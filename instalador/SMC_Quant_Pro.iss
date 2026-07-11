@@ -27,20 +27,19 @@
 ; ----------------------------------------------------------------------------
 ;  <<< AJUSTE: pastas de origem (onde estão os arquivos na SUA máquina)
 ; ----------------------------------------------------------------------------
-; Pasta que o PyInstaller gerou (contém o .exe e tudo que ele precisa).
-; Normalmente é  ...\dist\SMC_Quant_Pro\  quando você compila em modo "onedir".
-#define SourceApp        "C:\SMC\dist\SMC_Quant_Pro"
+; A sua pasta "dist" JÁ é o pacote completo: contém o SMC_Quant_Pro.exe (onefile)
+; e a pasta motor\ ao lado dele. O instalador copia tudo que estiver aqui dentro.
+; >>> Confira que a pasta motor\ dentro da dist tem o node_modules pronto. <<<
+#define SourceApp        "C:\Users\jovan\Documents\SMC_QUANT_PRO\dist"
 
-; Pasta do motor Node.js (com node_modules JÁ pronto do Baileys).
-#define SourceMotor      "C:\SMC\motor"
-
-; Ícone do aplicativo (.ico). Deixe vazio ("") se não tiver um.
-#define AppIcon          "C:\SMC\assets\icone.ico"
+; Ícone do aplicativo (.ico). O .exe já tem ícone embutido; isto é só para o
+; assistente de instalação e o item no Painel de Controle. Deixe "" se não tiver.
+#define AppIcon          ""
 
 ; Instalador do Node.js para incluir no pacote (opcional, mas recomendado).
 ; Baixe o .msi LTS x64 em https://nodejs.org e aponte aqui.
 ; Deixe vazio ("") se NÃO quiser embutir o Node.js no setup.
-#define NodeInstaller    "C:\SMC\redist\node-v20.17.0-x64.msi"
+#define NodeInstaller    "C:\Users\jovan\Documents\SMC_QUANT_PRO\node-v20.17.0-x64.msi"
 
 ; ----------------------------------------------------------------------------
 
@@ -69,8 +68,9 @@ WizardStyle=modern
 ; WizardSmallImageFile=assets\wizard_topo.bmp
 #if AppIcon != ""
 SetupIconFile={#AppIcon}
-UninstallDisplayIcon={app}\{#MyAppExeName}
 #endif
+; O ícone que aparece em "Programas e Recursos" vem do próprio .exe.
+UninstallDisplayIcon={app}\{#MyAppExeName}
 ; Idioma da interface do próprio setup:
 ShowLanguageDialog=no
 
@@ -81,11 +81,8 @@ Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortugue
 Name: "desktopicon"; Description: "Criar um atalho na Área de Trabalho"; GroupDescription: "Atalhos:"; Flags: checkedonce
 
 [Files]
-; --- Aplicativo principal (todo o conteúdo da pasta dist do PyInstaller) ---
+; --- Pacote completo (o .exe + a pasta motor\ que já estão dentro da dist) ---
 Source: "{#SourceApp}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-
-; --- Motor Node.js (com node_modules já pronto) ---
-Source: "{#SourceMotor}\*"; DestDir: "{app}\motor"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 ; --- Instalador do Node.js embutido (copiado só temporariamente p/ rodar) ---
 #if NodeInstaller != ""

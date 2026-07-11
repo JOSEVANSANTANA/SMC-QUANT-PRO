@@ -15,23 +15,22 @@ instala o Node.js se faltar, e **não apaga os dados do cliente** nas atualizaç
 Baixe e instale de: https://jrsoftware.org/isdl.php (gratuito).
 
 ### 2. Organize as pastas de origem
-O script espera três coisas prontas na sua máquina:
+Bom: a sua pasta `dist` **já é o pacote completo** — tem o `SMC_Quant_Pro.exe`
+(onefile) e a pasta `motor\` ao lado. Então o instalador aponta para **uma pasta
+só**. O script já vem com os SEUS caminhos preenchidos:
 
-| O quê | Onde o script procura (padrão) | O que é |
+| O quê | Caminho já configurado no script | Observação |
 |---|---|---|
-| App compilado | `C:\SMC\dist\SMC_Quant_Pro` | A pasta que o **PyInstaller** gera. Use o modo **onedir** (pasta), não onefile. |
-| Motor Node.js | `C:\SMC\motor` | A pasta `motor/` com o `node_modules` **já pronto** do Baileys. |
-| Node.js (opcional) | `C:\SMC\redist\node-v20.17.0-x64.msi` | O `.msi` LTS x64 baixado de https://nodejs.org, para instalar no cliente que não tem Node. |
-| Ícone (opcional) | `C:\SMC\assets\icone.ico` | Ícone `.ico` do app. |
+| Pacote (exe + motor) | `C:\Users\jovan\Documents\SMC_QUANT_PRO\dist` | Confira que `dist\motor\` tem o `node_modules` pronto do Baileys. |
+| Node.js (opcional) | `C:\Users\jovan\Documents\SMC_QUANT_PRO\node-v20.17.0-x64.msi` | Baixe o `.msi` LTS x64 em https://nodejs.org e coloque aí (ou apague essa linha). |
+| Ícone (opcional) | *(vazio)* | O `.exe` já tem ícone embutido; não precisa de `.ico`. |
 
-Se as suas pastas estiverem em outro lugar, **ajuste os caminhos** no topo do
-arquivo `SMC_Quant_Pro.iss`, nas linhas marcadas com `<<< AJUSTE`.
+Se algum caminho mudar, ajuste no topo do `SMC_Quant_Pro.iss`, nas linhas `<<< AJUSTE`.
 
-> **Sobre o PyInstaller:** para o instalador funcionar bem, compile em modo
-> pasta. No seu `.spec`, isso corresponde a ter um `COLLECT(...)` no final
-> (onedir). O resultado fica em `dist\SMC_Quant_Pro\` com o `.exe` + arquivos.
-> Se hoje você gera um `.exe` único (onefile), aponte o `SourceApp` para a
-> pasta que contém esse único `.exe` — o script copia tudo que estiver lá.
+> ⚠️ **Importante sobre a `dist\motor`:** confirme que a pasta `motor` **dentro
+> da dist** tem o `node_modules` completo do Baileys. Se ela estiver vazia,
+> copie para lá o conteúdo da sua `motor_completo_com_dependencias`. É esse
+> `node_modules` pronto que evita o cliente ter que rodar `npm install`.
 
 ### 3. Confira a versão
 No topo do `.iss`, ajuste:
