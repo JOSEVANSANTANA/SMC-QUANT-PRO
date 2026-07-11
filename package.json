@@ -1,0 +1,12 @@
+{
+  "name": "smc-licenca-server",
+  "version": "1.0.0",
+  "description": "Servidor de licenças do SMC Quant Pro - TIGER INVEST VIP",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.0"
+  }
+}
