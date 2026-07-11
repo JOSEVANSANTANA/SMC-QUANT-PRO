@@ -13,10 +13,12 @@
 // ============================================================
 
 const express = require("express");
+const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
 
 const app = express();
+app.use(cors());          // libera o painel (rodando localmente) a chamar o servidor
 app.use(express.json());
 
 const DB = path.join(__dirname, "licencas.json");
