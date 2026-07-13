@@ -72,7 +72,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "1.6.2"
+VERSAO_ATUAL = "1.6.3"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1587,6 +1587,14 @@ class SmcQuantApp(ctk.CTk):
             self.lbl_dica_manual.grid(row=3, column=0, columnspan=6, sticky="w")
 
     def _adicionar_operacao_manual(self):
+        from tkinter import messagebox
+
+        def aviso(msg):
+            # Popup visível + log, para o trader SABER por que nada foi incluído
+            # (antes só ia pro log e passava despercebido).
+            self.log(f"⚠️ {msg}")
+            messagebox.showwarning("Incluir operação no diário", msg)
+
         def num(campo, obrigatorio=True):
             txt = campo.get().strip().replace(",", ".")
             if not txt:
@@ -1602,11 +1610,11 @@ class SmcQuantApp(ctk.CTk):
             tp2 = num(self.manual_tp2, obrigatorio=False)
             contratos = int(self.manual_contratos.get().strip() or 1)
         except ValueError:
-            self.log("⚠️ Operação manual: preencha Entrada, Stop e Qtde com números válidos.")
+            aviso("Preencha Entrada, Stop e Qtde com números válidos.")
             return
 
         if entry == stop:
-            self.log("⚠️ Operação manual: Entrada e Stop não podem ser iguais.")
+            aviso("Entrada e Stop não podem ser iguais.")
             return
 
         ativo = self.manual_ativo.get().strip().upper() or "DESCONHECIDO"
@@ -1619,7 +1627,8 @@ class SmcQuantApp(ctk.CTk):
             try:
                 preco_saida = num(self.manual_saida)
             except ValueError:
-                self.log("⚠️ Operação concluída: informe o preço de saída.")
+                aviso("Operação 'Já concluída': informe o Preço de saída para o "
+                      "resultado entrar no dashboard.")
                 return
 
         if concluida:
@@ -2532,7 +2541,18 @@ class SmcQuantApp(ctk.CTk):
         falar("Integração concluída. Sistemas de proteção visual e aprendizado ativados.")
 
         api_key = carregar_api_key()
-        client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=60_000))
+        # Timeout de 25s (era 60s): uma análise de gráfico responde em ~5–15s.
+        # Se um modelo fica "sobrecarregado" e trava, 60s de espera num único
+        # modelo é inaceitável — 25s já derruba o modelo lento e passa ao próximo.
+        client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=25_000))
+
+        # Cooldown por modelo: quando um modelo dá cota esgotada (429) ou fica
+        # sobrecarregado (503), ele é "estacionado" por um tempo. Assim paramos
+        # de gastar ida-e-volta de rede tentando modelos mortos EM TODO CICLO —
+        # o maior ralo de tempo quando a cota diária começa a estourar.
+        cooldown_modelos = {}   # nome_modelo -> timestamp (epoch) até quando pular
+        COOLDOWN_COTA = 900     # 429 cota esgotada: pula por 15 min
+        COOLDOWN_SOBRECARGA = 120  # 503/timeout: pula por 2 min
 
         # Lista de modelos de reserva: se o principal esgotar a cota (comum
         # no plano gratuito — 20 requisições/dia por modelo), tenta os
@@ -2810,7 +2830,19 @@ class SmcQuantApp(ctk.CTk):
                 resposta = None
                 ultimo_erro = None
                 modelo_vencedor = None
-                for modelo_atual in modelos_fallback:
+
+                # Só tenta modelos que NÃO estão em cooldown (cota/sobrecarga
+                # recentes). Se todos estiverem estacionados, tenta a lista
+                # inteira mesmo assim — melhor uma chance do que pular o ciclo.
+                agora_ts = time.time()
+                candidatos = [m for m in modelos_fallback
+                               if cooldown_modelos.get(m, 0) <= agora_ts]
+                if not candidatos:
+                    candidatos = list(modelos_fallback)
+                    self.log("⏳ Todos os modelos estão em cooldown de cota/sobrecarga — "
+                              "tentando mesmo assim. (Considere aumentar o intervalo ou usar chave paga.)")
+
+                for modelo_atual in candidatos:
                     try:
                         resposta = client.models.generate_content(
                             model=modelo_atual,
@@ -2822,7 +2854,8 @@ class SmcQuantApp(ctk.CTk):
                             )
                         )
                         modelo_vencedor = modelo_atual
-                        if modelo_atual != modelos_fallback[0]:
+                        cooldown_modelos.pop(modelo_atual, None)  # respondeu: sai do cooldown
+                        if modelo_atual != candidatos[0]:
                             self.log(f"ℹ️ Análise concluída usando modelo de reserva: {modelo_atual}")
                         break
                     except Exception as e:
@@ -2852,11 +2885,15 @@ class SmcQuantApp(ctk.CTk):
                                          "TIMED OUT", "OVERLOADED", "CONNECTION", "SSL",
                                          "TEMPORARILY")
                         if any(t in erro_str for t in transitorios):
-                            motivo = "cota esgotada" if ("429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str) \
-                                      else "indisponível/sobrecarregado"
-                            self.log(f"⚠️ {modelo_atual} {motivo} — tentando próximo modelo da lista...")
-                            time.sleep(0.6)  # respiro curto antes de tentar o próximo (era 2s)
-                            continue
+                            eh_cota = ("429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str)
+                            # Estaciona o modelo para não desperdiçar rede nos
+                            # próximos ciclos: cota -> 15 min, sobrecarga -> 2 min.
+                            cooldown_modelos[modelo_atual] = time.time() + (
+                                COOLDOWN_COTA if eh_cota else COOLDOWN_SOBRECARGA)
+                            motivo = "cota esgotada (pausado 15min)" if eh_cota \
+                                      else "sobrecarregado (pausado 2min)"
+                            self.log(f"⚠️ {modelo_atual} {motivo} — próximo modelo...")
+                            continue  # sem sleep: o próximo modelo já é uma nova requisição
                         raise  # erro real (ex: chave inválida): sobe pro tratamento do ciclo
 
                 # Expurga de vez os modelos descontinuados, para não perder
