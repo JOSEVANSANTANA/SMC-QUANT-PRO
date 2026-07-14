@@ -336,6 +336,165 @@ class TradovateAuto:
         self.cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Delete",
                                             "code": "Delete", "windowsVirtualKeyCode": 46})
 
+    # ============================================================
+    #  OPÇÃO B — Ordem pelo "Chamado do pedido" (preço EXATO digitado)
+    # ============================================================
+    #  Localiza controles por TEXTO em tempo de execução (Comprar/Vender/
+    #  LIMITE/STOP/Enviar são <div> React, não têm id estável), e preenche
+    #  os inputs com o "setter nativo" pra o React reconhecer a mudança.
+    def _achar_por_texto(self, palavras):
+        """Devolve {palavra: {x, y}} do MENOR elemento visível cujo texto é
+        exatamente a palavra (centro em coordenadas de página)."""
+        js = """
+        (function(alvos){
+          function vis(el){var r=el.getBoundingClientRect();return r.width>0&&r.height>0;}
+          var res={};
+          var els=document.querySelectorAll('button,div,span,a,li,td,label,p');
+          for(var i=0;i<els.length;i++){var el=els[i];
+            if(!vis(el))continue;
+            var t=(el.textContent||'').trim();
+            for(var j=0;j<alvos.length;j++){var a=alvos[j];
+              if(t===a){var r=el.getBoundingClientRect();var area=r.width*r.height;
+                if(!res[a]||area<res[a].area){
+                  res[a]={area:area,x:Math.round(r.x+r.width/2),
+                          y:Math.round(r.y+r.height/2)};}}}}
+          return JSON.stringify(res);
+        })(%s)
+        """ % json.dumps(palavras)
+        try:
+            return json.loads(self.avaliar_js(js) or "{}")
+        except Exception:
+            return {}
+
+    def localizar(self, palavra):
+        return self._achar_por_texto([palavra]).get(palavra)
+
+    def definir_campo_ticket(self, papel, valor):
+        """Preenche o campo do ticket: papel='preco' ou 'qtd'. Usa o setter
+        nativo do input + eventos input/change pra o React captar."""
+        js = """
+        (function(papel,val){
+          function setInput(el,v){
+            var setter=Object.getOwnPropertyDescriptor(
+              window.HTMLInputElement.prototype,'value').set;
+            setter.call(el,String(v));
+            el.dispatchEvent(new Event('input',{bubbles:true}));
+            el.dispatchEvent(new Event('change',{bubbles:true}));
+          }
+          var ins=[].slice.call(document.querySelectorAll('input')).filter(function(el){
+            var r=el.getBoundingClientRect();
+            return r.width>0&&r.height>0&&r.x<300;});   // painel do ticket (esquerda)
+          var alvo=null;
+          if(papel==='preco'){
+            alvo=ins.filter(function(el){
+              return (el.placeholder||'')===''
+                && /^[0-9][0-9.,]*$/.test((el.value||'').trim());})[0];
+          } else {
+            alvo=ins.filter(function(el){
+              return (el.placeholder||'').toLowerCase().indexOf('selecionar')>=0;})[0];
+          }
+          if(!alvo) return 'NAO_ACHOU';
+          alvo.focus(); setInput(alvo,val);
+          return 'OK';
+        })(%s,%s)
+        """ % (json.dumps(papel), json.dumps(str(valor)))
+        return self.avaliar_js(js)
+
+    def _selecionar_tipo(self, tipo, pausa=0.45, dry_run=False):
+        """Ajusta TIPO DE PEDIDO (LIMITE/STOP/MERCADO) clicando no seletor e na
+        opção. Best-effort: se não achar, deixa como está e avisa."""
+        mapa = {"LIMITE": ["LIMITE", "LIMIT"], "STOP": ["STOP", "STP"],
+                "MERCADO": ["MERCADO", "MKT", "MARKET"],
+                "STOP LIMITE": ["STOP LIMITE", "STOP LIMIT"]}
+        desejados = mapa.get(tipo.upper(), [tipo.upper()])
+        todos = sum(mapa.values(), [])
+        achou = self._achar_por_texto(todos)
+        ctrl = next((achou[w] for lst in mapa.values() for w in lst if w in achou), None)
+        if not ctrl:
+            self.log("   ⚠️ seletor de TIPO não encontrado — mantendo o atual.")
+            return
+        if dry_run:
+            self.log(f"   [dry] mudaria TIPO para {tipo}")
+            return
+        self.clicar_pagina(ctrl["x"], ctrl["y"]); time.sleep(pausa)   # abre dropdown
+        opc = self._achar_por_texto(desejados)
+        alvo = next((opc[w] for w in desejados if w in opc), None)
+        if alvo:
+            self.clicar_pagina(alvo["x"], alvo["y"]); time.sleep(pausa)
+            self.log(f"   tipo → {tipo.upper()}")
+        else:
+            self.log(f"   ⚠️ opção '{tipo}' não apareceu no dropdown — mantendo o atual.")
+
+    def enviar_ordem_ticket(self, preco, direcao, tipo="LIMITE", qtd=None,
+                            enviar=False, pausa=0.45):
+        """Preenche UMA ordem no 'Chamado do pedido'. Se enviar=False (padrão),
+        só preenche pra você conferir na tela — NÃO clica em Enviar."""
+        long_ = str(direcao).upper() in ("BUY", "COMPRA", "COMPRAR", "C", "LONG")
+        palavra_dir = "Comprar" if long_ else "Vender"
+        modo = "ENVIAR" if enviar else "SÓ PREENCHER (confira na tela)"
+        self.log(f"🧾 Ordem [{modo}]: {palavra_dir} {tipo} @ {preco}"
+                 + (f"  x{qtd}" if qtd else ""))
+        # 1) direção
+        d = self.localizar(palavra_dir)
+        if not d:
+            self.log(f"   ❌ não achei o botão '{palavra_dir}'. Abra o 'Chamado do pedido'.")
+            return False
+        # Clicar Comprar/Vender e preencher campos é seguro (não envia a ordem);
+        # só o botão "Enviar" no fim é que dispara. Por isso preenchemos de
+        # verdade mesmo em dry-run, pra você VER o formulário preenchido.
+        self.clicar_pagina(d["x"], d["y"])
+        time.sleep(pausa)
+        # 2) tipo (best-effort)
+        if tipo:
+            self._selecionar_tipo(tipo, pausa)
+        # 3) preço (sempre preenche — é seguro, só escreve no campo)
+        r = self.definir_campo_ticket("preco", preco)
+        if r != "OK":
+            self.log(f"   ❌ campo de preço não encontrado ({r}).")
+            return False
+        self.log(f"   ✏️ preço {preco} preenchido.")
+        time.sleep(pausa)
+        # 4) qtd
+        if qtd is not None:
+            self.definir_campo_ticket("qtd", int(qtd))
+            self.log(f"   ✏️ qtd {int(qtd)} preenchida.")
+            time.sleep(pausa)
+        # 5) enviar (só no modo real)
+        if enviar:
+            e = self.localizar("Enviar")
+            if not e:
+                self.log("   ❌ botão 'Enviar' não encontrado.")
+                return False
+            self.clicar_pagina(e["x"], e["y"])
+            self.log("   ✅ Enviar clicado.")
+        else:
+            self.log("   👀 Preenchido (não enviei). Confira e mande '!' pra enviar.")
+        return True
+
+    def enviar_bracket_ticket(self, direcao, entrada, stop, alvo, qtd=None,
+                              enviar=False, pausa=0.7):
+        """Coloca a estrutura completa com PREÇOS EXATOS do SMC via ticket:
+          LONG : entrada Comprar/LIMITE · stop Vender/STOP · alvo Vender/LIMITE
+          SHORT: entrada Vender/LIMITE  · stop Comprar/STOP · alvo Comprar/LIMITE
+        """
+        long_ = str(direcao).upper() in ("BUY", "COMPRA", "COMPRAR", "C", "LONG")
+        dir_entrada = "Comprar" if long_ else "Vender"
+        dir_prot = "Vender" if long_ else "Comprar"
+        plano = [("ENTRADA", entrada, dir_entrada, "LIMITE"),
+                 ("STOP",    stop,    dir_prot,    "STOP"),
+                 ("ALVO",    alvo,    dir_prot,    "LIMITE")]
+        self.log(f"📦 Bracket {'LONG' if long_ else 'SHORT'} via ticket "
+                 f"[{'ENVIAR' if enviar else 'dry'}]  qtd={qtd}")
+        ok = True
+        for nome, preco, dirr, tipo in plano:
+            if preco is None:
+                continue
+            self.log(f" • {nome}")
+            ok = self.enviar_ordem_ticket(preco, dirr, tipo, qtd, enviar) and ok
+            time.sleep(pausa)
+        self.log("📦 Bracket concluído.")
+        return ok
+
     # --------------------------- Calibração -----------------------------
     #  Precisamos saber a que altura (Y da página) fica cada preço. Em vez de
     #  adivinhar pixels, deixamos VOCÊ clicar em 2 preços conhecidos: a própria
@@ -533,13 +692,15 @@ def _assistente():
                                pontos[1][0], pontos[1][1][1], x_click)
         print(f"✅ Calibrado e salvo em {calib_path}")
 
-    print("\n--- TESTE DE CLIQUE ---")
+    print("\n--- TESTE ---  (abra o 'Chamado do pedido' na Tradovate)")
     print("Comandos:")
-    print("  <preço>       -> dry-run: só mostra onde clicaria (ex: 7585)")
-    print("  !<preço>      -> clique REAL na altura do preço (ex: !7585)")
-    print("  inspect       -> abra o 'Chamado do pedido' na Tradovate e rode isto:")
-    print("                   ele mostra os campos do formulário (me mande esse texto)")
-    print("  sair          -> encerrar")
+    print("  inspect                              -> dump do formulário (me envie)")
+    print("  ordem <preço> <buy|sell> [limit|stop]-> PREENCHE o ticket (não envia)")
+    print("  !ordem <preço> <buy|sell> [limit|stop]-> preenche e clica ENVIAR")
+    print("  bracket <buy|sell> <ent> <stop> <alvo> [qtd] -> preenche as 3 ordens")
+    print("  !bracket <buy|sell> <ent> <stop> <alvo> [qtd] -> envia as 3 ordens")
+    print("  <preço> / !<preço>                   -> clique cru na altura (Opção A)")
+    print("  sair")
     while True:
         entrada = _ler_texto("cmd> ")
         if entrada is None or entrada.lower() in ("sair", "q", "exit"):
@@ -547,18 +708,46 @@ def _assistente():
         if not entrada:
             continue
 
-        if entrada.lower() in ("inspect", "inspecionar", "ticket"):
+        real = entrada.startswith("!")
+        corpo = entrada[1:].strip() if real else entrada
+        partes = corpo.split()
+        cmd = partes[0].lower() if partes else ""
+
+        if cmd in ("inspect", "inspecionar", "ticket"):
             print("\n----- ESTRUTURA DO 'CHAMADO DO PEDIDO' (copie e me envie) -----")
-            info = bot.inspecionar_ticket()
-            print(json.dumps(info, ensure_ascii=False, indent=2))
+            print(json.dumps(bot.inspecionar_ticket(), ensure_ascii=False, indent=2))
             print("----- fim -----\n")
             continue
 
-        real = entrada.startswith("!")
+        if cmd == "ordem":
+            try:
+                preco = float(partes[1].replace(",", "."))
+                direcao = partes[2]
+                tipo = partes[3].upper() if len(partes) > 3 else "LIMITE"
+            except (IndexError, ValueError):
+                print("  uso: ordem <preço> <buy|sell> [limit|stop]")
+                continue
+            bot.enviar_ordem_ticket(preco, direcao, tipo, enviar=real)
+            continue
+
+        if cmd == "bracket":
+            try:
+                direcao = partes[1]
+                ent = float(partes[2].replace(",", "."))
+                stop = float(partes[3].replace(",", "."))
+                alvo = float(partes[4].replace(",", "."))
+                qtd = int(partes[5]) if len(partes) > 5 else None
+            except (IndexError, ValueError):
+                print("  uso: bracket <buy|sell> <entrada> <stop> <alvo> [qtd]")
+                continue
+            bot.enviar_bracket_ticket(direcao, ent, stop, alvo, qtd=qtd, enviar=real)
+            continue
+
+        # senão: clique cru na altura de um preço (Opção A)
         try:
-            preco = float(entrada.lstrip("!").strip().replace(",", "."))
+            preco = float(corpo.replace(",", "."))
         except ValueError:
-            print("  comando inválido. Use: 7585 | !7585 | inspect | sair")
+            print("  comando inválido. Veja a lista acima.")
             continue
         bot.clicar_preco(preco, dry_run=not real)
 
