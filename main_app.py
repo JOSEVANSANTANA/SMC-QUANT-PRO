@@ -72,7 +72,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "1.6.5"
+VERSAO_ATUAL = "1.6.6"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -91,7 +91,7 @@ VERSAO_ATUAL = "1.6.5"
 # RECENTE do JSON. Se a URL tivesse o hash (.../raw/8a9b0c.../versao.json),
 # ela ficaria congelada no conteúdo daquele momento e os clientes nunca
 # veriam as atualizações futuras.
-URL_VERSAO = "https://gist.githubusercontent.com/JOSEVANSANTANA/186b63b2de425d236abef4afcf9d1b33/raw/versao.json"
+URL_VERSAO = "https://raw.githubusercontent.com/JOSEVANSANTANA/SMC-QUANT-PRO/main/versao.json"
 
 def _comparar_versoes(v1: str, v2: str) -> int:
     """Retorna 1 se v1 > v2, -1 se v1 < v2, 0 se iguais. Compara 1.10.0 > 1.9.0
