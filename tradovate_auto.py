@@ -378,6 +378,38 @@ def abrir_chrome_debug(porta=PORTA_DEBUG_PADRAO, url="https://trader.tradovate.c
 
 
 # ============================================================================
+#  Entradas de terminal à prova de erro (não quebram com ENTER vazio, aceitam
+#  vírgula como separador decimal e tratam Ctrl+Z/EOF sem estourar traceback).
+# ============================================================================
+def _ler_texto(prompt):
+    try:
+        return input(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+def _ler_float(prompt):
+    """Repergunta até vir um número válido. ENTER vazio -> repergunta.
+    Aceita vírgula (7588,5) além de ponto. EOF -> devolve None (aborta)."""
+    while True:
+        txt = _ler_texto(prompt)
+        if txt is None:
+            return None
+        if not txt:
+            print("  (vazio) digite um número, ex: 7590")
+            continue
+        try:
+            return float(txt.replace(",", "."))
+        except ValueError:
+            print(f"  '{txt}' não é um número válido. Ex: 7590 ou 7588.5")
+
+def _ler_sim_nao(prompt, padrao=False):
+    txt = _ler_texto(prompt)
+    if not txt:
+        return padrao
+    return txt.lower() in ("s", "sim", "y", "yes")
+
+
+# ============================================================================
 #  ASSISTENTE DE TESTE ISOLADO  —  python tradovate_auto.py
 # ============================================================================
 def _assistente():
@@ -389,26 +421,27 @@ def _assistente():
 
     if not bot.chrome_ligado():
         print("\nChrome de depuração não está aberto.")
-        if input("Abrir agora (Chrome dedicado na Tradovate)? [s/N] ").strip().lower() == "s":
+        if _ler_sim_nao("Abrir agora (Chrome dedicado na Tradovate)? [s/N] "):
             abrir_chrome_debug()
             print("→ Faça login na Tradovate nessa janela e deixe o gráfico visível.")
-            input("Quando estiver pronto, aperte ENTER... ")
+            _ler_texto("Quando estiver pronto, aperte ENTER... ")
 
     if not bot.conectar():
         return
 
     if bot.calib:
         print(f"\nCalibração existente encontrada: {bot.calib}")
-        if input("Recalibrar? [s/N] ").strip().lower() != "s":
-            pass
-        else:
+        if _ler_sim_nao("Recalibrar? [s/N] "):
             bot.calib = None
 
     if not bot.calib:
         print("\n--- CALIBRAÇÃO (2 preços conhecidos no gráfico) ---")
         pontos = []
         for i in (1, 2):
-            preco = float(input(f"[{i}/2] Digite um preço visível no gráfico e ENTER: "))
+            preco = _ler_float(f"[{i}/2] Digite um preço visível no gráfico e ENTER: ")
+            if preco is None:
+                print("      Abortado.")
+                return
             print(f"      Agora CLIQUE exatamente na linha/altura do preço {preco} no gráfico...")
             bot.armar_captura_clique()
             xy = bot.ler_captura_clique()
@@ -417,6 +450,9 @@ def _assistente():
                 return
             print(f"      capturado: x={xy[0]} y={xy[1]}")
             pontos.append((preco, xy))
+        if pontos[0][0] == pontos[1][0]:
+            print("      ❌ Os 2 preços são iguais — impossível calibrar. Rode de novo.")
+            return
         x_click = round((pontos[0][1][0] + pontos[1][1][0]) / 2)
         bot.definir_calibracao(pontos[0][0], pontos[0][1][1],
                                pontos[1][0], pontos[1][1][1], x_click)
@@ -427,14 +463,16 @@ def _assistente():
     print("Prefixe com '!' para clique REAL (sem '!' é dry-run que só mostra).")
     print("Digite 'sair' para encerrar.")
     while True:
-        entrada = input("preço> ").strip()
-        if entrada.lower() in ("sair", "q", "exit"):
+        entrada = _ler_texto("preço> ")
+        if entrada is None or entrada.lower() in ("sair", "q", "exit"):
             break
+        if not entrada:
+            continue
         real = entrada.startswith("!")
         try:
-            preco = float(entrada.lstrip("!").strip())
+            preco = float(entrada.lstrip("!").strip().replace(",", "."))
         except ValueError:
-            print("  valor inválido.")
+            print("  valor inválido (ex: 7585 ou !7585 para clicar de verdade).")
             continue
         bot.clicar_preco(preco, dry_run=not real)
 
