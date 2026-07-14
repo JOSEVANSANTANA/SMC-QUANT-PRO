@@ -72,7 +72,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "1.6.3"
+VERSAO_ATUAL = "1.6.4"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -862,6 +862,14 @@ def garantir_janela_renderizando(hwnd, restaurar_se_minimizada=True):
             # SW_SHOWNOACTIVATE = 4 -> mostra sem ativar/roubar foco
             win32gui.ShowWindow(hwnd, 4)
             time.sleep(0.4)  # dá tempo do app redesenhar
+            # Empurra a janela restaurada para o FUNDO da pilha, sem ativá-la.
+            # Assim ela volta a ser renderizável (dá pra capturar), mas NÃO fica
+            # por cima do que você está fazendo — nada de "pular na sua frente".
+            # HWND_BOTTOM=1 ; SWP_NOSIZE=0x1|NOMOVE=0x2|NOACTIVATE=0x10 = 0x13
+            try:
+                ctypes.windll.user32.SetWindowPos(hwnd, 1, 0, 0, 0, 0, 0x13)
+            except Exception:
+                pass
     except Exception:
         pass
     try:
@@ -1051,6 +1059,11 @@ class SmcQuantApp(ctk.CTk):
         # para PARAR de mandar acompanhamento de pendente de um cenário que o
         # trader dispensou (senão o WhatsApp seguia tratando como entrada ativa).
         self.sinais_dispensados = set()
+        # IDs de sinais que o trader ACATOU (dashboard ou WhatsApp). O robô só
+        # manda acompanhamento (entrada acionada, alvo, stop) de cenários que
+        # foram acatados — cenário não acatado é só a sugestão inicial, sem
+        # follow-up no WhatsApp.
+        self.sinais_acatados = set()
 
         config_atual = carregar_config()
         self.plano = config_atual.get("plano_trading", {
@@ -1476,6 +1489,7 @@ class SmcQuantApp(ctk.CTk):
             canvas = tk.Canvas(col, bg=COR["card"], height=175, highlightthickness=0)
             canvas.pack(fill="x", padx=6, pady=(0, 8))
             setattr(self, attr, canvas)
+            self._ativar_zoom_pan(canvas)
 
         self.lbl_legenda_dias = ctk.CTkLabel(scroll, text="", justify="left", anchor="w",
                                               text_color=COR["dim"], font=ctk.CTkFont(size=9))
@@ -2048,6 +2062,60 @@ class SmcQuantApp(ctk.CTk):
         )
         self.lbl_patrimonio.configure(text=texto, text_color=cor)
 
+    def _ativar_zoom_pan(self, canvas):
+        """Torna um gráfico MANIPULÁVEL: roda do mouse dá zoom, arraste move
+        (pan) e duplo-clique reseta. O estado (_zoom/_panx) vive no canvas."""
+        canvas._zoom = 1.0
+        canvas._panx = 0.0
+        canvas._arraste_x = None
+
+        def redesenhar():
+            # Redesenha os dois gráficos (barato e mantém tudo consistente).
+            try:
+                self._desenhar_equity_curve()
+                self._desenhar_grafico_dias()
+            except Exception:
+                pass
+
+        def on_wheel(event):
+            # event.delta > 0 = rolar pra cima = ampliar. Zoom entre 1x e 8x.
+            fator = 1.15 if getattr(event, "delta", 0) > 0 else (1 / 1.15)
+            novo = min(max(canvas._zoom * fator, 1.0), 8.0)
+            canvas._zoom = novo
+            if novo <= 1.0:       # ao voltar ao mínimo, recentraliza
+                canvas._panx = 0.0
+            redesenhar()
+            return "break"
+
+        def on_wheel_linux(delta):
+            return lambda e: on_wheel(type("E", (), {"delta": delta})())
+
+        def on_press(event):
+            canvas._arraste_x = event.x
+
+        def on_drag(event):
+            if canvas._arraste_x is not None:
+                canvas._panx += event.x - canvas._arraste_x
+                canvas._arraste_x = event.x
+                redesenhar()
+
+        def on_release(_event):
+            canvas._arraste_x = None
+
+        def on_reset(_event):
+            canvas._zoom = 1.0
+            canvas._panx = 0.0
+            redesenhar()
+            return "break"
+
+        canvas.bind("<MouseWheel>", on_wheel)                 # Windows / Mac
+        canvas.bind("<Button-4>", on_wheel_linux(120))        # Linux scroll up
+        canvas.bind("<Button-5>", on_wheel_linux(-120))       # Linux scroll down
+        canvas.bind("<ButtonPress-1>", on_press)
+        canvas.bind("<B1-Motion>", on_drag)
+        canvas.bind("<ButtonRelease-1>", on_release)
+        canvas.bind("<Double-Button-1>", on_reset)
+
     def _desenhar_linha(self, canvas, valores, rotulos=None, tooltip_extra=None):
         """Gráfico de LINHA com timeline no eixo X. `rotulos` é a lista de
         legendas (ex: 'Dia 1', 'Op 3') alinhada com `valores`."""
@@ -2067,10 +2135,20 @@ class SmcQuantApp(ctk.CTk):
         n = len(valores)
         topo, base = 14, altura - margem_base
 
+        # Zoom/pan interativos (roda do mouse amplia, arraste move, duplo-clique
+        # reseta). O estado fica guardado no próprio canvas.
+        zoom = getattr(canvas, "_zoom", 1.0)
+        panx = getattr(canvas, "_panx", 0.0)
+        centro = largura / 2
+
         def xy(i, v):
             x = (i / max(n - 1, 1)) * (largura - 40) + 20
+            x = (x - centro) * zoom + centro + panx   # aplica zoom horizontal + deslocamento
             y = base - ((v - minimo) / faixa) * (base - topo)
             return x, y
+
+        def visivel(x):
+            return 16 <= x <= largura - 16
 
         # Linha do zero
         y_zero = base - ((0 - minimo) / faixa) * (base - topo)
@@ -2092,6 +2170,8 @@ class SmcQuantApp(ctk.CTk):
         passo_rotulo = max(1, n // 8)
         for i, v in enumerate(valores):
             x, y = xy(i, v)
+            if not visivel(x):   # fora da área visível (ampliado): não desenha
+                continue
             cor_ponto = COR["verde"] if v >= 0 else COR["vermelho"]
             canvas.create_oval(x - 3, y - 3, x + 3, y + 3, fill=cor_ponto, outline="")
             if rotulos and (i % passo_rotulo == 0 or i == n - 1):
@@ -2180,6 +2260,11 @@ class SmcQuantApp(ctk.CTk):
         # "Cenário em PENDENTE" no WhatsApp de algo que o trader não vai operar).
         if decisao == "NAO_OPEROU":
             self.sinais_dispensados.add(sinal_id)
+            self.sinais_acatados.discard(sinal_id)
+        # ACATOU: libera o acompanhamento desse cenário no WhatsApp.
+        elif decisao in ("ACATOU_COMPRA", "ACATOU_VENDA"):
+            self.sinais_acatados.add(sinal_id)
+            self.sinais_dispensados.discard(sinal_id)
 
         # Ao ACATAR, a sugestão vira uma POSIÇÃO REAL no diário — aparece como
         # "rodando" no dashboard, com P&L atualizado a cada ciclo de preço.
@@ -2798,21 +2883,51 @@ class SmcQuantApp(ctk.CTk):
                 self.log("🧠 Processando análise com Memória Episódica...")
 
                 memoria_dinamica = compilar_memoria_prompt()
-                PROMPT_BASE = "Você é um algoritmo SMC Institucional."
+                PROMPT_BASE = (
+                    "Você é um trader institucional de Smart Money Concepts (SMC/ICT) "
+                    "operando índices futuros (ES/MES, NQ/MNQ). Sua leitura é criteriosa, "
+                    "paciente e prioriza QUALIDADE sobre quantidade: é melhor não operar do "
+                    "que forçar um trade fraco."
+                )
                 PROMPT_FINAL = (
                     f"{PROMPT_BASE}\n{memoria_dinamica}\n"
                     f"ÚLTIMO ESTADO DO LEDGER:\n{ledger_text_memory}\n"
-                    "Identifique o TICKER do ativo no gráfico (asset_symbol). "
-                    "Analise o gráfico. Retorne JSON com base em OB, FVG e Liquidez. "
-                    "Liste TODAS as confluências encontradas em confluence_factors, de forma "
-                    "clara e didática. "
-                    "Em 'probabilidade' (0 a 100), estime de forma calibrada e honesta a chance do "
-                    "cenário atingir o objetivo 1 antes de invalidar — leve em conta o histórico real "
-                    "do trader no feedback loop acima. Não infle a probabilidade: se a estrutura for "
-                    "ambígua, use valores baixos. "
-                    "Priorize entradas em zonas de DISCOUNT (para compras) e PREMIUM (para vendas), "
-                    "que oferecem a melhor relação risco:retorno. "
-                    "ENTRY_PRICE é sempre ordem pendente. "
+                    "Identifique o TICKER do ativo no gráfico (asset_symbol) e leia o PREÇO "
+                    "ATUAL com precisão pela última vela e pela escala de preço à direita.\n"
+                    "\n"
+                    "SIGA ESTE ROTEIRO DE ANÁLISE, NESTA ORDEM:\n"
+                    "1) VIÉS (HTF): determine a tendência dominante pela ESTRUTURA visível "
+                    "(sequência de BOS/CHoCH, topos/fundos). Só é BUY se a estrutura for de "
+                    "alta; SELL se de baixa. Contra-tendência exige CHoCH confirmado + varredura "
+                    "de liquidez clara — caso contrário, HOLD.\n"
+                    "2) PREMIUM/DISCOUNT: marque o range relevante (perna atual). Compras SÓ em "
+                    "DISCOUNT (abaixo de 50%); vendas SÓ em PREMIUM (acima de 50%). Preço em "
+                    "EQUILÍBRIO (perto de 50%) ou no meio do range = HOLD.\n"
+                    "3) LIQUIDEZ: exija uma varredura de liquidez (sweep de topo/fundo, ou "
+                    "inducement) ANTES da entrada. Nunca entre MIRANDO liquidez que ainda não "
+                    "foi tomada — o preço tende a buscá-la primeiro.\n"
+                    "4) PONTO DE ENTRADA (POI): a entrada deve estar num Order Block NÃO mitigado "
+                    "ou num Fair Value Gap (FVG) coerente com o viés. ENTRY_PRICE é sempre ordem "
+                    "PENDENTE nesse POI (não a mercado).\n"
+                    "5) STOP e ALVOS: stop_loss logo além do POI/estrutura que invalida a ideia. "
+                    "take_profit_1 na liquidez interna/oposta mais próxima; take_profit_2 na "
+                    "liquidez externa seguinte. O RISCO:RETORNO até o objetivo 1 deve ser de no "
+                    "mínimo ~1.5. Se não houver R:R decente, retorne HOLD.\n"
+                    "\n"
+                    "REGRAS DE HONESTIDADE:\n"
+                    "- Liste em confluence_factors APENAS confluências REAIS e visíveis no "
+                    "gráfico (BOS/CHoCH, OB, FVG, sweep, premium/discount, equilíbrio). Não "
+                    "invente fatores para justificar um trade.\n"
+                    "- Se faltar confluência, se a estrutura estiver ambígua, ou se o preço já "
+                    "estiver longe do POI, retorne action=HOLD com probabilidade baixa. HOLD é "
+                    "uma resposta válida e desejada.\n"
+                    "- 'probabilidade' (0 a 100): estimativa CALIBRADA e honesta de atingir o "
+                    "objetivo 1 antes de invalidar. Poucas confluências ou contra-tendência => "
+                    "probabilidade baixa. Use o histórico do feedback loop acima para calibrar. "
+                    "NÃO infle.\n"
+                    "- Coerência obrigatória: para BUY, stop < entry < tp1 <= tp2; para SELL, "
+                    "stop > entry > tp1 >= tp2. Se não conseguir montar um cenário coerente, HOLD.\n"
+                    "\n"
                     # ---- Sizing é responsabilidade EXCLUSIVA do plano da mesa ----
                     "NUNCA sugira quantidade de contratos, tamanho de posição, número de "
                     "lotes, alavancagem ou valores de risco em dólar no texto da análise nem "
@@ -2981,6 +3096,12 @@ class SmcQuantApp(ctk.CTk):
                     self.sinais_dispensados.discard(sinal_ativo.get("sinal_id"))
                     sinal_ativo = {"estado": "ENCERRADA"}
 
+                # ACOMPANHAMENTO SÓ SE ACATADO: o robô só manda follow-up no
+                # WhatsApp (entrada acionada, alvo, stop, acompanhamento) de um
+                # cenário que o trader ACATOU (no dashboard ou no WhatsApp). Um
+                # cenário não acatado recebe só a sugestão inicial, sem follow-up.
+                acatado_atual = sinal_ativo.get("sinal_id") in self.sinais_acatados
+
                 # ---------------- MÁQUINA DE ESTADOS ----------------
                 if sinal_ativo["estado"] != "ENCERRADA" and preco is not None:
                     direcao = sinal_ativo["direcao"]
@@ -2999,8 +3120,9 @@ class SmcQuantApp(ctk.CTk):
                             sinal_ativo["estado"] = "ATIVA"
                             msg = f"🎯 *ENTRADA ACIONADA — {direcao}*\nPreço mitigou a zona em {sinal_ativo['entry']}."
                             self.log(msg)
-                            enviar_relatorio_whatsapp(msg, screenshot, self.log)
-                            falar(f"Ordem de {direcao} ativada no mercado.")
+                            if acatado_atual:
+                                enviar_relatorio_whatsapp(msg, screenshot, self.log)
+                                falar(f"Ordem de {direcao} ativada no mercado.")
                         elif sinal_ativo["candles"] >= MAX_CANDLES:
                             sinal_ativo = {"estado": "ENCERRADA"}
                             self.log("⌛ SINAL EXPIRADO: Nenhuma mitigação no tempo limite.")
@@ -3019,8 +3141,9 @@ class SmcQuantApp(ctk.CTk):
                             sinal_ativo = {"estado": "ENCERRADA"}
                             msg = f"🔴 *STOP ATINGIDO (LOSS) — {direcao}*\nOperação invalidada em {preco}."
                             self.log(msg)
-                            enviar_relatorio_whatsapp(msg, screenshot, self.log)
-                            falar("Stop atingido. Dados gravados no banco de aprendizado.")
+                            if acatado_atual:
+                                enviar_relatorio_whatsapp(msg, screenshot, self.log)
+                                falar("Stop atingido. Dados gravados no banco de aprendizado.")
                             self.after(0, self._atualizar_dashboard)
 
                         elif bateu_tp2:
@@ -3029,8 +3152,9 @@ class SmcQuantApp(ctk.CTk):
                             sinal_ativo = {"estado": "ENCERRADA"}
                             msg = f"🟢🟢 *TAKE PROFIT 2 (WIN) — {direcao}*\nLucro máximo em {preco}."
                             self.log(msg)
-                            enviar_relatorio_whatsapp(msg, screenshot, self.log)
-                            falar("Take profit final atingido. Excelente operação.")
+                            if acatado_atual:
+                                enviar_relatorio_whatsapp(msg, screenshot, self.log)
+                                falar("Take profit final atingido. Excelente operação.")
                             self.after(0, self._atualizar_dashboard)
 
                         elif bateu_tp1 and not sinal_ativo.get("tp1_notificado"):
@@ -3039,7 +3163,8 @@ class SmcQuantApp(ctk.CTk):
                                                           sinal_ativo["tp1"], preco, "WIN", ativo)
                             msg = f"🟢 *TAKE PROFIT 1 (WIN PARCIAL) — {direcao}*\nParcial realizada em {preco}."
                             self.log(msg)
-                            enviar_relatorio_whatsapp(msg, screenshot, self.log)
+                            if acatado_atual:
+                                enviar_relatorio_whatsapp(msg, screenshot, self.log)
                             self.after(0, self._atualizar_dashboard)
 
                 # ---------------- NOVO SINAL (se estado livre) ----------------
@@ -3125,11 +3250,19 @@ class SmcQuantApp(ctk.CTk):
                             f"• {c}" for c in confluencias
                         )
 
-                    if sinal_ativo["estado"] != "ENCERRADA":
+                    if sinal_ativo["estado"] != "ENCERRADA" and acatado_atual:
+                        # Só faz ACOMPANHAMENTO de trade se o trader ACATOU o cenário.
                         cabecalho = (f"⏳ *Acompanhamento — {ativo}*\n"
                                       f"🕐 {time.strftime('%d/%m/%Y %H:%M:%S')}\n"
                                       f"Cenário {sinal_ativo['direcao']} em {sinal_ativo['estado']} "
                                       f"(entrada {sinal_ativo['entry']})")
+                    elif sinal_ativo["estado"] != "ENCERRADA":
+                        # Há um cenário aberto, mas o trader ainda NÃO acatou: nota
+                        # neutra, sem tratar como se fosse a operação dele.
+                        cabecalho = (f"👀 *Cenário aguardando sua decisão — {ativo}*\n"
+                                      f"🕐 {time.strftime('%d/%m/%Y %H:%M:%S')}\n"
+                                      f"Sugestão {sinal_ativo['direcao']} (entrada {sinal_ativo['entry']}). "
+                                      f"Acate no app/WhatsApp para receber o acompanhamento.")
                     else:
                         cabecalho = (f"⚪ *Sem cenário acionável — {ativo}*\n"
                                       f"🕐 {time.strftime('%d/%m/%Y %H:%M:%S')}\n"
