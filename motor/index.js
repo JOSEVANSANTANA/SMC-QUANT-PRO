@@ -170,24 +170,61 @@ async function connectToWhatsApp() {
 
     // Comandos por mensagem: START (inscreve), STOP (desinscreve) e
     // ACATAR (registra que o trader vai operar o último cenário).
-    // Sem checar fromMe: se o comando vier do mesmo número logado no bot,
-    // a mensagem chega com fromMe=true — sem essa flexibilidade, o comando
-    // nunca seria capturado nesse cenário.
+    //
+    // ⚠️ CORREÇÃO DO LOOP INFINITO:
+    //   1) O robô responde CADA comando com uma confirmação (ex.: "✅ Inscrito!
+    //      ...Envie STOP..."). Essas confirmações também chegam de volta neste
+    //      handler com fromMe=true. Antes usávamos `texto.includes('STOP')`, então
+    //      a própria confirmação "...Envie STOP..." re-disparava STOP, que mandava
+    //      outra confirmação com "START", e assim infinitamente — spam que levou o
+    //      WhatsApp a derrubar a sessão (código 401).
+    //   2) A correção tem DUAS camadas:
+    //      a) IGNORAR as mensagens que o próprio robô enviou. Toda confirmação do
+    //         robô começa com um emoji de status (✅ 🛑 ℹ️ 👍 🚪) — se a mensagem
+    //         for fromMe e começar com um desses, é eco do robô: descartar.
+    //      b) Reconhecer comando só por CORRESPONDÊNCIA EXATA (`===`), nunca por
+    //         `includes`. Assim uma frase longa jamais é confundida com um comando.
+    //
+    // Continuamos aceitando comandos com fromMe=true (para o dono operar do próprio
+    // número), mas só quando o texto é EXATAMENTE o comando — não uma confirmação.
+    const PREFIXOS_CONFIRMACAO_ROBO = ['✅', '🛑', 'ℹ️', '👍', '🚪', '📊', '⚠️', '🔴', '🟢'];
+
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message) return;
 
-        const texto = (msg.message.conversation ||
-                       msg.message.extendedTextMessage?.text ||
-                       "").trim().toUpperCase();
-        if (!texto) return;
+        const textoBruto = (msg.message.conversation ||
+                            msg.message.extendedTextMessage?.text ||
+                            "").trim();
+        if (!textoBruto) return;
 
+        // Descarta ecos das próprias confirmações do robô (evita o loop).
+        if (msg.key.fromMe &&
+            PREFIXOS_CONFIRMACAO_ROBO.some((p) => textoBruto.startsWith(p))) {
+            return;
+        }
+
+        // Normaliza para comparar comando por igualdade exata.
+        const texto = textoBruto.toUpperCase();
         const jidAlvo = msg.key.remoteJid;
-        console.log(`💬 Mensagem recebida (fromMe=${msg.key.fromMe}) em ${jidAlvo}: "${texto}"`);
 
-        // STOP é checado ANTES de START (a palavra "START" nunca contém "STOP",
-        // mas mantemos a ordem explícita para clareza).
-        if (texto.includes('STOP')) {
+        // Conjuntos de comandos aceitos (correspondência EXATA).
+        const CMD_STOP      = ['STOP', 'PARAR'];
+        const CMD_START     = ['START', 'INICIAR'];
+        const CMD_ACATAR    = ['ACATAR', 'ACATEI', 'ACATO', 'ACATAR CENARIO'];
+        const CMD_DISPENSAR = ['NAO OPEREI', 'NÃO OPEREI', 'DISPENSAR', 'NAO', 'NÃO'];
+
+        const ehComando =
+            CMD_STOP.includes(texto) || CMD_START.includes(texto) ||
+            CMD_ACATAR.includes(texto) || CMD_DISPENSAR.includes(texto);
+
+        // Só logamos/agimos quando é de fato um comando — reduz ruído e garante
+        // que conversa normal nunca entra no fluxo de comandos.
+        if (!ehComando) return;
+
+        console.log(`💬 Comando recebido (fromMe=${msg.key.fromMe}) em ${jidAlvo}: "${texto}"`);
+
+        if (CMD_STOP.includes(texto)) {
             const removido = removerInscrito(jidAlvo);
             await sock.sendMessage(jidAlvo, {
                 text: removido
@@ -197,7 +234,7 @@ async function connectToWhatsApp() {
             return;
         }
 
-        if (texto.includes('START')) {
+        if (CMD_START.includes(texto)) {
             const adicionado = adicionarInscrito(jidAlvo);
             await sock.sendMessage(jidAlvo, {
                 text: adicionado
@@ -210,7 +247,7 @@ async function connectToWhatsApp() {
         // ACATAR / ACATO / ACATEI -> registra intenção de operar o último
         // cenário sugerido. O app (main_app.py) lê isso via GET /comandos e
         // abre a posição na direção do sinal (mesma lógica do botão "Acatei").
-        if (texto.includes('ACATAR') || texto.includes('ACATEI') || texto.includes('ACATO')) {
+        if (CMD_ACATAR.includes(texto)) {
             filaComandos.push({ tipo: 'ACATAR', jid: jidAlvo, ts: Date.now() });
             await sock.sendMessage(jidAlvo, {
                 text: "👍 Recebido: vou registrar o ACATAR do último cenário no seu diário e acompanhar até stop/alvo."
@@ -219,7 +256,7 @@ async function connectToWhatsApp() {
         }
 
         // NAO OPEREI / DISPENSAR -> encerra o acompanhamento do último cenário.
-        if (texto.includes('NAO OPEREI') || texto.includes('NÃO OPEREI') || texto.includes('DISPENSAR')) {
+        if (CMD_DISPENSAR.includes(texto)) {
             filaComandos.push({ tipo: 'DISPENSAR', jid: jidAlvo, ts: Date.now() });
             await sock.sendMessage(jidAlvo, {
                 text: "🚪 Ok: não vou fazer acompanhamento desse cenário."
