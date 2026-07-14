@@ -6,6 +6,44 @@ const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 
+// ------------------------------------------------------------------
+// SILENCIADOR DE RUÍDO DO libsignal
+// A lib de criptografia (libsignal) imprime, direto no console, erros de
+// decodificação de mensagens RECEBIDAS que são INOFENSIVOS para o robô:
+// "Bad MAC", "Key used already or never filled", "Failed to decrypt
+// message", "Session error". Acontecem com mensagens antigas/duplicadas ou
+// de membros de grupo cujo handshake ainda não foi feito — e NÃO afetam o
+// envio dos relatórios. Sem este filtro, eles INUNDAM o log do app.
+// Aqui filtramos apenas esse ruído específico; todo o resto do log continua.
+// ------------------------------------------------------------------
+const _padroesRuidoLibsignal = [
+    'Bad MAC',
+    'Failed to decrypt message',
+    'Session error',
+    'MessageCounterError',
+    'Key used already or never filled',
+];
+let _ruidoSuprimido = 0;
+function _ehRuidoLibsignal(args) {
+    const texto = args.map(a => (a && a.stack) ? a.stack : String(a)).join(' ');
+    return _padroesRuidoLibsignal.some(p => texto.includes(p));
+}
+const _logOriginal = console.log.bind(console);
+const _errOriginal = console.error.bind(console);
+function _filtrar(orig, args) {
+    if (_ehRuidoLibsignal(args)) {
+        _ruidoSuprimido++;
+        // De tempos em tempos avisa que está ignorando (para não parecer travado).
+        if (_ruidoSuprimido % 200 === 0) {
+            _logOriginal(`ℹ️ ${_ruidoSuprimido} mensagens de grupo não decifráveis ignoradas (normal, não afeta os relatórios).`);
+        }
+        return;
+    }
+    orig(...args);
+}
+console.log = (...args) => _filtrar(_logOriginal, args);
+console.error = (...args) => _filtrar(_errOriginal, args);
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
