@@ -72,7 +72,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "1.6.4"
+VERSAO_ATUAL = "1.6.5"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1064,6 +1064,11 @@ class SmcQuantApp(ctk.CTk):
         # foram acatados — cenário não acatado é só a sugestão inicial, sem
         # follow-up no WhatsApp.
         self.sinais_acatados = set()
+
+        # Poller dos comandos recebidos por WhatsApp (ACATAR/DISPENSAR). Roda
+        # em segundo plano por toda a vida do app; se o motor estiver fora do
+        # ar, a chamada falha em silêncio e ele tenta de novo depois.
+        threading.Thread(target=self._poller_comandos_whatsapp, daemon=True).start()
 
         config_atual = carregar_config()
         self.plano = config_atual.get("plano_trading", {
@@ -2299,6 +2304,45 @@ class SmcQuantApp(ctk.CTk):
                     self.log(f"⏳ Ordem PENDENTE registrada: {direcao} {pos['ativo']} @ {pos['entry']} "
                               f"({pos['contratos']} ctr) — aguardando o preço tocar a entrada.")
         self._atualizar_dashboard()
+
+    def _ultimo_sinal_pendente(self):
+        """O sinal mais recente que o trader ainda NÃO decidiu (acatar/dispensar).
+        É a ele que os comandos ACATAR/DISPENSAR do WhatsApp se aplicam."""
+        pendentes = [s for s in carregar_sinais_log() if not s.get("decisao")]
+        return pendentes[-1] if pendentes else None
+
+    def _poller_comandos_whatsapp(self):
+        """Lê a fila de comandos do motor (GET /comandos) e aplica ACATAR/
+        DISPENSAR ao último cenário pendente — o mesmo efeito dos botões do
+        dashboard, mas acionado pela mensagem no WhatsApp."""
+        while True:
+            time.sleep(4)
+            try:
+                r = requests.get(f"{BAILEYS_URL}/comandos", timeout=3)
+                if r.status_code != 200:
+                    continue
+                comandos = r.json().get("comandos", [])
+            except Exception:
+                continue  # motor fora do ar ou sem resposta: tenta no próximo ciclo
+
+            for cmd in comandos:
+                tipo = cmd.get("tipo")
+                if tipo not in ("ACATAR", "DISPENSAR"):
+                    continue
+                sinal = self._ultimo_sinal_pendente()
+                if not sinal:
+                    self.log("💬 Comando do WhatsApp recebido, mas não há cenário recente "
+                              "pendente para aplicar.")
+                    continue
+                if tipo == "ACATAR":
+                    decisao = "ACATOU_COMPRA" if sinal.get("direcao") == "BUY" else "ACATOU_VENDA"
+                else:
+                    decisao = "NAO_OPEROU"
+                sid = sinal["id"]
+                self.log(f"💬 WhatsApp: {tipo} aplicado ao cenário {sinal.get('direcao')} "
+                          f"{sinal.get('ativo')} (id {sid}).")
+                # Executa na thread da GUI (mexe no diário e no dashboard).
+                self.after(0, lambda s=sid, d=decisao: self._registrar_decisao(s, d))
 
     # ------------------------------------------------------------------
     # LIGAR MOTOR — dispara tudo numa thread separada para não travar a GUI
