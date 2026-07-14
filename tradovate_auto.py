@@ -261,6 +261,81 @@ class TradovateAuto:
         self.cdp("Input.dispatchMouseEvent", dict(base, type="mouseReleased"))
         self.log(f"   🖱️ clique injetado em (x={x}, y={y})")
 
+    def duplo_clique_pagina(self, x, y, dry_run=False):
+        """Duplo-clique no ponto (x, y) da página (alguns gestos da Tradovate
+        respondem a duplo-clique)."""
+        x, y = int(round(x)), int(round(y))
+        if dry_run:
+            self.log(f"   [dry-run] duplo-clique em (x={x}, y={y})")
+            return
+        base = {"x": x, "y": y, "button": "left"}
+        self.cdp("Input.dispatchMouseEvent", dict(base, type="mouseMoved", clickCount=0))
+        for c in (1, 2):
+            self.cdp("Input.dispatchMouseEvent", dict(base, type="mousePressed", clickCount=c))
+            self.cdp("Input.dispatchMouseEvent", dict(base, type="mouseReleased", clickCount=c))
+        self.log(f"   🖱️🖱️ duplo-clique injetado em (x={x}, y={y})")
+
+    # ---------------------- Inspetor do "Chamado do pedido" --------------
+    #  Lê a estrutura do formulário de ordem (inputs, botões, rótulos) e devolve
+    #  um resumo. É assim que eu "enxergo" o DOM da SUA Tradovate à distância pra
+    #  travar os seletores certos da Opção B (digitar preço + Comprar/Vender +
+    #  Enviar), sem chutar.
+    def inspecionar_ticket(self):
+        js = r"""
+        (function(){
+          function vis(el){var r=el.getBoundingClientRect();
+            return r.width>0&&r.height>0&&r.bottom>0&&r.right>0;}
+          function txt(el){return (el.innerText||el.textContent||'').trim().slice(0,40);}
+          var out={inputs:[],botoes:[],selects:[]};
+          document.querySelectorAll('input,textarea').forEach(function(el){
+            if(!vis(el))return;
+            var r=el.getBoundingClientRect();
+            out.inputs.push({tipo:el.type||'', ph:el.placeholder||'',
+              nome:el.name||'', aria:el.getAttribute('aria-label')||'',
+              valor:(el.value||'').slice(0,20),
+              x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)});
+          });
+          document.querySelectorAll('button,[role=button]').forEach(function(el){
+            if(!vis(el))return; var t=txt(el); if(!t)return;
+            var r=el.getBoundingClientRect();
+            out.botoes.push({texto:t, x:Math.round(r.x+r.width/2),
+              y:Math.round(r.y+r.height/2)});
+          });
+          document.querySelectorAll('select,[role=combobox],[role=listbox]').forEach(function(el){
+            if(!vis(el))return; var r=el.getBoundingClientRect();
+            out.selects.push({texto:txt(el), x:Math.round(r.x+r.width/2),
+              y:Math.round(r.y+r.height/2)});
+          });
+          return JSON.stringify(out);
+        })()
+        """
+        try:
+            return json.loads(self.avaliar_js(js) or "{}")
+        except Exception as e:
+            self.log(f"⚠️ Falha ao inspecionar o ticket: {e}")
+            return {}
+
+    # ---------------------- Digitação em 2º plano -----------------------
+    def digitar_texto(self, texto):
+        """Digita texto na página via CDP (vai pro elemento com foco).
+        Use depois de clicar/focar um campo."""
+        self.cdp("Input.insertText", {"text": str(texto)})
+
+    def apagar_campo(self, vezes=12):
+        """Seleciona-tudo + apaga (Ctrl+A, Delete) no campo com foco."""
+        # Ctrl+A
+        self.cdp("Input.dispatchKeyEvent", {"type": "keyDown", "modifiers": 2,
+                                            "key": "a", "code": "KeyA",
+                                            "windowsVirtualKeyCode": 65})
+        self.cdp("Input.dispatchKeyEvent", {"type": "keyUp", "modifiers": 2,
+                                            "key": "a", "code": "KeyA",
+                                            "windowsVirtualKeyCode": 65})
+        # Delete
+        self.cdp("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Delete",
+                                            "code": "Delete", "windowsVirtualKeyCode": 46})
+        self.cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Delete",
+                                            "code": "Delete", "windowsVirtualKeyCode": 46})
+
     # --------------------------- Calibração -----------------------------
     #  Precisamos saber a que altura (Y da página) fica cada preço. Em vez de
     #  adivinhar pixels, deixamos VOCÊ clicar em 2 preços conhecidos: a própria
@@ -459,20 +534,31 @@ def _assistente():
         print(f"✅ Calibrado e salvo em {calib_path}")
 
     print("\n--- TESTE DE CLIQUE ---")
-    print("Digite um PREÇO para o robô clicar na altura dele.")
-    print("Prefixe com '!' para clique REAL (sem '!' é dry-run que só mostra).")
-    print("Digite 'sair' para encerrar.")
+    print("Comandos:")
+    print("  <preço>       -> dry-run: só mostra onde clicaria (ex: 7585)")
+    print("  !<preço>      -> clique REAL na altura do preço (ex: !7585)")
+    print("  inspect       -> abra o 'Chamado do pedido' na Tradovate e rode isto:")
+    print("                   ele mostra os campos do formulário (me mande esse texto)")
+    print("  sair          -> encerrar")
     while True:
-        entrada = _ler_texto("preço> ")
+        entrada = _ler_texto("cmd> ")
         if entrada is None or entrada.lower() in ("sair", "q", "exit"):
             break
         if not entrada:
             continue
+
+        if entrada.lower() in ("inspect", "inspecionar", "ticket"):
+            print("\n----- ESTRUTURA DO 'CHAMADO DO PEDIDO' (copie e me envie) -----")
+            info = bot.inspecionar_ticket()
+            print(json.dumps(info, ensure_ascii=False, indent=2))
+            print("----- fim -----\n")
+            continue
+
         real = entrada.startswith("!")
         try:
             preco = float(entrada.lstrip("!").strip().replace(",", "."))
         except ValueError:
-            print("  valor inválido (ex: 7585 ou !7585 para clicar de verdade).")
+            print("  comando inválido. Use: 7585 | !7585 | inspect | sair")
             continue
         bot.clicar_preco(preco, dry_run=not real)
 
