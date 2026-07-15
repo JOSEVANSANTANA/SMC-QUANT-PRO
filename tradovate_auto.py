@@ -432,25 +432,40 @@ class TradovateAuto:
             self.log(f"   ⚠️ opção '{tipo}' não apareceu no dropdown — mantendo o atual.")
 
     def voltar_ticket(self, dry_run=False):
-        """Clica na setinha ← do topo do 'Chamado do pedido' para voltar do
-        comprovante da ordem de volta ao FORMULÁRIO. Necessário entre as ordens
-        do bracket (depois de enviar, o painel vira comprovante)."""
+        """Volta do comprovante da ordem para o FORMULÁRIO clicando na setinha ←
+        do topo do 'Chamado do pedido'. Necessário entre as ordens do bracket.
+
+        Clica VIA DOM (.click() no elemento) — bem mais confiável que pixel para
+        achar o ícone certo. Prioriza um elemento pequeno no topo-esquerdo que
+        contenha um <svg> (o ícone de seta)."""
         js = """
         (function(){
           var cands=[].slice.call(
-            document.querySelectorAll('svg,button,[role=button],i,a,span,div'));
+            document.querySelectorAll('button,[role=button],svg,i,a,span,div'));
           var best=null;
           for(var k=0;k<cands.length;k++){var el=cands[k];
             var r=el.getBoundingClientRect();
             if(r.width<=0||r.height<=0) continue;
             var cx=r.x+r.width/2, cy=r.y+r.height/2;
-            // ícone pequeno, no topo-esquerdo do painel do ticket
-            if(cx<60 && cy>185 && cy<255 && r.width<=44 && r.height<=44){
-              var a=r.width*r.height;
-              if(!best||a<best.a){best={a:a,x:Math.round(cx),y:Math.round(cy)};}
+            // ícone pequeno no topo-esquerdo do painel do ticket
+            if(cx<85 && cy>165 && cy<290 && r.width<=54 && r.height<=54){
+              var temSvg = (el.tagName && el.tagName.toLowerCase()==='svg') ||
+                           (el.querySelector && !!el.querySelector('svg'));
+              // menor área é melhor; conter um svg (seta) tem prioridade forte
+              var score = (r.width*r.height) - (temSvg ? 1e6 : 0);
+              if(!best || score<best.score){
+                best={score:score, x:Math.round(cx), y:Math.round(cy), el:el};
+              }
             }
           }
-          return best?JSON.stringify(best):'';
+          if(!best) return '';
+          var achou_svg = best.score < 0;
+          try {
+            var alvo = (best.el.closest &&
+                        best.el.closest('button,[role=button],a,div')) || best.el;
+            alvo.click();               // clique real via DOM (React reconhece)
+          } catch(e){}
+          return JSON.stringify({x:best.x, y:best.y, svg:achou_svg});
         })()
         """
         v = self.avaliar_js(js)
@@ -459,23 +474,28 @@ class TradovateAuto:
             return False
         d = json.loads(v)
         if dry_run:
-            self.log(f"   [dry] voltaria (←) em ({d['x']},{d['y']})")
+            self.log(f"   [dry] voltaria (←) em ({d['x']},{d['y']}, svg={d.get('svg')})")
             return True
-        self.clicar_pagina(d["x"], d["y"])
-        self.log("   ↩️ voltei ao formulário (←).")
-        time.sleep(0.4)
+        self.log(f"   ↩️ voltar (←) via DOM em ({d['x']},{d['y']}, svg={d.get('svg')}).")
+        time.sleep(0.5)
         return True
 
-    def _garantir_formulario(self, tentativas=2):
+    def _garantir_formulario(self, tentativas=4):
         """Garante que o formulário (Comprar/Vender) está à vista; se estiver no
-        comprovante da última ordem, clica ← para voltar."""
-        for _ in range(tentativas):
+        comprovante da última ordem, clica ← para voltar. Tenta várias vezes,
+        pois o comprovante pode demorar um instante a aparecer/sair."""
+        for i in range(tentativas):
             if self.localizar("Comprar") or self.localizar("Vender"):
+                if i > 0:
+                    self.log("   ✅ formulário de ordem de volta à vista.")
                 return True
-            if not self.voltar_ticket():
-                break
-            time.sleep(0.4)
-        return bool(self.localizar("Comprar") or self.localizar("Vender"))
+            self.log(f"   ↩️ formulário não está à vista — voltando (tentativa {i + 1}/{tentativas})...")
+            self.voltar_ticket()
+            time.sleep(0.6)
+        ok = bool(self.localizar("Comprar") or self.localizar("Vender"))
+        if not ok:
+            self.log("   ❌ não consegui voltar ao formulário do ticket (setinha ←).")
+        return ok
 
     def enviar_ordem_ticket(self, preco, direcao, tipo="LIMITE", qtd=None,
                             enviar=False, pausa=0.45):

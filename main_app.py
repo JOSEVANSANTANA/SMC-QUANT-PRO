@@ -2527,23 +2527,40 @@ class SmcQuantApp(ctk.CTk):
                 continue  # motor fora do ar ou sem resposta: tenta no próximo ciclo
 
             for cmd in comandos:
-                tipo = cmd.get("tipo")
-                if tipo not in ("ACATAR", "DISPENSAR"):
-                    continue
-                sinal = self._ultimo_sinal_pendente()
-                if not sinal:
-                    self.log("💬 Comando do WhatsApp recebido, mas não há cenário recente "
-                              "pendente para aplicar.")
-                    continue
-                if tipo == "ACATAR":
-                    decisao = "ACATOU_COMPRA" if sinal.get("direcao") == "BUY" else "ACATOU_VENDA"
-                else:
-                    decisao = "NAO_OPEROU"
-                sid = sinal["id"]
-                self.log(f"💬 WhatsApp: {tipo} aplicado ao cenário {sinal.get('direcao')} "
-                          f"{sinal.get('ativo')} (id {sid}).")
-                # Executa na thread da GUI (mexe no diário e no dashboard).
-                self.after(0, lambda s=sid, d=decisao: self._registrar_decisao(s, d))
+                # Blindado: um erro num comando não pode derrubar o poller (senão
+                # ACATAR/DISPENSAR parariam de funcionar até reiniciar o app).
+                try:
+                    tipo = cmd.get("tipo")
+                    if tipo not in ("ACATAR", "DISPENSAR"):
+                        continue
+                    sinal = self._ultimo_sinal_pendente()
+                    if not sinal:
+                        self.log("💬 WhatsApp: comando recebido, mas não há cenário "
+                                  "pendente para aplicar.")
+                        enviar_relatorio_whatsapp(
+                            "ℹ️ Não há um cenário recente aguardando decisão. "
+                            "Assim que sair uma nova sugestão, responda ACATAR ou NÃO ACATAR.",
+                            None, self.log)
+                        continue
+                    direcao_sinal = str(sinal.get("direcao", "")).upper()
+                    if tipo == "ACATAR":
+                        decisao = "ACATOU_COMPRA" if direcao_sinal in ("BUY", "COMPRA") else "ACATOU_VENDA"
+                        confirma = (f"✅ Cenário {sinal.get('direcao')} {sinal.get('ativo','')} "
+                                    f"ACATADO. Registrando no diário e enviando as ordens "
+                                    f"(entrada/stop/alvo).")
+                    else:
+                        decisao = "NAO_OPEROU"
+                        confirma = (f"🚪 Cenário {sinal.get('direcao')} {sinal.get('ativo','')} "
+                                    f"DISPENSADO. Não farei acompanhamento dele.")
+                    sid = sinal["id"]
+                    self.log(f"💬 WhatsApp: {tipo} aplicado ao cenário {sinal.get('direcao')} "
+                              f"{sinal.get('ativo')} (id {sid}).")
+                    # Executa na thread da GUI (mexe no diário/dashboard/ordens).
+                    self.after(0, lambda s=sid, d=decisao: self._registrar_decisao(s, d))
+                    # Confirma no WhatsApp o que REALMENTE aconteceu.
+                    enviar_relatorio_whatsapp(confirma, None, self.log)
+                except Exception as e:
+                    self.log(f"⚠️ Erro ao aplicar comando do WhatsApp: {e}")
 
     # ------------------------------------------------------------------
     # LIGAR MOTOR — dispara tudo numa thread separada para não travar a GUI
@@ -3476,6 +3493,9 @@ class SmcQuantApp(ctk.CTk):
                         f"{linha_contratos}"
                         f"{bloco_confluencias}\n\n"
                         f"_{sinal.get('market_analysis', '')}_\n\n"
+                        f"❓ *Deseja acatar este cenário?*\n"
+                        f"Responda *ACATAR* para eu registrar e plotar as ordens (entrada, "
+                        f"stop e alvo) na plataforma, ou *NÃO ACATAR* para dispensar.\n\n"
                         f"_Material educacional. A decisão de operar é sua._"
                     )
                     enviar_relatorio_whatsapp(mensagem_wpp, screenshot, self.log)
