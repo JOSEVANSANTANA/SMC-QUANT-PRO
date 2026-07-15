@@ -825,25 +825,31 @@ def atualizar_decisao_sinal(sinal_id, decisao):
 # PW_RENDERFULLCONTENT, necessária para capturar corretamente conteúdo
 # renderizado por GPU — como uma aba do Chrome (o Tradovate roda em Chrome).
 def encontrar_janela_por_titulo(nome_parcial: str):
-    """Retorna o hwnd da primeira janela visível cujo título contenha
-    `nome_parcial`, ou None se não encontrar."""
+    """Retorna o hwnd de uma janela visível pelo título. Prefere o título
+    EXATO (o dropdown guarda o título completo); se não houver, cai para
+    correspondência parcial. Retorna None se não encontrar."""
     if not nome_parcial or not PYWIN32_DISPONIVEL:
         return None
 
-    resultado = {"hwnd": None}
+    alvo = nome_parcial.strip().lower()
+    resultado = {"exato": None, "parcial": None}
 
     def callback(hwnd, extra):
         if win32gui.IsWindowVisible(hwnd):
             titulo = win32gui.GetWindowText(hwnd)
-            if nome_parcial.lower() in titulo.lower():
-                resultado["hwnd"] = hwnd
+            if titulo:
+                t = titulo.strip().lower()
+                if t == alvo and resultado["exato"] is None:
+                    resultado["exato"] = hwnd
+                elif alvo in t and resultado["parcial"] is None:
+                    resultado["parcial"] = hwnd
         return True
 
     try:
         win32gui.EnumWindows(callback, None)
     except Exception:
         pass
-    return resultado["hwnd"]
+    return resultado["exato"] or resultado["parcial"]
 
 def garantir_janela_renderizando(hwnd, restaurar_se_minimizada=True):
     """
@@ -1085,6 +1091,12 @@ class SmcQuantApp(ctk.CTk):
         # pra quem quiser só pré-visualizar antes de mandar.
         self.tv_dry_var = tk.BooleanVar(value=tv_cfg.get("dry_run", False))
         self._tv_bot = None  # instância TradovateAuto criada sob demanda
+
+        # Cache do handle da janela da corretora. O título do Chrome muda com a
+        # aba ativa; fixar o hwnd evita "não encontrei a janela" quando a aba da
+        # corretora não está em foco.
+        self._hwnd_cache = None
+        self._hwnd_cache_nome = None
 
         # Poller dos comandos recebidos por WhatsApp (ACATAR/DISPENSAR). Roda
         # em segundo plano por toda a vida do app; se o motor estiver fora do
@@ -1879,6 +1891,27 @@ class SmcQuantApp(ctk.CTk):
         self._atualizar_dashboard()
 
     # ------------------------------------------------------------------
+    def _resolver_hwnd_corretora(self, nome_janela):
+        """Resolve o hwnd da janela da corretora REUSANDO o handle já achado
+        enquanto a janela existir. O título do Chrome muda conforme a aba ativa,
+        então buscar por título todo ciclo falha quando a aba da corretora não
+        está em foco. Fixando o hwnd, seguimos capturando a MESMA janela mesmo
+        com a aba trocada; só rebuscamos se ela fechar ou o alvo mudar."""
+        cache = self._hwnd_cache
+        if cache and self._hwnd_cache_nome == nome_janela:
+            try:
+                if PYWIN32_DISPONIVEL and win32gui.IsWindow(cache):
+                    return cache
+            except Exception:
+                pass
+        hwnd = encontrar_janela_por_titulo(nome_janela)
+        self._hwnd_cache = hwnd
+        self._hwnd_cache_nome = nome_janela
+        if hwnd:
+            self.log(f"🔗 Janela da corretora fixada (handle {hwnd}) — seguirei "
+                     "capturando ela mesmo se a aba/título mudar.")
+        return hwnd
+
     def _salvar_pref_restaurar(self):
         valor = self.restaurar_minimizada_var.get()
         salvar_config({"restaurar_janela_minimizada": valor})
@@ -2983,7 +3016,7 @@ class SmcQuantApp(ctk.CTk):
                 hora_atual = time.strftime('%H:%M:%S')
 
                 if nome_janela:
-                    hwnd = encontrar_janela_por_titulo(nome_janela)
+                    hwnd = self._resolver_hwnd_corretora(nome_janela)
                     if not hwnd:
                         self.log(f"⚠️ ERRO DE VISUALIZAÇÃO: não encontrei a janela '{nome_janela}'. "
                                   "Pulando este ciclo.")

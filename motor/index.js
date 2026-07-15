@@ -187,16 +187,41 @@ async function connectToWhatsApp() {
     //
     // Continuamos aceitando comandos com fromMe=true (para o dono operar do próprio
     // número), mas só quando o texto é EXATAMENTE o comando — não uma confirmação.
-    const PREFIXOS_CONFIRMACAO_ROBO = ['✅', '🛑', 'ℹ️', '👍', '🚪', '📊', '⚠️', '🔴', '🟢'];
+    const PREFIXOS_CONFIRMACAO_ROBO = ['✅', '🛑', 'ℹ️', '👍', '🚪', '📊', '⚠️',
+                                       '🔴', '🟢', '📘', '⏳', '👀', '⚪', '🎯'];
+
+    // Extrai o texto de QUALQUER envelope de mensagem do WhatsApp: texto puro,
+    // texto com citação (extendedText), mensagem efêmera/viewOnce e respostas
+    // de botão/lista. Sem isso, alguns tipos de mensagem chegam "sem texto" e o
+    // comando (START/STOP/ACATAR) nunca é reconhecido.
+    const extrairTexto = (message) => {
+        if (!message) return "";
+        if (message.ephemeralMessage)  return extrairTexto(message.ephemeralMessage.message);
+        if (message.viewOnceMessage)   return extrairTexto(message.viewOnceMessage.message);
+        if (message.viewOnceMessageV2) return extrairTexto(message.viewOnceMessageV2.message);
+        return (message.conversation ||
+                message.extendedTextMessage?.text ||
+                message.buttonsResponseMessage?.selectedDisplayText ||
+                message.listResponseMessage?.title ||
+                "");
+    };
 
     sock.ev.on('messages.upsert', async (m) => {
-        const msg = m.messages[0];
-        if (!msg.message) return;
+        const msg = m.messages && m.messages[0];
+        if (!msg || !msg.message) return;
 
-        const textoBruto = (msg.message.conversation ||
-                            msg.message.extendedTextMessage?.text ||
-                            "").trim();
+        // Colapsa espaços e remove caracteres invisíveis (zero-width) que às
+        // vezes vêm junto e quebravam a comparação exata.
+        const textoBruto = extrairTexto(msg.message)
+            .replace(/[​-‍﻿]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
         if (!textoBruto) return;
+
+        const jidAlvo = msg.key.remoteJid;
+
+        // Log de TODA mensagem recebida — essencial pra diagnosticar comandos.
+        console.log(`💬 msg (tipo=${m.type}, fromMe=${msg.key.fromMe}) ${jidAlvo}: "${textoBruto}"`);
 
         // Descarta ecos das próprias confirmações do robô (evita o loop).
         if (msg.key.fromMe &&
@@ -206,23 +231,22 @@ async function connectToWhatsApp() {
 
         // Normaliza para comparar comando por igualdade exata.
         const texto = textoBruto.toUpperCase();
-        const jidAlvo = msg.key.remoteJid;
 
-        // Conjuntos de comandos aceitos (correspondência EXATA).
+        // Conjuntos de comandos aceitos (correspondência EXATA — evita o loop).
         const CMD_STOP      = ['STOP', 'PARAR'];
-        const CMD_START     = ['START', 'INICIAR'];
-        const CMD_ACATAR    = ['ACATAR', 'ACATEI', 'ACATO', 'ACATAR CENARIO'];
-        const CMD_DISPENSAR = ['NAO OPEREI', 'NÃO OPEREI', 'DISPENSAR', 'NAO', 'NÃO'];
+        const CMD_START     = ['START', 'INICIAR', 'INICIO', 'INÍCIO'];
+        const CMD_ACATAR    = ['ACATAR', 'ACATEI', 'ACATO', 'ACATAR CENARIO',
+                               'ACATAR CENÁRIO', 'SIM'];
+        const CMD_DISPENSAR = ['NAO OPEREI', 'NÃO OPEREI', 'DISPENSAR',
+                               'NAO ACATAR', 'NÃO ACATAR', 'NAO ACATO', 'NÃO ACATO'];
 
         const ehComando =
             CMD_STOP.includes(texto) || CMD_START.includes(texto) ||
             CMD_ACATAR.includes(texto) || CMD_DISPENSAR.includes(texto);
 
-        // Só logamos/agimos quando é de fato um comando — reduz ruído e garante
-        // que conversa normal nunca entra no fluxo de comandos.
         if (!ehComando) return;
 
-        console.log(`💬 Comando recebido (fromMe=${msg.key.fromMe}) em ${jidAlvo}: "${texto}"`);
+        console.log(`✅ Comando reconhecido: "${texto}"`);
 
         if (CMD_STOP.includes(texto)) {
             const removido = removerInscrito(jidAlvo);
