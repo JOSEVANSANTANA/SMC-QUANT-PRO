@@ -21,6 +21,17 @@ except ImportError:
     PYWIN32_DISPONIVEL = False
 
 # --------------------------------------------------------------------
+# AUTOMAÇÃO OPCIONAL DA TRADOVATE (item #7) — envio de ordem por CDP.
+# Importa com guarda: se o arquivo não estiver junto (ou faltar algo), o app
+# continua funcionando normalmente; a automação só aparece se estiver ligada.
+# --------------------------------------------------------------------
+try:
+    import tradovate_auto
+    TRADOVATE_DISPONIVEL = True
+except Exception:
+    TRADOVATE_DISPONIVEL = False
+
+# --------------------------------------------------------------------
 # CONFIGURAÇÕES E PERSISTÊNCIA DE DADOS
 # --------------------------------------------------------------------
 # --------------------------------------------------------------------
@@ -1065,6 +1076,14 @@ class SmcQuantApp(ctk.CTk):
         # follow-up no WhatsApp.
         self.sinais_acatados = set()
 
+        # --- Automação Tradovate (opcional, DESLIGADA por padrão) ---
+        tv_cfg = carregar_config().get("tradovate", {})
+        # auto_ativo: se o robô envia ordem à Tradovate ao ACATAR um sinal.
+        self.tv_auto_var = tk.BooleanVar(value=tv_cfg.get("auto_ativo", False))
+        # dry_run: modo teste — só PREENCHE o ticket, não clica Enviar.
+        self.tv_dry_var = tk.BooleanVar(value=tv_cfg.get("dry_run", True))
+        self._tv_bot = None  # instância TradovateAuto criada sob demanda
+
         # Poller dos comandos recebidos por WhatsApp (ACATAR/DISPENSAR). Roda
         # em segundo plano por toda a vida do app; se o motor estiver fora do
         # ar, a chamada falha em silêncio e ele tenta de novo depois.
@@ -1215,6 +1234,9 @@ class SmcQuantApp(ctk.CTk):
                                 insertbackground="#00ff00")
         self.console.pack(pady=(0, 8), padx=10, fill="both", expand=True)
 
+        # ---------- AUTOMAÇÃO TRADOVATE (opcional) ----------
+        self._montar_painel_tradovate(master)
+
         # ---------- SEÇÃO DESENVOLVEDOR (oculta no app do cliente) ----------
         if MODO_DEV:
             frame_dev = ctk.CTkFrame(master, fg_color="#2b1b1b", border_color="#8b4513", border_width=1)
@@ -1229,6 +1251,114 @@ class SmcQuantApp(ctk.CTk):
                           command=self._restaurar_backup).pack(side="left", padx=6)
             ctk.CTkButton(frame_dev_btns, text="📂 Abrir pasta de dados", fg_color="#444444",
                           command=lambda: os.startfile(pasta_dados_usuario())).pack(side="left", padx=6)
+
+    # ==================================================================
+    # AUTOMAÇÃO TRADOVATE (item #7) — opcional, desligada por padrão.
+    # Envia a estrutura entrada/stop/alvo pelo "Chamado do pedido" via CDP,
+    # com o preço EXATO do SMC, em segundo plano (sem roubar o foco).
+    # ==================================================================
+    def _montar_painel_tradovate(self, master):
+        frame = ctk.CTkFrame(master, fg_color="#141b26", border_color="#2b6cb0", border_width=1)
+        frame.pack(padx=10, pady=8, fill="x")
+        ctk.CTkLabel(frame, text="🎯 Automação Tradovate (opcional)",
+                     font=ctk.CTkFont(weight="bold", size=13),
+                     text_color="#63b3ed").pack(pady=(8, 0), anchor="w", padx=12)
+
+        if not TRADOVATE_DISPONIVEL:
+            ctk.CTkLabel(frame, text="Módulo tradovate_auto.py não encontrado ao lado do app.",
+                         text_color="#e0a458").pack(pady=(2, 10), padx=12, anchor="w")
+            return
+
+        ctk.CTkLabel(
+            frame, justify="left", text_color="#9fb3c8",
+            text="Ao ACATAR um sinal, o robô coloca entrada + stop + alvo na Tradovate\n"
+                 "(preço exato do SMC). Requer o Chrome aberto pelo botão abaixo e o\n"
+                 "'Chamado do pedido' visível. Quem não usa Tradovate é só deixar desligado."
+        ).pack(pady=(2, 6), padx=12, anchor="w")
+
+        ctk.CTkCheckBox(frame, text="Ligar automação (enviar ordem ao Acatar)",
+                        variable=self.tv_auto_var, command=self._tv_salvar_prefs
+                        ).pack(pady=2, padx=12, anchor="w")
+        ctk.CTkCheckBox(frame, text="Modo teste (só PREENCHE o ticket, não envia)",
+                        variable=self.tv_dry_var, command=self._tv_salvar_prefs
+                        ).pack(pady=2, padx=12, anchor="w")
+
+        linha = ctk.CTkFrame(frame, fg_color="transparent")
+        linha.pack(pady=(4, 10), padx=8, anchor="w")
+        ctk.CTkButton(linha, text="🌐 Abrir Chrome (Tradovate)", fg_color="#2b6cb0",
+                      width=190, command=self._tv_abrir_chrome).pack(side="left", padx=4)
+        ctk.CTkButton(linha, text="🔌 Testar conexão", fg_color="#555555",
+                      width=140, command=self._tv_testar_conexao).pack(side="left", padx=4)
+
+    def _tv_salvar_prefs(self):
+        salvar_config({"tradovate": {
+            "auto_ativo": self.tv_auto_var.get(),
+            "dry_run": self.tv_dry_var.get(),
+        }})
+        if self.tv_auto_var.get():
+            modo = "TESTE (não envia)" if self.tv_dry_var.get() else "REAL (envia ordem)"
+            self.log(f"🎯 Automação Tradovate LIGADA — modo {modo}.")
+        else:
+            self.log("🎯 Automação Tradovate desligada.")
+
+    def _tv_abrir_chrome(self):
+        try:
+            tradovate_auto.abrir_chrome_debug(log=self.log)
+            self.log("🌐 Chrome de depuração aberto. Faça login na Tradovate, deixe o "
+                     "'Chamado do pedido' visível, e use 'Testar conexão'.")
+        except Exception as e:
+            self.log(f"⚠️ Falha ao abrir o Chrome: {e}")
+
+    def _tv_conectar(self):
+        """Devolve uma instância conectada de TradovateAuto (reconecta se preciso)."""
+        if self._tv_bot is None:
+            self._tv_bot = tradovate_auto.TradovateAuto(log=self.log)
+        bot = self._tv_bot
+        # (re)conecta se o WebSocket não estiver de pé
+        if bot.ws is None:
+            if not bot.conectar():
+                return None
+        return bot
+
+    def _tv_testar_conexao(self):
+        def tarefa():
+            bot = self._tv_conectar()
+            if not bot:
+                self.log("❌ Não conectei ao Chrome/Tradovate. Abra pelo botão e faça login.")
+                return
+            achou = bot.localizar("Comprar") or bot.localizar("Vender")
+            if achou:
+                self.log("✅ Tradovate pronta: 'Chamado do pedido' encontrado.")
+            else:
+                self.log("⚠️ Conectei, mas não achei o formulário de ordem. "
+                         "Abra o 'Chamado do pedido' na Tradovate.")
+        threading.Thread(target=tarefa, daemon=True).start()
+
+    def _tv_enviar_bracket(self, direcao, entry, stop, alvo, qtd):
+        """Dispara o envio em thread separada (não trava a GUI). Usa dry-run
+        conforme o interruptor. direcao: 'BUY'/'SELL'."""
+        if not TRADOVATE_DISPONIVEL:
+            return
+        dry = self.tv_dry_var.get()
+
+        def tarefa():
+            try:
+                bot = self._tv_conectar()
+                if not bot:
+                    self.log("❌ Tradovate: sem conexão. Abra o Chrome pelo botão e faça login.")
+                    return
+                # ws pode ter caído entre um uso e outro — força reconferir
+                self.log(f"🎯 Tradovate: enviando bracket {direcao} "
+                         f"(entrada {entry} · stop {stop} · alvo {alvo} · {qtd} ctr)"
+                         + (" [TESTE]" if dry else ""))
+                bot.enviar_bracket_ticket(direcao, entry, stop, alvo,
+                                          qtd=qtd, enviar=not dry)
+            except Exception as e:
+                self.log(f"⚠️ Tradovate: falha ao enviar ordem: {e}")
+                # zera a conexão pra forçar reconexão limpa no próximo envio
+                self._tv_bot = None
+
+        threading.Thread(target=tarefa, daemon=True).start()
 
     def _checar_atualizacao(self):
         info = verificar_nova_versao()
@@ -2303,6 +2433,17 @@ class SmcQuantApp(ctk.CTk):
                     salvar_posicoes(lista)
                     self.log(f"⏳ Ordem PENDENTE registrada: {direcao} {pos['ativo']} @ {pos['entry']} "
                               f"({pos['contratos']} ctr) — aguardando o preço tocar a entrada.")
+
+                    # AUTOMAÇÃO TRADOVATE (opcional): se ligada, envia a estrutura
+                    # entrada/stop/alvo com o preço EXATO do SMC. O alvo é o
+                    # primeiro objetivo (tp1) — mais provável de ser atingido;
+                    # cai para tp2 se não houver tp1.
+                    if getattr(self, "tv_auto_var", None) and self.tv_auto_var.get():
+                        alvo = sinal.get("tp1") or sinal.get("tp2")
+                        self._tv_enviar_bracket(
+                            direcao, sinal["entry"], sinal["stop"], alvo,
+                            sizing["contratos"] or 1
+                        )
         self._atualizar_dashboard()
 
     def _ultimo_sinal_pendente(self):
