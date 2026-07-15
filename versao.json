@@ -1,0 +1,5 @@
+{
+  "versao": "1.6.7",
+  "url_download": "https://drive.google.com/drive/folders/1IF61HDi95bcDUrJNUKgnNtKm4czRwooA",
+  "notas": "Automacao opcional de ordem na Tradovate: ao acatar um sinal, o robo posiciona entrada/stop/alvo com o preco exato do SMC, em 2o plano (sem roubar o foco). Correcao do loop de START/STOP no WhatsApp. Melhorias de estabilidade."
+}

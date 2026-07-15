@@ -83,7 +83,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "1.6.6"
+VERSAO_ATUAL = "1.6.7"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1080,8 +1080,10 @@ class SmcQuantApp(ctk.CTk):
         tv_cfg = carregar_config().get("tradovate", {})
         # auto_ativo: se o robô envia ordem à Tradovate ao ACATAR um sinal.
         self.tv_auto_var = tk.BooleanVar(value=tv_cfg.get("auto_ativo", False))
-        # dry_run: modo teste — só PREENCHE o ticket, não clica Enviar.
-        self.tv_dry_var = tk.BooleanVar(value=tv_cfg.get("dry_run", True))
+        # dry_run: modo teste — só PREENCHE o ticket, não clica Enviar. Padrão
+        # DESLIGADO: ao ligar a automação, ela envia de verdade. Fica como opção
+        # pra quem quiser só pré-visualizar antes de mandar.
+        self.tv_dry_var = tk.BooleanVar(value=tv_cfg.get("dry_run", False))
         self._tv_bot = None  # instância TradovateAuto criada sob demanda
 
         # Poller dos comandos recebidos por WhatsApp (ACATAR/DISPENSAR). Roda
@@ -1272,8 +1274,10 @@ class SmcQuantApp(ctk.CTk):
         ctk.CTkLabel(
             frame, justify="left", text_color=COR["texto"],
             text="Ao ACATAR um sinal, o robô coloca entrada + stop + alvo na Tradovate\n"
-                 "(preço exato do SMC). Requer o Chrome aberto pelo botão abaixo e o\n"
-                 "'Chamado do pedido' visível. Quem não usa Tradovate é só deixar desligado."
+                 "(preço exato do SMC), em 2º plano. Requer o Chrome aberto pelo botão\n"
+                 "abaixo e o 'Chamado do pedido' visível. Quem não usa Tradovate é só\n"
+                 "deixar desligado.  Com a automação LIGADA, as ordens são ENVIADAS de\n"
+                 "verdade — marque 'Modo teste' se quiser só pré-visualizar sem enviar."
         ).pack(pady=(2, 6), padx=12, anchor="w")
 
         # text_color explícito: sem definir modo de aparência, o padrão do
