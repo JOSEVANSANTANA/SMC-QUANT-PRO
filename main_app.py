@@ -1258,7 +1258,7 @@ class SmcQuantApp(ctk.CTk):
     # com o preço EXATO do SMC, em segundo plano (sem roubar o foco).
     # ==================================================================
     def _montar_painel_tradovate(self, master):
-        frame = ctk.CTkFrame(master, fg_color="#141b26", border_color="#2b6cb0", border_width=1)
+        frame = ctk.CTkFrame(master, fg_color="#1b2735", border_color="#3d7fc0", border_width=1)
         frame.pack(padx=10, pady=8, fill="x")
         ctk.CTkLabel(frame, text="🎯 Automação Tradovate (opcional)",
                      font=ctk.CTkFont(weight="bold", size=13),
@@ -1270,25 +1270,33 @@ class SmcQuantApp(ctk.CTk):
             return
 
         ctk.CTkLabel(
-            frame, justify="left", text_color="#9fb3c8",
+            frame, justify="left", text_color=COR["texto"],
             text="Ao ACATAR um sinal, o robô coloca entrada + stop + alvo na Tradovate\n"
                  "(preço exato do SMC). Requer o Chrome aberto pelo botão abaixo e o\n"
                  "'Chamado do pedido' visível. Quem não usa Tradovate é só deixar desligado."
         ).pack(pady=(2, 6), padx=12, anchor="w")
 
+        # text_color explícito: sem definir modo de aparência, o padrão do
+        # CustomTkinter deixa o texto do checkbox escuro (some no fundo escuro).
         ctk.CTkCheckBox(frame, text="Ligar automação (enviar ordem ao Acatar)",
-                        variable=self.tv_auto_var, command=self._tv_salvar_prefs
-                        ).pack(pady=2, padx=12, anchor="w")
+                        variable=self.tv_auto_var, command=self._tv_salvar_prefs,
+                        text_color=COR["texto"], fg_color="#1f8b4c",
+                        border_color="#63b3ed", hover_color="#25a35a"
+                        ).pack(pady=3, padx=12, anchor="w")
         ctk.CTkCheckBox(frame, text="Modo teste (só PREENCHE o ticket, não envia)",
-                        variable=self.tv_dry_var, command=self._tv_salvar_prefs
-                        ).pack(pady=2, padx=12, anchor="w")
+                        variable=self.tv_dry_var, command=self._tv_salvar_prefs,
+                        text_color=COR["texto"], fg_color="#1f8b4c",
+                        border_color="#63b3ed", hover_color="#25a35a"
+                        ).pack(pady=3, padx=12, anchor="w")
 
         linha = ctk.CTkFrame(frame, fg_color="transparent")
         linha.pack(pady=(4, 10), padx=8, anchor="w")
         ctk.CTkButton(linha, text="🌐 Abrir Chrome (Tradovate)", fg_color="#2b6cb0",
-                      width=190, command=self._tv_abrir_chrome).pack(side="left", padx=4)
+                      text_color="#ffffff", width=190,
+                      command=self._tv_abrir_chrome).pack(side="left", padx=4)
         ctk.CTkButton(linha, text="🔌 Testar conexão", fg_color="#555555",
-                      width=140, command=self._tv_testar_conexao).pack(side="left", padx=4)
+                      text_color="#ffffff", width=140,
+                      command=self._tv_testar_conexao).pack(side="left", padx=4)
 
     def _tv_salvar_prefs(self):
         salvar_config({"tradovate": {
