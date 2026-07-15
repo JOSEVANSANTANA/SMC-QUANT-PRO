@@ -1327,9 +1327,24 @@ class SmcQuantApp(ctk.CTk):
 
     def _tv_abrir_chrome(self):
         try:
+            # Se já houver um Chrome de depuração aberto, ele será REUTILIZADO e
+            # as flags anti-congelamento NÃO se aplicam. Avisa pra fechar antes.
+            ja_aberto = False
+            try:
+                ja_aberto = tradovate_auto.TradovateAuto(log=lambda *_: None).chrome_ligado()
+            except Exception:
+                pass
+            if ja_aberto:
+                self.log("⚠️ Já existe um Chrome de automação aberto. Para as flags "
+                         "anti-congelamento valerem, FECHE-O primeiro e clique de novo.")
             tradovate_auto.abrir_chrome_debug(log=self.log)
-            self.log("🌐 Chrome de depuração aberto. Faça login na Tradovate, deixe o "
-                     "'Chamado do pedido' visível, e use 'Testar conexão'.")
+            self.log("🌐 Chrome (Tradovate) aberto em modo SEMPRE-RENDERIZANDO.")
+            self.log("👉 Nesta MESMA janela: (1) faça login e deixe o gráfico do seu ativo; "
+                     "(2) deixe o 'Chamado do pedido' visível se for usar automação; "
+                     "(3) em 'Janela da corretora' (acima), selecione ESTA janela do Chrome.")
+            self.log("⚠️ IMPORTANTE: NÃO minimize essa janela. Pode deixá-la ATRÁS de "
+                     "outras à vontade — com as flags novas, o robô lê o gráfico mesmo "
+                     "coberta, sem trazer ela pra frente (sem roubar seu foco).")
         except Exception as e:
             self.log(f"⚠️ Falha ao abrir o Chrome: {e}")
 

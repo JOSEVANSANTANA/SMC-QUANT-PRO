@@ -670,9 +670,23 @@ def abrir_chrome_debug(porta=PORTA_DEBUG_PADRAO, url="https://trader.tradovate.c
     if not exe:
         log("❌ chrome.exe não encontrado. Informe o caminho em chrome_path=.")
         return None
+    # FLAGS ANTI-CONGELAMENTO (essenciais para a captura em 2º plano):
+    #   Por padrão o Chrome PARA de renderizar uma janela que está atrás de
+    #   outras (occlusion detection) ou em segundo plano — e aí o PrintWindow
+    #   devolve um quadro CONGELADO, o que fazia o robô dizer "não consigo ver
+    #   o gráfico" mesmo com a janela aberta. Estas flags mantêm o Chrome
+    #   renderizando sempre, então dá pra capturar a janela mesmo coberta por
+    #   outras, sem precisar trazê-la pra frente (logo, sem roubar o foco).
+    flags_anti_congelamento = [
+        "--disable-features=CalculateNativeWinOcclusion",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-background-timer-throttling",
+    ]
     args = [exe, f"--remote-debugging-port={porta}",
-            f"--user-data-dir={perfil_dir}", "--new-window", url]
-    log(f"🌐 Abrindo Chrome de depuração (porta {porta})...")
+            f"--user-data-dir={perfil_dir}", *flags_anti_congelamento,
+            "--new-window", url]
+    log(f"🌐 Abrindo Chrome de depuração (porta {porta}) — modo sempre-renderizando...")
     return subprocess.Popen(args)
 
 
