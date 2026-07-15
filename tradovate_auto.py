@@ -401,22 +401,28 @@ class TradovateAuto:
         return self.avaliar_js(js)
 
     def _selecionar_tipo(self, tipo, pausa=0.45, dry_run=False):
-        """Ajusta TIPO DE PEDIDO (LIMITE/STOP/MERCADO) clicando no seletor e na
-        opção. Best-effort: se não achar, deixa como está e avisa."""
-        mapa = {"LIMITE": ["LIMITE", "LIMIT"], "STOP": ["STOP", "STP"],
+        """Ajusta TIPO DE PEDIDO clicando no seletor e na opção. Best-effort.
+        ATENÇÃO: no Tradovate em PT-BR, STOP = 'PARAR' e STOP LIMITE = 'PARAR
+        LIMITE' (confirmado na tela do usuário)."""
+        mapa = {"LIMITE": ["LIMITE", "LIMIT"],
+                "STOP": ["PARAR", "STOP", "STP"],
                 "MERCADO": ["MERCADO", "MKT", "MARKET"],
-                "STOP LIMITE": ["STOP LIMITE", "STOP LIMIT"]}
+                "STOP LIMITE": ["PARAR LIMITE", "STOP LIMITE", "STOP LIMIT"]}
         desejados = mapa.get(tipo.upper(), [tipo.upper()])
         todos = sum(mapa.values(), [])
+        # Com o dropdown FECHADO, só o tipo ATUAL fica visível -> descobre qual é.
         achou = self._achar_por_texto(todos)
-        ctrl = next((achou[w] for lst in mapa.values() for w in lst if w in achou), None)
-        if not ctrl:
+        atual = next((w for lst in mapa.values() for w in lst if w in achou), None)
+        if not atual:
             self.log("   ⚠️ seletor de TIPO não encontrado — mantendo o atual.")
             return
-        if dry_run:
-            self.log(f"   [dry] mudaria TIPO para {tipo}")
+        if atual in desejados:
+            self.log(f"   tipo já é {tipo.upper()} — mantendo.")
             return
-        self.clicar_pagina(ctrl["x"], ctrl["y"]); time.sleep(pausa)   # abre dropdown
+        if dry_run:
+            self.log(f"   [dry] mudaria TIPO {atual} → {tipo.upper()}")
+            return
+        self.clicar_pagina(achou[atual]["x"], achou[atual]["y"]); time.sleep(pausa)  # abre
         opc = self._achar_por_texto(desejados)
         alvo = next((opc[w] for w in desejados if w in opc), None)
         if alvo:
@@ -424,6 +430,52 @@ class TradovateAuto:
             self.log(f"   tipo → {tipo.upper()}")
         else:
             self.log(f"   ⚠️ opção '{tipo}' não apareceu no dropdown — mantendo o atual.")
+
+    def voltar_ticket(self, dry_run=False):
+        """Clica na setinha ← do topo do 'Chamado do pedido' para voltar do
+        comprovante da ordem de volta ao FORMULÁRIO. Necessário entre as ordens
+        do bracket (depois de enviar, o painel vira comprovante)."""
+        js = """
+        (function(){
+          var cands=[].slice.call(
+            document.querySelectorAll('svg,button,[role=button],i,a,span,div'));
+          var best=null;
+          for(var k=0;k<cands.length;k++){var el=cands[k];
+            var r=el.getBoundingClientRect();
+            if(r.width<=0||r.height<=0) continue;
+            var cx=r.x+r.width/2, cy=r.y+r.height/2;
+            // ícone pequeno, no topo-esquerdo do painel do ticket
+            if(cx<60 && cy>185 && cy<255 && r.width<=44 && r.height<=44){
+              var a=r.width*r.height;
+              if(!best||a<best.a){best={a:a,x:Math.round(cx),y:Math.round(cy)};}
+            }
+          }
+          return best?JSON.stringify(best):'';
+        })()
+        """
+        v = self.avaliar_js(js)
+        if not v:
+            self.log("   ⚠️ setinha ← não encontrada.")
+            return False
+        d = json.loads(v)
+        if dry_run:
+            self.log(f"   [dry] voltaria (←) em ({d['x']},{d['y']})")
+            return True
+        self.clicar_pagina(d["x"], d["y"])
+        self.log("   ↩️ voltei ao formulário (←).")
+        time.sleep(0.4)
+        return True
+
+    def _garantir_formulario(self, tentativas=2):
+        """Garante que o formulário (Comprar/Vender) está à vista; se estiver no
+        comprovante da última ordem, clica ← para voltar."""
+        for _ in range(tentativas):
+            if self.localizar("Comprar") or self.localizar("Vender"):
+                return True
+            if not self.voltar_ticket():
+                break
+            time.sleep(0.4)
+        return bool(self.localizar("Comprar") or self.localizar("Vender"))
 
     def enviar_ordem_ticket(self, preco, direcao, tipo="LIMITE", qtd=None,
                             enviar=False, pausa=0.45):
@@ -434,6 +486,16 @@ class TradovateAuto:
         modo = "ENVIAR" if enviar else "SÓ PREENCHER (confira na tela)"
         self.log(f"🧾 Ordem [{modo}]: {palavra_dir} {tipo} @ {preco}"
                  + (f"  x{qtd}" if qtd else ""))
+        if enviar and (qtd is None):
+            self.log("   ⚠️ QTD é obrigatória pra ENVIAR (o Tradovate recusa sem "
+                     "quantidade). Informe a quantidade.")
+            return False
+        # 0) garante que o formulário está à vista (após uma ordem, o painel vira
+        #    comprovante e precisa do ← para voltar).
+        if not self._garantir_formulario():
+            self.log("   ❌ formulário do 'Chamado do pedido' não está visível. "
+                     "Abra o ticket na Tradovate.")
+            return False
         # 1) direção
         d = self.localizar(palavra_dir)
         if not d:
@@ -485,6 +547,9 @@ class TradovateAuto:
                  ("ALVO",    alvo,    dir_prot,    "LIMITE")]
         self.log(f"📦 Bracket {'LONG' if long_ else 'SHORT'} via ticket "
                  f"[{'ENVIAR' if enviar else 'dry'}]  qtd={qtd}")
+        if enviar and (qtd is None):
+            self.log("   ⚠️ QTD é obrigatória pra ENVIAR o bracket. Informe a quantidade.")
+            return False
         ok = True
         for nome, preco, dirr, tipo in plano:
             if preco is None:
@@ -694,13 +759,13 @@ def _assistente():
 
     print("\n--- TESTE ---  (abra o 'Chamado do pedido' na Tradovate)")
     print("Comandos:")
-    print("  inspect                              -> dump do formulário (me envie)")
-    print("  ordem <preço> <buy|sell> [limit|stop]-> PREENCHE o ticket (não envia)")
-    print("  !ordem <preço> <buy|sell> [limit|stop]-> preenche e clica ENVIAR")
+    print("  inspect                                   -> dump do formulário (me envie)")
+    print("  ordem <preço> <buy|sell> [limit|stop] [qtd] -> PREENCHE o ticket (não envia)")
+    print("  !ordem <preço> <buy|sell> [limit|stop] <qtd> -> preenche e clica ENVIAR")
     print("  bracket <buy|sell> <ent> <stop> <alvo> [qtd] -> preenche as 3 ordens")
-    print("  !bracket <buy|sell> <ent> <stop> <alvo> [qtd] -> envia as 3 ordens")
-    print("  <preço> / !<preço>                   -> clique cru na altura (Opção A)")
-    print("  sair")
+    print("  !bracket <buy|sell> <ent> <stop> <alvo> <qtd> -> envia as 3 ordens")
+    print("  <preço> / !<preço>                        -> clique cru na altura (Opção A)")
+    print("  sair    (dica: STOP no seu Tradovate = 'PARAR')")
     while True:
         entrada = _ler_texto("cmd> ")
         if entrada is None or entrada.lower() in ("sair", "q", "exit"):
@@ -723,11 +788,18 @@ def _assistente():
             try:
                 preco = float(partes[1].replace(",", "."))
                 direcao = partes[2]
-                tipo = partes[3].upper() if len(partes) > 3 else "LIMITE"
+                tipo = "LIMITE"
+                qtd = None
+                # partes[3] e partes[4] podem ser tipo e/ou qtd, em qualquer ordem
+                for p in partes[3:5]:
+                    if p.isdigit():
+                        qtd = int(p)
+                    else:
+                        tipo = p.upper()
             except (IndexError, ValueError):
-                print("  uso: ordem <preço> <buy|sell> [limit|stop]")
+                print("  uso: ordem <preço> <buy|sell> [limit|stop] [qtd]")
                 continue
-            bot.enviar_ordem_ticket(preco, direcao, tipo, enviar=real)
+            bot.enviar_ordem_ticket(preco, direcao, tipo, qtd=qtd, enviar=real)
             continue
 
         if cmd == "bracket":
