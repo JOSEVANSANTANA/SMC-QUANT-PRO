@@ -22,6 +22,13 @@ const _padroesRuidoLibsignal = [
     'Session error',
     'MessageCounterError',
     'Key used already or never filled',
+    // Ruído de rotação de sessão do libsignal (despeja objetos enormes com
+    // <Buffer ...> no log). Tudo inofensivo — só sujava a tela.
+    'Closing session',
+    'Closing open session',
+    'incoming prekey bundle',
+    'Decrypted message with closed session',
+    'SessionEntry',
 ];
 let _ruidoSuprimido = 0;
 function _ehRuidoLibsignal(args) {

@@ -480,19 +480,27 @@ class TradovateAuto:
         time.sleep(0.5)
         return True
 
-    def _garantir_formulario(self, tentativas=4):
-        """Garante que o formulário (Comprar/Vender) está à vista; se estiver no
-        comprovante da última ordem, clica ← para voltar. Tenta várias vezes,
-        pois o comprovante pode demorar um instante a aparecer/sair."""
+    def _formulario_visivel(self):
+        """True se o FORMULÁRIO de ordem está à vista. Indicador confiável: o
+        botão 'Enviar' só existe no formulário — no comprovante da ordem ele
+        some. (Comprar/Vender não servem: o comprovante de uma venda deixa um
+        texto 'Vender' na tela e dava falso-positivo.)"""
+        return bool(self.localizar("Enviar"))
+
+    def _garantir_formulario(self, tentativas=5):
+        """Garante que o FORMULÁRIO está à vista; se estiver no comprovante da
+        última ordem, clica ← para voltar. Tenta várias vezes, pois o comprovante
+        pode demorar um instante a aparecer/sair."""
         for i in range(tentativas):
-            if self.localizar("Comprar") or self.localizar("Vender"):
+            if self._formulario_visivel():
                 if i > 0:
                     self.log("   ✅ formulário de ordem de volta à vista.")
                 return True
-            self.log(f"   ↩️ formulário não está à vista — voltando (tentativa {i + 1}/{tentativas})...")
+            self.log(f"   ↩️ comprovante à vista — voltando ao formulário "
+                     f"(tentativa {i + 1}/{tentativas})...")
             self.voltar_ticket()
             time.sleep(0.6)
-        ok = bool(self.localizar("Comprar") or self.localizar("Vender"))
+        ok = self._formulario_visivel()
         if not ok:
             self.log("   ❌ não consegui voltar ao formulário do ticket (setinha ←).")
         return ok
@@ -519,7 +527,11 @@ class TradovateAuto:
         # 1) direção
         d = self.localizar(palavra_dir)
         if not d:
-            self.log(f"   ❌ não achei o botão '{palavra_dir}'. Abra o 'Chamado do pedido'.")
+            # Diagnóstico: mostra o que ESTÁ detectável, pra facilitar ajuste.
+            achou = self._achar_por_texto(["Comprar", "Vender", "Enviar",
+                                           "LIMITE", "PARAR", "MERCADO"])
+            self.log(f"   ❌ não achei o botão '{palavra_dir}'. Detectáveis agora: "
+                     f"{list(achou.keys())}")
             return False
         # Clicar Comprar/Vender e preencher campos é seguro (não envia a ordem);
         # só o botão "Enviar" no fim é que dispara. Por isso preenchemos de
