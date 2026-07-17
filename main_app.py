@@ -83,7 +83,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "1.6.7"
+VERSAO_ATUAL = "1.6.8"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -722,12 +722,10 @@ def resultados_por_dia():
 def compilar_memoria_prompt():
     contexto = "\n--- FEEDBACK LOOP DE APRENDIZADO ---\n"
 
-    # 1) Plano do trader (o "projeto" dele) — a IA calibra rigor pela meta/drawdown.
-    plano = carregar_config().get("plano_trading", {})
-    if plano.get("margem"):
-        contexto += (f"PLANO DO TRADER: margem US${plano.get('margem')}, "
-                      f"meta US${plano.get('meta_alvo')}, drawdown máximo US${plano.get('drawdown_maximo')}, "
-                      f"risco por operação {plano.get('risco_pct', 1.0)}%.\n")
+    # 1) A DECISÃO (viés/entrada) é 100% técnica (SMC + indicadores no gráfico).
+    # O dimensionamento (contratos/risco) é calculado FORA da IA, pelo plano da
+    # mesa. Por isso NÃO passamos meta/drawdown aqui: injetar a meta deixava a IA
+    # conservadora demais (ela "se segurava" pela meta e só mandava HOLD).
 
     # 2) Diário de trader — operações REAIS (acatadas e manuais), que valem
     # mais como aprendizado do que os fechamentos hipotéticos do robô.
@@ -759,13 +757,15 @@ def compilar_memoria_prompt():
     # 4) Instrução de calibragem.
     perdeu_recente = (fechadas and fechadas[-1]["pnl_final"] < 0) or \
                      (db and db[-1]["resultado"] == "LOSS")
-    contexto += "\nINSTRUÇÃO CRÍTICA DO SISTEMA:\n"
+    contexto += "\nCALIBRAGEM (use o histórico só para ajustar o CRITÉRIO, não para travar):\n"
     if winrate < 50.0 or perdeu_recente:
-        contexto += ("⚠️ ALERTA: perdas recentes ou mercado incerto. SEJA EXTREMAMENTE RIGOROSO. "
-                      "Exija confluência perfeita entre Order Block não mitigado, FVG e captura de "
-                      "liquidez. Em caso de ruído no gráfico, obrigatoriamente sugira ACTION: HOLD.\n")
+        contexto += ("Houve perdas recentes — exija confluência SMC clara (estrutura + liquidez "
+                      "+ POI), MAS continue sinalizando sempre que houver um setup válido, "
+                      "inclusive de REVERSÃO bem configurada. NÃO trave em HOLD por excesso de "
+                      "cautela: HOLD é apenas para quando realmente não existe cenário.\n")
     else:
-        contexto += "✅ Sistema calibrado. Mantenha os parâmetros estruturais atuais.\n"
+        contexto += ("Sistema calibrado: sinalize TODO cenário SMC válido — de continuação OU de "
+                      "reversão — que tenha confluência real. Evite HOLD quando houver setup legítimo.\n")
 
     return contexto
 
@@ -1182,6 +1182,9 @@ class SmcQuantApp(ctk.CTk):
             text_color="gray", font=ctk.CTkFont(size=10), justify="left"
         ).pack(pady=(0, 4))
         self._atualizar_lista_janelas(manter_selecao=nome_janela_salvo)
+
+        # ---------- CONTATOS QUE RECEBEM RELATÓRIO (WhatsApp) ----------
+        self._montar_painel_inscritos(master)
 
         if not PYWIN32_DISPONIVEL:
             ctk.CTkLabel(master, text="⚠️ pywin32 não encontrado — foco automático de janela desativado.",
@@ -1926,6 +1929,92 @@ class SmcQuantApp(ctk.CTk):
             self.log(f"🔗 Janela da corretora fixada (handle {hwnd}) — seguirei "
                      "capturando ela mesmo se a aba/título mudar.")
         return hwnd
+
+    # ==================================================================
+    # CONTATOS QUE RECEBEM RELATÓRIO (WhatsApp) — gerência pelo app.
+    # Segurança: só quem está NESTA lista recebe. O usuário vê e remove
+    # qualquer chat indevido, e pode zerar tudo.
+    # ==================================================================
+    def _montar_painel_inscritos(self, master):
+        frame = ctk.CTkFrame(master, fg_color="#1a1f2b", border_color="#2b6cb0", border_width=1)
+        frame.pack(padx=10, pady=8, fill="x")
+        ctk.CTkLabel(frame, text="📇 Contatos que recebem relatório (WhatsApp)",
+                     font=ctk.CTkFont(weight="bold", size=13),
+                     text_color="#63b3ed").pack(pady=(8, 0), anchor="w", padx=12)
+        ctk.CTkLabel(
+            frame, justify="left", text_color=COR["texto"],
+            text="SÓ estes chats recebem os relatórios. Um contato entra quando envia START\n"
+                 "no WhatsApp — remova aqui qualquer um que não deva receber, ou zere tudo."
+        ).pack(pady=(2, 6), padx=12, anchor="w")
+        self.frame_lista_inscritos = ctk.CTkFrame(frame, fg_color="transparent")
+        self.frame_lista_inscritos.pack(fill="x", padx=8, pady=(0, 4))
+        linha = ctk.CTkFrame(frame, fg_color="transparent")
+        linha.pack(pady=(0, 10), padx=8, anchor="w")
+        ctk.CTkButton(linha, text="🔄 Atualizar", width=110, fg_color="#555555",
+                      command=self._wpp_atualizar_inscritos).pack(side="left", padx=4)
+        ctk.CTkButton(linha, text="🧹 Limpar todos", width=140, fg_color="#8b1f1f",
+                      command=self._wpp_limpar_inscritos).pack(side="left", padx=4)
+        self._wpp_atualizar_inscritos()
+
+    def _wpp_atualizar_inscritos(self):
+        def tarefa():
+            try:
+                r = requests.get(f"{BAILEYS_URL}/inscritos", timeout=3)
+                subs = r.json().get("subscribers", []) if r.status_code == 200 else None
+            except Exception:
+                subs = None
+            self.after(0, lambda: self._render_inscritos(subs))
+        threading.Thread(target=tarefa, daemon=True).start()
+
+    def _render_inscritos(self, subs):
+        if not hasattr(self, "frame_lista_inscritos"):
+            return
+        for w in self.frame_lista_inscritos.winfo_children():
+            w.destroy()
+        if subs is None:
+            ctk.CTkLabel(self.frame_lista_inscritos, text_color="#e0a458",
+                         text="Motor offline — ligue o motor para ver/gerenciar os contatos."
+                         ).pack(anchor="w", padx=6, pady=2)
+            return
+        if not subs:
+            ctk.CTkLabel(self.frame_lista_inscritos, text_color=COR["dim"],
+                         text="Nenhum contato inscrito. Envie START no chat que deve receber."
+                         ).pack(anchor="w", padx=6, pady=2)
+            return
+        for jid in subs:
+            row = ctk.CTkFrame(self.frame_lista_inscritos, fg_color="#141b26")
+            row.pack(fill="x", pady=2, padx=2)
+            ctk.CTkLabel(row, text=jid, anchor="w", text_color=COR["texto"]
+                         ).pack(side="left", fill="x", expand=True, padx=8, pady=4)
+            ctk.CTkButton(row, text="🗑️ Remover", width=100, fg_color="#8b1f1f",
+                          command=lambda j=jid: self._wpp_remover_inscrito(j)
+                          ).pack(side="right", padx=6, pady=3)
+
+    def _wpp_remover_inscrito(self, jid):
+        def tarefa():
+            try:
+                requests.post(f"{BAILEYS_URL}/remover-inscrito", json={"jid": jid}, timeout=3)
+                self.log(f"🗑️ Contato removido dos relatórios: {jid}")
+            except Exception as e:
+                self.log(f"⚠️ Falha ao remover contato: {e}")
+            self._wpp_atualizar_inscritos()
+        threading.Thread(target=tarefa, daemon=True).start()
+
+    def _wpp_limpar_inscritos(self):
+        from tkinter import messagebox
+        if not messagebox.askyesno(
+            "Limpar contatos",
+            "Remover TODOS os contatos que recebem relatório?\n\n"
+            "Ninguém receberá até você enviar START de novo nos chats desejados."):
+            return
+        def tarefa():
+            try:
+                requests.post(f"{BAILEYS_URL}/limpar-inscritos", timeout=3)
+                self.log("🧹 Lista de contatos do WhatsApp zerada.")
+            except Exception as e:
+                self.log(f"⚠️ Falha ao limpar contatos: {e}")
+            self._wpp_atualizar_inscritos()
+        threading.Thread(target=tarefa, daemon=True).start()
 
     def _salvar_pref_restaurar(self):
         valor = self.restaurar_minimizada_var.get()
@@ -3147,9 +3236,13 @@ class SmcQuantApp(ctk.CTk):
                 memoria_dinamica = compilar_memoria_prompt()
                 PROMPT_BASE = (
                     "Você é um trader institucional de Smart Money Concepts (SMC/ICT) "
-                    "operando índices futuros (ES/MES, NQ/MNQ). Sua leitura é criteriosa, "
-                    "paciente e prioriza QUALIDADE sobre quantidade: é melhor não operar do "
-                    "que forçar um trade fraco."
+                    "operando índices futuros (ES/MES, NQ/MNQ). Você é criterioso, mas "
+                    "PROATIVO: sinaliza todo cenário SMC válido — tanto de CONTINUAÇÃO quanto "
+                    "de REVERSÃO — e busca se ANTECIPAR a reversões prováveis. Qualidade "
+                    "importa, mas não seja conservador a ponto de deixar passar setups "
+                    "legítimos. Se houver OUTROS indicadores visíveis no gráfico (volume, "
+                    "perfil de volume/VPOC, RSI, médias móveis, VWAP, etc.), use-os como "
+                    "confluência adicional junto do SMC."
                 )
                 PROMPT_FINAL = (
                     f"{PROMPT_BASE}\n{memoria_dinamica}\n"
@@ -3159,9 +3252,17 @@ class SmcQuantApp(ctk.CTk):
                     "\n"
                     "SIGA ESTE ROTEIRO DE ANÁLISE, NESTA ORDEM:\n"
                     "1) VIÉS (HTF): determine a tendência dominante pela ESTRUTURA visível "
-                    "(sequência de BOS/CHoCH, topos/fundos). Só é BUY se a estrutura for de "
-                    "alta; SELL se de baixa. Contra-tendência exige CHoCH confirmado + varredura "
-                    "de liquidez clara — caso contrário, HOLD.\n"
+                    "(sequência de BOS/CHoCH, topos/fundos). Continuação a favor da tendência é "
+                    "o cenário-base (BUY em estrutura de alta, SELL em estrutura de baixa).\n"
+                    "1b) REVERSÃO E ANTECIPAÇÃO (importante): procure ATIVAMENTE reversões e "
+                    "antecipe-as. Gatilhos SMC de reversão válidos: CHoCH (troca de caráter) "
+                    "contra a tendência logo após varredura de liquidez num EXTREMO do range; "
+                    "SFP / swing failure (pavio que varre um topo/fundo e FECHA de volta pra "
+                    "dentro); rejeição forte em Order Block/FVG de timeframe maior em PREMIUM "
+                    "(para venda) ou DISCOUNT (para compra); esgotamento de momentum / divergência "
+                    "em indicador visível. Uma reversão bem configurada (sweep do extremo + CHoCH "
+                    "+ POI) é um sinal TÃO válido quanto a continuação — sinalize-a, não espere "
+                    "confirmação tardia demais.\n"
                     "2) PREMIUM/DISCOUNT: marque o range relevante (perna atual). Compras SÓ em "
                     "DISCOUNT (abaixo de 50%); vendas SÓ em PREMIUM (acima de 50%). Preço em "
                     "EQUILÍBRIO (perto de 50%) ou no meio do range = HOLD.\n"
@@ -3181,8 +3282,9 @@ class SmcQuantApp(ctk.CTk):
                     "gráfico (BOS/CHoCH, OB, FVG, sweep, premium/discount, equilíbrio). Não "
                     "invente fatores para justificar um trade.\n"
                     "- Se faltar confluência, se a estrutura estiver ambígua, ou se o preço já "
-                    "estiver longe do POI, retorne action=HOLD com probabilidade baixa. HOLD é "
-                    "uma resposta válida e desejada.\n"
+                    "estiver longe do POI, retorne action=HOLD com probabilidade baixa. Porém "
+                    "NÃO use HOLD quando existir um setup real (continuação OU reversão) com "
+                    "confluência SMC — nesse caso, sinalize BUY/SELL.\n"
                     "- 'probabilidade' (0 a 100): estimativa CALIBRADA e honesta de atingir o "
                     "objetivo 1 antes de invalidar. Poucas confluências ou contra-tendência => "
                     "probabilidade baixa. Use o histórico do feedback loop acima para calibrar. "

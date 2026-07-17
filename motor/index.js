@@ -78,17 +78,11 @@ function lerInscritos() {
         if (Array.isArray(dados.subscribers)) return dados.subscribers;
     } catch (e) { /* arquivo ainda não existe */ }
 
-    // Migração automática do formato antigo (registered_jid.json com 1 JID).
-    try {
-        const antigo = JSON.parse(fs.readFileSync(caminhoConfigJidAntigo, 'utf8'));
-        if (antigo.registered_jid) {
-            const lista = [antigo.registered_jid];
-            salvarInscritos(lista);
-            console.log(`♻️ Migrado o contato antigo para a nova lista de inscritos: ${antigo.registered_jid}`);
-            return lista;
-        }
-    } catch (e) { /* sem legado */ }
-
+    // ⚠️ NÃO migramos mais o registered_jid.json automaticamente. Aquela migração
+    // silenciosa adicionava um contato antigo sem o usuário perceber — e os
+    // relatórios acabavam indo para um chat que ele NUNCA escolheu (bug grave).
+    // Agora a lista começa VAZIA e só cresce por START explícito (ou pelo painel
+    // do app). Nunca há inscrição silenciosa.
     return [];
 }
 
@@ -267,6 +261,10 @@ async function connectToWhatsApp() {
 
         if (CMD_START.includes(texto)) {
             const adicionado = adicionarInscrito(jidAlvo);
+            if (adicionado) {
+                console.log(`✅ NOVO contato inscrito via START: ${jidAlvo}. `
+                    + `Se NÃO foi você, remova no painel "Contatos que recebem relatório" do app.`);
+            }
             await sock.sendMessage(jidAlvo, {
                 text: adicionado
                     ? "✅ Inscrito! Este chat passará a receber os relatórios do Robô SMC.\nEnvie STOP quando quiser parar."
@@ -308,9 +306,26 @@ app.get('/status', (req, res) => {
     res.json({ status: statusConexao, inscritos: lerInscritos().length });
 });
 
-// Lista os inscritos atuais (para o app mostrar/gerenciar, se quiser).
+// Lista os inscritos atuais (para o app mostrar/gerenciar).
 app.get('/inscritos', (req, res) => {
     res.json({ subscribers: lerInscritos() });
+});
+
+// Remove UM inscrito específico (chamado pelo painel do app).
+app.post('/remover-inscrito', (req, res) => {
+    const { jid } = req.body || {};
+    if (!jid) return res.status(400).json({ ok: false, erro: 'Informe o jid.' });
+    const removido = removerInscrito(jid);
+    console.log(`🗑️ Inscrito removido pelo painel do app: ${jid} `
+        + `(${removido ? 'removido' : 'não estava na lista'}).`);
+    res.json({ ok: true, removido });
+});
+
+// Zera TODA a lista de inscritos (painel do app) — reset limpo.
+app.post('/limpar-inscritos', (req, res) => {
+    salvarInscritos([]);
+    console.log('🧹 Lista de inscritos ZERADA pelo painel do app.');
+    res.json({ ok: true });
 });
 
 // Fila de comandos recebidos por WhatsApp (ACATAR/DISPENSAR). Devolve e

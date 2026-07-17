@@ -1,5 +1,5 @@
 {
-  "versao": "1.6.7",
+  "versao": "1.6.8",
   "url_download": "https://drive.google.com/drive/folders/1IF61HDi95bcDUrJNUKgnNtKm4czRwooA",
-  "notas": "Automacao opcional de ordem na Tradovate: ao acatar um sinal, o robo posiciona entrada/stop/alvo com o preco exato do SMC, em 2o plano (sem roubar o foco). Correcao do loop de START/STOP no WhatsApp. Melhorias de estabilidade."
+  "notas": "IA menos conservadora (a decisao deixou de ser podada pela meta/drawdown) e com analise/antecipacao de reversao via SMC, alem de usar outros indicadores visiveis no grafico. Correcao critica: relatorios so vao para os contatos que voce escolheu (fim da inscricao silenciosa) e novo painel para ver/remover/zerar contatos. Automacao Tradovate com bracket completo (entrada/stop/alvo)."
 }
