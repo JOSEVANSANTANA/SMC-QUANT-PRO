@@ -9,7 +9,7 @@ const path = require('path');
 // ⚠️ MARCADOR DE BUILD — se esta linha NÃO aparecer no Registro de atividade ao
 // iniciar, o app está rodando um motor ANTIGO (troque o motor/index.js certo e
 // finalize processos node.exe órfãos antes de reiniciar).
-const MOTOR_BUILD = '2026-07-20 · recepcao-v3 (markOffline + /reparear)';
+const MOTOR_BUILD = '2026-07-20 · conexao-estavel-v4 (socket-unico, sem loop de QR)';
 
 // ------------------------------------------------------------------
 // SILENCIADOR DE RUÍDO DO libsignal
@@ -64,6 +64,26 @@ let sock;
 let ultimoQrBase64 = null;              // "data:image/png;base64,...." pronto para <img src="...">
 let statusConexao = 'AGUARDANDO_QR';    // AGUARDANDO_QR | CONECTADO | DESCONECTADO
 
+// --------------------------------------------------------------------
+// CONTROLE DE RECONEXÃO — impede múltiplos sockets/QRs simultâneos.
+// Sem isto, cada evento de 'close' (e o /reparear) agendava sua própria
+// reconexão; elas se empilhavam e criavam VÁRIOS sockets ao mesmo tempo ->
+// "novo QR a cada 30s" e o erro "Cannot read ... 'id'" ao enviar durante a
+// troca de socket. Agora: no máximo UMA conexão em andamento e UM timer de
+// reconexão por vez.
+// --------------------------------------------------------------------
+let conectando = false;        // true enquanto um socket está sendo criado
+let timerReconexao = null;     // timer único de reconexão pendente
+
+function agendarReconexao(delayMs, motivo) {
+    if (timerReconexao) return;          // já há uma reconexão agendada: não empilha
+    console.log(`🕒 Reconexão agendada em ${Math.round(delayMs / 1000)}s (${motivo}).`);
+    timerReconexao = setTimeout(() => {
+        timerReconexao = null;
+        connectToWhatsApp();
+    }, delayMs);
+}
+
 // Fila de comandos vindos do WhatsApp (ex: ACATAR) que o app (main_app.py)
 // consome via GET /comandos. É esvaziada a cada leitura.
 let filaComandos = [];
@@ -113,15 +133,32 @@ function removerInscrito(jid) {
 }
 
 async function connectToWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'auth_smc'));
+    // Trava anti-concorrência: nunca cria dois sockets ao mesmo tempo.
+    if (conectando) {
+        console.log('⏭️ Conexão já em andamento — ignorando chamada duplicada.');
+        return;
+    }
+    conectando = true;
 
-    // Busca a versão ATUAL do protocolo do WhatsApp Web. Sem isso, o Baileys
-    // usa uma versão padrão embutida na lib que pode estar desatualizada,
-    // causando rejeição da conexão (código 405) e o QR nunca é gerado.
-    const { version, isLatest } = await fetchLatestBaileysVersion();
-    console.log(`Usando versão do protocolo WhatsApp Web: ${version.join('.')} (mais recente: ${isLatest})`);
+    // Derruba o socket anterior E seus listeners antes de criar um novo. Remover
+    // os listeners ANTES de encerrar evita que o 'close' do socket velho dispare
+    // outra reconexão (era a origem da tempestade de QRs).
+    if (sock) {
+        try { sock.ev.removeAllListeners(); } catch (e) {}
+        try { sock.end(undefined); } catch (e) {}
+        sock = null;
+    }
 
-    sock = makeWASocket({
+    try {
+        const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'auth_smc'));
+
+        // Busca a versão ATUAL do protocolo do WhatsApp Web. Sem isso, o Baileys
+        // usa uma versão padrão embutida na lib que pode estar desatualizada,
+        // causando rejeição da conexão (código 405) e o QR nunca é gerado.
+        const { version, isLatest } = await fetchLatestBaileysVersion();
+        console.log(`Usando versão do protocolo WhatsApp Web: ${version.join('.')} (mais recente: ${isLatest})`);
+
+        sock = makeWASocket({
         version,
         auth: state,
         logger: pino({ level: 'silent' }),
@@ -177,9 +214,11 @@ async function connectToWhatsApp() {
                 } catch (e) {
                     console.log(`⚠️ Falha ao limpar pasta de sessão antiga: ${e}`);
                 }
-                setTimeout(connectToWhatsApp, 2000);
+                agendarReconexao(2000, 'logout');
             } else {
-                setTimeout(connectToWhatsApp, 5000); // espera 5s — evita martelar o WhatsApp em loop agressivo
+                // 515 (restart required, NORMAL logo após parear), 428, etc.:
+                // apenas reconectar (sem apagar credenciais).
+                agendarReconexao(5000, `código ${codigoErro}`);
             }
         }
     });
@@ -327,8 +366,15 @@ async function connectToWhatsApp() {
         }
     });
 
-    // Confirmação de que o listener de comandos foi de fato instalado nesta conexão.
-    console.log(`🎧 Listener de comandos (START/STOP/ACATAR) instalado. Build: ${MOTOR_BUILD}`);
+        // Confirmação de que o listener de comandos foi de fato instalado nesta conexão.
+        console.log(`🎧 Listener de comandos (START/STOP/ACATAR) instalado. Build: ${MOTOR_BUILD}`);
+    } catch (e) {
+        console.log(`❌ Falha ao iniciar a conexão do WhatsApp: ${e}`);
+        agendarReconexao(5000, 'erro ao conectar');
+    } finally {
+        // Libera a trava: o socket já foi criado e os listeners registrados.
+        conectando = false;
+    }
 }
 
 // --------------------------------------------------------------------
@@ -371,13 +417,20 @@ app.post('/limpar-inscritos', (req, res) => {
 app.get('/reparear', async (req, res) => {
     console.log('🔁 Re-pareamento FORÇADO solicitado — limpando sessão...');
     try {
-        try { await sock?.logout(); } catch (e) { /* já pode estar caído */ }
-        try { sock?.end?.(new Error('reparear')); } catch (e) { /* ignore */ }
+        // Remove os listeners ANTES de encerrar: assim o 'close' do socket velho
+        // não dispara outra reconexão (evita a tempestade de QRs). A reconexão é
+        // agendada UMA vez, pelo agendarReconexao (que faz dedup).
+        if (sock) {
+            try { sock.ev.removeAllListeners(); } catch (e) {}
+            try { await sock.logout(); } catch (e) { /* já pode estar caído */ }
+            try { sock.end(undefined); } catch (e) {}
+            sock = null;
+        }
         fs.rmSync(path.join(__dirname, 'auth_smc'), { recursive: true, force: true });
         statusConexao = 'AGUARDANDO_QR';
         ultimoQrBase64 = null;
-        setTimeout(connectToWhatsApp, 1500);
-        res.send('OK — sessão limpa. Volte ao app: um NOVO QR vai aparecer, escaneie-o. '
+        agendarReconexao(1500, 'reparear');
+        res.send('OK — sessão limpa. Volte ao app: um NOVO QR vai aparecer, escaneie-o UMA vez. '
             + 'Depois mande START de novo nos chats desejados.');
     } catch (e) {
         console.log(`⚠️ Falha ao forçar re-pareamento: ${e}`);
@@ -395,6 +448,14 @@ app.get('/comandos', (req, res) => {
 
 app.post('/enviar-relatorio', async (req, res) => {
     try {
+        // Só envia se o WhatsApp estiver realmente CONECTADO e autenticado.
+        // Enviar durante a troca de socket causava "Cannot read ... 'id'".
+        if (statusConexao !== 'CONECTADO' || !sock || !sock.user) {
+            return res.status(503).send(
+                "WhatsApp não está conectado agora — relatório não enviado (será reenviado no próximo ciclo)."
+            );
+        }
+
         const { jid, texto, imagemBase64 } = req.body;
 
         // Se um jid específico foi passado, envia só para ele (compatibilidade).
