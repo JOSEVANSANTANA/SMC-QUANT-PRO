@@ -9,7 +9,22 @@ const path = require('path');
 // ⚠️ MARCADOR DE BUILD — se esta linha NÃO aparecer no Registro de atividade ao
 // iniciar, o app está rodando um motor ANTIGO (troque o motor/index.js certo e
 // finalize processos node.exe órfãos antes de reiniciar).
-const MOTOR_BUILD = '2026-07-20 · conexao-estavel-v4 (socket-unico, sem loop de QR)';
+const MOTOR_BUILD = '2026-07-21 · resiliente-v5 (nao-morre + versao-cacheada)';
+
+// ⚠️ BLINDAGEM CONTRA MORTE DO PROCESSO.
+// O Baileys, durante turbulência de conexão (WebSocket 1006/408/428/500...),
+// às vezes emite uma promise rejeitada FORA do nosso try/catch. No Node 24+
+// uma "unhandledRejection" DERRUBA o processo — foi o que matou o motor e fez
+// os relatórios pararem com "conexão recusada na porta 3939". Aqui capturamos
+// esses erros globalmente: logamos e SEGUIMOS VIVOS (a reconexão se encarrega
+// de restabelecer a sessão).
+process.on('unhandledRejection', (reason) => {
+    const txt = (reason && reason.message) ? reason.message : String(reason);
+    console.log(`⚠️ Rejeição não tratada IGNORADA (motor segue vivo): ${txt}`);
+});
+process.on('uncaughtException', (err) => {
+    console.log(`⚠️ Exceção não capturada IGNORADA (motor segue vivo): ${err?.message || err}`);
+});
 
 // ------------------------------------------------------------------
 // SILENCIADOR DE RUÍDO DO libsignal
@@ -74,6 +89,7 @@ let statusConexao = 'AGUARDANDO_QR';    // AGUARDANDO_QR | CONECTADO | DESCONECT
 // --------------------------------------------------------------------
 let conectando = false;        // true enquanto um socket está sendo criado
 let timerReconexao = null;     // timer único de reconexão pendente
+let versaoWA = null;           // versão do protocolo WA, buscada UMA vez e cacheada
 
 function agendarReconexao(delayMs, motivo) {
     if (timerReconexao) return;          // já há uma reconexão agendada: não empilha
@@ -152,14 +168,22 @@ async function connectToWhatsApp() {
     try {
         const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'auth_smc'));
 
-        // Busca a versão ATUAL do protocolo do WhatsApp Web. Sem isso, o Baileys
-        // usa uma versão padrão embutida na lib que pode estar desatualizada,
-        // causando rejeição da conexão (código 405) e o QR nunca é gerado.
-        const { version, isLatest } = await fetchLatestBaileysVersion();
-        console.log(`Usando versão do protocolo WhatsApp Web: ${version.join('.')} (mais recente: ${isLatest})`);
+        // Versão do protocolo WhatsApp Web: busca UMA vez e reusa. Buscar a cada
+        // reconexão às vezes devolvia uma versão MAIS ANTIGA (que o WhatsApp
+        // rejeitava com 405), piorando a instabilidade. Cacheando, fica consistente.
+        if (versaoWA === null) {
+            try {
+                const r = await fetchLatestBaileysVersion();
+                versaoWA = r.version;
+                console.log(`Versão do protocolo WhatsApp Web: ${versaoWA.join('.')} (mais recente: ${r.isLatest})`);
+            } catch (e) {
+                versaoWA = undefined; // deixa o Baileys usar a versão embutida
+                console.log(`⚠️ Não consegui buscar a versão do WhatsApp (${e}); usando a padrão do Baileys.`);
+            }
+        }
 
         sock = makeWASocket({
-        version,
+        version: versaoWA || undefined,
         auth: state,
         logger: pino({ level: 'silent' }),
         browser: ['SMC Quant Pro', 'Chrome', '1.0.0'],

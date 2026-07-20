@@ -83,7 +83,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "1.6.8"
+VERSAO_ATUAL = "1.6.9"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -456,6 +456,21 @@ def salvar_resultado_performance(direcao, entry, stop, tp, preco_saida, resultad
     """Registra o desfecho HIPOTÉTICO de um cenário do robô (independente de o
     trader ter acatado). Guarda o P&L em US$ que teria sido obtido usando o
     sizing do plano — é a base do comparativo 'e se eu tivesse acatado tudo'."""
+    # BLINDAGEM CONTRA DADO INVÁLIDO: quando a captura falha, a IA devolve
+    # preço 0 (ativo DESCONHECIDO). Fechar um cenário com entry/saída 0 gerava
+    # um P&L ABSURDO (ex.: saída 0 -> "lucro" de +112 mil) que poluía o KPI
+    # "se acatasse todas". Nesses casos, NÃO registramos o cenário.
+    try:
+        entry_f, stop_f, saida_f = float(entry), float(stop), float(preco_saida)
+    except (TypeError, ValueError):
+        return
+    if entry_f <= 0 or stop_f <= 0 or saida_f <= 0:
+        return
+    # Nenhum sinal intradiário de índice move >10% do preço num único cenário;
+    # acima disso é leitura corrompida — descarta.
+    if abs(saida_f - entry_f) > abs(entry_f) * 0.10:
+        return
+
     r_multiplo = calcular_r_multiplo(direcao, entry, stop, preco_saida)
 
     plano = carregar_config().get("plano_trading", {})
@@ -548,13 +563,20 @@ def pnl_usd_do_registro(op):
     tratá-los como zero (o que zerava o comparativo), recalculamos a partir de
     entrada, saída, ativo e contratos.
     """
-    if op.get("pnl_usd") is not None:
-        return op["pnl_usd"]
     entry = op.get("entry")
     saida = op.get("preco_saida")
-    if entry is None or saida is None:
-        return 0.0
     direcao = op.get("direcao", "BUY")
+    # Filtro de sanidade (também vale para registros ANTIGOS já salvos com lixo):
+    # preço 0/ausente ou movimento absurdo (>10% do preço) = captura corrompida.
+    try:
+        entry_f, saida_f = float(entry), float(saida)
+    except (TypeError, ValueError):
+        return 0.0
+    if entry_f <= 0 or saida_f <= 0 or abs(saida_f - entry_f) > abs(entry_f) * 0.10:
+        return 0.0
+    # Registro válido: se já tem o P&L calculado, usa; senão recalcula.
+    if op.get("pnl_usd") is not None:
+        return op["pnl_usd"]
     ativo = op.get("ativo", "DESCONHECIDO")
     contratos = op.get("contratos")
     if not contratos:
@@ -3467,7 +3489,10 @@ class SmcQuantApp(ctk.CTk):
                 acatado_atual = sinal_ativo.get("sinal_id") in self.sinais_acatados
 
                 # ---------------- MÁQUINA DE ESTADOS ----------------
-                if sinal_ativo["estado"] != "ENCERRADA" and preco is not None:
+                # Exige preço VÁLIDO (>0). Quando a captura falha, a IA devolve
+                # preço 0 — processar isso disparava stop/alvo fantasma (ex.:
+                # "TAKE PROFIT em 0") e poluía o diário/KPI.
+                if sinal_ativo["estado"] != "ENCERRADA" and preco is not None and preco > 0:
                     direcao = sinal_ativo["direcao"]
 
                     if sinal_ativo["estado"] == "PENDENTE":
@@ -3532,8 +3557,12 @@ class SmcQuantApp(ctk.CTk):
                             self.after(0, self._atualizar_dashboard)
 
                 # ---------------- NOVO SINAL (se estado livre) ----------------
+                # Só cria sinal com preços VÁLIDOS (>0) e preço de tela lido —
+                # evita "sinais fantasma" quando a captura falha (entry/stop 0).
                 if sinal_ativo["estado"] == "ENCERRADA" and acao in ("BUY", "SELL") \
-                        and sinal.get("entry_price") is not None and sinal.get("stop_loss") is not None:
+                        and preco is not None and preco > 0 \
+                        and sinal.get("entry_price") and sinal.get("stop_loss") \
+                        and sinal.get("entry_price") > 0 and sinal.get("stop_loss") > 0:
                     novo_sinal_id = registrar_novo_sinal_log(
                         acao, sinal.get("entry_price"), sinal.get("stop_loss"),
                         sinal.get("take_profit_1"), sinal.get("take_profit_2"), ativo)
