@@ -9,7 +9,7 @@ const path = require('path');
 // ⚠️ MARCADOR DE BUILD — se esta linha NÃO aparecer no Registro de atividade ao
 // iniciar, o app está rodando um motor ANTIGO (troque o motor/index.js certo e
 // finalize processos node.exe órfãos antes de reiniciar).
-const MOTOR_BUILD = '2026-07-20 · comandos-lote-v2';
+const MOTOR_BUILD = '2026-07-20 · recepcao-v3 (markOffline + /reparear)';
 
 // ------------------------------------------------------------------
 // SILENCIADOR DE RUÍDO DO libsignal
@@ -126,6 +126,11 @@ async function connectToWhatsApp() {
         auth: state,
         logger: pino({ level: 'silent' }),
         browser: ['SMC Quant Pro', 'Chrome', '1.0.0'],
+        // Não se marca "online": bots que ficam online às vezes deixam de
+        // RECEBER mensagens (o WhatsApp para de entregar as notificações ao
+        // aparelho linkado). Ficar "offline" mantém a entrada de mensagens.
+        markOnlineOnConnect: false,
+        syncFullHistory: false,
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -147,6 +152,11 @@ async function connectToWhatsApp() {
             statusConexao = 'CONECTADO';
             ultimoQrBase64 = null;
             console.log('✅ CONECTADO: WhatsApp pareado com sucesso!');
+            console.log(`   (isNewLogin=${update.isNewLogin}, `
+                + `receivedPendingNotifications=${update.receivedPendingNotifications})`);
+            console.log('   Se você mandar mensagem e NÃO aparecer "📥 upsert recebido", '
+                + 'a sessão parou de receber — force o re-pareamento em '
+                + 'http://localhost:3939/reparear');
         }
 
         if (connection === 'close') {
@@ -352,6 +362,27 @@ app.post('/limpar-inscritos', (req, res) => {
     salvarInscritos([]);
     console.log('🧹 Lista de inscritos ZERADA pelo painel do app.');
     res.json({ ok: true });
+});
+
+// FORÇA RE-PAREAMENTO (abra http://localhost:3939/reparear no navegador).
+// Use quando o WhatsApp aparece "conectado" mas NÃO recebe mensagens (sessão
+// meio-morta após vários 401): apaga as credenciais e gera um QR NOVO para
+// escanear no app. É o conserto real do "não recebe comando".
+app.get('/reparear', async (req, res) => {
+    console.log('🔁 Re-pareamento FORÇADO solicitado — limpando sessão...');
+    try {
+        try { await sock?.logout(); } catch (e) { /* já pode estar caído */ }
+        try { sock?.end?.(new Error('reparear')); } catch (e) { /* ignore */ }
+        fs.rmSync(path.join(__dirname, 'auth_smc'), { recursive: true, force: true });
+        statusConexao = 'AGUARDANDO_QR';
+        ultimoQrBase64 = null;
+        setTimeout(connectToWhatsApp, 1500);
+        res.send('OK — sessão limpa. Volte ao app: um NOVO QR vai aparecer, escaneie-o. '
+            + 'Depois mande START de novo nos chats desejados.');
+    } catch (e) {
+        console.log(`⚠️ Falha ao forçar re-pareamento: ${e}`);
+        res.status(500).send(String(e));
+    }
 });
 
 // Fila de comandos recebidos por WhatsApp (ACATAR/DISPENSAR). Devolve e
