@@ -1,5 +1,5 @@
 {
-  "versao": "1.6.8",
+  "versao": "1.6.9",
   "url_download": "https://drive.google.com/drive/folders/1IF61HDi95bcDUrJNUKgnNtKm4czRwooA",
-  "notas": "IA menos conservadora (a decisao deixou de ser podada pela meta/drawdown) e com analise/antecipacao de reversao via SMC, alem de usar outros indicadores visiveis no grafico. Correcao critica: relatorios so vao para os contatos que voce escolheu (fim da inscricao silenciosa) e novo painel para ver/remover/zerar contatos. Automacao Tradovate com bracket completo (entrada/stop/alvo)."
+  "notas": "Correcao critica: o motor do WhatsApp nao morre mais por erro de conexao (antes uma rejeicao nao tratada derrubava o processo e parava os relatorios). Correcao do KPI 'se acatasse todas' que inflava com cenarios de captura falha (preco 0). Conexao WhatsApp mais estavel (versao do protocolo cacheada). Nao gera mais sinal fantasma quando a tela nao pode ser lida."
 }
