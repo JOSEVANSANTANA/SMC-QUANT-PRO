@@ -207,8 +207,11 @@ async function connectToWhatsApp() {
                 "");
     };
 
-    sock.ev.on('messages.upsert', async (m) => {
-        const msg = m.messages && m.messages[0];
+    // Processa UMA mensagem (um comando). É chamada para CADA mensagem do lote.
+    // Antes o handler só olhava m.messages[0]; quando comandos chegavam em lote
+    // (ex.: após reconexão, ou várias mensagens juntas), os demais eram
+    // ignorados — por isso vários START não vinculavam.
+    const processarMensagem = async (msg, tipoUpsert) => {
         if (!msg || !msg.message) return;
 
         // Colapsa espaços e remove caracteres invisíveis (zero-width) que às
@@ -222,7 +225,7 @@ async function connectToWhatsApp() {
         const jidAlvo = msg.key.remoteJid;
 
         // Log de TODA mensagem recebida — essencial pra diagnosticar comandos.
-        console.log(`💬 msg (tipo=${m.type}, fromMe=${msg.key.fromMe}) ${jidAlvo}: "${textoBruto}"`);
+        console.log(`💬 msg (tipo=${tipoUpsert}, fromMe=${msg.key.fromMe}) ${jidAlvo}: "${textoBruto}"`);
 
         // Descarta ecos das próprias confirmações do robô (evita o loop).
         if (msg.key.fromMe &&
@@ -261,10 +264,9 @@ async function connectToWhatsApp() {
 
         if (CMD_START.includes(texto)) {
             const adicionado = adicionarInscrito(jidAlvo);
-            if (adicionado) {
-                console.log(`✅ NOVO contato inscrito via START: ${jidAlvo}. `
-                    + `Se NÃO foi você, remova no painel "Contatos que recebem relatório" do app.`);
-            }
+            console.log(adicionado
+                ? `✅ NOVO contato inscrito via START: ${jidAlvo} (total: ${lerInscritos().length}). Remova no painel se não foi você.`
+                : `ℹ️ START em ${jidAlvo}: já estava inscrito (total: ${lerInscritos().length}).`);
             await sock.sendMessage(jidAlvo, {
                 text: adicionado
                     ? "✅ Inscrito! Este chat passará a receber os relatórios do Robô SMC.\nEnvie STOP quando quiser parar."
@@ -291,6 +293,18 @@ async function connectToWhatsApp() {
                 text: "🚪 Ok: não vou fazer acompanhamento desse cenário."
             });
             return;
+        }
+    };
+
+    // Percorre TODAS as mensagens do lote (não só a primeira) e processa cada
+    // uma com blindagem — um erro em uma não impede as outras.
+    sock.ev.on('messages.upsert', async (m) => {
+        for (const msg of (m.messages || [])) {
+            try {
+                await processarMensagem(msg, m.type);
+            } catch (e) {
+                console.log(`⚠️ Erro ao processar mensagem do lote: ${e}`);
+            }
         }
     });
 }
