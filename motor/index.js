@@ -6,6 +6,11 @@ const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 
+// ⚠️ MARCADOR DE BUILD — se esta linha NÃO aparecer no Registro de atividade ao
+// iniciar, o app está rodando um motor ANTIGO (troque o motor/index.js certo e
+// finalize processos node.exe órfãos antes de reiniciar).
+const MOTOR_BUILD = '2026-07-20 · comandos-lote-v2';
+
 // ------------------------------------------------------------------
 // SILENCIADOR DE RUÍDO DO libsignal
 // A lib de criptografia (libsignal) imprime, direto no console, erros de
@@ -299,6 +304,10 @@ async function connectToWhatsApp() {
     // Percorre TODAS as mensagens do lote (não só a primeira) e processa cada
     // uma com blindagem — um erro em uma não impede as outras.
     sock.ev.on('messages.upsert', async (m) => {
+        // Log CRU: prova que o handler está sendo chamado e quantas mensagens
+        // chegaram. Se você manda START e ISSO nem aparece, o problema é a
+        // entrega do WhatsApp/conexão — não o reconhecimento do comando.
+        console.log(`📥 upsert recebido: ${(m.messages || []).length} mensagem(ns), tipo=${m.type}`);
         for (const msg of (m.messages || [])) {
             try {
                 await processarMensagem(msg, m.type);
@@ -307,6 +316,9 @@ async function connectToWhatsApp() {
             }
         }
     });
+
+    // Confirmação de que o listener de comandos foi de fato instalado nesta conexão.
+    console.log(`🎧 Listener de comandos (START/STOP/ACATAR) instalado. Build: ${MOTOR_BUILD}`);
 }
 
 // --------------------------------------------------------------------
@@ -397,7 +409,10 @@ app.post('/enviar-relatorio', async (req, res) => {
 connectToWhatsApp();
 
 const PORTA = 3939;
-const servidor = app.listen(PORTA, () => console.log(`🚀 API Gateway rodando na porta ${PORTA}`));
+const servidor = app.listen(PORTA, () => {
+    console.log(`🚀 API Gateway rodando na porta ${PORTA}`);
+    console.log(`🔧 MOTOR BUILD: ${MOTOR_BUILD}  (se não vir esta linha, é motor ANTIGO)`);
+});
 
 servidor.on('error', (erro) => {
     if (erro.code === 'EADDRINUSE') {
