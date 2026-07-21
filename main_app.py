@@ -83,7 +83,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "1.7.1"
+VERSAO_ATUAL = "1.7.2"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1642,24 +1642,30 @@ class SmcQuantApp(ctk.CTk):
                      font=ctk.CTkFont(size=11, weight="bold"), text_color=COR["dim"]
                      ).grid(row=0, column=0, columnspan=4, pady=(10, 8))
 
+        # (rótulo, atributo, chave no plano, linha, coluna, valor padrão)
         campos = [
-            ("Margem (US$):", "entry_margem", "margem", 1, 0),
-            ("Meta Alvo (US$):", "entry_meta", "meta_alvo", 1, 2),
-            ("Drawdown Máx. (US$):", "entry_dd", "drawdown_maximo", 2, 0),
-            ("Risco/operação (%):", "entry_risco", "risco_pct", 2, 2),
+            ("Margem (US$):", "entry_margem", "margem", 1, 0, 0),
+            ("Meta Alvo (US$):", "entry_meta", "meta_alvo", 1, 2, 0),
+            ("Drawdown Máx. (US$):", "entry_dd", "drawdown_maximo", 2, 0, 0),
+            ("Risco/operação (%):", "entry_risco", "risco_pct", 2, 2, 1.0),
+            ("Prazo p/ acatar (min):", "entry_timeout", "timeout_acatar_min", 3, 0, 10),
         ]
-        for rotulo, attr, chave, linha, col in campos:
+        for rotulo, attr, chave, linha, col, padrao in campos:
             ctk.CTkLabel(frame_config, text=rotulo, text_color=COR["dim"],
                          font=ctk.CTkFont(size=11)).grid(row=linha, column=col, sticky="e", padx=(12, 4), pady=4)
             entrada = ctk.CTkEntry(frame_config, width=110, fg_color=COR["input"],
                                     border_color=COR["borda"], text_color=COR["texto"])
             entrada.grid(row=linha, column=col + 1, padx=(0, 12), pady=4)
-            padrao = 1.0 if chave == "risco_pct" else 0
             entrada.insert(0, str(self.plano.get(chave, padrao)))
             setattr(self, attr, entrada)
 
+        ctk.CTkLabel(frame_config,
+                     text="(tempo até a sugestão ser cancelada se você não responder ACATAR)",
+                     text_color=COR["dim"], font=ctk.CTkFont(size=9)
+                     ).grid(row=3, column=2, columnspan=2, sticky="w", padx=(0, 12), pady=4)
+
         frame_botoes_plano = ctk.CTkFrame(frame_config, fg_color="transparent")
-        frame_botoes_plano.grid(row=3, column=0, columnspan=4, pady=(6, 10))
+        frame_botoes_plano.grid(row=4, column=0, columnspan=4, pady=(6, 10))
         ctk.CTkButton(frame_botoes_plano, text="💾 Salvar Plano", width=140,
                       fg_color=COR["verde_esc"], hover_color=COR["verde"],
                       command=self.salvar_plano_trading).pack(side="left", padx=6)
@@ -2090,6 +2096,9 @@ class SmcQuantApp(ctk.CTk):
             self.plano["meta_alvo"] = float(self.entry_meta.get().replace(",", "."))
             self.plano["drawdown_maximo"] = float(self.entry_dd.get().replace(",", "."))
             self.plano["risco_pct"] = float(self.entry_risco.get().replace(",", "."))
+            # Prazo p/ acatar: inteiro em minutos, mínimo 1 (evita 0 = sem prazo).
+            _tmo = int(float(self.entry_timeout.get().replace(",", ".")))
+            self.plano["timeout_acatar_min"] = max(1, _tmo)
         except ValueError:
             self.log("⚠️ Valores do plano de trading inválidos — use apenas números.")
             return
@@ -3097,7 +3106,13 @@ class SmcQuantApp(ctk.CTk):
         MAX_CANDLES = 6
         # Prazo para você ACATAR uma sugestão. Se não acatar dentro desse tempo,
         # o cenário é cancelado automaticamente e o robô passa a considerar novos.
-        TIMEOUT_ACATAR_SEG = 600  # 10 minutos
+        # Configurável no Plano de Trading ("Prazo p/ acatar (min)"). Padrão 10 min.
+        _plano_cfg = config_horario.get("plano_trading", {})
+        try:
+            _timeout_min = int(float(_plano_cfg.get("timeout_acatar_min", 10)))
+        except (TypeError, ValueError):
+            _timeout_min = 10
+        TIMEOUT_ACATAR_SEG = max(1, _timeout_min) * 60
 
         # PISO DE QUALIDADE (corta ruído sem travar a agressividade). Um cenário
         # só vira sugestão se passar destes dois filtros:
@@ -3313,6 +3328,11 @@ class SmcQuantApp(ctk.CTk):
                     "o alvo nem alargue artificialmente o stop só para 'fechar' o R:R.\n"
                     "\n"
                     "REGRAS DE HONESTIDADE:\n"
+                    "- NUNCA invente números, preços, níveis, teses ou confluências. "
+                    "entry_price, stop_loss, take_profit_1 e take_profit_2 são níveis REAIS "
+                    "lidos do gráfico (topos/fundos, OB, FVG, liquidez visíveis). Se você não "
+                    "consegue ler um nível com clareza no gráfico, NÃO o chute — retorne "
+                    "action=HOLD. Uma análise honesta com HOLD vale mais que um número inventado.\n"
                     "- Liste em confluence_factors APENAS confluências REAIS e visíveis no "
                     "gráfico (BOS/CHoCH, OB, FVG, sweep, premium/discount, equilíbrio). Não "
                     "invente fatores para justificar um trade.\n"
@@ -3665,9 +3685,14 @@ class SmcQuantApp(ctk.CTk):
                         plano.get("drawdown_maximo", 0)
                     )
 
+                    # R:R do relatório é SEMPRE calculado dos preços reais (nunca
+                    # vem do texto da IA). Usa o mesmo alvo do piso de qualidade
+                    # (tp1, ou tp2 se não houver tp1), então o número exibido nunca
+                    # fica abaixo do RR_MINIMO que aprovou o sinal.
                     rr1 = None
-                    if sinal_ativo["tp1"] and sinal_ativo["entry"] != sinal_ativo["stop"]:
-                        rr1 = round(abs((sinal_ativo["tp1"] - sinal_ativo["entry"]) /
+                    _alvo_rr_disp = sinal_ativo["tp1"] or sinal_ativo["tp2"]
+                    if _alvo_rr_disp and sinal_ativo["entry"] != sinal_ativo["stop"]:
+                        rr1 = round(abs((_alvo_rr_disp - sinal_ativo["entry"]) /
                                         (sinal_ativo["entry"] - sinal_ativo["stop"])), 2)
 
                     linha_contratos = ""
