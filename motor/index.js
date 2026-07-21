@@ -9,7 +9,7 @@ const path = require('path');
 // ⚠️ MARCADOR DE BUILD — se esta linha NÃO aparecer no Registro de atividade ao
 // iniciar, o app está rodando um motor ANTIGO (troque o motor/index.js certo e
 // finalize processos node.exe órfãos antes de reiniciar).
-const MOTOR_BUILD = '2026-07-21 · seguro-v6 (so-dono-comanda + so-chat-inscrito)';
+const MOTOR_BUILD = '2026-07-21 · seguro-v7 (so-dono-comanda + acatar-de-qualquer-chat)';
 
 // ⚠️ BLINDAGEM CONTRA MORTE DO PROCESSO.
 // O Baileys, durante turbulência de conexão (WebSocket 1006/408/428/500...),
@@ -347,25 +347,28 @@ async function connectToWhatsApp() {
             return;
         }
 
-        // STOP/ACATAR/DISPENSAR: SÓ agem e SÓ respondem em chat JÁ INSCRITO. Assim
-        // o robô NUNCA envia nada para um chat que você não escolheu — nem que
-        // você digite o comando por engano num chat qualquer.
-        if (!inscrito) {
-            console.log(`🔒 "${texto}" ignorado: ${jidAlvo} não é chat inscrito (nada enviado).`);
-            return;
-        }
-
+        // STOP: desinscreve ESTE chat. Só age/responde se ele estava recebendo.
         if (CMD_STOP.includes(texto)) {
-            removerInscrito(jidAlvo);
-            await sock.sendMessage(jidAlvo, {
-                text: "🛑 Você PAROU de receber os relatórios do Robô SMC neste chat.\nEnvie START para voltar a receber."
-            });
+            if (inscrito) {
+                removerInscrito(jidAlvo);
+                await sock.sendMessage(jidAlvo, {
+                    text: "🛑 Você PAROU de receber os relatórios do Robô SMC neste chat.\nEnvie START para voltar a receber."
+                });
+            } else {
+                console.log(`🔒 STOP em ${jidAlvo}: não estava inscrito (silêncio).`);
+            }
             return;
         }
 
+        // ACATAR / DISPENSAR: são AÇÕES GLOBAIS sobre o ÚLTIMO cenário. A AÇÃO vale
+        // de QUALQUER chat SEU (já garantimos fromMe). A RESPOSTA no WhatsApp só é
+        // enviada se o chat for inscrito — assim o comando FUNCIONA de onde você
+        // quiser, mas o robô NUNCA escreve num chat que você não escolheu. (O app
+        // também confirma o resultado nos seus chats inscritos.)
         if (CMD_ACATAR.includes(texto)) {
             filaComandos.push({ tipo: 'ACATAR', jid: jidAlvo, ts: Date.now() });
-            await sock.sendMessage(jidAlvo, {
+            console.log(`👍 ACATAR enfileirado (responde neste chat? ${inscrito}).`);
+            if (inscrito) await sock.sendMessage(jidAlvo, {
                 text: "👍 Recebido: vou registrar o ACATAR do último cenário no seu diário e acompanhar até stop/alvo."
             });
             return;
@@ -373,7 +376,8 @@ async function connectToWhatsApp() {
 
         if (CMD_DISPENSAR.includes(texto)) {
             filaComandos.push({ tipo: 'DISPENSAR', jid: jidAlvo, ts: Date.now() });
-            await sock.sendMessage(jidAlvo, {
+            console.log(`🚪 DISPENSAR enfileirado (responde neste chat? ${inscrito}).`);
+            if (inscrito) await sock.sendMessage(jidAlvo, {
                 text: "🚪 Ok: não vou fazer acompanhamento desse cenário."
             });
             return;
