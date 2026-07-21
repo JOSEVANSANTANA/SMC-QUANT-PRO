@@ -83,7 +83,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "1.6.9"
+VERSAO_ATUAL = "1.7.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -3095,6 +3095,9 @@ class SmcQuantApp(ctk.CTk):
         INTERVALO_MINUTOS = config_horario.get("intervalo_minutos", 15)
         BUFFER_SEGUNDOS = 5
         MAX_CANDLES = 6
+        # Prazo para você ACATAR uma sugestão. Se não acatar dentro desse tempo,
+        # o cenário é cancelado automaticamente e o robô passa a considerar novos.
+        TIMEOUT_ACATAR_SEG = 600  # 10 minutos
         HORA_INICIO = config_horario.get("hora_inicio", "09:00")
         HORA_FIM = config_horario.get("hora_fim", "17:00")
         sinal_ativo = {"estado": "ENCERRADA"}
@@ -3488,6 +3491,21 @@ class SmcQuantApp(ctk.CTk):
                 # cenário não acatado recebe só a sugestão inicial, sem follow-up.
                 acatado_atual = sinal_ativo.get("sinal_id") in self.sinais_acatados
 
+                # ---------------- TIMEOUT DE ACATAR (10 min) ----------------
+                # Se você NÃO acatou a sugestão dentro do prazo, ela é cancelada
+                # automaticamente e o robô fica livre para considerar novos
+                # cenários — não fica preso numa sugestão velha que você não vai
+                # operar. (Uma sugestão ACATADA vira sua operação e não expira.)
+                if (sinal_ativo["estado"] != "ENCERRADA" and not acatado_atual
+                        and (time.time() - sinal_ativo.get("ts_criacao", 0)) > TIMEOUT_ACATAR_SEG):
+                    sid_exp = sinal_ativo.get("sinal_id")
+                    atualizar_decisao_sinal(sid_exp, "EXPIRADO")
+                    self.sinais_dispensados.discard(sid_exp)
+                    self.log(f"⌛ Sugestão não acatada em {TIMEOUT_ACATAR_SEG // 60} min — "
+                              "cancelada automaticamente. Considerando novos cenários.")
+                    sinal_ativo = {"estado": "ENCERRADA"}
+                    self.after(0, self._atualizar_dashboard)
+
                 # ---------------- MÁQUINA DE ESTADOS ----------------
                 # Exige preço VÁLIDO (>0). Quando a captura falha, a IA devolve
                 # preço 0 — processar isso disparava stop/alvo fantasma (ex.:
@@ -3576,6 +3594,7 @@ class SmcQuantApp(ctk.CTk):
                         "candles": 0,
                         "tp1_notificado": False,
                         "sinal_id": novo_sinal_id,   # elo com a decisão do trader
+                        "ts_criacao": time.time(),   # p/ o timeout de acatar (10 min)
                     }
 
                     # Dimensionamento de posição com base no Plano da Mesa
