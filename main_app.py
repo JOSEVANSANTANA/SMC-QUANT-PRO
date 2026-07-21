@@ -83,7 +83,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "1.7.0"
+VERSAO_ATUAL = "1.7.1"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -3098,6 +3098,13 @@ class SmcQuantApp(ctk.CTk):
         # Prazo para você ACATAR uma sugestão. Se não acatar dentro desse tempo,
         # o cenário é cancelado automaticamente e o robô passa a considerar novos.
         TIMEOUT_ACATAR_SEG = 600  # 10 minutos
+
+        # PISO DE QUALIDADE (corta ruído sem travar a agressividade). Um cenário
+        # só vira sugestão se passar destes dois filtros:
+        #   • R:R até o 1º alvo >= 2.0 (alvo no mínimo 2x o risco — "a conta fecha")
+        #   • probabilidade >= mínimo (cenários fracos viram HOLD)
+        RR_MINIMO = float(config_horario.get("rr_minimo", 2.0))
+        PROBABILIDADE_MINIMA = float(config_horario.get("probabilidade_minima", 60))
         HORA_INICIO = config_horario.get("hora_inicio", "09:00")
         HORA_FIM = config_horario.get("hora_fim", "17:00")
         sinal_ativo = {"estado": "ENCERRADA"}
@@ -3297,10 +3304,13 @@ class SmcQuantApp(ctk.CTk):
                     "4) PONTO DE ENTRADA (POI): a entrada deve estar num Order Block NÃO mitigado "
                     "ou num Fair Value Gap (FVG) coerente com o viés. ENTRY_PRICE é sempre ordem "
                     "PENDENTE nesse POI (não a mercado).\n"
-                    "5) STOP e ALVOS: stop_loss logo além do POI/estrutura que invalida a ideia. "
-                    "take_profit_1 na liquidez interna/oposta mais próxima; take_profit_2 na "
-                    "liquidez externa seguinte. O RISCO:RETORNO até o objetivo 1 deve ser de no "
-                    "mínimo ~1.5. Se não houver R:R decente, retorne HOLD.\n"
+                    "5) STOP e ALVOS (REGRA RÍGIDA DE R:R): stop_loss logo além do POI/estrutura "
+                    "que invalida a ideia. O take_profit_1 DEVE estar a uma distância de PELO MENOS "
+                    "2x a distância do stop (R:R do 1º alvo >= 1:2, idealmente 1:3); posicione-o numa "
+                    "liquidez/estrutura REAL que justifique esse alcance. take_profit_2 na liquidez "
+                    "externa seguinte. Se o alvo lógico mais próximo não alcançar 1:2 a partir de um "
+                    "stop tecnicamente correto, o trade NÃO vale — retorne action=HOLD. NUNCA encurte "
+                    "o alvo nem alargue artificialmente o stop só para 'fechar' o R:R.\n"
                     "\n"
                     "REGRAS DE HONESTIDADE:\n"
                     "- Liste em confluence_factors APENAS confluências REAIS e visíveis no "
@@ -3310,12 +3320,26 @@ class SmcQuantApp(ctk.CTk):
                     "estiver longe do POI, retorne action=HOLD com probabilidade baixa. Porém "
                     "NÃO use HOLD quando existir um setup real (continuação OU reversão) com "
                     "confluência SMC — nesse caso, sinalize BUY/SELL.\n"
-                    "- 'probabilidade' (0 a 100): estimativa CALIBRADA e honesta de atingir o "
-                    "objetivo 1 antes de invalidar. Poucas confluências ou contra-tendência => "
-                    "probabilidade baixa. Use o histórico do feedback loop acima para calibrar. "
-                    "NÃO infle.\n"
+                    "- 'confidence_score' E 'probabilidade' são SEMPRE inteiros na ESCALA 0 a 100 "
+                    "(ex.: 72, nunca 0.72). 'probabilidade' é a estimativa CALIBRADA e honesta de "
+                    "atingir o objetivo 1 antes de invalidar. Poucas confluências ou contra-tendência "
+                    "=> probabilidade baixa. Use o histórico do feedback loop acima para calibrar. "
+                    "Cenário abaixo de ~60% de probabilidade deve virar HOLD. NÃO infle.\n"
                     "- Coerência obrigatória: para BUY, stop < entry < tp1 <= tp2; para SELL, "
                     "stop > entry > tp1 >= tp2. Se não conseguir montar um cenário coerente, HOLD.\n"
+                    "\n"
+                    "FILTRO DE RUÍDO (evite stops bobos):\n"
+                    "- 90% das operações DEVEM ser fundamentadas em SMC/ICT (estrutura BOS/CHoCH, "
+                    "varredura de liquidez, Order Block/FVG não mitigado, premium/discount), em "
+                    "QUALQUER timeframe. Indicadores (RSI, VWAP, médias, volume) são apenas "
+                    "confluência SECUNDÁRIA — nunca o motivo principal de um trade.\n"
+                    "- NÃO opere dentro de range/consolidação sem direção (chop): mercado lateral, "
+                    "preço colado na média/VWAP em equilíbrio, velas pequenas e sobrepostas = HOLD. "
+                    "É melhor perder o trade do que tomar stop em ruído.\n"
+                    "- Exija SEMPRE o gatilho + o POI JÁ mitigável: só sinalize quando a varredura de "
+                    "liquidez JÁ ocorreu e o preço está reagindo no POI. Sem sweep + reação, é HOLD.\n"
+                    "- NÃO fique alternando BUY/SELL a cada leitura: se o cenário anterior ainda é "
+                    "válido estruturalmente, mantenha o viés; só inverta com CHoCH/sweep NOVO e claro.\n"
                     "\n"
                     # ---- Sizing é responsabilidade EXCLUSIVA do plano da mesa ----
                     "NUNCA sugira quantidade de contratos, tamanho de posição, número de "
@@ -3430,6 +3454,19 @@ class SmcQuantApp(ctk.CTk):
                 confluencias = sinal.get("confluence_factors", []) or []
                 ativo = sinal.get("asset_symbol", "DESCONHECIDO")
                 ledger_text_memory = sinal.get("ledger_update", ledger_text_memory)
+
+                # NORMALIZA A ESCALA (0-100). A IA às vezes devolve 0.78 (escala
+                # 0-1) e às vezes 75 (escala 0-100). Padroniza tudo para 0-100.
+                def _pct(v):
+                    try:
+                        v = float(v)
+                    except (TypeError, ValueError):
+                        return 0.0
+                    if v <= 1.0:      # veio em 0-1 -> converte para 0-100
+                        v *= 100.0
+                    return round(max(0.0, min(100.0, v)), 1)
+                confianca = _pct(confianca)
+                probabilidade = _pct(probabilidade)
 
                 self.log(f"📊 Ativo: {ativo} | Leitura IA: {acao} | Confiança: {confianca}% | "
                           f"Probabilidade: {probabilidade}% | Preço: {preco}")
@@ -3575,12 +3612,33 @@ class SmcQuantApp(ctk.CTk):
                             self.after(0, self._atualizar_dashboard)
 
                 # ---------------- NOVO SINAL (se estado livre) ----------------
-                # Só cria sinal com preços VÁLIDOS (>0) e preço de tela lido —
-                # evita "sinais fantasma" quando a captura falha (entry/stop 0).
+                # PISO DE QUALIDADE: calcula o R:R até o 1º alvo e exige R:R>=2
+                # e probabilidade>=mínimo. Setups fracos (alvo curto, baixa
+                # convicção) NÃO viram sugestão — cortam o ruído.
+                _ep = sinal.get("entry_price") or 0
+                _sl = sinal.get("stop_loss") or 0
+                _alvo_rr = sinal.get("take_profit_1") or sinal.get("take_profit_2") or 0
+                _risco = abs(_ep - _sl)
+                rr_sinal = (abs(_alvo_rr - _ep) / _risco) if (_risco and _alvo_rr) else 0
+                qualidade_ok = (rr_sinal >= RR_MINIMO and probabilidade >= PROBABILIDADE_MINIMA)
+
+                # Loga a rejeição só quando havia um candidato REAL (BUY/SELL válido)
+                # com estado livre — pra você ver o filtro trabalhando.
+                if (sinal_ativo["estado"] == "ENCERRADA" and acao in ("BUY", "SELL")
+                        and preco and _ep > 0 and _sl > 0 and not qualidade_ok):
+                    motivo = (f"R:R 1:{rr_sinal:.2f} (mínimo 1:{RR_MINIMO:.0f})"
+                              if rr_sinal < RR_MINIMO
+                              else f"probabilidade {probabilidade:.0f}% (mínimo {PROBABILIDADE_MINIMA:.0f}%)")
+                    self.log(f"🚧 {acao} {ativo} descartado pelo piso de qualidade: {motivo}. "
+                              "Aguardando um setup melhor.")
+
+                # Só cria sinal com preços VÁLIDOS (>0), preço de tela lido E que
+                # passe no piso de qualidade.
                 if sinal_ativo["estado"] == "ENCERRADA" and acao in ("BUY", "SELL") \
                         and preco is not None and preco > 0 \
                         and sinal.get("entry_price") and sinal.get("stop_loss") \
-                        and sinal.get("entry_price") > 0 and sinal.get("stop_loss") > 0:
+                        and sinal.get("entry_price") > 0 and sinal.get("stop_loss") > 0 \
+                        and qualidade_ok:
                     novo_sinal_id = registrar_novo_sinal_log(
                         acao, sinal.get("entry_price"), sinal.get("stop_loss"),
                         sinal.get("take_profit_1"), sinal.get("take_profit_2"), ativo)

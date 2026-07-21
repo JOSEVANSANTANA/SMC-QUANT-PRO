@@ -1,5 +1,5 @@
 {
-  "versao": "1.7.0",
+  "versao": "1.7.1",
   "url_download": "https://drive.google.com/drive/folders/1IF61HDi95bcDUrJNUKgnNtKm4czRwooA",
-  "notas": "Novo: sugestao nao acatada em 10 minutos e cancelada automaticamente e o robo passa a considerar novos cenarios. Seguranca do WhatsApp: o robo so obedece comandos SEUS (fromMe) e nunca envia para um chat que voce nao escolheu; removidas palavras ambiguas (ex.: 'SIM') que viravam comando em conversa normal. ACATAR/NAO ACATAR funcionam de qualquer chat seu. Motor mais resiliente (nao morre por erro de conexao) e KPI 'se acatasse todas' corrigido."
+  "notas": "Recalibragem das analises: R:R minimo 1:2 (alvo no minimo 2x o risco - senao vira HOLD), piso de qualidade por probabilidade minima e filtro de ruido (nao opera em range/consolidacao). Reforcada a premissa de 90% das operacoes baseadas em SMC em qualquer timeframe, com indicadores so como confluencia secundaria. Escala de Confianca/Probabilidade normalizada para 0-100. Inclui o timeout de 10 min para acatar e a seguranca do WhatsApp."
 }
