@@ -1,5 +1,5 @@
 {
-  "versao": "1.7.1",
+  "versao": "1.7.2",
   "url_download": "https://drive.google.com/drive/folders/1IF61HDi95bcDUrJNUKgnNtKm4czRwooA",
-  "notas": "Recalibragem das analises: R:R minimo 1:2 (alvo no minimo 2x o risco - senao vira HOLD), piso de qualidade por probabilidade minima e filtro de ruido (nao opera em range/consolidacao). Reforcada a premissa de 90% das operacoes baseadas em SMC em qualquer timeframe, com indicadores so como confluencia secundaria. Escala de Confianca/Probabilidade normalizada para 0-100. Inclui o timeout de 10 min para acatar e a seguranca do WhatsApp."
+  "notas": "Prazo para acatar agora e configuravel no Plano de Trading (campo 'Prazo p/ acatar (min)', padrao 10). Reforcado o anti-alucinacao: a IA nao inventa numeros/precos/teses - entry, stop e alvos sao niveis reais lidos do grafico, senao vira HOLD. R:R do relatorio sempre calculado dos precos reais e travado no minimo 1:2 (piso de qualidade), com o valor exibido usando o mesmo alvo que aprovou o sinal."
 }
