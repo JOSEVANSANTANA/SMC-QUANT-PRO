@@ -9,7 +9,7 @@ const path = require('path');
 // ⚠️ MARCADOR DE BUILD — se esta linha NÃO aparecer no Registro de atividade ao
 // iniciar, o app está rodando um motor ANTIGO (troque o motor/index.js certo e
 // finalize processos node.exe órfãos antes de reiniciar).
-const MOTOR_BUILD = '2026-07-21 · resiliente-v5 (nao-morre + versao-cacheada)';
+const MOTOR_BUILD = '2026-07-21 · seguro-v6 (so-dono-comanda + so-chat-inscrito)';
 
 // ⚠️ BLINDAGEM CONTRA MORTE DO PROCESSO.
 // O Baileys, durante turbulência de conexão (WebSocket 1006/408/428/500...),
@@ -305,57 +305,64 @@ async function connectToWhatsApp() {
         // Log de TODA mensagem recebida — essencial pra diagnosticar comandos.
         console.log(`💬 msg (tipo=${tipoUpsert}, fromMe=${msg.key.fromMe}) ${jidAlvo}: "${textoBruto}"`);
 
-        // Descarta ecos das próprias confirmações do robô (evita o loop).
-        if (msg.key.fromMe &&
-            PREFIXOS_CONFIRMACAO_ROBO.some((p) => textoBruto.startsWith(p))) {
-            return;
-        }
+        // ─────────────────────────────────────────────────────────────────
+        // SEGURANÇA CRÍTICA: o robô SÓ obedece comandos que VOCÊ enviou.
+        //   • Mensagens de TERCEIROS (fromMe=false) são IGNORADAS por completo.
+        //     Foi isso que vazou: um contato escreveu "sim" numa conversa normal,
+        //     o robô entendeu como ACATAR e respondeu NO CHAT DELE. Nunca mais.
+        //   • As próprias confirmações do robô (fromMe + emoji) também são
+        //     descartadas, para não formar loop.
+        // ─────────────────────────────────────────────────────────────────
+        if (!msg.key.fromMe) return;
+        if (PREFIXOS_CONFIRMACAO_ROBO.some((p) => textoBruto.startsWith(p))) return;
 
-        // Normaliza para comparar comando por igualdade exata.
         const texto = textoBruto.toUpperCase();
 
-        // Conjuntos de comandos aceitos (correspondência EXATA — evita o loop).
-        const CMD_STOP      = ['STOP', 'PARAR'];
-        const CMD_START     = ['START', 'INICIAR', 'INICIO', 'INÍCIO'];
-        const CMD_ACATAR    = ['ACATAR', 'ACATEI', 'ACATO', 'ACATAR CENARIO',
-                               'ACATAR CENÁRIO', 'SIM'];
+        // Comandos por CORRESPONDÊNCIA EXATA e SEM PALAVRAS AMBÍGUAS. Removidos
+        // "SIM", "INÍCIO", etc. — viravam comando em conversa normal.
+        const CMD_STOP      = ['STOP', 'PARAR RELATORIOS'];
+        const CMD_START     = ['START', 'INICIAR RELATORIOS'];
+        const CMD_ACATAR    = ['ACATAR', 'ACATEI', 'ACATO', 'ACATAR CENARIO', 'ACATAR CENÁRIO'];
         const CMD_DISPENSAR = ['NAO OPEREI', 'NÃO OPEREI', 'DISPENSAR',
                                'NAO ACATAR', 'NÃO ACATAR', 'NAO ACATO', 'NÃO ACATO'];
 
         const ehComando =
             CMD_STOP.includes(texto) || CMD_START.includes(texto) ||
             CMD_ACATAR.includes(texto) || CMD_DISPENSAR.includes(texto);
-
         if (!ehComando) return;
 
-        console.log(`✅ Comando reconhecido: "${texto}"`);
+        const inscrito = lerInscritos().includes(jidAlvo);
+        console.log(`✅ Comando reconhecido: "${texto}" (chat inscrito: ${inscrito})`);
 
-        if (CMD_STOP.includes(texto)) {
-            const removido = removerInscrito(jidAlvo);
-            await sock.sendMessage(jidAlvo, {
-                text: removido
-                    ? "🛑 Você PAROU de receber os relatórios do Robô SMC neste chat.\nEnvie START para voltar a receber."
-                    : "ℹ️ Este chat já não estava recebendo os relatórios."
-            });
-            return;
-        }
-
+        // START: você inscreve um chat enviando START DENTRO dele (só você pode,
+        // pois só fromMe chega aqui). É a única forma de um chat passar a receber.
         if (CMD_START.includes(texto)) {
             const adicionado = adicionarInscrito(jidAlvo);
             console.log(adicionado
-                ? `✅ NOVO contato inscrito via START: ${jidAlvo} (total: ${lerInscritos().length}). Remova no painel se não foi você.`
-                : `ℹ️ START em ${jidAlvo}: já estava inscrito (total: ${lerInscritos().length}).`);
+                ? `✅ Chat inscrito via START: ${jidAlvo} (total: ${lerInscritos().length}).`
+                : `ℹ️ START em ${jidAlvo}: já estava inscrito.`);
+            await sock.sendMessage(jidAlvo, { text: adicionado
+                ? "✅ Inscrito! Este chat passará a receber os relatórios do Robô SMC.\nEnvie STOP quando quiser parar."
+                : "✅ Este chat JÁ estava recebendo os relatórios do Robô SMC.\nEnvie STOP quando quiser parar." });
+            return;
+        }
+
+        // STOP/ACATAR/DISPENSAR: SÓ agem e SÓ respondem em chat JÁ INSCRITO. Assim
+        // o robô NUNCA envia nada para um chat que você não escolheu — nem que
+        // você digite o comando por engano num chat qualquer.
+        if (!inscrito) {
+            console.log(`🔒 "${texto}" ignorado: ${jidAlvo} não é chat inscrito (nada enviado).`);
+            return;
+        }
+
+        if (CMD_STOP.includes(texto)) {
+            removerInscrito(jidAlvo);
             await sock.sendMessage(jidAlvo, {
-                text: adicionado
-                    ? "✅ Inscrito! Este chat passará a receber os relatórios do Robô SMC.\nEnvie STOP quando quiser parar."
-                    : "✅ Este chat JÁ estava recebendo os relatórios do Robô SMC.\nEnvie STOP quando quiser parar."
+                text: "🛑 Você PAROU de receber os relatórios do Robô SMC neste chat.\nEnvie START para voltar a receber."
             });
             return;
         }
 
-        // ACATAR / ACATO / ACATEI -> registra intenção de operar o último
-        // cenário sugerido. O app (main_app.py) lê isso via GET /comandos e
-        // abre a posição na direção do sinal (mesma lógica do botão "Acatei").
         if (CMD_ACATAR.includes(texto)) {
             filaComandos.push({ tipo: 'ACATAR', jid: jidAlvo, ts: Date.now() });
             await sock.sendMessage(jidAlvo, {
@@ -364,7 +371,6 @@ async function connectToWhatsApp() {
             return;
         }
 
-        // NAO OPEREI / DISPENSAR -> encerra o acompanhamento do último cenário.
         if (CMD_DISPENSAR.includes(texto)) {
             filaComandos.push({ tipo: 'DISPENSAR', jid: jidAlvo, ts: Date.now() });
             await sock.sendMessage(jidAlvo, {
