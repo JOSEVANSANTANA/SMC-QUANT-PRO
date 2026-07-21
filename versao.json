@@ -1,5 +1,5 @@
 {
-  "versao": "1.6.9",
+  "versao": "1.7.0",
   "url_download": "https://drive.google.com/drive/folders/1IF61HDi95bcDUrJNUKgnNtKm4czRwooA",
-  "notas": "Correcao critica: o motor do WhatsApp nao morre mais por erro de conexao (antes uma rejeicao nao tratada derrubava o processo e parava os relatorios). Correcao do KPI 'se acatasse todas' que inflava com cenarios de captura falha (preco 0). Conexao WhatsApp mais estavel (versao do protocolo cacheada). Nao gera mais sinal fantasma quando a tela nao pode ser lida."
+  "notas": "Novo: sugestao nao acatada em 10 minutos e cancelada automaticamente e o robo passa a considerar novos cenarios. Seguranca do WhatsApp: o robo so obedece comandos SEUS (fromMe) e nunca envia para um chat que voce nao escolheu; removidas palavras ambiguas (ex.: 'SIM') que viravam comando em conversa normal. ACATAR/NAO ACATAR funcionam de qualquer chat seu. Motor mais resiliente (nao morre por erro de conexao) e KPI 'se acatasse todas' corrigido."
 }
