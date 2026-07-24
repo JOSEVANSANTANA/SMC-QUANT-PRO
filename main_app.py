@@ -83,7 +83,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "1.7.2"
+VERSAO_ATUAL = "1.7.3"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -653,7 +653,10 @@ def atualizar_posicoes_com_preco(preco, ativo=None):
     alcançou não pode contar como operação em andamento.
     Retorna lista de eventos para notificação.
     """
-    if preco is None:
+    # Preço inválido (captura falhou -> IA devolve 0/None) NÃO pode acionar
+    # stop/alvo nem realizar P&L. Antes, um preço 0 fechava posições com perda/
+    # ganho fantasma. Espelha o guard da máquina de estados.
+    if preco is None or preco <= 0:
         return []
     lista = carregar_posicoes()
     eventos = []
@@ -665,6 +668,11 @@ def atualizar_posicoes_com_preco(preco, ativo=None):
         if ativo and pos.get("ativo") not in (None, "", "DESCONHECIDO"):
             if not pos["ativo"].upper().startswith(ativo.upper()[:3]):
                 continue
+        # Leitura corrompida: um preço a mais de 10% da entrada da posição não é
+        # movimento real de índice — é captura ruim. Não aciona nada neste ciclo
+        # (evita stop/alvo e P&L fantasma a partir de um preço absurdo).
+        if pos.get("entry") and abs(preco - pos["entry"]) > abs(pos["entry"]) * 0.10:
+            continue
 
         direcao = pos["direcao"]
         bateu_stop = (direcao == "BUY" and preco <= pos["stop"]) or \
@@ -697,8 +705,15 @@ def atualizar_posicoes_com_preco(preco, ativo=None):
             (direcao == "SELL" and preco <= pos["tp2"])
         )
         if bateu_stop or bateu_tp2:
+            # Realiza o P&L no NÍVEL DA ORDEM (stop ou alvo), NUNCA no preço lido.
+            # Um preço com overshoot (ou leitura tardia) além do stop inflaria a
+            # perda para além do risco planejado — foi o que gerou o -US$325 acima
+            # do teto. O resultado agora é o valor exato e determinístico do plano.
+            preco_saida = pos["stop"] if bateu_stop else pos["tp2"]
             pos["status"] = "FECHADA"
             pos["data_fechamento"] = time.strftime('%d/%m/%Y %H:%M')
+            pos["preco_atual"] = preco_saida
+            pos["pnl_atual"] = calcular_pnl_posicao(pos, preco_saida)
             pos["pnl_final"] = pos["pnl_atual"]
             eventos.append(("STOP" if bateu_stop else "ALVO", dict(pos)))
     salvar_posicoes(lista)
@@ -1692,9 +1707,25 @@ class SmcQuantApp(ctk.CTk):
             ctk.CTkLabel(col, text=titulo, font=ctk.CTkFont(size=10, weight="bold"),
                          text_color=COR["dim"]).pack(anchor="w", padx=10, pady=(8, 2))
             canvas = tk.Canvas(col, bg=COR["card"], height=175, highlightthickness=0)
-            canvas.pack(fill="x", padx=6, pady=(0, 8))
+            canvas.pack(fill="x", padx=6, pady=(0, 2))
             setattr(self, attr, canvas)
             self._ativar_zoom_pan(canvas)
+
+            # Barra de controles do gráfico: zoom +/-, reset e dica de uso.
+            barra = ctk.CTkFrame(col, fg_color="transparent")
+            barra.pack(fill="x", padx=6, pady=(0, 6))
+            ctk.CTkButton(barra, text="➕", width=30, height=22, fg_color="#2a3f5f",
+                          hover_color="#3a5580",
+                          command=lambda c=canvas: c._aplicar_zoom(1.3)).pack(side="left", padx=(0, 3))
+            ctk.CTkButton(barra, text="➖", width=30, height=22, fg_color="#2a3f5f",
+                          hover_color="#3a5580",
+                          command=lambda c=canvas: c._aplicar_zoom(1 / 1.3)).pack(side="left", padx=3)
+            ctk.CTkButton(barra, text="⟳", width=30, height=22, fg_color="#3a3a3a",
+                          hover_color="#555555",
+                          command=lambda c=canvas: c._reset_zoom()).pack(side="left", padx=3)
+            ctk.CTkLabel(barra, text="roda do mouse = zoom · arraste = mover · passe o mouse p/ ver o valor",
+                         text_color=COR["dim"], font=ctk.CTkFont(size=8)
+                         ).pack(side="left", padx=8)
 
         self.lbl_legenda_dias = ctk.CTkLabel(scroll, text="", justify="left", anchor="w",
                                               text_color=COR["dim"], font=ctk.CTkFont(size=9))
@@ -2378,11 +2409,18 @@ class SmcQuantApp(ctk.CTk):
         self.lbl_patrimonio.configure(text=texto, text_color=cor)
 
     def _ativar_zoom_pan(self, canvas):
-        """Torna um gráfico MANIPULÁVEL: roda do mouse dá zoom, arraste move
-        (pan) e duplo-clique reseta. O estado (_zoom/_panx) vive no canvas."""
-        canvas._zoom = 1.0
+        """Torna um gráfico totalmente MANIPULÁVEL:
+          • roda do mouse = zoom (amplia/reduz) CENTRADO no cursor;
+          • arraste (segurar botão esq. + mover) = deslocar (pan) em X e Y;
+          • passar o mouse sobre a linha = tooltip com o valor e o rótulo do ponto;
+          • duplo-clique OU botão ⟳ = volta ao enquadramento original.
+        O estado (_zoom/_zoomy/_panx/_pany) vive no próprio canvas."""
+        canvas._zoom = 1.0     # zoom horizontal (tempo)
+        canvas._zoomy = 1.0    # zoom vertical (US$)
         canvas._panx = 0.0
+        canvas._pany = 0.0
         canvas._arraste_x = None
+        canvas._arraste_y = None
 
         def redesenhar():
             # Redesenha os dois gráficos (barato e mantém tudo consistente).
@@ -2392,36 +2430,79 @@ class SmcQuantApp(ctk.CTk):
             except Exception:
                 pass
 
-        def on_wheel(event):
-            # event.delta > 0 = rolar pra cima = ampliar. Zoom entre 1x e 8x.
-            fator = 1.15 if getattr(event, "delta", 0) > 0 else (1 / 1.15)
-            novo = min(max(canvas._zoom * fator, 1.0), 8.0)
-            canvas._zoom = novo
-            if novo <= 1.0:       # ao voltar ao mínimo, recentraliza
-                canvas._panx = 0.0
+        def aplicar_zoom(fator, cx=None, cy=None):
+            # Zoom CENTRADO no cursor: o ponto sob o mouse fica parado enquanto o
+            # resto expande/contrai (comportamento de mapa). Faixa 1x a 12x.
+            antigo, antigoy = canvas._zoom, canvas._zoomy
+            novo = min(max(antigo * fator, 1.0), 12.0)
+            novoy = min(max(antigoy * fator, 1.0), 12.0)
+            if cx is None:
+                cx = canvas.winfo_width() / 2
+            if cy is None:
+                cy = canvas.winfo_height() / 2
+            # Mantém o ponto sob o cursor fixo ao mudar a escala.
+            canvas._panx = cx - (cx - canvas._panx) * (novo / antigo)
+            canvas._pany = cy - (cy - canvas._pany) * (novoy / antigoy)
+            canvas._zoom, canvas._zoomy = novo, novoy
+            if novo <= 1.0 and novoy <= 1.0:   # voltou ao mínimo: recentraliza
+                canvas._panx = canvas._pany = 0.0
             redesenhar()
+
+        def on_wheel(event):
+            fator = 1.18 if getattr(event, "delta", 0) > 0 else (1 / 1.18)
+            aplicar_zoom(fator, getattr(event, "x", None), getattr(event, "y", None))
             return "break"
 
         def on_wheel_linux(delta):
-            return lambda e: on_wheel(type("E", (), {"delta": delta})())
+            return lambda e: (setattr(e, "delta", delta), on_wheel(e))[1]
 
         def on_press(event):
-            canvas._arraste_x = event.x
+            canvas._arraste_x, canvas._arraste_y = event.x, event.y
 
         def on_drag(event):
             if canvas._arraste_x is not None:
                 canvas._panx += event.x - canvas._arraste_x
-                canvas._arraste_x = event.x
+                canvas._pany += event.y - canvas._arraste_y
+                canvas._arraste_x, canvas._arraste_y = event.x, event.y
                 redesenhar()
 
         def on_release(_event):
-            canvas._arraste_x = None
+            canvas._arraste_x = canvas._arraste_y = None
 
-        def on_reset(_event):
-            canvas._zoom = 1.0
-            canvas._panx = 0.0
+        def on_reset(_event=None):
+            canvas._zoom = canvas._zoomy = 1.0
+            canvas._panx = canvas._pany = 0.0
             redesenhar()
             return "break"
+
+        def on_hover(event):
+            # Tooltip do ponto mais próximo do cursor (sem redesenhar o gráfico
+            # inteiro — só apaga/redesenha a camada "tooltip").
+            canvas.delete("tooltip")
+            pontos = getattr(canvas, "_pontos_dados", None)
+            if not pontos:
+                return
+            alvo = min(pontos, key=lambda p: abs(p[0] - event.x))
+            if abs(alvo[0] - event.x) > 40:   # longe demais de qualquer ponto
+                return
+            px, py, valor, rotulo = alvo
+            canvas.create_oval(px - 5, py - 5, px + 5, py + 5, outline="#ffffff",
+                                width=2, tags="tooltip")
+            texto = f"{rotulo}: US${valor:+.2f}"
+            larg = 8 + len(texto) * 6.5
+            tx = min(max(px, larg / 2 + 2), canvas.winfo_width() - larg / 2 - 2)
+            ty = max(py - 22, 12)
+            canvas.create_rectangle(tx - larg / 2, ty - 9, tx + larg / 2, ty + 9,
+                                     fill="#0e1117", outline="#3a3a5a", tags="tooltip")
+            canvas.create_text(tx, ty, text=texto, fill="#ffffff",
+                                font=("Consolas", 9, "bold"), tags="tooltip")
+
+        def on_leave(_event):
+            canvas.delete("tooltip")
+
+        # guarda para os botões ＋ / － / ⟳ e para o wheel
+        canvas._aplicar_zoom = aplicar_zoom
+        canvas._reset_zoom = on_reset
 
         canvas.bind("<MouseWheel>", on_wheel)                 # Windows / Mac
         canvas.bind("<Button-4>", on_wheel_linux(120))        # Linux scroll up
@@ -2430,11 +2511,14 @@ class SmcQuantApp(ctk.CTk):
         canvas.bind("<B1-Motion>", on_drag)
         canvas.bind("<ButtonRelease-1>", on_release)
         canvas.bind("<Double-Button-1>", on_reset)
+        canvas.bind("<Motion>", on_hover)
+        canvas.bind("<Leave>", on_leave)
 
     def _desenhar_linha(self, canvas, valores, rotulos=None, tooltip_extra=None):
         """Gráfico de LINHA com timeline no eixo X. `rotulos` é a lista de
         legendas (ex: 'Dia 1', 'Op 3') alinhada com `valores`."""
         canvas.delete("all")
+        canvas._pontos_dados = []   # zera o hit-test do tooltip a cada redesenho
         largura = max(canvas.winfo_width(), 300)
         altura = 190
         margem_base = 32  # espaço reservado para os rótulos do eixo X
@@ -2450,17 +2534,19 @@ class SmcQuantApp(ctk.CTk):
         n = len(valores)
         topo, base = 14, altura - margem_base
 
-        # Zoom/pan interativos (roda do mouse amplia, arraste move, duplo-clique
-        # reseta). O estado fica guardado no próprio canvas.
+        # Zoom/pan interativos (roda do mouse amplia CENTRADO no cursor, arraste
+        # move em X e Y, duplo-clique reseta). O estado vive no próprio canvas.
+        # A transformação é linear (x' = x*zoom + panx) para casar exatamente com
+        # o zoom-no-cursor de _ativar_zoom_pan.
         zoom = getattr(canvas, "_zoom", 1.0)
+        zoomy = getattr(canvas, "_zoomy", 1.0)
         panx = getattr(canvas, "_panx", 0.0)
-        centro = largura / 2
+        pany = getattr(canvas, "_pany", 0.0)
 
         def xy(i, v):
-            x = (i / max(n - 1, 1)) * (largura - 40) + 20
-            x = (x - centro) * zoom + centro + panx   # aplica zoom horizontal + deslocamento
-            y = base - ((v - minimo) / faixa) * (base - topo)
-            return x, y
+            x_base = (i / max(n - 1, 1)) * (largura - 40) + 20
+            y_base = base - ((v - minimo) / faixa) * (base - topo)
+            return x_base * zoom + panx, y_base * zoomy + pany
 
         def visivel(x):
             return 16 <= x <= largura - 16
@@ -2485,6 +2571,10 @@ class SmcQuantApp(ctk.CTk):
         passo_rotulo = max(1, n // 8)
         for i, v in enumerate(valores):
             x, y = xy(i, v)
+            rot = rotulos[i] if rotulos and i < len(rotulos) else f"#{i + 1}"
+            # Registra o ponto para o tooltip (mesmo levemente fora, p/ hit-test).
+            if -40 <= x <= largura + 40:
+                canvas._pontos_dados.append((x, y, v, rot))
             if not visivel(x):   # fora da área visível (ampliado): não desenha
                 continue
             cor_ponto = COR["verde"] if v >= 0 else COR["vermelho"]
@@ -2626,10 +2716,25 @@ class SmcQuantApp(ctk.CTk):
                         )
         self._atualizar_dashboard()
 
+    def _janela_acatar_seg(self):
+        """Prazo (em segundos) dentro do qual uma sugestão ainda pode ser acatada.
+        Lê o campo configurável do Plano de Trading (padrão 10 min)."""
+        plano = carregar_config().get("plano_trading", {})
+        try:
+            minutos = int(float(plano.get("timeout_acatar_min", 10)))
+        except (TypeError, ValueError):
+            minutos = 10
+        return max(1, minutos) * 60
+
     def _ultimo_sinal_pendente(self):
-        """O sinal mais recente que o trader ainda NÃO decidiu (acatar/dispensar).
-        É a ele que os comandos ACATAR/DISPENSAR do WhatsApp se aplicam."""
-        pendentes = [s for s in carregar_sinais_log() if not s.get("decisao")]
+        """O sinal mais recente que o trader ainda NÃO decidiu, E que ainda está
+        DENTRO da janela de acatar. Um comando ACATAR/DISPENSAR do WhatsApp só se
+        aplica a um cenário FRESCO — nunca a um sinal antigo já esquecido/expirado.
+        Isso evita que uma sugestão velha (ou um comando preso na fila) vire uma
+        operação sem você mandar acatar AGORA."""
+        limite_ms = (time.time() - self._janela_acatar_seg()) * 1000
+        pendentes = [s for s in carregar_sinais_log()
+                     if not s.get("decisao") and s.get("id", 0) >= limite_ms]
         return pendentes[-1] if pendentes else None
 
     def _poller_comandos_whatsapp(self):
@@ -2652,6 +2757,16 @@ class SmcQuantApp(ctk.CTk):
                 try:
                     tipo = cmd.get("tipo")
                     if tipo not in ("ACATAR", "DISPENSAR"):
+                        continue
+                    # ANTI-FANTASMA: comando obsoleto (ficou preso na fila do motor
+                    # enquanto o app estava fechado/desconectado) NÃO é aplicado.
+                    # Um comando legítimo é lido em segundos; qualquer coisa acima
+                    # de 2 min é resíduo antigo e não pode virar operação agora.
+                    ts_cmd = cmd.get("ts", 0)
+                    if ts_cmd and (time.time() * 1000 - ts_cmd) > 120000:
+                        idade = int((time.time() * 1000 - ts_cmd) / 1000)
+                        self.log(f"⌛ Comando {tipo} do WhatsApp ignorado (obsoleto: "
+                                  f"{idade}s na fila — provavelmente de antes de reabrir o app).")
                         continue
                     sinal = self._ultimo_sinal_pendente()
                     if not sinal:
@@ -3600,8 +3715,10 @@ class SmcQuantApp(ctk.CTk):
                                     (direcao == "SELL" and preco <= sinal_ativo["tp1"])
 
                         if bateu_stop:
+                            # Resultado realizado no NÍVEL do stop (não no preço lido,
+                            # que pode ter overshoot) — mantém o comparativo honesto.
                             salvar_resultado_performance(direcao, sinal_ativo["entry"], sinal_ativo["stop"],
-                                                          sinal_ativo["tp1"], preco, "LOSS", ativo)
+                                                          sinal_ativo["tp1"], sinal_ativo["stop"], "LOSS", ativo)
                             sinal_ativo = {"estado": "ENCERRADA"}
                             msg = f"🔴 *STOP ATINGIDO (LOSS) — {direcao}*\nOperação invalidada em {preco}."
                             self.log(msg)
@@ -3612,7 +3729,7 @@ class SmcQuantApp(ctk.CTk):
 
                         elif bateu_tp2:
                             salvar_resultado_performance(direcao, sinal_ativo["entry"], sinal_ativo["stop"],
-                                                          sinal_ativo["tp2"], preco, "WIN", ativo)
+                                                          sinal_ativo["tp2"], sinal_ativo["tp2"], "WIN", ativo)
                             sinal_ativo = {"estado": "ENCERRADA"}
                             msg = f"🟢🟢 *TAKE PROFIT 2 (WIN) — {direcao}*\nLucro máximo em {preco}."
                             self.log(msg)
@@ -3624,7 +3741,7 @@ class SmcQuantApp(ctk.CTk):
                         elif bateu_tp1 and not sinal_ativo.get("tp1_notificado"):
                             sinal_ativo["tp1_notificado"] = True
                             salvar_resultado_performance(direcao, sinal_ativo["entry"], sinal_ativo["stop"],
-                                                          sinal_ativo["tp1"], preco, "WIN", ativo)
+                                                          sinal_ativo["tp1"], sinal_ativo["tp1"], "WIN", ativo)
                             msg = f"🟢 *TAKE PROFIT 1 (WIN PARCIAL) — {direcao}*\nParcial realizada em {preco}."
                             self.log(msg)
                             if acatado_atual:
