@@ -1,26 +1,27 @@
 # Como compilar o SMC Quant Pro v1.8.0
 
-Passo a passo para gerar o `.exe` e o instalador na sua máquina Windows.
+> **Resumo:** o processo de build **não mudou** na v1.8.0. Se você já compila pelo
+> `.spec`, continue exatamente como sempre — não há arquivo novo a incluir.
 
 ---
 
-## 0. Antes de começar
+## 0. O que mudou nesta versão
 
-Confirme que estes arquivos estão na pasta do projeto (`C:\Users\jovan\Documents\SMC_QUANT_PRO`):
+Apenas o **conteúdo** de dois arquivos que já faziam parte do build:
 
-- `main_app.py` (v1.8.0)
-- `tradovate_auto.py` (v1.8.0 — agora com a leitura de posições)
-- pasta `motor\` (com `index.js` e `node_modules`)
-- `icone.ico` (se você usa ícone próprio)
+- `main_app.py`
+- `tradovate_auto.py`  ← mudou também! (ganhou a leitura de posições)
 
-> **O motor NÃO mudou** nesta versão. Se você já tem a pasta `motor\` com
-> `node_modules` de uma build anterior, pode reaproveitá-la inteira.
+**Nenhum arquivo novo** foi criado. O **motor NÃO mudou** — pode reaproveitar a
+pasta `motor\` com o `node_modules` que você já tem.
+
+Substitua os dois `.py` na pasta do projeto e siga para o passo 2.
 
 ---
 
-## 1. Rodar local primeiro (recomendado, sem compilar)
+## 1. Rodar local primeiro (opcional, recomendado)
 
-Vale conferir tudo rodando antes de gastar tempo compilando:
+Vale conferir antes de gastar tempo compilando:
 
 ```cmd
 cd C:\Users\jovan\Documents\SMC_QUANT_PRO
@@ -35,20 +36,24 @@ Checklist rápido:
 
 ---
 
-## 2. Instalar as dependências de build
+## 2. Compilar (fluxo padrão — pelo `.spec`)
 
-```cmd
-pip install --upgrade pyinstaller customtkinter pillow pyttsx3 requests google-genai pywin32
-```
-
----
-
-## 3. Gerar o executável (PyInstaller)
-
-Um único comando, dentro da pasta do projeto:
+É o fluxo que você já usa. O `.spec` guarda ícone, nome e opções, então não há
+nada para redigitar:
 
 ```cmd
 cd C:\Users\jovan\Documents\SMC_QUANT_PRO
+rd /s /q build
+rd /s /q dist
+python -m PyInstaller SMC_Quant_Pro.spec
+```
+
+O executável sai em: `dist\SMC_Quant_Pro.exe`
+
+<details>
+<summary>Não tem o <code>.spec</code>? (só nesse caso)</summary>
+
+```cmd
 pyinstaller --noconfirm --onefile --windowed ^
   --name SMC_Quant_Pro ^
   --icon icone.ico ^
@@ -58,16 +63,14 @@ pyinstaller --noconfirm --onefile --windowed ^
   main_app.py
 ```
 
-Sem ícone próprio? Remova a linha `--icon icone.ico`.
-
-O executável sai em: `dist\SMC_Quant_Pro.exe`
+Isso **gera** um `SMC_Quant_Pro.spec` — a partir daí use o fluxo do passo 2.
+</details>
 
 ---
 
-## 4. Montar a pasta `dist` completa
+## 3. Montar a pasta `dist` completa
 
-O instalador copia **tudo** que estiver em `dist\`. Coloque a pasta do motor ao
-lado do `.exe`:
+O instalador copia **tudo** que estiver em `dist\`. Coloque o motor ao lado do `.exe`:
 
 ```cmd
 xcopy /E /I /Y motor dist\motor
@@ -89,19 +92,24 @@ dist\
 
 ---
 
-## 5. Testar o executável
+## 4. Testar o executável
 
 ```cmd
 dist\SMC_Quant_Pro.exe
 ```
 
-Repita o checklist do passo 1. Vale testar também:
-- **🔎 Detectar posições agora** (aba *Motor & WhatsApp*, painel Tradovate) com o
+Repita o checklist do passo 1 e confira estes dois pontos novos da v1.8.0:
+
+- **➕ Nova** abre a caixinha pedindo o nome da conta.
+  (É o único import novo da versão — `tkinter.simpledialog`. Se por algum motivo
+  o botão não abrir nada, acrescente `hiddenimports=['tkinter.simpledialog'],`
+  no `Analysis(...)` do `.spec` e recompile.)
+- **🔎 Detectar posições agora** (aba *Motor & WhatsApp*, painel Tradovate), com o
   Chrome aberto pelo botão do app e o painel de posições visível na Tradovate.
 
 ---
 
-## 6. Gerar o instalador (Inno Setup)
+## 5. Gerar o instalador (Inno Setup)
 
 1. Abra `instalador\SMC_Quant_Pro.iss` no Inno Setup Compiler.
 2. Confira que `MyAppVersion` está **"1.8.0"** (já está).
@@ -111,7 +119,7 @@ O instalador sai em `instalador\Output\SMC_Quant_Pro_Setup_1.8.0.exe`.
 
 ---
 
-## 7. Publicar a atualização
+## 6. Publicar a atualização
 
 1. Suba o `SMC_Quant_Pro_Setup_1.8.0.exe` na pasta do Google Drive.
 2. O `versao.json` **já está publicado como 1.8.0** — assim que o arquivo estiver
@@ -123,8 +131,9 @@ O instalador sai em `instalador\Output\SMC_Quant_Pro_Setup_1.8.0.exe`.
 
 | Sintoma | Causa provável | O que fazer |
 |---|---|---|
-| `ModuleNotFoundError: tradovate_auto` no .exe | faltou o `--add-data` | refaça o passo 3 com a linha `--add-data "tradovate_auto.py;."` |
-| App abre e fecha na hora | erro na inicialização | rode `dist\SMC_Quant_Pro.exe` a partir do `cmd` para ver a mensagem |
-| WhatsApp não conecta no cliente | `node_modules` faltando | confira o passo 4 (`dist\motor\node_modules`) |
-| "Não consegui ler o painel de posições" | grade não visível/reconhecida | deixe o painel de posições da Tradovate aberto e visível na tela |
-| Antivírus reclama do .exe | falso positivo comum do PyInstaller | assine o executável ou oriente a exceção |
+| Botão "➕ Nova" não abre nada no .exe | `tkinter.simpledialog` não empacotado | some `hiddenimports=['tkinter.simpledialog'],` no `.spec` |
+| `ModuleNotFoundError: tradovate_auto` | `.spec` sem o módulo | confira `datas`/`hiddenimports` do `.spec` |
+| App abre e fecha na hora | erro na inicialização | rode `dist\SMC_Quant_Pro.exe` pelo `cmd` para ver a mensagem |
+| WhatsApp não conecta no cliente | `node_modules` faltando | confira o passo 3 (`dist\motor\node_modules`) |
+| "Não consegui ler o painel de posições" | grade não visível/reconhecida | deixe o painel de posições da Tradovate aberto e visível |
+| Build antigo "grudado" | cache do PyInstaller | é para isso que servem os `rd /s /q build` e `rd /s /q dist` |
