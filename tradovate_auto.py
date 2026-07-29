@@ -480,6 +480,133 @@ class TradovateAuto:
         time.sleep(0.5)
         return True
 
+    # ------------------- LEITURA DAS POSIÇÕES ABERTAS -------------------
+    #  Lê a grade de posições da Tradovate (símbolo, quantidade líquida, preço
+    #  médio e P&L) direto do DOM. É assim que o app descobre que VOCÊ já está
+    #  posicionado — inclusive numa operação que você abriu na mão, sem passar
+    #  pela sugestão do robô.
+    #
+    #  REGRA DE OURO (anti-invenção): esta função NUNCA "deduz" um número. Ela
+    #  só devolve linhas de uma grade cujo CABEÇALHO foi reconhecido (tem, no
+    #  mínimo, uma coluna de símbolo e uma de quantidade). Se não reconhecer a
+    #  grade, devolve lista vazia e diz o motivo — melhor não trazer nada do que
+    #  trazer um número inventado para o seu diário.
+    def ler_posicoes(self):
+        """Devolve [{'ativo','qtd_liquida','preco_medio','pnl','conta'}, ...].
+        Lista vazia = não consegui ler com segurança (o motivo vai pro log)."""
+        js = r"""
+        (function(){
+          function norm(s){
+            return (s||'').toString().normalize('NFD').replace(/[̀-ͯ]/g,'')
+                   .toLowerCase().replace(/[^a-z0-9\/&% ]/g,' ').replace(/\s+/g,' ').trim();
+          }
+          // Converte "1,234.50", "(123.45)" (negativo), "-", "US$12" em número.
+          function num(s){
+            if(s===null||s===undefined) return null;
+            var t=s.toString().trim();
+            if(t===''||t==='-'||t==='--') return null;
+            var neg=/^\(.*\)$/.test(t)||/^-/.test(t);
+            t=t.replace(/[()]/g,'').replace(/[^0-9.,-]/g,'');
+            // separador decimal: assume o ULTIMO ponto/virgula como decimal
+            var ult=Math.max(t.lastIndexOf('.'), t.lastIndexOf(','));
+            if(ult>-1){ t=t.slice(0,ult).replace(/[.,]/g,'')+'.'+t.slice(ult+1); }
+            t=t.replace(/-/g,'');
+            var v=parseFloat(t);
+            if(isNaN(v)) return null;
+            return neg?-v:v;
+          }
+          var SIN={
+            ativo:['symbol','contract','instrument','simbolo','ativo','produto'],
+            qtd:['netpos','net pos','net position','position','pos','qty','quantity',
+                 'quantidade','posicao','contratos'],
+            preco:['avg price','avgprice','avg px','avg. px','average price','avg',
+                   'preco medio','preco med','preco'],
+            pnl:['p l','p/l','pl','p&l','pnl','open p l','open pl','profit','lucro',
+                 'resultado','p l aberto']
+          };
+          function achaCol(cabs, chaves){
+            for(var i=0;i<cabs.length;i++){
+              var c=cabs[i];
+              for(var k=0;k<chaves.length;k++){
+                if(c===chaves[k]) return i;              // match exato primeiro
+              }
+            }
+            for(var i2=0;i2<cabs.length;i2++){
+              var c2=cabs[i2];
+              for(var k2=0;k2<chaves.length;k2++){
+                if(c2.indexOf(chaves[k2])>-1) return i2; // depois parcial
+              }
+            }
+            return -1;
+          }
+          function textoCel(el){return (el.innerText||el.textContent||'').trim();}
+          var saida={ok:false, motivo:'nenhuma grade de posicoes reconhecida',
+                     linhas:[], cabecalhos:[]};
+
+          // Candidatos: tabelas reais e grids ARIA (a Tradovate e React/divs).
+          var grades=[].slice.call(document.querySelectorAll(
+              'table,[role=grid],[role=table]'));
+          for(var g=0; g<grades.length; g++){
+            var grade=grades[g];
+            var r=grade.getBoundingClientRect();
+            if(r.width<=0||r.height<=0) continue;          // invisivel: ignora
+
+            // Cabecalho
+            var cabEls=[].slice.call(grade.querySelectorAll(
+                'thead th,[role=columnheader],th'));
+            if(!cabEls.length) continue;
+            var cabs=cabEls.map(function(e){return norm(textoCel(e));})
+                           .filter(function(t){return t!=='';});
+            if(cabs.length<2) continue;
+
+            var iAtivo=achaCol(cabs,SIN.ativo), iQtd=achaCol(cabs,SIN.qtd);
+            // EXIGE simbolo + quantidade. Sem isso nao e grade de posicao.
+            if(iAtivo<0||iQtd<0) continue;
+            var iPreco=achaCol(cabs,SIN.preco), iPnl=achaCol(cabs,SIN.pnl);
+
+            var linhas=[].slice.call(grade.querySelectorAll(
+                'tbody tr,[role=row]'));
+            var out=[];
+            for(var i=0;i<linhas.length;i++){
+              var cels=[].slice.call(linhas[i].querySelectorAll(
+                  'td,[role=gridcell],[role=cell]'));
+              if(cels.length<2) continue;                  // provavel linha de cabecalho
+              var textos=cels.map(textoCel);
+              var ativo=(textos[iAtivo]||'').trim();
+              var qtd=num(textos[iQtd]);
+              if(!ativo||qtd===null) continue;             // linha incompleta: pula
+              if(!/[A-Za-z]/.test(ativo)) continue;        // simbolo tem letra
+              out.push({
+                ativo: ativo.split('\n')[0].trim().slice(0,20),
+                qtd_liquida: qtd,
+                preco_medio: iPreco>-1?num(textos[iPreco]):null,
+                pnl: iPnl>-1?num(textos[iPnl]):null
+              });
+            }
+            if(out.length){
+              saida.ok=true; saida.motivo=''; saida.linhas=out; saida.cabecalhos=cabs;
+              return JSON.stringify(saida);
+            }
+            // grade reconhecida, porem sem linhas = sem posicao aberta
+            saida.ok=true; saida.motivo='sem posicoes abertas';
+            saida.cabecalhos=cabs; saida.linhas=[];
+            return JSON.stringify(saida);
+          }
+          return JSON.stringify(saida);
+        })()
+        """
+        try:
+            bruto = self.avaliar_js(js)
+            dados = json.loads(bruto or "{}")
+        except Exception as e:
+            self.log(f"⚠️ Não consegui ler as posições da plataforma: {e}")
+            return {"ok": False, "motivo": str(e), "linhas": []}
+
+        if not dados.get("ok"):
+            self.log(f"ℹ️ Posições da plataforma: {dados.get('motivo', 'leitura falhou')}. "
+                     "Deixe o painel de posições visível na tela da Tradovate.")
+        return dados
+
     def _formulario_visivel(self):
         """True se o FORMULÁRIO de ordem está à vista. Indicador confiável: o
         botão 'Enviar' só existe no formulário — no comprovante da ordem ele

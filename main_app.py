@@ -1,5 +1,6 @@
 import time, json, threading, customtkinter as ctk, tkinter as tk, os, subprocess, sys, webbrowser
 import base64
+import copy
 import datetime
 import ctypes
 import requests
@@ -83,7 +84,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "1.7.3"
+VERSAO_ATUAL = "1.8.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -288,20 +289,188 @@ BAILEYS_URL = "http://localhost:3939"
 BAILEYS_API_URL = f"{BAILEYS_URL}/enviar-relatorio"
 
 
+# --------------------------------------------------------------------
+# CACHE DE LEITURA DOS ARQUIVOS JSON (desempenho da interface)
+# --------------------------------------------------------------------
+# O dashboard se redesenha a cada 5 s e cada redesenho lia os mesmos arquivos
+# várias vezes (config, posições, performance, sinais) — era a maior causa da
+# interface "travada". Agora o conteúdo fica em memória e só é relido quando o
+# arquivo REALMENTE muda no disco (mtime + tamanho). A cópia devolvida é rasa,
+# então quem altera a lista não corrompe o cache.
+_cache_json = {}
+
+def _ler_json_cache(caminho):
+    """Lê um JSON com cache por mtime. Devolve None se não existir/for inválido."""
+    try:
+        st = os.stat(caminho)
+    except OSError:
+        _cache_json.pop(caminho, None)
+        return None
+    assinatura = (st.st_mtime_ns, st.st_size)
+    entrada = _cache_json.get(caminho)
+    if entrada and entrada[0] == assinatura:
+        return entrada[1]
+    try:
+        with open(caminho, "r", encoding="utf-8") as f:
+            dados = json.load(f)
+    except Exception:
+        return None
+    _cache_json[caminho] = (assinatura, dados)
+    return dados
+
+def _copia_rasa(dados):
+    """Cópia segura para o chamador mexer sem sujar o cache."""
+    if isinstance(dados, list):
+        return [dict(d) if isinstance(d, dict) else d for d in dados]
+    return dados
+
 def carregar_config():
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+    dados = _ler_json_cache(CONFIG_FILE)
+    if not isinstance(dados, dict):
+        return {}
+    # O config é aninhado (contas -> plano_trading), então precisa de cópia
+    # profunda para ninguém alterar o cache por referência.
+    return copy.deepcopy(dados)
 
 def salvar_config(dados: dict):
     atual = carregar_config()
     atual.update(dados)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(atual, f, ensure_ascii=False, indent=2)
+    _cache_json.pop(CONFIG_FILE, None)   # força releitura na próxima consulta
+
+# --------------------------------------------------------------------
+# MULTI-CONTA — cada conta tem PLANO, CICLO, DIÁRIO e HISTÓRICO próprios
+# --------------------------------------------------------------------
+# O app nasceu com UMA conta só (um único "plano_trading" no topo do config).
+# Agora o trader pode cadastrar quantas contas quiser (mesas diferentes, contas
+# de avaliação, conta real...) e alternar entre elas: ao selecionar uma conta,
+# TODO o dashboard, o dimensionamento das sugestões e a gestão de risco passam
+# a ser daquela conta.
+#
+# COMPATIBILIDADE: a estrutura antiga é migrada automaticamente para a "Conta 1"
+# e os registros antigos (sem conta_id) são atribuídos a ela — nenhum histórico
+# se perde ao atualizar.
+ID_CONTA_LEGADA = "conta_1"
+
+PLANO_PADRAO = {
+    "margem": 0,
+    "meta_alvo": 0,
+    "drawdown_maximo": 0,
+    "risco_pct": 1.0,
+    "timeout_acatar_min": 10,
+    "data_inicio": None,
+}
+
+def _novo_id_conta(existentes=None):
+    """ID único de conta. O timestamp em milissegundos sozinho NÃO basta: duas
+    contas criadas no mesmo milissegundo receberiam o mesmo ID e passariam a
+    compartilhar posições/sinais. Aqui garantimos unicidade de verdade."""
+    existentes = set(existentes or [])
+    base = f"conta_{int(time.time() * 1000)}"
+    if base not in existentes:
+        return base
+    n = 2
+    while f"{base}_{n}" in existentes:
+        n += 1
+    return f"{base}_{n}"
+
+def carregar_contas():
+    """Lista de contas cadastradas. Migra a estrutura antiga na primeira vez."""
+    cfg = carregar_config()
+    contas = cfg.get("contas")
+    if isinstance(contas, list) and contas:
+        return [c for c in contas if isinstance(c, dict) and c.get("id")]
+    # ---- MIGRAÇÃO: o plano único vira a "Conta 1", preservando tudo ----
+    plano_legado = dict(PLANO_PADRAO)
+    plano_legado.update(cfg.get("plano_trading") or {})
+    contas = [{"id": ID_CONTA_LEGADA, "nome": "Conta 1", "plano_trading": plano_legado}]
+    salvar_config({"contas": contas, "conta_ativa": ID_CONTA_LEGADA})
+    return contas
+
+def conta_ativa_id():
+    """ID da conta selecionada. Se a salva não existir mais, cai na primeira."""
+    cfg = carregar_config()
+    contas = carregar_contas()
+    ids = [c["id"] for c in contas]
+    cid = cfg.get("conta_ativa")
+    if cid in ids:
+        return cid
+    salvar_config({"conta_ativa": ids[0]})
+    return ids[0]
+
+def conta_ativa():
+    cid = conta_ativa_id()
+    return next((c for c in carregar_contas() if c["id"] == cid), None)
+
+def nome_conta_ativa():
+    c = conta_ativa() or {}
+    return c.get("nome", "Conta 1")
+
+def plano_da_conta_ativa():
+    """Plano de trading da conta selecionada (com os padrões preenchidos)."""
+    plano = dict(PLANO_PADRAO)
+    plano.update((conta_ativa() or {}).get("plano_trading") or {})
+    return plano
+
+def salvar_plano_da_conta(plano, conta_id=None):
+    conta_id = conta_id or conta_ativa_id()
+    contas = carregar_contas()
+    for c in contas:
+        if c["id"] == conta_id:
+            c["plano_trading"] = plano
+    salvar_config({"contas": contas})
+
+def criar_conta(nome=""):
+    contas = carregar_contas()
+    nova = {
+        "id": _novo_id_conta([c["id"] for c in contas]),
+        "nome": (nome or "").strip() or f"Conta {len(contas) + 1}",
+        "plano_trading": dict(PLANO_PADRAO),
+    }
+    contas.append(nova)
+    salvar_config({"contas": contas})
+    return nova
+
+def renomear_conta(conta_id, novo_nome):
+    novo_nome = (novo_nome or "").strip()
+    if not novo_nome:
+        return False
+    contas = carregar_contas()
+    for c in contas:
+        if c["id"] == conta_id:
+            c["nome"] = novo_nome
+            salvar_config({"contas": contas})
+            return True
+    return False
+
+def excluir_conta(conta_id):
+    """Remove a conta do cadastro. NUNCA deixa o app sem nenhuma conta.
+    Os registros dela continuam no disco (histórico preservado), apenas deixam
+    de aparecer — assim uma exclusão por engano não destrói dado nenhum."""
+    contas = carregar_contas()
+    if len(contas) <= 1:
+        return False
+    restantes = [c for c in contas if c["id"] != conta_id]
+    if len(restantes) == len(contas):
+        return False
+    salvar_config({"contas": restantes})
+    if conta_ativa_id() == conta_id:
+        salvar_config({"conta_ativa": restantes[0]["id"]})
+    return True
+
+def definir_conta_ativa(conta_id):
+    if any(c["id"] == conta_id for c in carregar_contas()):
+        salvar_config({"conta_ativa": conta_id})
+        return True
+    return False
+
+def _conta_do_registro(reg):
+    """Conta dona do registro. Registro antigo (sem o campo) pertence à Conta 1."""
+    return reg.get("conta_id") or ID_CONTA_LEGADA
+
+def _e_da_conta_ativa(reg):
+    return _conta_do_registro(reg) == conta_ativa_id()
 
 # --------------------------------------------------------------------
 # CRIPTOGRAFIA DA API KEY VIA WINDOWS DPAPI
@@ -340,17 +509,13 @@ def salvar_api_key(api_key_texto: str):
 # MÓDULO DE APRENDIZADO (FEEDBACK LOOP) — agora com R-múltiplo
 # --------------------------------------------------------------------
 def carregar_performance():
-    if os.path.exists(PERFORMANCE_FILE):
-        try:
-            with open(PERFORMANCE_FILE, "r", encoding="utf-8") as f:
-                dados = json.load(f)
-            if isinstance(dados, list):
-                # Filtra qualquer entrada malformada (ex: de uma versão antiga
-                # do arquivo, ou escrita parcial) — nunca confia cegamente em
-                # dado persistido em disco.
-                return [op for op in dados if isinstance(op, dict) and "resultado" in op]
-        except Exception:
-            pass
+    dados = _ler_json_cache(PERFORMANCE_FILE)
+    if isinstance(dados, list):
+        # Filtra qualquer entrada malformada (ex: de uma versão antiga do
+        # arquivo, ou escrita parcial) — nunca confia cegamente em dado
+        # persistido em disco.
+        return _copia_rasa([op for op in dados
+                            if isinstance(op, dict) and "resultado" in op])
     return []
 
 # --------------------------------------------------------------------
@@ -473,7 +638,7 @@ def salvar_resultado_performance(direcao, entry, stop, tp, preco_saida, resultad
 
     r_multiplo = calcular_r_multiplo(direcao, entry, stop, preco_saida)
 
-    plano = carregar_config().get("plano_trading", {})
+    plano = plano_da_conta_ativa()
     sizing = calcular_contratos(entry, stop, ativo, plano.get("margem", 0),
                                  plano.get("risco_pct", 1.0), plano.get("drawdown_maximo", 0))
     contratos = max(sizing["contratos"], 1)
@@ -483,6 +648,7 @@ def salvar_resultado_performance(direcao, entry, stop, tp, preco_saida, resultad
 
     db = carregar_performance()
     db.append({
+        "conta_id": conta_ativa_id(),
         "data_hora": time.strftime('%d/%m/%Y %H:%M:%S'),
         "direcao": direcao,
         "ativo": ativo,
@@ -498,6 +664,7 @@ def salvar_resultado_performance(direcao, entry, stop, tp, preco_saida, resultad
     db = db[-200:]
     with open(PERFORMANCE_FILE, "w", encoding="utf-8") as f:
         json.dump(db, f, ensure_ascii=False, indent=2)
+    _cache_json.pop(PERFORMANCE_FILE, None)
 
 def calcular_max_drawdown_r(valores_r_acumulados):
     if not valores_r_acumulados:
@@ -527,9 +694,9 @@ def _parse_dt(texto):
     return None
 
 def inicio_do_ciclo():
-    """Momento em que o ciclo de 5 dias foi (re)iniciado. Tudo anterior a isso
-    é histórico arquivado e NÃO aparece no dashboard."""
-    plano = carregar_config().get("plano_trading", {})
+    """Momento em que o ciclo de 5 dias foi (re)iniciado NA CONTA SELECIONADA.
+    Cada conta tem o seu próprio ciclo — reiniciar uma não mexe nas outras."""
+    plano = plano_da_conta_ativa()
     marca = plano.get("ciclo_inicio")
     if marca:
         try:
@@ -553,8 +720,9 @@ def _dentro_do_ciclo(registro, campo_data="data_criacao"):
     return dt >= inicio
 
 def posicoes_do_ciclo():
-    """Posições criadas a partir do início do ciclo atual."""
-    return [p for p in carregar_posicoes() if _dentro_do_ciclo(p, "data_criacao")]
+    """Posições DA CONTA SELECIONADA criadas a partir do início do ciclo dela."""
+    return [p for p in carregar_posicoes()
+            if _e_da_conta_ativa(p) and _dentro_do_ciclo(p, "data_criacao")]
 
 def pnl_usd_do_registro(op):
     """P&L em US$ de um registro de performance (cenário hipotético do robô).
@@ -580,7 +748,7 @@ def pnl_usd_do_registro(op):
     ativo = op.get("ativo", "DESCONHECIDO")
     contratos = op.get("contratos")
     if not contratos:
-        plano = carregar_config().get("plano_trading", {})
+        plano = plano_da_conta_ativa()
         sizing = calcular_contratos(entry, op.get("stop", entry), ativo,
                                      plano.get("margem", 0), plano.get("risco_pct", 1.0),
                                      plano.get("drawdown_maximo", 0))
@@ -589,24 +757,32 @@ def pnl_usd_do_registro(op):
     return round(pontos * valor_por_ponto_do_ativo(ativo) * contratos, 2)
 
 def performance_do_ciclo():
-    """Resultados hipotéticos do robô dentro do ciclo atual (todas as sugestões,
-    acatadas ou não) — usado no comparativo."""
-    return [op for op in carregar_performance() if _dentro_do_ciclo(op, "data_hora")]
+    """Resultados hipotéticos do robô no ciclo DA CONTA SELECIONADA (todas as
+    sugestões, acatadas ou não) — usado no comparativo. O sizing embutido em
+    cada registro é o do plano da conta que estava ativa quando ele foi gerado."""
+    return [op for op in carregar_performance()
+            if _e_da_conta_ativa(op) and _dentro_do_ciclo(op, "data_hora")]
 
 def carregar_posicoes():
-    if os.path.exists(POSITIONS_FILE):
-        try:
-            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
-                dados = json.load(f)
-            if isinstance(dados, list):
-                return [p for p in dados if isinstance(p, dict) and "id" in p]
-        except Exception:
-            pass
+    dados = _ler_json_cache(POSITIONS_FILE)
+    if isinstance(dados, list):
+        return _copia_rasa([p for p in dados if isinstance(p, dict) and "id" in p])
     return []
 
 def salvar_posicoes(lista):
     with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
         json.dump(lista[-500:], f, ensure_ascii=False, indent=2)
+    _cache_json.pop(POSITIONS_FILE, None)
+
+def _novo_id_posicao(lista=None):
+    """ID único de posição. O id identifica a posição nos botões Fechar/Cancelar,
+    então uma colisão (duas posições criadas no mesmo milissegundo) faria o app
+    agir na posição ERRADA. Aqui a unicidade é garantida."""
+    usados = {p.get("id") for p in (lista if lista is not None else carregar_posicoes())}
+    novo = int(time.time() * 1000)
+    while novo in usados:
+        novo += 1
+    return novo
 
 def abrir_posicao(origem, direcao, ativo, entry, stop, tp1, tp2, contratos, status_inicial="ABERTA"):
     """
@@ -617,8 +793,11 @@ def abrir_posicao(origem, direcao, ativo, entry, stop, tp1, tp2, contratos, stat
     """
     lista = carregar_posicoes()
     pos = {
-        "id": int(time.time() * 1000),
-        "origem": origem,  # "ROBO" (acatou sugestão) ou "MANUAL" (diário)
+        "id": _novo_id_posicao(lista),
+        "conta_id": conta_ativa_id(),   # a posição pertence à conta selecionada
+        # "ROBO" (acatou sugestão), "MANUAL" (diário) ou "PLATAFORMA" (detectada
+        # automaticamente na corretora)
+        "origem": origem,
         "direcao": direcao,
         "ativo": ativo or "DESCONHECIDO",
         "entry": entry,
@@ -663,6 +842,15 @@ def atualizar_posicoes_com_preco(preco, ativo=None):
     for pos in lista:
         status = pos.get("status")
         if status not in ("PENDENTE", "ABERTA"):
+            continue
+        # Posição DETECTADA NA PLATAFORMA é governada pela sincronização com a
+        # corretora (P&L e encerramento vêm de lá, que é a fonte da verdade).
+        # A máquina de preço não a toca — assim não inventamos saída para uma
+        # operação cujo stop/alvo estão na plataforma, não aqui.
+        if pos.get("origem") == "PLATAFORMA":
+            continue
+        # Sem stop registrado não há como avaliar níveis — evita comparar com None.
+        if pos.get("stop") in (None, ""):
             continue
         # Não marca P&L de MES com preço de MNQ.
         if ativo and pos.get("ativo") not in (None, "", "DESCONHECIDO"):
@@ -732,6 +920,127 @@ def fechar_posicao_manual(pos_id, preco_saida=None):
             salvar_posicoes(lista)
             return pos
     return None
+
+# --------------------------------------------------------------------
+# SINCRONIZAÇÃO COM A PLATAFORMA — "estou posicionado?"
+# --------------------------------------------------------------------
+# Recebe o que foi LIDO na corretora e reconcilia com o diário da conta ativa:
+#   • posição nova na plataforma  -> entra no diário (origem PLATAFORMA)
+#   • posição que sumiu de lá     -> é encerrada aqui, com o ÚLTIMO P&L lido
+#   • posição que continua lá     -> atualiza quantidade/preço médio/P&L
+#
+# ANTI-INVENÇÃO: só entra no diário o que veio COM NÚMERO VÁLIDO da plataforma.
+# Linha sem preço médio, com quantidade zero/absurda ou P&L fora de escala é
+# ignorada — o robô prefere não registrar nada a registrar um número inventado.
+# E se já existe uma posição sua (ROBO/MANUAL) do mesmo ativo e direção aberta,
+# não criamos uma segunda: seria a MESMA operação contada em dobro.
+MAX_CONTRATOS_PLAUSIVEL = 1000
+MAX_PNL_PLAUSIVEL = 1_000_000
+
+def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
+    """linhas_lidas: lista de dicts {'ativo','qtd_liquida','preco_medio','pnl'}.
+    Devolve um resumo {'criadas','atualizadas','encerradas','ignoradas'}."""
+    log = log or (lambda _m: None)
+    resumo = {"criadas": 0, "atualizadas": 0, "encerradas": 0, "ignoradas": 0}
+    conta = conta_ativa_id()
+    lista = carregar_posicoes()
+
+    # --- 1) Valida e normaliza o que veio da plataforma ---
+    validas = {}
+    for ln in (linhas_lidas or []):
+        try:
+            ativo = str(ln.get("ativo") or "").strip().upper()
+            qtd = ln.get("qtd_liquida")
+            preco = ln.get("preco_medio")
+            pnl = ln.get("pnl")
+            qtd = float(qtd) if qtd is not None else None
+        except (TypeError, ValueError):
+            resumo["ignoradas"] += 1
+            continue
+        if not ativo or qtd is None or qtd == 0:
+            continue                      # sem posição líquida: nada a registrar
+        if abs(qtd) > MAX_CONTRATOS_PLAUSIVEL:
+            resumo["ignoradas"] += 1
+            log(f"⚠️ Ignorei '{ativo}': quantidade implausível ({qtd}).")
+            continue
+        try:
+            preco = float(preco) if preco is not None else None
+        except (TypeError, ValueError):
+            preco = None
+        if not preco or preco <= 0:
+            resumo["ignoradas"] += 1
+            log(f"⚠️ Ignorei '{ativo}': preço médio não veio legível da plataforma "
+                "(não vou inventar um preço).")
+            continue
+        try:
+            pnl = float(pnl) if pnl is not None else None
+        except (TypeError, ValueError):
+            pnl = None
+        if pnl is not None and abs(pnl) > MAX_PNL_PLAUSIVEL:
+            pnl = None
+        validas[ativo] = {"ativo": ativo, "qtd": qtd, "preco": preco, "pnl": pnl}
+
+    # --- 2) Atualiza/encerra as posições PLATAFORMA já existentes ---
+    abertas_plataforma = [p for p in lista
+                          if p.get("origem") == "PLATAFORMA"
+                          and p.get("conta_id") == conta
+                          and p.get("status") == "ABERTA"]
+    for pos in abertas_plataforma:
+        atual = validas.get(str(pos.get("ativo", "")).upper())
+        if atual:
+            pos["contratos"] = max(int(abs(atual["qtd"])), 1)
+            pos["entry"] = atual["preco"]
+            if atual["pnl"] is not None:
+                pos["pnl_atual"] = round(atual["pnl"], 2)
+            pos["preco_atual"] = atual["preco"]
+            resumo["atualizadas"] += 1
+        else:
+            # Sumiu da plataforma => você encerrou a operação lá. Realizamos com
+            # o ÚLTIMO P&L que a própria plataforma reportou (dado real, não
+            # estimativa nossa).
+            pos["status"] = "FECHADA"
+            pos["data_fechamento"] = time.strftime('%d/%m/%Y %H:%M')
+            pos["pnl_final"] = round(pos.get("pnl_atual") or 0.0, 2)
+            resumo["encerradas"] += 1
+            log(f"🔻 Posição encerrada na plataforma: {pos.get('direcao')} "
+                f"{pos.get('ativo')} — resultado US${pos['pnl_final']:+.2f} "
+                "(registrado no diário).")
+
+    # --- 3) Cria as que ainda não existem no diário ---
+    ja_no_diario = {str(p.get("ativo", "")).upper() for p in lista
+                    if p.get("conta_id") == conta and p.get("status") in ("ABERTA", "PENDENTE")}
+    for ativo, dados in validas.items():
+        if ativo in ja_no_diario:
+            continue      # mesma operação já registrada (sua ou do robô): não duplica
+        direcao = "BUY" if dados["qtd"] > 0 else "SELL"
+        pos = {
+            "id": _novo_id_posicao(lista),
+            "conta_id": conta,
+            "origem": "PLATAFORMA",
+            "direcao": direcao,
+            "ativo": ativo,
+            "entry": dados["preco"],
+            "stop": None,        # a plataforma gerencia; não inventamos níveis
+            "tp1": None,
+            "tp2": None,
+            "contratos": max(int(abs(dados["qtd"])), 1),
+            "vpp": valor_por_ponto_do_ativo(ativo),
+            "status": "ABERTA",
+            "preco_atual": dados["preco"],
+            "pnl_atual": round(dados["pnl"], 2) if dados["pnl"] is not None else 0.0,
+            "data_criacao": time.strftime('%d/%m/%Y %H:%M'),
+            "data_abertura": time.strftime('%d/%m/%Y %H:%M'),
+            "data_fechamento": None,
+            "pnl_final": None,
+        }
+        lista.append(pos)
+        resumo["criadas"] += 1
+        log(f"🔎 Detectei que você está posicionado: {direcao} {ativo} "
+            f"{pos['contratos']} contrato(s) @ {dados['preco']} — incluído no diário "
+            f"da conta '{nome_conta_ativa()}'.")
+
+    salvar_posicoes(lista)
+    return resumo
 
 def resultados_por_dia():
     """Agrega o P&L realizado por dia (posições fechadas) + P&L aberto de hoje.
@@ -810,26 +1119,33 @@ def compilar_memoria_prompt():
 # REGISTRO DE SINAIS + DECISÃO DO TRADER (acatou ou não a sugestão)
 # --------------------------------------------------------------------
 def carregar_sinais_log():
-    if os.path.exists(SIGNALS_LOG_FILE):
-        try:
-            with open(SIGNALS_LOG_FILE, "r", encoding="utf-8") as f:
-                dados = json.load(f)
-            if isinstance(dados, list):
-                return [s for s in dados if isinstance(s, dict) and "id" in s]
-        except Exception:
-            pass
+    dados = _ler_json_cache(SIGNALS_LOG_FILE)
+    if isinstance(dados, list):
+        return _copia_rasa([s for s in dados if isinstance(s, dict) and "id" in s])
     return []
 
 def salvar_sinais_log(lista):
     lista = lista[-100:]
     with open(SIGNALS_LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(lista, f, ensure_ascii=False, indent=2)
+    _cache_json.pop(SIGNALS_LOG_FILE, None)
+
+def sinais_da_conta_ativa():
+    """Sugestões pertencentes à conta selecionada (as antigas, sem conta_id,
+    ficam na Conta 1). É o que a lista do dashboard e o ACATAR enxergam."""
+    return [s for s in carregar_sinais_log() if _e_da_conta_ativa(s)]
 
 def registrar_novo_sinal_log(direcao, entry, stop, tp1, tp2, ativo="DESCONHECIDO"):
     lista = carregar_sinais_log()
+    # ID único: o ACATAR do WhatsApp e os botões do dashboard identificam a
+    # sugestão por este id — uma colisão decidiria o cenário errado.
+    usados = {s.get("id") for s in lista}
     novo_id = int(time.time() * 1000)
+    while novo_id in usados:
+        novo_id += 1
     lista.append({
         "id": novo_id,
+        "conta_id": conta_ativa_id(),   # sugestão dimensionada para esta conta
         "data_hora": time.strftime('%d/%m/%Y %H:%M:%S'),
         "direcao": direcao,
         "ativo": ativo,
@@ -1127,6 +1443,9 @@ class SmcQuantApp(ctk.CTk):
         # DESLIGADO: ao ligar a automação, ela envia de verdade. Fica como opção
         # pra quem quiser só pré-visualizar antes de mandar.
         self.tv_dry_var = tk.BooleanVar(value=tv_cfg.get("dry_run", False))
+        # sync_posicoes: lê o painel de posições da corretora a cada ciclo para
+        # descobrir se você já está posicionado (inclusive fora da sugestão).
+        self.tv_sync_var = tk.BooleanVar(value=tv_cfg.get("sync_posicoes", False))
         self._tv_bot = None  # instância TradovateAuto criada sob demanda
 
         # Cache do handle da janela da corretora. O título do Chrome muda com a
@@ -1141,10 +1460,8 @@ class SmcQuantApp(ctk.CTk):
         threading.Thread(target=self._poller_comandos_whatsapp, daemon=True).start()
 
         config_atual = carregar_config()
-        self.plano = config_atual.get("plano_trading", {
-            "margem": 0, "meta_alvo": 0, "drawdown_maximo": 0,
-            "risco_pct": 1.0, "data_inicio": None,
-        })
+        # Plano da CONTA SELECIONADA (migra automaticamente a estrutura antiga).
+        self.plano = plano_da_conta_ativa()
 
         self.tabview = ctk.CTkTabview(self, width=660, height=720)
         self.tabview.pack(padx=10, pady=10, fill="both", expand=True)
@@ -1346,7 +1663,7 @@ class SmcQuantApp(ctk.CTk):
                         ).pack(pady=3, padx=12, anchor="w")
 
         linha = ctk.CTkFrame(frame, fg_color="transparent")
-        linha.pack(pady=(4, 10), padx=8, anchor="w")
+        linha.pack(pady=(4, 4), padx=8, anchor="w")
         ctk.CTkButton(linha, text="🌐 Abrir Chrome (Tradovate)", fg_color="#2b6cb0",
                       text_color="#ffffff", width=190,
                       command=self._tv_abrir_chrome).pack(side="left", padx=4)
@@ -1354,10 +1671,36 @@ class SmcQuantApp(ctk.CTk):
                       text_color="#ffffff", width=140,
                       command=self._tv_testar_conexao).pack(side="left", padx=4)
 
+        # ---------- DETECÇÃO DE POSIÇÃO ABERTA NA PLATAFORMA ----------
+        ctk.CTkLabel(frame, text="— Posições abertas na plataforma —",
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color="#63b3ed").pack(pady=(8, 0), padx=12, anchor="w")
+        ctk.CTkLabel(
+            frame, justify="left", text_color=COR["texto"], font=ctk.CTkFont(size=11),
+            text="O robô lê o painel de posições da Tradovate e descobre se você já está\n"
+                 "posicionado — inclusive numa operação que VOCÊ abriu por fora (antecipou\n"
+                 "ou não seguiu a sugestão). Preço médio, quantidade e P&L vêm da própria\n"
+                 "plataforma e entram no diário da CONTA SELECIONADA, preenchendo o dia.\n"
+                 "Se a leitura não for confiável, nada é registrado (nunca inventa número)."
+        ).pack(pady=(2, 4), padx=12, anchor="w")
+
+        ctk.CTkCheckBox(frame, text="Detectar automaticamente a cada ciclo de análise",
+                        variable=self.tv_sync_var, command=self._tv_salvar_prefs,
+                        text_color=COR["texto"], fg_color="#1f8b4c",
+                        border_color="#63b3ed", hover_color="#25a35a"
+                        ).pack(pady=3, padx=12, anchor="w")
+
+        linha2 = ctk.CTkFrame(frame, fg_color="transparent")
+        linha2.pack(pady=(2, 10), padx=8, anchor="w")
+        ctk.CTkButton(linha2, text="🔎 Detectar posições agora", fg_color="#1f8b4c",
+                      hover_color="#25a35a", text_color="#ffffff", width=200,
+                      command=self._tv_sincronizar_posicoes).pack(side="left", padx=4)
+
     def _tv_salvar_prefs(self):
         salvar_config({"tradovate": {
             "auto_ativo": self.tv_auto_var.get(),
             "dry_run": self.tv_dry_var.get(),
+            "sync_posicoes": self.tv_sync_var.get(),
         }})
         if self.tv_auto_var.get():
             modo = "TESTE (não envia)" if self.tv_dry_var.get() else "REAL (envia ordem)"
@@ -1411,6 +1754,53 @@ class SmcQuantApp(ctk.CTk):
             else:
                 self.log("⚠️ Conectei, mas não achei o formulário de ordem. "
                          "Abra o 'Chamado do pedido' na Tradovate.")
+        threading.Thread(target=tarefa, daemon=True).start()
+
+    def _tv_sincronizar_posicoes(self, silencioso=False):
+        """Lê as posições abertas na Tradovate e reconcilia com o diário da conta
+        selecionada. Roda em thread para não travar a GUI.
+        silencioso=True (uso automático a cada ciclo) só fala quando há novidade."""
+        if not TRADOVATE_DISPONIVEL:
+            if not silencioso:
+                self.log("ℹ️ Módulo tradovate_auto.py não está junto do app.")
+            return
+
+        def tarefa():
+            try:
+                bot = self._tv_conectar()
+                if not bot:
+                    if not silencioso:
+                        self.log("❌ Sem conexão com a Tradovate. Abra o Chrome pelo botão "
+                                  "e faça login antes de detectar posições.")
+                    return
+                dados = bot.ler_posicoes() or {}
+                if not dados.get("ok"):
+                    if not silencioso:
+                        self.log("⚠️ Não consegui ler o painel de posições com segurança "
+                                  f"({dados.get('motivo', 'motivo desconhecido')}). "
+                                  "Nada foi registrado — prefiro não inventar dado.")
+                    return
+
+                linhas = dados.get("linhas", [])
+                resumo = sincronizar_posicoes_plataforma(linhas, log=self.log)
+                houve = any(resumo[k] for k in ("criadas", "encerradas"))
+                if houve or not silencioso:
+                    self.log(
+                        f"🔎 Posições da plataforma (conta '{nome_conta_ativa()}'): "
+                        f"{resumo['criadas']} nova(s), {resumo['atualizadas']} atualizada(s), "
+                        f"{resumo['encerradas']} encerrada(s)"
+                        + (f", {resumo['ignoradas']} ignorada(s) por leitura duvidosa"
+                           if resumo["ignoradas"] else "")
+                        + "."
+                    )
+                    if not linhas and not silencioso:
+                        self.log("   (nenhuma posição aberta na plataforma neste momento)")
+                self.after(0, self._atualizar_dashboard)
+            except Exception as e:
+                if not silencioso:
+                    self.log(f"⚠️ Falha ao detectar posições da plataforma: {e}")
+                self._tv_bot = None   # força reconexão limpa na próxima
+
         threading.Thread(target=tarefa, daemon=True).start()
 
     def _tv_enviar_bracket(self, direcao, entry, stop, alvo, qtd):
@@ -1637,6 +2027,37 @@ class SmcQuantApp(ctk.CTk):
         scroll = ctk.CTkScrollableFrame(master, fg_color=COR["fundo"])
         scroll.pack(fill="both", expand=True)
 
+        # ================= BARRA DE CONTAS (multi-conta) =================
+        # Tudo abaixo desta barra — KPIs, gráficos, plano, diário e as próprias
+        # sugestões do robô — pertence à conta selecionada aqui.
+        frame_conta = ctk.CTkFrame(scroll, fg_color="#16213e", corner_radius=8,
+                                    border_width=1, border_color="#2a4a7a")
+        frame_conta.pack(padx=8, pady=(8, 2), fill="x")
+
+        ctk.CTkLabel(frame_conta, text="🏦 CONTA", font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=COR["dim"]).pack(side="left", padx=(12, 6), pady=10)
+
+        self.conta_var = tk.StringVar(value=nome_conta_ativa())
+        self.menu_contas = ctk.CTkOptionMenu(
+            frame_conta, variable=self.conta_var, values=[c["nome"] for c in carregar_contas()],
+            width=230, fg_color=COR["input"], button_color="#2a4a7a",
+            font=ctk.CTkFont(size=12, weight="bold"), command=self._trocar_conta)
+        self.menu_contas.pack(side="left", padx=4, pady=10)
+
+        ctk.CTkButton(frame_conta, text="➕ Nova", width=70, fg_color=COR["verde_esc"],
+                      hover_color=COR["verde"], command=self._nova_conta
+                      ).pack(side="left", padx=(10, 3), pady=10)
+        ctk.CTkButton(frame_conta, text="✏️ Renomear", width=95, fg_color="#2a3f5f",
+                      hover_color="#3a5580", command=self._renomear_conta
+                      ).pack(side="left", padx=3, pady=10)
+        ctk.CTkButton(frame_conta, text="🗑️ Excluir", width=80, fg_color="#5a1f1f",
+                      hover_color="#8b1f1f", command=self._excluir_conta
+                      ).pack(side="left", padx=3, pady=10)
+
+        self.lbl_conta_resumo = ctk.CTkLabel(frame_conta, text="", text_color=COR["dim"],
+                                              font=ctk.CTkFont(size=10))
+        self.lbl_conta_resumo.pack(side="right", padx=12, pady=10)
+
         # ================= FAIXA DE KPIs (leitura instantânea) =================
         frame_kpis = ctk.CTkFrame(scroll, fg_color="transparent")
         frame_kpis.pack(padx=8, pady=(8, 4), fill="x")
@@ -1653,9 +2074,10 @@ class SmcQuantApp(ctk.CTk):
                                      border_width=1, border_color=COR["borda"])
         frame_config.pack(padx=8, pady=6, fill="x")
 
-        ctk.CTkLabel(frame_config, text="CONFIGURAÇÃO DA CONTA (MESA PROPRIETÁRIA)",
-                     font=ctk.CTkFont(size=11, weight="bold"), text_color=COR["dim"]
-                     ).grid(row=0, column=0, columnspan=4, pady=(10, 8))
+        self.lbl_titulo_plano = ctk.CTkLabel(
+            frame_config, text="PLANO DE TRADING DESTA CONTA",
+            font=ctk.CTkFont(size=11, weight="bold"), text_color=COR["dim"])
+        self.lbl_titulo_plano.grid(row=0, column=0, columnspan=4, pady=(10, 8))
 
         # (rótulo, atributo, chave no plano, linha, coluna, valor padrão)
         campos = [
@@ -1910,12 +2332,23 @@ class SmcQuantApp(ctk.CTk):
         self._atualizar_dashboard()
 
     def _renderizar_posicoes(self):
-        for widget in self.frame_posicoes.winfo_children():
-            widget.destroy()
-
         todas = posicoes_do_ciclo()
         pendentes = [p for p in todas if p.get("status") == "PENDENTE"]
         abertas = [p for p in todas if p.get("status") == "ABERTA"]
+
+        # DESEMPENHO: destruir e recriar estes widgets a cada 5 s é o que deixava
+        # a interface pesada. Só reconstrói quando algo REALMENTE mudou.
+        assinatura = tuple(
+            (p["id"], p.get("status"), round(p.get("pnl_atual") or 0, 2),
+             p.get("preco_atual"), p.get("contratos"))
+            for p in pendentes + abertas
+        )
+        if getattr(self, "_assin_posicoes", None) == assinatura:
+            return
+        self._assin_posicoes = assinatura
+
+        for widget in self.frame_posicoes.winfo_children():
+            widget.destroy()
 
         if not pendentes and not abertas:
             ctk.CTkLabel(self.frame_posicoes, text="Nenhuma ordem pendente ou operação em andamento.",
@@ -2119,6 +2552,88 @@ class SmcQuantApp(ctk.CTk):
         self.after(0, _escrever)
 
     # ------------------------------------------------------------------
+    # MULTI-CONTA — criar, renomear, excluir e trocar a conta ativa
+    # ------------------------------------------------------------------
+    def _recarregar_menu_contas(self):
+        """Repopula o seletor e marca a conta ativa."""
+        contas = carregar_contas()
+        self.menu_contas.configure(values=[c["nome"] for c in contas])
+        self.conta_var.set(nome_conta_ativa())
+
+    def _aplicar_conta_na_tela(self):
+        """Recarrega o plano da conta selecionada nos campos e redesenha TUDO
+        (KPIs, gráficos, diário, sugestões) com os dados dela."""
+        self.plano = plano_da_conta_ativa()
+        campos = [
+            (self.entry_margem, "margem", 0),
+            (self.entry_meta, "meta_alvo", 0),
+            (self.entry_dd, "drawdown_maximo", 0),
+            (self.entry_risco, "risco_pct", 1.0),
+            (self.entry_timeout, "timeout_acatar_min", 10),
+        ]
+        for widget, chave, padrao in campos:
+            widget.delete(0, tk.END)
+            widget.insert(0, str(self.plano.get(chave, padrao)))
+        # Invalida os caches de render: a conta mudou, as listas TÊM de ser
+        # redesenhadas mesmo que a assinatura anterior fosse igual.
+        self._assin_posicoes = None
+        self._assin_sinais = None
+        self._recarregar_menu_contas()
+        self._atualizar_dashboard()
+
+    def _trocar_conta(self, nome_escolhido):
+        conta = next((c for c in carregar_contas() if c["nome"] == nome_escolhido), None)
+        if not conta:
+            return
+        definir_conta_ativa(conta["id"])
+        self.log(f"🏦 Conta ativa: '{conta['nome']}'. Dashboard, plano e sugestões "
+                  "agora são desta conta.")
+        self._aplicar_conta_na_tela()
+
+    def _nova_conta(self):
+        from tkinter import simpledialog
+        nome = simpledialog.askstring("Nova conta",
+                                       "Nome da conta (ex.: Apex 50k, Conta Real, Avaliação 2):",
+                                       parent=self)
+        if not nome or not nome.strip():
+            return
+        nova = criar_conta(nome)
+        definir_conta_ativa(nova["id"])
+        self.log(f"🏦 Conta '{nova['nome']}' criada e selecionada. "
+                  "Configure o plano dela (margem, meta, drawdown, risco) e salve.")
+        self._aplicar_conta_na_tela()
+
+    def _renomear_conta(self):
+        from tkinter import simpledialog
+        atual = conta_ativa() or {}
+        nome = simpledialog.askstring("Renomear conta", "Novo nome:",
+                                       initialvalue=atual.get("nome", ""), parent=self)
+        if not nome or not nome.strip():
+            return
+        if renomear_conta(atual.get("id"), nome):
+            self.log(f"✏️ Conta renomeada para '{nome.strip()}'.")
+            self._aplicar_conta_na_tela()
+
+    def _excluir_conta(self):
+        from tkinter import messagebox
+        atual = conta_ativa() or {}
+        if len(carregar_contas()) <= 1:
+            messagebox.showinfo("Excluir conta",
+                                 "Esta é a sua única conta — o app precisa de pelo menos uma.")
+            return
+        if not messagebox.askyesno(
+            "Excluir conta",
+            f"Remover a conta '{atual.get('nome')}' da lista?\n\n"
+            "O histórico dela permanece salvo no disco (nada é apagado); ela apenas "
+            "deixa de aparecer. As demais contas não são afetadas."
+        ):
+            return
+        if excluir_conta(atual.get("id")):
+            self.log(f"🗑️ Conta '{atual.get('nome')}' removida da lista "
+                      "(histórico preservado no disco).")
+            self._aplicar_conta_na_tela()
+
+    # ------------------------------------------------------------------
     # PLANO DE TRADING — salvar / reiniciar
     # ------------------------------------------------------------------
     def salvar_plano_trading(self):
@@ -2137,8 +2652,8 @@ class SmcQuantApp(ctk.CTk):
         if not self.plano.get("data_inicio"):
             self.plano["data_inicio"] = datetime.date.today().isoformat()
 
-        salvar_config({"plano_trading": self.plano})
-        self.log("💾 Plano de trading salvo.")
+        salvar_plano_da_conta(self.plano)
+        self.log(f"💾 Plano de trading salvo para a conta '{nome_conta_ativa()}'.")
         self._atualizar_dashboard()
 
     def reiniciar_plano_trading(self):
@@ -2151,8 +2666,9 @@ class SmcQuantApp(ctk.CTk):
 
         confirmado = messagebox.askyesno(
             "Reiniciar contagem de 5 dias",
-            "Isso vai ZERAR todos os indicadores do dashboard (resultado, gráficos, "
-            "operações e comparativo) e iniciar um novo ciclo a partir de agora.\n\n"
+            f"Isso vai ZERAR os indicadores do dashboard DA CONTA '{nome_conta_ativa()}' "
+            "(resultado, gráficos, operações e comparativo) e iniciar um novo ciclo a "
+            "partir de agora.\n\nAs SUAS OUTRAS CONTAS não são afetadas.\n"
             "Seu histórico NÃO será apagado — ele fica arquivado nos arquivos de dados."
             + aviso + "\n\nDeseja continuar?"
         )
@@ -2163,8 +2679,9 @@ class SmcQuantApp(ctk.CTk):
         agora = datetime.datetime.now()
         self.plano["data_inicio"] = agora.date().isoformat()
         self.plano["ciclo_inicio"] = agora.isoformat(timespec="seconds")
-        salvar_config({"plano_trading": self.plano})
-        self.log(f"🔄 Novo ciclo de 5 dias iniciado em {agora.strftime('%d/%m/%Y %H:%M:%S')}. "
+        salvar_plano_da_conta(self.plano)
+        self.log(f"🔄 Novo ciclo de 5 dias iniciado em {agora.strftime('%d/%m/%Y %H:%M:%S')} "
+                  f"para a conta '{nome_conta_ativa()}'. "
                   "Dashboard zerado (histórico preservado nos arquivos).")
         self._atualizar_dashboard()
 
@@ -2271,6 +2788,16 @@ class SmcQuantApp(ctk.CTk):
                 text=f"{pct_meta:.0f}%" if meta else "—",
                 text_color=COR["verde"] if pct_meta >= 100 else COR["texto"]
             )
+
+            # Resumo ao lado do seletor: deixa explícito de QUAL conta é o painel.
+            if hasattr(self, "lbl_conta_resumo"):
+                total_contas = len(carregar_contas())
+                self.lbl_conta_resumo.configure(
+                    text=f"Exibindo: {nome_conta_ativa()}  ·  {stats['abertas']} posição(ões) aberta(s)"
+                         f"  ·  {total_contas} conta(s) cadastrada(s)")
+            if hasattr(self, "lbl_titulo_plano"):
+                self.lbl_titulo_plano.configure(
+                    text=f"PLANO DE TRADING — {nome_conta_ativa().upper()}")
 
             self._desenhar_equity_curve()
             self._desenhar_grafico_dias()
@@ -2623,10 +3150,17 @@ class SmcQuantApp(ctk.CTk):
             self.lbl_legenda_dias.configure(text="")
 
     def _renderizar_lista_sinais(self):
+        sinais = list(reversed(sinais_da_conta_ativa()[-10:]))
+
+        # DESEMPENHO: só reconstrói a lista quando ela muda de verdade.
+        assinatura = tuple((s["id"], s.get("decisao")) for s in sinais)
+        if getattr(self, "_assin_sinais", None) == assinatura:
+            return
+        self._assin_sinais = assinatura
+
         for widget in self.frame_sinais.winfo_children():
             widget.destroy()
 
-        sinais = list(reversed(carregar_sinais_log()[-10:]))
         if not sinais:
             ctk.CTkLabel(self.frame_sinais, text="Nenhum sinal registrado ainda.").pack(pady=6)
             return
@@ -2683,7 +3217,7 @@ class SmcQuantApp(ctk.CTk):
                 )
                 if not ja_aberta:
                     direcao = "BUY" if decisao == "ACATOU_COMPRA" else "SELL"
-                    plano = carregar_config().get("plano_trading", {})
+                    plano = plano_da_conta_ativa()
                     sizing = calcular_contratos(
                         sinal["entry"], sinal["stop"], sinal.get("ativo", ""),
                         plano.get("margem", 0), plano.get("risco_pct", 1.0),
@@ -2718,8 +3252,8 @@ class SmcQuantApp(ctk.CTk):
 
     def _janela_acatar_seg(self):
         """Prazo (em segundos) dentro do qual uma sugestão ainda pode ser acatada.
-        Lê o campo configurável do Plano de Trading (padrão 10 min)."""
-        plano = carregar_config().get("plano_trading", {})
+        Lê o campo configurável do Plano de Trading da conta ativa (padrão 10 min)."""
+        plano = plano_da_conta_ativa()
         try:
             minutos = int(float(plano.get("timeout_acatar_min", 10)))
         except (TypeError, ValueError):
@@ -2731,9 +3265,10 @@ class SmcQuantApp(ctk.CTk):
         DENTRO da janela de acatar. Um comando ACATAR/DISPENSAR do WhatsApp só se
         aplica a um cenário FRESCO — nunca a um sinal antigo já esquecido/expirado.
         Isso evita que uma sugestão velha (ou um comando preso na fila) vire uma
-        operação sem você mandar acatar AGORA."""
+        operação sem você mandar acatar AGORA.
+        Só considera sugestões DA CONTA SELECIONADA."""
         limite_ms = (time.time() - self._janela_acatar_seg()) * 1000
-        pendentes = [s for s in carregar_sinais_log()
+        pendentes = [s for s in sinais_da_conta_ativa()
                      if not s.get("decisao") and s.get("id", 0) >= limite_ms]
         return pendentes[-1] if pendentes else None
 
@@ -3222,7 +3757,8 @@ class SmcQuantApp(ctk.CTk):
         # Prazo para você ACATAR uma sugestão. Se não acatar dentro desse tempo,
         # o cenário é cancelado automaticamente e o robô passa a considerar novos.
         # Configurável no Plano de Trading ("Prazo p/ acatar (min)"). Padrão 10 min.
-        _plano_cfg = config_horario.get("plano_trading", {})
+        # Lido da CONTA SELECIONADA (cada conta tem o seu prazo).
+        _plano_cfg = plano_da_conta_ativa()
         try:
             _timeout_min = int(float(_plano_cfg.get("timeout_acatar_min", 10)))
         except (TypeError, ValueError):
@@ -3392,6 +3928,12 @@ class SmcQuantApp(ctk.CTk):
                     capturas_congeladas = 0
                 hash_captura_anterior = hash_atual
                 self.log(f"🖼️ Imagem atual obtida via: {metodo}")
+
+                # DETECÇÃO DE POSIÇÃO NA PLATAFORMA: antes de analisar, confere na
+                # corretora se você já está posicionado (inclusive numa operação
+                # aberta por fora da sugestão) e reflete isso no diário/dashboard.
+                if getattr(self, "tv_sync_var", None) and self.tv_sync_var.get():
+                    self._tv_sincronizar_posicoes(silencioso=True)
 
                 self.log("🧠 Processando análise com Memória Episódica...")
 
@@ -3794,8 +4336,8 @@ class SmcQuantApp(ctk.CTk):
 
                     # Dimensionamento de posição com base no Plano da Mesa
                     # (Margem, Risco%, Drawdown) e no valor por ponto do
-                    # ativo identificado no gráfico.
-                    plano = carregar_config().get("plano_trading", {})
+                    # ativo identificado no gráfico, na CONTA SELECIONADA.
+                    plano = plano_da_conta_ativa()
                     sizing = calcular_contratos(
                         sinal_ativo["entry"], sinal_ativo["stop"], ativo,
                         plano.get("margem", 0), plano.get("risco_pct", 1.0),
