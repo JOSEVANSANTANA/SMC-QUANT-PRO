@@ -92,7 +92,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "1.9.1"
+VERSAO_ATUAL = "1.9.2"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -372,8 +372,20 @@ PLANO_PADRAO = {
     #   probabilidade_minima -> abaixo disso o cenário vira HOLD
     "rr_minimo": 2.0,
     "probabilidade_minima": 55,
+    # Em quantos dias operados a meta deve ser batida. Era fixo em 5; agora você
+    # escolhe — 1 para "quero bater hoje", 20 para um mês de mesa, etc. Isso muda
+    # o ritmo exigido por dia E entra no contexto que a IA recebe.
+    "dias_meta": 5,
     "data_inicio": None,
 }
+
+def dias_meta_do_plano(plano=None):
+    """Prazo (em dias) da meta na conta selecionada. Mínimo 1."""
+    plano = plano if plano is not None else plano_da_conta_ativa()
+    try:
+        return max(1, int(float(plano.get("dias_meta", 5))))
+    except (TypeError, ValueError):
+        return 5
 
 def _novo_id_conta(existentes=None):
     """ID único de conta. O timestamp em milissegundos sozinho NÃO basta: duas
@@ -2674,6 +2686,7 @@ class SmcQuantApp(ctk.CTk):
             ("Meta Alvo (US$):", "entry_meta", "meta_alvo", 1, 2, 0),
             ("Drawdown Máx. (US$):", "entry_dd", "drawdown_maximo", 2, 0, 0),
             ("Risco/operação (%):", "entry_risco", "risco_pct", 2, 2, 1.0),
+            ("Dias p/ bater a meta:", "entry_dias_meta", "dias_meta", 5, 0, 5),
             ("Prazo p/ acatar (min):", "entry_timeout", "timeout_acatar_min", 3, 0, 10),
             ("R:R mínimo (1:X):", "entry_rr", "rr_minimo", 4, 0, 2.0),
             ("Probabilidade mín. (%):", "entry_prob", "probabilidade_minima", 4, 2, 55),
@@ -2693,13 +2706,19 @@ class SmcQuantApp(ctk.CTk):
                      ).grid(row=3, column=2, columnspan=2, sticky="w", padx=(0, 12), pady=4)
 
         ctk.CTkLabel(frame_config,
+                     text="(em quantos dias operados a Meta Alvo deve ser batida — use 1 se "
+                          "quer bater hoje)",
+                     text_color=COR["dim"], font=ctk.CTkFont(size=9), justify="left"
+                     ).grid(row=5, column=2, columnspan=2, sticky="w", padx=(0, 12), pady=4)
+
+        ctk.CTkLabel(frame_config,
                      text="Piso de qualidade: abaixo disso o cenário vira HOLD. Menor probabilidade "
                           "mínima = mais sugestões (mais agressivo). O R:R 1:2 é a regra da casa.",
                      text_color=COR["dim"], font=ctk.CTkFont(size=9), justify="left"
-                     ).grid(row=5, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 2))
+                     ).grid(row=6, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 2))
 
         frame_botoes_plano = ctk.CTkFrame(frame_config, fg_color="transparent")
-        frame_botoes_plano.grid(row=6, column=0, columnspan=4, pady=(6, 10))
+        frame_botoes_plano.grid(row=7, column=0, columnspan=4, pady=(6, 10))
         ctk.CTkButton(frame_botoes_plano, text="💾 Salvar Plano", width=140,
                       fg_color=COR["verde_esc"], hover_color=COR["verde"],
                       command=self.salvar_plano_trading).pack(side="left", padx=6)
@@ -3172,6 +3191,7 @@ class SmcQuantApp(ctk.CTk):
             (self.entry_timeout, "timeout_acatar_min", 10),
             (self.entry_rr, "rr_minimo", 2.0),
             (self.entry_prob, "probabilidade_minima", 55),
+            (self.entry_dias_meta, "dias_meta", 5),
         ]
         for widget, chave, padrao in campos:
             widget.delete(0, tk.END)
@@ -3254,6 +3274,9 @@ class SmcQuantApp(ctk.CTk):
             self.plano["rr_minimo"] = max(1.0, _rr)
             _prob = float(self.entry_prob.get().replace(",", "."))
             self.plano["probabilidade_minima"] = max(0.0, min(95.0, _prob))
+            # Prazo da meta: pelo menos 1 dia (1 = "quero bater hoje").
+            _dm = int(float(self.entry_dias_meta.get().replace(",", ".")))
+            self.plano["dias_meta"] = max(1, _dm)
         except ValueError:
             self.log("⚠️ Valores do plano de trading inválidos — use apenas números.")
             return
@@ -3274,7 +3297,7 @@ class SmcQuantApp(ctk.CTk):
                       "Elas sairão do dashboard, mas continuarão sendo acompanhadas internamente.")
 
         confirmado = messagebox.askyesno(
-            "Reiniciar contagem de 5 dias",
+            f"Reiniciar contagem de {dias_meta_do_plano(self.plano)} dia(s)",
             f"Isso vai ZERAR os indicadores do dashboard DA CONTA '{nome_conta_ativa()}' "
             "(resultado, gráficos, operações e comparativo) e iniciar um novo ciclo a "
             "partir de agora.\n\nAs SUAS OUTRAS CONTAS não são afetadas.\n"
@@ -3289,13 +3312,14 @@ class SmcQuantApp(ctk.CTk):
         self.plano["data_inicio"] = agora.date().isoformat()
         self.plano["ciclo_inicio"] = agora.isoformat(timespec="seconds")
         salvar_plano_da_conta(self.plano)
-        self.log(f"🔄 Novo ciclo de 5 dias iniciado em {agora.strftime('%d/%m/%Y %H:%M:%S')} "
-                  f"para a conta '{nome_conta_ativa()}'. "
+        self.log(f"🔄 Novo ciclo de {dias_meta_do_plano(self.plano)} dia(s) iniciado em "
+                  f"{agora.strftime('%d/%m/%Y %H:%M:%S')} para a conta "
+                  f"'{nome_conta_ativa()}'. "
                   "Dashboard zerado (histórico preservado nos arquivos).")
-        self._atualizar_dashboard()
+        self._atualizar_dashboard(forcar=True)
 
     # ------------------------------------------------------------------
-    # DASHBOARD — equity curve, drawdown, plano de 5 dias, sinais
+    # DASHBOARD — equity curve, drawdown, plano da meta, sinais
     # ------------------------------------------------------------------
     def _loop_atualizar_dashboard(self):
         try:
@@ -3361,14 +3385,16 @@ class SmcQuantApp(ctk.CTk):
         risco_usd = margem * (risco_pct / 100) if margem else 0
 
         meta = self.plano.get("meta_alvo") or 0
+        # Prazo da meta configurável (era fixo em 5 dias).
+        dias_meta = dias_meta_do_plano(self.plano)
         data_inicio_str = self.plano.get("data_inicio")
         dias_passados = 0
-        dias_restantes = 5
+        dias_restantes = dias_meta
         if data_inicio_str:
             try:
                 data_inicio = datetime.date.fromisoformat(data_inicio_str)
                 dias_passados = (datetime.date.today() - data_inicio).days
-                dias_restantes = max(5 - dias_passados, 0)
+                dias_restantes = max(dias_meta - dias_passados, 0)
             except ValueError:
                 pass
 
@@ -3383,8 +3409,71 @@ class SmcQuantApp(ctk.CTk):
             "risco_usd": risco_usd, "dias_passados": dias_passados,
             "dias_restantes": dias_restantes, "falta": falta, "abertas": len(abertas),
             "meta_diaria": meta_diaria, "total_ops": total, "meta": meta,
-            "resultado_hoje": resultado_hoje,
+            "resultado_hoje": resultado_hoje, "dias_meta": dias_meta,
         }
+
+    def _contexto_do_plano(self):
+        """Bloco que entra no prompt contando à IA o PLANO DA MESA: meta, prazo
+        escolhido, quanto falta e qual o ritmo exigido por dia. É o que faz a
+        recomendação sair alinhada ao seu plano — quem quer bater a meta HOJE
+        precisa de um cenário diferente de quem tem 20 dias pela frente.
+
+        Importante: isto NUNCA autoriza forçar trade. O plano ajusta a POSTURA
+        (o quanto vale esperar o setup perfeito), jamais a honestidade da leitura.
+        """
+        try:
+            stats = self._computar_stats_plano()
+        except Exception:
+            return ""
+        meta = stats.get("meta") or 0
+        if not meta:
+            return ("PLANO DA MESA: sem meta configurada — priorize apenas a "
+                    "qualidade do setup.\n")
+
+        dias_meta = stats.get("dias_meta", 5)
+        restantes = stats.get("dias_restantes", dias_meta)
+        falta = stats.get("falta", meta)
+        risco_trade = stats.get("risco_usd") or 0
+        ritmo = stats.get("meta_diaria")
+
+        if falta <= 0:
+            postura = ("A META JÁ FOI ATINGIDA no ciclo. Postura: PRESERVAR. Só "
+                       "sinalize setups A+ (confluência máxima); na dúvida, HOLD.")
+        elif restantes <= 0:
+            postura = ("O PRAZO DA META ESGOTOU e ela não foi batida. Postura: não "
+                       "force recuperação. Continue exigindo setup de qualidade — "
+                       "operar mal para 'correr atrás' é como se destrói conta.")
+        else:
+            # Quantos trades no R:R mínimo seriam necessários para fechar a meta.
+            alvo_por_trade = risco_trade * 2 if risco_trade else 0
+            n_trades = (falta / alvo_por_trade) if alvo_por_trade > 0 else 0
+            if restantes == 1:
+                postura = ("PRAZO CURTO (último dia). Postura: AGRESSIVA na busca — "
+                           "vasculhe TODOS os setups SMC válidos do gráfico, inclusive "
+                           "reversões e continuações de menor timeframe, e prefira "
+                           "alvos que capturem o movimento CHEIO (liquidez completa). "
+                           "Mas NÃO relaxe o R:R nem invente cenário: agressividade "
+                           "é achar mais oportunidade real, não aceitar trade ruim.")
+            elif n_trades and n_trades <= 2:
+                postura = ("O ritmo exigido é confortável (1 a 2 trades no R:R mínimo "
+                           "resolvem). Postura: SELETIVA — priorize os setups de maior "
+                           "confluência e alvo amplo.")
+            else:
+                postura = ("O ritmo exigido é puxado. Postura: AGRESSIVA na busca de "
+                           "oportunidades (todo setup SMC válido conta) e alvos no "
+                           "pool de liquidez cheio, mantendo o R:R mínimo intacto.")
+
+        ritmo_txt = (f"US$ {ritmo:,.2f}/dia" if ritmo is not None else "prazo esgotado")
+        return (
+            "PLANO DA MESA (use para calibrar a POSTURA, nunca para forçar trade):\n"
+            f"• Meta do ciclo: US$ {meta:,.2f} · já feito: US$ {stats['lucro_usd']:,.2f} "
+            f"· falta: US$ {falta:,.2f}\n"
+            f"• Prazo escolhido: {dias_meta} dia(s) · decorridos: "
+            f"{stats['dias_passados']} · restam: {restantes}\n"
+            f"• Ritmo necessário: {ritmo_txt} · risco por operação: "
+            f"US$ {risco_trade:,.2f}\n"
+            f"• {postura}\n"
+        )
 
     def _atualizar_dashboard(self, forcar=False):
         # SAÍDA ANTECIPADA: nada mudou desde o último desenho -> não faz nada.
@@ -3544,15 +3633,19 @@ class SmcQuantApp(ctk.CTk):
         if dd_max and stats["max_dd_usd"] >= dd_max * 0.8:
             alerta = "  ⚠️ PRÓXIMO DO LIMITE"
 
-        # Trilha de 5 dias com a meta acumulada esperada em cada um
+        # Trilha do prazo escolhido, com a meta acumulada esperada em cada dia.
+        # Com prazos longos, mostra só os primeiros dias para não estourar a linha.
+        dias_meta = stats.get("dias_meta", 5)
         trilha = []
-        for dia in range(1, 6):
-            meta_dia = meta * (dia / 5) if meta else 0
+        for dia in range(1, min(dias_meta, 10) + 1):
+            meta_dia = meta * (dia / dias_meta) if meta else 0
             if stats["dias_passados"] >= dia:
                 marca = "✅" if stats["lucro_usd"] >= meta_dia else "❌"
             else:
                 marca = "⬜"
             trilha.append(f"D{dia} {marca}")
+        if dias_meta > 10:
+            trilha.append(f"… (+{dias_meta - 10})")
 
         meta_diaria_txt = (f"US$ {stats['meta_diaria']:,.2f}/dia"
                             if stats["meta_diaria"] is not None else "PRAZO ESGOTADO")
@@ -3572,8 +3665,8 @@ class SmcQuantApp(ctk.CTk):
             f"Falta p/ meta: US$ {stats['falta']:,.2f}   |   Ritmo: {meta_diaria_txt}\n"
             f"Projeção: {projecao}\n"
             f"{'─' * 46}\n"
-            f"Trilha de 5 dias:  {'   '.join(trilha)}   "
-            f"({stats['dias_passados']}/5 · restam {stats['dias_restantes']})"
+            f"Trilha de {dias_meta} dia(s):  {'   '.join(trilha)}   "
+            f"({stats['dias_passados']}/{dias_meta} · restam {stats['dias_restantes']})"
         )
         self.lbl_patrimonio.configure(text=texto, text_color=cor)
 
@@ -4626,6 +4719,7 @@ class SmcQuantApp(ctk.CTk):
                 self.log("🧠 Processando análise com Memória Episódica...")
 
                 memoria_dinamica = compilar_memoria_prompt()
+                contexto_meta = self._contexto_do_plano()
                 PROMPT_BASE = (
                     "Você é um trader institucional de Smart Money Concepts (SMC/ICT) "
                     "operando índices futuros (ES/MES, NQ/MNQ). Você é criterioso, mas "
@@ -4672,6 +4766,7 @@ class SmcQuantApp(ctk.CTk):
                     f"{PROMPT_BASE}\n{memoria_dinamica}\n"
                     f"ÚLTIMO ESTADO DO LEDGER:\n{ledger_text_memory}\n"
                     f"CONTEXTO DA TELA: {DICAS_PLATAFORMA.get(self.plataforma_atual, DICAS_PLATAFORMA['outra'])}\n"
+                    f"{contexto_meta}"
                     "Identifique o TICKER do ativo no gráfico (asset_symbol) e leia o PREÇO "
                     "ATUAL com precisão pela última vela e pela escala de preço à direita.\n"
                     "\n"
