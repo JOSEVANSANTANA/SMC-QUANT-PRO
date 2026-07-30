@@ -92,7 +92,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "1.9.0"
+VERSAO_ATUAL = "1.9.1"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -367,6 +367,11 @@ PLANO_PADRAO = {
     "drawdown_maximo": 0,
     "risco_pct": 1.0,
     "timeout_acatar_min": 10,
+    # Piso de qualidade das sugestões (calibra a agressividade):
+    #   rr_minimo            -> R:R mínimo até o 1º alvo (regra da casa: 2.0)
+    #   probabilidade_minima -> abaixo disso o cenário vira HOLD
+    "rr_minimo": 2.0,
+    "probabilidade_minima": 55,
     "data_inicio": None,
 }
 
@@ -1720,6 +1725,9 @@ class SmcQuantApp(ctk.CTk):
         self._notif_abertas = []        # janelas de alerta na tela (p/ empilhar)
         self._sinais_notificados = set()  # evita notificar o mesmo sinal 2x
         self._tv_bot = None  # instância TradovateAuto criada sob demanda
+        self._tv_sync_ok_ts = 0          # última leitura de posições bem-sucedida
+        self._tv_ultimo_aviso_falha = 0  # p/ não repetir o aviso a cada ciclo
+        self._ultimo_ativo_lido = None   # ticker do último gráfico analisado
 
         # --- Plataforma de análise (qualquer uma; a Tradovate só ganha os
         #     recursos extras de ordem/posição por CDP) ---
@@ -2038,6 +2046,15 @@ class SmcQuantApp(ctk.CTk):
             self.log(f"🎯 Automação Tradovate LIGADA — modo {modo}.")
         else:
             self.log("🎯 Automação Tradovate desligada.")
+        # Ao LIGAR a detecção automática, testa na hora e mostra o resultado.
+        # Antes a caixinha ficava marcada sem nenhum retorno, dando a impressão
+        # de que a detecção não funcionava.
+        if self.tv_sync_var.get():
+            self.log("🔎 Detecção automática de posições LIGADA — testando agora...")
+            self._tv_ultimo_aviso_falha = 0
+            self._tv_sincronizar_posicoes(silencioso=False)
+        else:
+            self.log("🔎 Detecção automática de posições desligada.")
 
     def _tv_abrir_chrome(self):
         try:
@@ -2135,10 +2152,14 @@ class SmcQuantApp(ctk.CTk):
                   if self.notif_var.get() else
                   "🔕 Notificações no computador desligadas.")
 
-    def _notificar_desktop(self, titulo, linhas, cor="#1f8b4c", segundos=15):
+    def _notificar_desktop(self, titulo, linhas, cor="#1f8b4c", segundos=15,
+                            sinal_id=None, direcao=None):
         """Mostra um aviso no canto da tela (sempre por cima) + um bipe. Não usa
         biblioteca externa, então funciona no .exe sem nada a mais. Respeita o
-        interruptor: desligado, não aparece nada."""
+        interruptor: desligado, não aparece nada.
+
+        Com `sinal_id`, o aviso ganha os botões ACATAR / NÃO OPEREI: você decide
+        a sugestão direto da notificação, sem abrir o app."""
         if not (getattr(self, "notif_var", None) and self.notif_var.get()):
             return
 
@@ -2150,7 +2171,9 @@ class SmcQuantApp(ctk.CTk):
                 win = ctk.CTkToplevel(self)
                 win.overrideredirect(True)          # sem barra de título
                 win.attributes("-topmost", True)    # sempre visível
-                larg, alt = 400, 40 + 20 * (len(linhas) + 1)
+                decidivel = sinal_id is not None
+                larg = 430 if decidivel else 400
+                alt = 46 + 20 * (len(linhas) + 1) + (34 if decidivel else 0)
                 tela_l = win.winfo_screenwidth()
                 tela_a = win.winfo_screenheight()
                 # Empilha de baixo para cima, acima da barra de tarefas.
@@ -2170,12 +2193,52 @@ class SmcQuantApp(ctk.CTk):
                     ctk.CTkLabel(quadro, text=ln, text_color="#e6e6e6", anchor="w",
                                  justify="left", font=ctk.CTkFont(size=11)
                                  ).pack(fill="x", padx=12)
-                ctk.CTkButton(quadro, text="fechar", width=60, height=20,
+                barra = ctk.CTkFrame(quadro, fg_color="transparent")
+                barra.pack(fill="x", padx=10, pady=(4, 8))
+
+                if decidivel:
+                    # DECIDIR DIRETO DO AVISO — sem precisar abrir o app.
+                    def decidir(dec):
+                        try:
+                            # O aviso pode ter ficado na tela depois de o cenário
+                            # expirar/ser invalidado. Não deixa um clique atrasado
+                            # ressuscitar uma sugestão que já morreu.
+                            s = next((x for x in carregar_sinais_log()
+                                      if x.get("id") == sinal_id), None)
+                            if s is None or s.get("decisao"):
+                                estado = (s or {}).get("decisao") or "removida"
+                                self.log(f"⌛ Notificação vencida: essa sugestão já está "
+                                          f"como [{estado}]. Nada foi alterado.")
+                                return
+                            self._registrar_decisao(sinal_id, dec)
+                            rotulo = ("ACATADA" if dec.startswith("ACATOU")
+                                      else "dispensada")
+                            self.log(f"🔔 Sugestão {rotulo} pela notificação da tela.")
+                        except Exception as e:
+                            self.log(f"⚠️ Não consegui registrar a decisão: {e}")
+                        finally:
+                            if win.winfo_exists():
+                                win.destroy()
+
+                    dec_acatar = ("ACATOU_VENDA" if str(direcao).upper() == "SELL"
+                                  else "ACATOU_COMPRA")
+                    ctk.CTkButton(barra, text="✅ ACATAR", width=110, height=26,
+                                  fg_color="#1f8b4c", hover_color="#25a35a",
+                                  font=ctk.CTkFont(size=11, weight="bold"),
+                                  command=lambda: decidir(dec_acatar)
+                                  ).pack(side="left", padx=(0, 6))
+                    ctk.CTkButton(barra, text="❌ NÃO OPEREI", width=120, height=26,
+                                  fg_color="#8b1f1f", hover_color="#a52a2a",
+                                  font=ctk.CTkFont(size=11, weight="bold"),
+                                  command=lambda: decidir("NAO_OPEROU")
+                                  ).pack(side="left", padx=6)
+
+                ctk.CTkButton(barra, text="fechar", width=60, height=24,
                               fg_color="#333333", hover_color="#555555",
                               font=ctk.CTkFont(size=10),
-                              command=win.destroy).pack(anchor="e", padx=10, pady=(4, 8))
+                              command=win.destroy).pack(side="right")
 
-                # Clicar no aviso traz o app para frente.
+                # Clicar no corpo do aviso traz o app para frente.
                 def focar(_e=None):
                     try:
                         self.deiconify(); self.lift(); self.focus_force()
@@ -2253,23 +2316,46 @@ class SmcQuantApp(ctk.CTk):
             try:
                 bot = self._tv_conectar()
                 if not bot:
-                    if not silencioso:
-                        self.log("❌ Sem conexão com a Tradovate. Abra o Chrome pelo botão "
-                                  "e faça login antes de detectar posições.")
+                    # ANTES isso era silencioso no modo automático — você marcava
+                    # a caixinha e ficava sem nenhum retorno na tela, parecendo
+                    # que "não detecta". Agora avisa (com intervalo, p/ não spamar).
+                    self._avisar_falha_sync(
+                        "❌ Detecção de posições: sem conexão com a Tradovate. "
+                        "Clique em '🌐 Abrir Chrome (Tradovate)' e faça login — a "
+                        "leitura só funciona no Chrome aberto por esse botão.",
+                        silencioso)
                     return
                 dados = bot.ler_posicoes() or {}
                 if not dados.get("ok"):
-                    if not silencioso:
-                        self.log("⚠️ Não consegui ler o painel de posições com segurança "
-                                  f"({dados.get('motivo', 'motivo desconhecido')}). "
-                                  "Nada foi registrado — prefiro não inventar dado.")
+                    self._avisar_falha_sync(
+                        "⚠️ Detecção de posições: não consegui ler com segurança "
+                        f"({dados.get('motivo', 'motivo desconhecido')}). Nada foi "
+                        "registrado. Use '🩺 Diagnosticar leitura' e me mande o "
+                        "resultado.", silencioso)
                     return
 
                 # Leitura válida: a partir daqui a plataforma é a fonte da verdade
                 # sobre execução (usado por _plataforma_confirma_fills).
                 self._tv_sync_ok_ts = time.time()
+                self._tv_ultimo_aviso_falha = 0
 
                 linhas = dados.get("linhas", [])
+                # O painel nem sempre mostra o ticker ao lado do campo POSIÇÃO.
+                # Quando vier exatamente UMA linha sem ativo, associamos ao ativo
+                # que o robô acabou de ler no gráfico — e dizemos isso no log.
+                # Com mais de uma, não há como saber qual é qual: descartamos.
+                sem_ativo = [ln for ln in linhas if not ln.get("ativo")]
+                if sem_ativo:
+                    atual = getattr(self, "_ultimo_ativo_lido", None)
+                    if len(sem_ativo) == 1 and atual and atual != "DESCONHECIDO":
+                        sem_ativo[0]["ativo"] = atual
+                        self.log(f"ℹ️ O painel não mostrou o ticker ao lado de POSIÇÃO; "
+                                  f"associei ao ativo em análise ({atual}).")
+                    else:
+                        linhas = [ln for ln in linhas if ln.get("ativo")]
+                        self.log("⚠️ Havia leitura(s) de POSIÇÃO sem ticker identificável "
+                                  "— descartadas para não atribuir ao ativo errado.")
+
                 resumo = sincronizar_posicoes_plataforma(linhas, log=self.log)
                 houve = any(resumo[k] for k in
                             ("criadas", "encerradas", "corrigidas", "confirmadas"))
@@ -2288,11 +2374,23 @@ class SmcQuantApp(ctk.CTk):
                         self.log("   (nenhuma posição aberta na plataforma neste momento)")
                 self.after(0, self._atualizar_dashboard)
             except Exception as e:
-                if not silencioso:
-                    self.log(f"⚠️ Falha ao detectar posições da plataforma: {e}")
+                self._avisar_falha_sync(
+                    f"⚠️ Detecção de posições falhou: {e}", silencioso)
                 self._tv_bot = None   # força reconexão limpa na próxima
 
         threading.Thread(target=tarefa, daemon=True).start()
+
+    def _avisar_falha_sync(self, mensagem, silencioso):
+        """No modo manual avisa sempre. No automático, avisa na primeira falha e
+        depois no máximo a cada 5 min — assim você fica sabendo que a detecção
+        não está funcionando, sem encher o log a cada ciclo."""
+        if not silencioso:
+            self.log(mensagem)
+            return
+        agora = time.time()
+        if agora - getattr(self, "_tv_ultimo_aviso_falha", 0) > 300:
+            self._tv_ultimo_aviso_falha = agora
+            self.log(mensagem)
 
     def _tv_enviar_bracket(self, direcao, entry, stop, alvo, qtd):
         """Dispara o envio em thread separada (não trava a GUI). Usa dry-run
@@ -2577,6 +2675,8 @@ class SmcQuantApp(ctk.CTk):
             ("Drawdown Máx. (US$):", "entry_dd", "drawdown_maximo", 2, 0, 0),
             ("Risco/operação (%):", "entry_risco", "risco_pct", 2, 2, 1.0),
             ("Prazo p/ acatar (min):", "entry_timeout", "timeout_acatar_min", 3, 0, 10),
+            ("R:R mínimo (1:X):", "entry_rr", "rr_minimo", 4, 0, 2.0),
+            ("Probabilidade mín. (%):", "entry_prob", "probabilidade_minima", 4, 2, 55),
         ]
         for rotulo, attr, chave, linha, col, padrao in campos:
             ctk.CTkLabel(frame_config, text=rotulo, text_color=COR["dim"],
@@ -2592,8 +2692,14 @@ class SmcQuantApp(ctk.CTk):
                      text_color=COR["dim"], font=ctk.CTkFont(size=9)
                      ).grid(row=3, column=2, columnspan=2, sticky="w", padx=(0, 12), pady=4)
 
+        ctk.CTkLabel(frame_config,
+                     text="Piso de qualidade: abaixo disso o cenário vira HOLD. Menor probabilidade "
+                          "mínima = mais sugestões (mais agressivo). O R:R 1:2 é a regra da casa.",
+                     text_color=COR["dim"], font=ctk.CTkFont(size=9), justify="left"
+                     ).grid(row=5, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 2))
+
         frame_botoes_plano = ctk.CTkFrame(frame_config, fg_color="transparent")
-        frame_botoes_plano.grid(row=4, column=0, columnspan=4, pady=(6, 10))
+        frame_botoes_plano.grid(row=6, column=0, columnspan=4, pady=(6, 10))
         ctk.CTkButton(frame_botoes_plano, text="💾 Salvar Plano", width=140,
                       fg_color=COR["verde_esc"], hover_color=COR["verde"],
                       command=self.salvar_plano_trading).pack(side="left", padx=6)
@@ -3064,6 +3170,8 @@ class SmcQuantApp(ctk.CTk):
             (self.entry_dd, "drawdown_maximo", 0),
             (self.entry_risco, "risco_pct", 1.0),
             (self.entry_timeout, "timeout_acatar_min", 10),
+            (self.entry_rr, "rr_minimo", 2.0),
+            (self.entry_prob, "probabilidade_minima", 55),
         ]
         for widget, chave, padrao in campos:
             widget.delete(0, tk.END)
@@ -3140,6 +3248,12 @@ class SmcQuantApp(ctk.CTk):
             # Prazo p/ acatar: inteiro em minutos, mínimo 1 (evita 0 = sem prazo).
             _tmo = int(float(self.entry_timeout.get().replace(",", ".")))
             self.plano["timeout_acatar_min"] = max(1, _tmo)
+            # Piso de qualidade. R:R travado em no mínimo 1 (abaixo disso não faz
+            # sentido); probabilidade entre 0 e 95.
+            _rr = float(self.entry_rr.get().replace(",", "."))
+            self.plano["rr_minimo"] = max(1.0, _rr)
+            _prob = float(self.entry_prob.get().replace(",", "."))
+            self.plano["probabilidade_minima"] = max(0.0, min(95.0, _prob))
         except ValueError:
             self.log("⚠️ Valores do plano de trading inválidos — use apenas números.")
             return
@@ -4327,11 +4441,24 @@ class SmcQuantApp(ctk.CTk):
         # só vira sugestão se passar destes dois filtros:
         #   • R:R até o 1º alvo >= 2.0 (alvo no mínimo 2x o risco — "a conta fecha")
         #   • probabilidade >= mínimo (cenários fracos viram HOLD)
-        RR_MINIMO = float(config_horario.get("rr_minimo", 2.0))
-        PROBABILIDADE_MINIMA = float(config_horario.get("probabilidade_minima", 60))
+        # R:R continua RÍGIDO em 1:2 (regra da casa: "senão a conta não fecha").
+        # A agressividade vem de ACHAR MAIS SETUPS VÁLIDOS e de EXTRAIR MAIS de
+        # cada um — não de aceitar trade ruim. O piso de probabilidade é o que
+        # foi afrouxado (60 -> 55) para não barrar setups legítimos.
+        # Configuráveis por CONTA no Plano de Trading — assim você calibra o
+        # quanto quer de agressividade sem mexer no código.
+        try:
+            RR_MINIMO = float(_plano_cfg.get("rr_minimo", 2.0))
+        except (TypeError, ValueError):
+            RR_MINIMO = 2.0
+        try:
+            PROBABILIDADE_MINIMA = float(_plano_cfg.get("probabilidade_minima", 55))
+        except (TypeError, ValueError):
+            PROBABILIDADE_MINIMA = 55.0
         # Janela em que o MESMO setup (ativo+direção+entrada quase igual) não é
-        # sugerido de novo. Evita a lista cheia de cenários idênticos repetidos.
-        JANELA_ANTI_REPETICAO_SEG = 45 * 60
+        # sugerido de novo. Encurtada para 20 min: se o preço volta ao POI e o
+        # setup se reapresenta, queremos a oportunidade de novo.
+        JANELA_ANTI_REPETICAO_SEG = 20 * 60
         HORA_INICIO = config_horario.get("hora_inicio", "09:00")
         HORA_FIM = config_horario.get("hora_fim", "17:00")
         sinal_ativo = {"estado": "ENCERRADA"}
@@ -4507,7 +4634,39 @@ class SmcQuantApp(ctk.CTk):
                     "importa, mas não seja conservador a ponto de deixar passar setups "
                     "legítimos. Se houver OUTROS indicadores visíveis no gráfico (volume, "
                     "perfil de volume/VPOC, RSI, médias móveis, VWAP, etc.), use-os como "
-                    "confluência adicional junto do SMC."
+                    "confluência adicional junto do SMC.\n"
+                    "\n"
+                    "POSTURA — VOCÊ É UMA MESA INSTITUCIONAL, NÃO UM VAREJISTA MEDROSO:\n"
+                    "Pense como quem PRECISA preencher ordem grande: onde está a liquidez "
+                    "parada (stops do varejo), quem está preso, e para onde o preço TEM de "
+                    "ir para essa liquidez ser tomada. Seu trabalho é RASPAR O MÁXIMO que o "
+                    "movimento oferece — entrar onde a instituição entra (no desconto/prêmio "
+                    "extremo, depois da manipulação) e sair onde a instituição realiza (na "
+                    "liquidez oposta). Ser 'moderado' aqui é erro: um setup SMC válido, com "
+                    "estrutura, liquidez e POI claros, DEVE virar sinal. Só use HOLD quando "
+                    "realmente não houver vantagem — não por medo.\n"
+                    "\n"
+                    "ARSENAL SMC/ICT COMPLETO (use TUDO que estiver visível, não só o básico):\n"
+                    "• Estrutura: BOS, CHoCH, MSS (market structure shift), swings internos "
+                    "x externos, dealing range e a fase do Power of 3 (acumulação → "
+                    "manipulação → distribuição).\n"
+                    "• Order Blocks: bullish/bearish OB, BREAKER block, MITIGATION block, "
+                    "REJECTION block, propulsion block. Prefira OB de origem (o que causou "
+                    "o deslocamento) e OB não mitigado.\n"
+                    "• Ineficiências: FVG, INVERSION FVG (iFVG), BPR (balanced price range), "
+                    "liquidity void, gap de abertura.\n"
+                    "• Liquidez: BSL/SSL (buy/sell side), topos e fundos IGUAIS, liquidez de "
+                    "linha de tendência, INDUCEMENT (a isca antes do POI), PDH/PDL (máx/mín "
+                    "do dia anterior), PWH/PWL (semana), abertura diária/semanal, "
+                    "TURTLE SOUP e JUDAS SWING (falso rompimento da abertura).\n"
+                    "• Precificação: premium/discount, equilíbrio (50%), OTE (61,8–79%), "
+                    "níveis de padrão institucional.\n"
+                    "• Tempo: killzones (Londres, NY AM, NY PM) e horários de virada. "
+                    "Setup dentro de killzone merece MAIS confiança, não menos.\n"
+                    "• Correlação: divergência SMT entre índices correlacionados (ES/NQ/YM), "
+                    "quando ambos estiverem visíveis.\n"
+                    "Cite em confluence_factors os nomes REAIS dos conceitos que você "
+                    "de fato identificou no gráfico."
                 )
                 PROMPT_FINAL = (
                     f"{PROMPT_BASE}\n{memoria_dinamica}\n"
@@ -4557,12 +4716,16 @@ class SmcQuantApp(ctk.CTk):
                     "'se o preço der mais uma lambida nesse extremo, meu stop sobrevive?' Se a "
                     "resposta for não, o stop está apertado demais. O stop só é válido se, "
                     "colocado assim (largo o suficiente), o R:R do 1º alvo AINDA fechar 1:2.\n"
-                    "5b) ALVOS: take_profit_1 a PELO MENOS 2x a distância do stop (R:R >= 1:2, "
-                    "idealmente 1:3), numa liquidez/estrutura REAL que justifique esse alcance. "
-                    "take_profit_2 na liquidez externa seguinte. Se o alvo lógico mais próximo "
-                    "não alcançar 1:2 a partir de um stop tecnicamente correto (item 5), o trade "
-                    "NÃO vale — retorne action=HOLD. NUNCA encurte o alvo nem aperte o stop só "
-                    "para 'fechar' o R:R no papel.\n"
+                    "5b) ALVOS — RASPAR O MÁXIMO (não seja tímido no alvo): take_profit_1 a "
+                    "PELO MENOS 2x a distância do stop (R:R >= 1:2, idealmente 1:3), na "
+                    "PRIMEIRA liquidez/estrutura REAL do caminho. take_profit_2 é o ALVO "
+                    "INSTITUCIONAL: o pool de liquidez COMPLETO para onde o preço está sendo "
+                    "levado (PDH/PDL, topos/fundos iguais, extremo do dealing range, FVG de "
+                    "timeframe maior por preencher). NÃO encurte o tp2 por cautela — ele é o "
+                    "que o movimento entrega quando o cenário funciona. Se o alvo lógico mais "
+                    "próximo não alcançar 1:2 a partir de um stop tecnicamente correto (item "
+                    "5), o trade NÃO vale — retorne action=HOLD. NUNCA encurte o alvo nem "
+                    "aperte o stop só para 'fechar' o R:R no papel.\n"
                     "\n"
                     "REGRAS DE HONESTIDADE:\n"
                     "- NUNCA invente números, preços, níveis, teses ou confluências. "
@@ -4710,6 +4873,9 @@ class SmcQuantApp(ctk.CTk):
                 probabilidade = sinal.get("probabilidade", 0)
                 confluencias = sinal.get("confluence_factors", []) or []
                 ativo = sinal.get("asset_symbol", "DESCONHECIDO")
+                # Guardado para a detecção de posições associar a leitura do campo
+                # POSIÇÃO quando o painel não mostra o ticker ao lado.
+                self._ultimo_ativo_lido = ativo
                 ledger_text_memory = sinal.get("ledger_update", ledger_text_memory)
 
                 # NORMALIZA A ESCALA (0-100). A IA às vezes devolve 0.78 (escala
@@ -5026,6 +5192,31 @@ class SmcQuantApp(ctk.CTk):
                             f"• {c}" for c in confluencias
                         )
 
+                    # PLANO DE GESTÃO — como raspar o máximo do movimento sem
+                    # devolver o lucro. Parcial no 1º alvo, risco zerado, e o
+                    # restante corre até o alvo institucional.
+                    n_ctr = sizing["contratos"]
+                    if n_ctr >= 2:
+                        parcial = max(1, n_ctr // 2)
+                        runner = n_ctr - parcial
+                        bloco_gestao = (
+                            f"\n\n🎯 *Gestão (para extrair o máximo):*\n"
+                            f"• No Objetivo 1 ({sinal_ativo['tp1']}): realize {parcial} de "
+                            f"{n_ctr} contrato(s) e leve o stop para o preço de entrada "
+                            f"({sinal_ativo['entry']}) — a partir daí o trade não perde mais.\n"
+                            f"• Deixe {runner} contrato(s) correndo até o Objetivo 2 "
+                            f"({sinal_ativo['tp2']}), que é o alvo de liquidez cheio.\n"
+                            f"• Só saia antes se a estrutura virar contra (CHoCH oposto)."
+                        )
+                    else:
+                        bloco_gestao = (
+                            f"\n\n🎯 *Gestão:* com 1 contrato não dá para fracionar. "
+                            f"Leve até o Objetivo 1 ({sinal_ativo['tp1']}) OU, se quiser "
+                            f"raspar o movimento cheio, segure até o Objetivo 2 "
+                            f"({sinal_ativo['tp2']}) movendo o stop para a entrada assim "
+                            f"que o preço passar do Objetivo 1."
+                        )
+
                     mensagem_wpp = (
                         f"📘 *Estudo de Cenário — {ativo}*\n"
                         f"🕐 {time.strftime('%d/%m/%Y %H:%M:%S')}\n"
@@ -5036,7 +5227,8 @@ class SmcQuantApp(ctk.CTk):
                         f"Objetivo 1: {sinal_ativo['tp1']}  |  Objetivo 2: {sinal_ativo['tp2']}"
                         f"{f'  |  R:R {rr1}' if rr1 else ''}"
                         f"{linha_contratos}"
-                        f"{bloco_confluencias}\n\n"
+                        f"{bloco_confluencias}"
+                        f"{bloco_gestao}\n\n"
                         f"_{sinal.get('market_analysis', '')}_\n\n"
                         f"❓ *Deseja acatar este cenário?*\n"
                         f"Responda *ACATAR* para eu registrar e plotar as ordens (entrada, "
@@ -5052,9 +5244,14 @@ class SmcQuantApp(ctk.CTk):
                         f"📘 Nova sugestão — {acao} {ativo}",
                         [f"Entrada {sinal_ativo['entry']}  ·  Stop {sinal_ativo['stop']}",
                          f"Alvo {sinal_ativo['tp1']}" + (f"  ·  R:R {rr1}" if rr1 else ""),
-                         f"Probabilidade {probabilidade:.0f}%  ·  conta {nome_conta_ativa()}",
-                         f"Responda ACATAR em até {TIMEOUT_ACATAR_SEG // 60} min."],
-                        cor="#1f8b4c" if acao == "BUY" else "#c53030")
+                         f"Probabilidade {probabilidade:.0f}%  ·  {sizing['contratos']} ctr"
+                         f"  ·  conta {nome_conta_ativa()}",
+                         f"Decida aqui ou no app (prazo {TIMEOUT_ACATAR_SEG // 60} min)."],
+                        cor="#1f8b4c" if acao == "BUY" else "#c53030",
+                        # O aviso fica de pé durante todo o prazo de acatar,
+                        # com os botões de decisão.
+                        segundos=TIMEOUT_ACATAR_SEG,
+                        sinal_id=novo_sinal_id, direcao=acao)
                     self.after(0, self._atualizar_dashboard)
 
                 else:
