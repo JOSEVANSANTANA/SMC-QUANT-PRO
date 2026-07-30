@@ -55,6 +55,11 @@ PORTA_DEBUG_PADRAO = 9222
 #  cobre exatamente esse caso (mascara os frames do cliente, lê os do servidor,
 #  responde ping, remonta frames fragmentados).
 # ============================================================================
+class ConexaoPerdida(Exception):
+    """A ligação CDP com o Chrome caiu (aba fechada, Chrome reaberto, socket
+    abortado). Quem receber isto deve reconectar antes de tentar de novo."""
+
+
 class _WebSocketMinimo:
     def __init__(self, host, porta, caminho, timeout=10):
         self.sock = socket.create_connection((host, porta), timeout=timeout)
@@ -223,21 +228,56 @@ class TradovateAuto:
 
     # ----------------------------- CDP ----------------------------------
     def cdp(self, metodo, params=None, timeout=10):
-        """Envia um comando CDP e espera a resposta com o mesmo id."""
+        """Envia um comando CDP e espera a resposta com o mesmo id.
+
+        Se o socket cair (Chrome fechado, aba trocada, nova janela de depuração
+        aberta por cima da antiga — o famoso WinError 10053), a conexão é
+        MARCADA COMO MORTA aqui. Sem isso, `self.ws` continuava preenchido e
+        ninguém reconectava: todas as leituras seguintes falhavam para sempre.
+        """
         if not self.ws:
-            raise RuntimeError("CDP não conectado (chame conectar() antes).")
+            raise ConexaoPerdida("CDP não conectado (chame conectar() antes).")
         meu_id = self._proximo_id
         self._proximo_id += 1
-        self.ws.enviar(json.dumps({"id": meu_id, "method": metodo, "params": params or {}}))
-        limite = time.time() + timeout
-        while time.time() < limite:
-            msg = json.loads(self.ws.receber())
-            if msg.get("id") == meu_id:      # resposta do nosso comando
-                if "error" in msg:
-                    raise RuntimeError(f"CDP {metodo}: {msg['error']}")
-                return msg.get("result", {})
-            # senão é um evento assíncrono — ignoramos.
-        raise TimeoutError(f"Sem resposta do CDP para {metodo}.")
+        try:
+            self.ws.enviar(json.dumps({"id": meu_id, "method": metodo,
+                                        "params": params or {}}))
+            limite = time.time() + timeout
+            while time.time() < limite:
+                msg = json.loads(self.ws.receber())
+                if msg.get("id") == meu_id:      # resposta do nosso comando
+                    if "error" in msg:
+                        raise RuntimeError(f"CDP {metodo}: {msg['error']}")
+                    return msg.get("result", {})
+                # senão é um evento assíncrono — ignoramos.
+        except (OSError, EOFError, ValueError) as e:
+            # OSError cobre ConnectionAbortedError/ConnectionResetError (10053/
+            # 10054); ValueError cobre frame/JSON corrompido de socket meio morto.
+            self._marcar_morta()
+            raise ConexaoPerdida(f"conexão com o Chrome caiu durante {metodo}: {e}")
+        self._marcar_morta()
+        raise ConexaoPerdida(f"sem resposta do CDP para {metodo} (conexão travada).")
+
+    def _marcar_morta(self):
+        """Derruba o socket e zera o estado para que a PRÓXIMA chamada reconecte."""
+        try:
+            if self.ws:
+                self.ws.fechar()
+        except Exception:
+            pass
+        self.ws = None
+
+    def conexao_viva(self):
+        """Ping baratíssimo para saber se ainda dá para falar com a aba."""
+        if not self.ws:
+            return False
+        try:
+            self.cdp("Runtime.evaluate",
+                     {"expression": "1", "returnByValue": True}, timeout=4)
+            return True
+        except Exception:
+            self._marcar_morta()
+            return False
 
     def avaliar_js(self, expressao):
         """Runtime.evaluate: roda JS na página e devolve o valor."""
@@ -724,6 +764,10 @@ class TradovateAuto:
         try:
             bruto = self.avaliar_js(self._JS_POSICOES)
             dados = json.loads(bruto or "{}")
+        except ConexaoPerdida as e:
+            # Sinaliza para o app derrubar a instância e reconectar do zero.
+            return {"ok": False, "motivo": str(e), "linhas": [],
+                    "conexao_perdida": True}
         except Exception as e:
             self.log(f"⚠️ Não consegui ler as posições da plataforma: {e}")
             return {"ok": False, "motivo": str(e), "linhas": []}
@@ -857,18 +901,57 @@ class TradovateAuto:
                  ("ALVO",    alvo,    dir_prot,    "LIMITE")]
         self.log(f"📦 Bracket {'LONG' if long_ else 'SHORT'} via ticket "
                  f"[{'ENVIAR' if enviar else 'dry'}]  qtd={qtd}")
+        resultado = {"ok": True, "enviadas": [], "faltando": [], "erro": None,
+                     "exposto": False}
         if enviar and (qtd is None):
             self.log("   ⚠️ QTD é obrigatória pra ENVIAR o bracket. Informe a quantidade.")
-            return False
-        ok = True
+            resultado["ok"] = False
+            resultado["erro"] = "quantidade não informada"
+            resultado["faltando"] = [n for n, p, _, _ in plano if p is not None]
+            return resultado
+
         for nome, preco, dirr, tipo in plano:
             if preco is None:
                 continue
             self.log(f" • {nome}")
-            ok = self.enviar_ordem_ticket(preco, dirr, tipo, qtd, enviar) and ok
+            try:
+                perna_ok = self.enviar_ordem_ticket(preco, dirr, tipo, qtd, enviar)
+            except ConexaoPerdida as e:
+                perna_ok = False
+                resultado["erro"] = str(e)
+                self.log(f"   ❌ {nome}: a conexão com o Chrome caiu ({e}).")
+            except Exception as e:
+                perna_ok = False
+                resultado["erro"] = str(e)
+                self.log(f"   ❌ {nome}: falhou ({e}).")
+
+            if perna_ok:
+                resultado["enviadas"].append(nome)
+            else:
+                resultado["ok"] = False
+                resultado["faltando"].append(nome)
+                if nome == "ENTRADA":
+                    # Sem entrada não existe posição — mandar stop/alvo agora
+                    # criaria ordens soltas na plataforma. Aborta o resto.
+                    resultado["faltando"] += [n for n, p, _, _ in plano
+                                               if p is not None and n != "ENTRADA"]
+                    self.log("   ⛔ ENTRADA não foi enviada — abortei stop e alvo "
+                             "para não deixar ordens soltas na plataforma.")
+                    break
             time.sleep(pausa)
-        self.log("📦 Bracket concluído.")
-        return ok
+
+        # RISCO REAL: a entrada foi para o mercado mas a proteção não. Isso é
+        # posição a descoberto — precisa gritar, não passar em silêncio.
+        if enviar and "ENTRADA" in resultado["enviadas"] and resultado["faltando"]:
+            resultado["exposto"] = True
+            self.log("🚨 ATENÇÃO: a ENTRADA foi enviada, mas "
+                     f"{' e '.join(resultado['faltando'])} NÃO. Se essa ordem for "
+                     "executada, a posição fica SEM PROTEÇÃO. Coloque "
+                     "stop/alvo na mão na plataforma AGORA.")
+        else:
+            self.log("📦 Bracket concluído." if resultado["ok"]
+                     else "📦 Bracket NÃO foi enviado por completo.")
+        return resultado
 
     # --------------------------- Calibração -----------------------------
     #  Precisamos saber a que altura (Y da página) fica cada preço. Em vez de

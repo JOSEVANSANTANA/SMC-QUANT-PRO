@@ -92,7 +92,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "1.9.2"
+VERSAO_ATUAL = "1.9.3"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -2092,14 +2092,29 @@ class SmcQuantApp(ctk.CTk):
             self.log(f"⚠️ Falha ao abrir o Chrome: {e}")
 
     def _tv_conectar(self):
-        """Devolve uma instância conectada de TradovateAuto (reconecta se preciso)."""
+        """Devolve uma instância de TradovateAuto REALMENTE conectada.
+
+        Antes bastava `bot.ws` estar preenchido para o app achar que estava tudo
+        certo. Só que o socket morre calado (Chrome reaberto, aba trocada,
+        WinError 10053) e o objeto continuava com `ws` setado — resultado: todas
+        as leituras falhavam para sempre, sem nunca reconectar. Agora a conexão é
+        VERIFICADA a cada uso e refeita quando cai.
+        """
         if self._tv_bot is None:
             self._tv_bot = tradovate_auto.TradovateAuto(log=self.log)
         bot = self._tv_bot
-        # (re)conecta se o WebSocket não estiver de pé
-        if bot.ws is None:
-            if not bot.conectar():
-                return None
+
+        # Já conectado? confirma que ainda responde antes de confiar.
+        if bot.ws is not None and bot.conexao_viva():
+            return bot
+
+        if bot.ws is not None:
+            self.log("🔌 A conexão com o Chrome tinha caído — reconectando...")
+        if not bot.conectar():
+            return None
+        # Nova conexão de pé: zera o intervalo de aviso para você ver o próximo
+        # resultado na hora.
+        self._tv_ultimo_aviso_falha = 0
         return bot
 
     def _tv_testar_conexao(self):
@@ -2338,6 +2353,16 @@ class SmcQuantApp(ctk.CTk):
                         silencioso)
                     return
                 dados = bot.ler_posicoes() or {}
+                if dados.get("conexao_perdida"):
+                    # Socket caiu no meio da leitura: derruba a instância para o
+                    # próximo ciclo reconectar do zero (antes ficava travado).
+                    self._tv_bot = None
+                    self._avisar_falha_sync(
+                        "🔌 Detecção de posições: a conexão com o Chrome caiu. "
+                        "Vou reconectar sozinho no próximo ciclo. (Isso acontece "
+                        "quando o Chrome é fechado/reaberto ou a aba muda.)",
+                        silencioso)
+                    return
                 if not dados.get("ok"):
                     self._avisar_falha_sync(
                         "⚠️ Detecção de posições: não consegui ler com segurança "
@@ -2421,10 +2446,35 @@ class SmcQuantApp(ctk.CTk):
                 self.log(f"🎯 Tradovate: enviando bracket {direcao} "
                          f"(entrada {entry} · stop {stop} · alvo {alvo} · {qtd} ctr)"
                          + (" [TESTE]" if dry else ""))
-                bot.enviar_bracket_ticket(direcao, entry, stop, alvo,
-                                          qtd=qtd, enviar=not dry)
+                res = bot.enviar_bracket_ticket(direcao, entry, stop, alvo,
+                                                 qtd=qtd, enviar=not dry)
+                # Compatível com versões que devolviam só True/False.
+                if not isinstance(res, dict):
+                    return
+
+                if res.get("exposto"):
+                    # ENTRADA no mercado SEM proteção: é o pior estado possível.
+                    # Grita no log, no alerta da tela e no WhatsApp.
+                    faltando = " e ".join(res.get("faltando", [])) or "a proteção"
+                    aviso = (f"🚨 ATENÇÃO — {direcao} {qtd} contrato(s): a ENTRADA foi "
+                             f"enviada, mas {faltando} NÃO. Se ela executar, a posição "
+                             f"fica SEM PROTEÇÃO. Coloque stop ({stop}) e alvo ({alvo}) "
+                             f"na mão na plataforma AGORA.")
+                    self.log(aviso)
+                    self._notificar_desktop(
+                        "🚨 POSIÇÃO SEM PROTEÇÃO NA PLATAFORMA",
+                        [f"{direcao} {qtd} ctr — entrada {entry} enviada.",
+                         f"NÃO foi enviado: {faltando}.",
+                         f"Coloque stop {stop} e alvo {alvo} na mão AGORA."],
+                        cor="#c53030", segundos=600)
+                    enviar_relatorio_whatsapp(aviso, None, self.log)
+                elif not res.get("ok"):
+                    self.log("⚠️ Tradovate: o bracket NÃO foi enviado por completo "
+                             f"({res.get('erro') or 'motivo não informado'}). "
+                             "Nenhuma ordem sua ficou solta — confira a plataforma.")
             except Exception as e:
-                self.log(f"⚠️ Tradovate: falha ao enviar ordem: {e}")
+                self.log(f"⚠️ Tradovate: falha ao enviar ordem: {e}. "
+                          "CONFIRA A PLATAFORMA: pode ter ficado ordem parcial.")
                 # zera a conexão pra forçar reconexão limpa no próximo envio
                 self._tv_bot = None
 
