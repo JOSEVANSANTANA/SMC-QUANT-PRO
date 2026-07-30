@@ -481,131 +481,230 @@ class TradovateAuto:
         return True
 
     # ------------------- LEITURA DAS POSIÇÕES ABERTAS -------------------
-    #  Lê a grade de posições da Tradovate (símbolo, quantidade líquida, preço
-    #  médio e P&L) direto do DOM. É assim que o app descobre que VOCÊ já está
-    #  posicionado — inclusive numa operação que você abriu na mão, sem passar
-    #  pela sugestão do robô.
+    #  Descobre se VOCÊ está posicionado, lendo a própria tela da corretora —
+    #  inclusive numa operação aberta na mão, fora da sugestão do robô.
     #
-    #  REGRA DE OURO (anti-invenção): esta função NUNCA "deduz" um número. Ela
-    #  só devolve linhas de uma grade cujo CABEÇALHO foi reconhecido (tem, no
-    #  mínimo, uma coluna de símbolo e uma de quantidade). Se não reconhecer a
-    #  grade, devolve lista vazia e diz o motivo — melhor não trazer nada do que
-    #  trazer um número inventado para o seu diário.
+    #  Por que há DUAS estratégias: a Tradovate é um app React feito de <div>,
+    #  não de <table>. Em muitos layouts NÃO existe uma grade de posições na
+    #  tela; o que existe é o campo "POSIÇÃO" no painel do instrumento (e o
+    #  "ABRIR P/L" no topo). Então:
+    #    A) grade de posições, quando o painel estiver aberto (tabela/ARIA grid);
+    #    B) rótulo "POSIÇÃO"/"POSITION" + valor ao lado, associado ao símbolo do
+    #       painel — funciona no layout padrão, sem precisar abrir nada.
+    #
+    #  REGRA DE OURO (anti-invenção): nada é deduzido. Só devolvemos número que
+    #  foi lido de um rótulo reconhecido. Se não reconhecer, devolve vazio e diz
+    #  o motivo. Uma leitura "POSIÇÃO 0" é informação legítima (você está zerado)
+    #  e é justamente o que permite corrigir uma execução que não aconteceu.
+    _JS_POSICOES = r"""
+    (function(){
+      function norm(s){
+        return (s||'').toString().normalize('NFD').replace(/[̀-ͯ]/g,'')
+               .toLowerCase().replace(/[^a-z0-9\/&% ]/g,' ').replace(/\s+/g,' ').trim();
+      }
+      // "1,234.50" | "1.234,50" | "(123.45)"=negativo | "-" | "US$12" -> número
+      function num(s){
+        if(s===null||s===undefined) return null;
+        var t=s.toString().trim();
+        if(t===''||t==='-'||t==='--'||t==='-.-'||t==='—') return null;
+        var neg=/^\(.*\)$/.test(t)||/^\s*-/.test(t);
+        t=t.replace(/[()]/g,'').replace(/[^0-9.,-]/g,'');
+        var ult=Math.max(t.lastIndexOf('.'), t.lastIndexOf(','));
+        if(ult>-1){ t=t.slice(0,ult).replace(/[.,]/g,'')+'.'+t.slice(ult+1); }
+        t=t.replace(/-/g,'');
+        var v=parseFloat(t);
+        if(isNaN(v)) return null;
+        return neg?-v:v;
+      }
+      function txt(el){return (el.innerText||el.textContent||'').trim();}
+      function vis(el){
+        var r=el.getBoundingClientRect();
+        return r.width>0 && r.height>0;
+      }
+      // Símbolo de futuro: MESU6, MNQU6, ESZ5, NQH6, 6EU6...
+      function ehSimbolo(t){
+        return /^[A-Z0-9]{2,5}[FGHJKMNQUVXZ][0-9]{1,2}$/.test(t) ||
+               /^[A-Z]{2,4}[0-9]{1,2}$/.test(t);
+      }
+
+      var SIN={
+        ativo:['symbol','contract','instrument','simbolo','ativo','produto'],
+        qtd:['netpos','net pos','net position','position','pos','posicao',
+             'qty','quantity','quantidade','contratos'],
+        preco:['avg price','avgprice','avg px','avg. px','average price','avg',
+               'preco medio','preco med','preco de entrada'],
+        pnl:['p l','p/l','pl','p&l','pnl','open p l','open pl','abrir p/l',
+             'abrir p l','p l aberto','profit','lucro','resultado']
+      };
+      function achaCol(cabs, chaves){
+        for(var i=0;i<cabs.length;i++)
+          for(var k=0;k<chaves.length;k++) if(cabs[i]===chaves[k]) return i;
+        for(var i2=0;i2<cabs.length;i2++)
+          for(var k2=0;k2<chaves.length;k2++)
+            if(cabs[i2].indexOf(chaves[k2])>-1) return i2;
+        return -1;
+      }
+
+      var res={ok:false, motivo:'', estrategia:'', linhas:[], diag:{}};
+
+      // ---------- ESTRATÉGIA A: grade de posições ----------
+      var grades=[].slice.call(document.querySelectorAll('table,[role=grid],[role=table]'));
+      res.diag.grades_encontradas=grades.length;
+      for(var g=0; g<grades.length; g++){
+        var grade=grades[g];
+        if(!vis(grade)) continue;
+        var cabEls=[].slice.call(grade.querySelectorAll('thead th,[role=columnheader],th'));
+        if(!cabEls.length) continue;
+        var cabs=cabEls.map(function(e){return norm(txt(e));})
+                       .filter(function(t){return t!=='';});
+        if(cabs.length<2) continue;
+        var iA=achaCol(cabs,SIN.ativo), iQ=achaCol(cabs,SIN.qtd);
+        if(iA<0||iQ<0) continue;
+        var iP=achaCol(cabs,SIN.preco), iL=achaCol(cabs,SIN.pnl);
+        var out=[];
+        var linhas=[].slice.call(grade.querySelectorAll('tbody tr,[role=row]'));
+        for(var i=0;i<linhas.length;i++){
+          var cels=[].slice.call(linhas[i].querySelectorAll('td,[role=gridcell],[role=cell]'));
+          if(cels.length<2) continue;
+          var tt=cels.map(txt);
+          var ativo=(tt[iA]||'').split('\n')[0].trim();
+          var q=num(tt[iQ]);
+          if(!ativo||q===null||!/[A-Za-z]/.test(ativo)) continue;
+          out.push({ativo:ativo.slice(0,20), qtd_liquida:q,
+                    preco_medio:iP>-1?num(tt[iP]):null,
+                    pnl:iL>-1?num(tt[iL]):null, fonte:'grade'});
+        }
+        res.ok=true; res.estrategia='grade'; res.linhas=out;
+        res.diag.cabecalhos=cabs;
+        if(!out.length) res.motivo='grade de posicoes vazia (voce esta zerado)';
+        return JSON.stringify(res);
+      }
+
+      // ---------- ESTRATÉGIA B: rótulo "POSIÇÃO" no painel ----------
+      // Procura elementos-folha cujo texto é exatamente o rótulo de posição.
+      var ROT_POS=['posicao','position','net pos','netpos'];
+      var ROT_PNL=['abrir p/l','abrir p l','open p l','open p/l','p/l','p l','pnl'];
+      var achados=[], rotulos_vistos=[];
+      var todos=document.querySelectorAll('div,span,label,p,td,th');
+      for(var n=0;n<todos.length;n++){
+        var el=todos[n];
+        if(el.children.length>0) continue;         // só folhas de texto
+        var t=norm(txt(el));
+        if(!t||t.length>14) continue;
+        if(ROT_POS.indexOf(t)<0) continue;
+        if(!vis(el)) continue;
+        rotulos_vistos.push(t);
+
+        // valor: procura o número no container do rótulo (subindo até 3 níveis)
+        var valor=null, alvoEl=null, cont=el.parentElement;
+        for(var up=0; up<3 && cont && valor===null; up++){
+          var folhas=cont.querySelectorAll('div,span,label,p');
+          for(var f=0; f<folhas.length; f++){
+            var fe=folhas[f];
+            if(fe.children.length>0) continue;
+            if(fe===el) continue;
+            var ft=txt(fe);
+            if(!ft) continue;
+            if(ROT_POS.indexOf(norm(ft))>-1) continue;   // outro rótulo
+            var v=num(ft);
+            if(v!==null && /^[-+(]?[0-9]/.test(ft.trim())){ valor=v; alvoEl=fe; break; }
+          }
+          cont=cont.parentElement;
+        }
+        if(valor===null) continue;
+
+        // símbolo: sobe procurando um texto que pareça contrato de futuro
+        var simbolo=null, c2=el.parentElement;
+        for(var u2=0; u2<6 && c2 && !simbolo; u2++){
+          var cand=c2.querySelectorAll('div,span,label,p,h1,h2,h3');
+          for(var q2=0; q2<cand.length; q2++){
+            var ce=cand[q2];
+            if(ce.children.length>0) continue;
+            var ct=txt(ce).split('\n')[0].trim().toUpperCase();
+            if(ct.length>=3 && ct.length<=7 && ehSimbolo(ct)){ simbolo=ct; break; }
+          }
+          c2=c2.parentElement;
+        }
+        if(!simbolo) continue;
+
+        // P&L aberto: no mesmo container do valor, se houver
+        var pnl=null, c3=alvoEl?alvoEl.parentElement:null;
+        for(var u3=0; u3<3 && c3 && pnl===null; u3++){
+          var fl=c3.querySelectorAll('div,span,label,p');
+          for(var y=0; y<fl.length; y++){
+            var ye=fl[y];
+            if(ye.children.length>0) continue;
+            var yt=txt(ye);
+            if(!yt || ye===alvoEl || ye===el) continue;
+            if(/usd|\$/i.test(yt)){ var pv=num(yt); if(pv!==null){ pnl=pv; break; } }
+          }
+          c3=c3.parentElement;
+        }
+        achados.push({ativo:simbolo, qtd_liquida:valor, preco_medio:null,
+                      pnl:pnl, fonte:'rotulo'});
+      }
+      res.diag.rotulos_posicao=rotulos_vistos.length;
+
+      if(achados.length){
+        // Deduplica por símbolo, preferindo a leitura com quantidade != 0
+        var mapa={};
+        for(var a=0;a<achados.length;a++){
+          var it=achados[a], ant=mapa[it.ativo];
+          if(!ant || (ant.qtd_liquida===0 && it.qtd_liquida!==0) ||
+             (ant.pnl===null && it.pnl!==null)) mapa[it.ativo]=it;
+        }
+        res.linhas=Object.keys(mapa).map(function(k){return mapa[k];});
+        res.ok=true; res.estrategia='rotulo';
+        var abertas=res.linhas.filter(function(l){return l.qtd_liquida!==0;});
+        if(!abertas.length) res.motivo='li o campo POSICAO: voce esta zerado';
+        return JSON.stringify(res);
+      }
+
+      res.motivo='nao achei grade de posicoes nem o campo POSICAO na tela';
+      return JSON.stringify(res);
+    })()
+    """
+
     def ler_posicoes(self):
-        """Devolve [{'ativo','qtd_liquida','preco_medio','pnl','conta'}, ...].
-        Lista vazia = não consegui ler com segurança (o motivo vai pro log)."""
-        js = r"""
-        (function(){
-          function norm(s){
-            return (s||'').toString().normalize('NFD').replace(/[̀-ͯ]/g,'')
-                   .toLowerCase().replace(/[^a-z0-9\/&% ]/g,' ').replace(/\s+/g,' ').trim();
-          }
-          // Converte "1,234.50", "(123.45)" (negativo), "-", "US$12" em número.
-          function num(s){
-            if(s===null||s===undefined) return null;
-            var t=s.toString().trim();
-            if(t===''||t==='-'||t==='--') return null;
-            var neg=/^\(.*\)$/.test(t)||/^-/.test(t);
-            t=t.replace(/[()]/g,'').replace(/[^0-9.,-]/g,'');
-            // separador decimal: assume o ULTIMO ponto/virgula como decimal
-            var ult=Math.max(t.lastIndexOf('.'), t.lastIndexOf(','));
-            if(ult>-1){ t=t.slice(0,ult).replace(/[.,]/g,'')+'.'+t.slice(ult+1); }
-            t=t.replace(/-/g,'');
-            var v=parseFloat(t);
-            if(isNaN(v)) return null;
-            return neg?-v:v;
-          }
-          var SIN={
-            ativo:['symbol','contract','instrument','simbolo','ativo','produto'],
-            qtd:['netpos','net pos','net position','position','pos','qty','quantity',
-                 'quantidade','posicao','contratos'],
-            preco:['avg price','avgprice','avg px','avg. px','average price','avg',
-                   'preco medio','preco med','preco'],
-            pnl:['p l','p/l','pl','p&l','pnl','open p l','open pl','profit','lucro',
-                 'resultado','p l aberto']
-          };
-          function achaCol(cabs, chaves){
-            for(var i=0;i<cabs.length;i++){
-              var c=cabs[i];
-              for(var k=0;k<chaves.length;k++){
-                if(c===chaves[k]) return i;              // match exato primeiro
-              }
-            }
-            for(var i2=0;i2<cabs.length;i2++){
-              var c2=cabs[i2];
-              for(var k2=0;k2<chaves.length;k2++){
-                if(c2.indexOf(chaves[k2])>-1) return i2; // depois parcial
-              }
-            }
-            return -1;
-          }
-          function textoCel(el){return (el.innerText||el.textContent||'').trim();}
-          var saida={ok:false, motivo:'nenhuma grade de posicoes reconhecida',
-                     linhas:[], cabecalhos:[]};
-
-          // Candidatos: tabelas reais e grids ARIA (a Tradovate e React/divs).
-          var grades=[].slice.call(document.querySelectorAll(
-              'table,[role=grid],[role=table]'));
-          for(var g=0; g<grades.length; g++){
-            var grade=grades[g];
-            var r=grade.getBoundingClientRect();
-            if(r.width<=0||r.height<=0) continue;          // invisivel: ignora
-
-            // Cabecalho
-            var cabEls=[].slice.call(grade.querySelectorAll(
-                'thead th,[role=columnheader],th'));
-            if(!cabEls.length) continue;
-            var cabs=cabEls.map(function(e){return norm(textoCel(e));})
-                           .filter(function(t){return t!=='';});
-            if(cabs.length<2) continue;
-
-            var iAtivo=achaCol(cabs,SIN.ativo), iQtd=achaCol(cabs,SIN.qtd);
-            // EXIGE simbolo + quantidade. Sem isso nao e grade de posicao.
-            if(iAtivo<0||iQtd<0) continue;
-            var iPreco=achaCol(cabs,SIN.preco), iPnl=achaCol(cabs,SIN.pnl);
-
-            var linhas=[].slice.call(grade.querySelectorAll(
-                'tbody tr,[role=row]'));
-            var out=[];
-            for(var i=0;i<linhas.length;i++){
-              var cels=[].slice.call(linhas[i].querySelectorAll(
-                  'td,[role=gridcell],[role=cell]'));
-              if(cels.length<2) continue;                  // provavel linha de cabecalho
-              var textos=cels.map(textoCel);
-              var ativo=(textos[iAtivo]||'').trim();
-              var qtd=num(textos[iQtd]);
-              if(!ativo||qtd===null) continue;             // linha incompleta: pula
-              if(!/[A-Za-z]/.test(ativo)) continue;        // simbolo tem letra
-              out.push({
-                ativo: ativo.split('\n')[0].trim().slice(0,20),
-                qtd_liquida: qtd,
-                preco_medio: iPreco>-1?num(textos[iPreco]):null,
-                pnl: iPnl>-1?num(textos[iPnl]):null
-              });
-            }
-            if(out.length){
-              saida.ok=true; saida.motivo=''; saida.linhas=out; saida.cabecalhos=cabs;
-              return JSON.stringify(saida);
-            }
-            // grade reconhecida, porem sem linhas = sem posicao aberta
-            saida.ok=true; saida.motivo='sem posicoes abertas';
-            saida.cabecalhos=cabs; saida.linhas=[];
-            return JSON.stringify(saida);
-          }
-          return JSON.stringify(saida);
-        })()
-        """
+        """Devolve {'ok','estrategia','motivo','linhas':[{'ativo','qtd_liquida',
+        'preco_medio','pnl'}...]}. ok=False significa que não consegui ler com
+        segurança — nesse caso nada é registrado no diário."""
         try:
-            bruto = self.avaliar_js(js)
+            bruto = self.avaliar_js(self._JS_POSICOES)
             dados = json.loads(bruto or "{}")
         except Exception as e:
             self.log(f"⚠️ Não consegui ler as posições da plataforma: {e}")
             return {"ok": False, "motivo": str(e), "linhas": []}
 
         if not dados.get("ok"):
-            self.log(f"ℹ️ Posições da plataforma: {dados.get('motivo', 'leitura falhou')}. "
-                     "Deixe o painel de posições visível na tela da Tradovate.")
+            self.log(f"ℹ️ Posições: {dados.get('motivo', 'leitura falhou')}. "
+                     "Deixe visível na tela o painel do instrumento (com o campo "
+                     "POSIÇÃO) ou o painel de posições.")
         return dados
+
+    def diagnosticar_posicoes(self):
+        """Dump do que a leitura está vendo na tela. Serve para ajustar a
+        detecção na SUA Tradovate sem chute: rode e me mande o resultado."""
+        dados = self.ler_posicoes() or {}
+        self.log("──── DIAGNÓSTICO DA LEITURA DE POSIÇÕES ────")
+        self.log(f"  leitura ok .....: {dados.get('ok')}")
+        self.log(f"  estratégia .....: {dados.get('estrategia') or '(nenhuma)'}")
+        self.log(f"  motivo .........: {dados.get('motivo') or '(sem observação)'}")
+        diag = dados.get("diag") or {}
+        self.log(f"  grades na tela .: {diag.get('grades_encontradas', '?')}")
+        self.log(f"  rótulos POSIÇÃO : {diag.get('rotulos_posicao', '?')}")
+        if diag.get("cabecalhos"):
+            self.log(f"  colunas ........: {diag['cabecalhos']}")
+        linhas = dados.get("linhas") or []
+        if not linhas:
+            self.log("  linhas .........: nenhuma")
+        for ln in linhas:
+            self.log(f"  • {ln.get('ativo')}: qtd={ln.get('qtd_liquida')} "
+                     f"preço_médio={ln.get('preco_medio')} pnl={ln.get('pnl')} "
+                     f"(via {ln.get('fonte')})")
+        self.log("────────────────────────────────────────────")
+        return dados
+
 
     def _formulario_visivel(self):
         """True se o FORMULÁRIO de ordem está à vista. Indicador confiável: o

@@ -21,6 +21,14 @@ try:
 except ImportError:
     PYWIN32_DISPONIVEL = False
 
+# Som do alerta no desktop. winsound é da biblioteca padrão do Windows — não
+# adiciona dependência; em outro sistema o alerta sai apenas visual.
+try:
+    import winsound
+    WINSOUND_DISPONIVEL = True
+except ImportError:
+    WINSOUND_DISPONIVEL = False
+
 # --------------------------------------------------------------------
 # AUTOMAÇÃO OPCIONAL DA TRADOVATE (item #7) — envio de ordem por CDP.
 # Importa com guarda: se o arquivo não estiver junto (ou faltar algo), o app
@@ -84,7 +92,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "1.8.0"
+VERSAO_ATUAL = "1.9.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -552,8 +560,85 @@ VALOR_POR_PONTO = {
     "YM": 5.0,     # E-mini Dow
     "M2K": 0.5,    # Micro E-mini Russell 2000
     "RTY": 50.0,   # E-mini Russell 2000
+    # --- Outros mercados CME comuns ---
+    "MGC": 10.0,   # Micro Ouro
+    "GC": 100.0,   # Ouro
+    "MCL": 100.0,  # Micro Petróleo WTI
+    "CL": 1000.0,  # Petróleo WTI
+    "M6E": 12500.0,  # Micro Euro FX
+    "6E": 125000.0,  # Euro FX
+    # --- B3 (para quem analisa no Profit/Nelogica ou NinjaTrader) ---
+    # Valores em REAIS por ponto; o dashboard mostra na moeda do seu plano.
+    "WIN": 0.20,   # Mini Índice Bovespa (R$ 0,20 por ponto)
+    "IND": 1.00,   # Índice Bovespa cheio
+    "WDO": 10.00,  # Mini Dólar (R$ 10 por ponto)
+    "DOL": 50.00,  # Dólar cheio
 }
 VALOR_POR_PONTO_PADRAO = 5.0  # fallback se o ativo não for reconhecido
+
+# --------------------------------------------------------------------
+# PLATAFORMAS SUPORTADAS
+# --------------------------------------------------------------------
+# A ANÁLISE funciona com QUALQUER plataforma: o robô captura a janela que você
+# escolher e lê o gráfico pela imagem — não depende de integração. O que é
+# exclusivo da Tradovate é o envio automático de ordem e a leitura de posições
+# (feitos por CDP, no Chrome). Saber QUAL plataforma está na tela também melhora
+# a leitura: cada uma escreve o símbolo e o preço de um jeito.
+PLATAFORMAS = {
+    "tradovate":   {"rotulo": "Tradovate (navegador)", "cdp": True,
+                    "pistas": ["tradovate"]},
+    "tradingview": {"rotulo": "TradingView", "cdp": False,
+                    "pistas": ["tradingview", "trading view"]},
+    "profit":      {"rotulo": "Profit / Nelogica", "cdp": False,
+                    "pistas": ["profit", "nelogica"]},
+    "ninjatrader": {"rotulo": "NinjaTrader", "cdp": False,
+                    "pistas": ["ninjatrader", "ninja trader"]},
+    "mt5":         {"rotulo": "MetaTrader 5", "cdp": False,
+                    "pistas": ["metatrader", "mt5"]},
+    "outra":       {"rotulo": "Outra plataforma", "cdp": False, "pistas": []},
+}
+
+def detectar_plataforma_do_titulo(titulo):
+    """Descobre a plataforma pelo título da janela escolhida. É o que permite ao
+    robô se adaptar sozinho quando você troca de TradingView para Profit, por
+    exemplo. Retorna a chave em PLATAFORMAS ('outra' se não reconhecer)."""
+    t = (titulo or "").lower()
+    for chave, info in PLATAFORMAS.items():
+        for pista in info["pistas"]:
+            if pista in t:
+                return chave
+    return "outra"
+
+def rotulo_plataforma(chave):
+    return PLATAFORMAS.get(chave, PLATAFORMAS["outra"])["rotulo"]
+
+def plataforma_tem_cdp(chave):
+    """True só para plataformas em que o envio de ordem / leitura de posição
+    por CDP faz sentido (hoje, a Tradovate no Chrome)."""
+    return PLATAFORMAS.get(chave, PLATAFORMAS["outra"])["cdp"]
+
+# Dicas de leitura por plataforma, injetadas no prompt. Melhora a precisão do
+# ticker e do preço — cada plataforma desenha essas informações num lugar.
+DICAS_PLATAFORMA = {
+    "tradovate": "A plataforma é a TRADOVATE. O ticker aparece na aba do gráfico "
+                 "(ex.: MESU6, MNQU6) e o preço atual fica destacado na escala à "
+                 "direita e no book/DOM. Decimal com PONTO.",
+    "tradingview": "A plataforma é o TRADINGVIEW. O ticker fica no CANTO SUPERIOR "
+                   "ESQUERDO do gráfico, junto do timeframe. O último preço aparece "
+                   "na etiqueta colorida da escala à direita. Atenção ao separador "
+                   "decimal do ativo.",
+    "profit": "A plataforma é o PROFIT (Nelogica). Ativos brasileiros como WINFUT/"
+              "WDOFUT/PETR4. O ticker fica no topo da janela do gráfico e o preço na "
+              "escala à direita. O separador decimal é VÍRGULA e o milhar é PONTO — "
+              "converta corretamente (ex.: 137.500 significa cento e trinta e sete "
+              "mil e quinhentos pontos).",
+    "ninjatrader": "A plataforma é o NINJATRADER. O ticker fica na barra de título "
+                   "do gráfico e o preço na escala à direita. Decimal com PONTO.",
+    "mt5": "A plataforma é o METATRADER 5. O ticker está na barra de título da "
+           "janela do gráfico e o preço na escala à direita.",
+    "outra": "Identifique o ticker e o preço atual onde a plataforma os exibir "
+             "(normalmente no topo do gráfico e na escala de preço à direita).",
+}
 
 def valor_por_ponto_do_ativo(asset_symbol: str) -> float:
     """Resolve o valor por ponto a partir do ticker lido no gráfico.
@@ -807,6 +892,10 @@ def abrir_posicao(origem, direcao, ativo, entry, stop, tp1, tp2, contratos, stat
         "contratos": max(int(contratos or 1), 1),
         "vpp": valor_por_ponto_do_ativo(ativo),
         "status": status_inicial,
+        # Como a execução foi apurada: "CONFIRMADA" (a corretora reportou a
+        # posição, ou você lançou na mão) ou "ESTIMADA" (deduzida do preço lido).
+        "execucao": "CONFIRMADA" if status_inicial == "ABERTA" else None,
+        "confirmacoes_entrada": 0,
         "preco_atual": entry,
         "pnl_atual": 0.0,
         "data_criacao": time.strftime('%d/%m/%Y %H:%M'),
@@ -822,15 +911,31 @@ def calcular_pnl_posicao(pos, preco):
     pontos = (preco - pos["entry"]) if pos["direcao"] == "BUY" else (pos["entry"] - preco)
     return round(pontos * pos["vpp"] * pos["contratos"], 2)
 
-def atualizar_posicoes_com_preco(preco, ativo=None):
+# Margem de confirmação de execução, como fração da distância do risco
+# (entrada -> stop). O preço tem de passar ALÉM da entrada por essa margem para
+# a execução ser considerada — encostar no nível não é execução.
+MARGEM_CONFIRMA_FILL = 0.15
+# Nº de leituras consecutivas além da entrada exigidas quando não há plataforma
+# confirmando. Duas leituras evitam "preencher" por um único preço mal lido.
+CONFIRMACOES_FILL = 2
+
+def atualizar_posicoes_com_preco(preco, ativo=None, exigir_confirmacao_plataforma=False):
     """
     Governa o ciclo de vida das posições do diário, comparando com o preço real:
-      PENDENTE -> ABERTA    (o preço tocou a região de entrada: execução confirmada)
+      PENDENTE -> ABERTA    (execução confirmada)
       PENDENTE -> CANCELADA (o preço rompeu o stop ANTES de tocar a entrada)
       ABERTA   -> FECHADA   (bateu stop ou alvo final)
-    Só posições ABERTAS acumulam P&L — uma sugestão acatada que o preço nunca
-    alcançou não pode contar como operação em andamento.
-    Retorna lista de eventos para notificação.
+
+    SOBRE A EXECUÇÃO (corrige a "operação aberta que nunca executou"):
+    o preço aqui vem da LEITURA DA IMAGEM do gráfico, a cada N minutos. Isso NÃO
+    prova que a SUA ordem limitada foi preenchida — o preço pode encostar no nível
+    e voltar (ou a leitura sair imprecisa). Por isso:
+      • se `exigir_confirmacao_plataforma` (sincronização com a corretora ligada e
+        funcionando), o preço NÃO abre posição nenhuma: quem confirma execução é a
+        plataforma, que é a fonte da verdade;
+      • sem plataforma, exige-se que o preço passe ALÉM da entrada por uma margem
+        do risco E em leituras CONSECUTIVAS. A posição fica marcada como
+        execução ESTIMADA, e o dashboard mostra isso.
     """
     # Preço inválido (captura falhou -> IA devolve 0/None) NÃO pode acionar
     # stop/alvo nem realizar P&L. Antes, um preço 0 fechava posições com perda/
@@ -868,20 +973,38 @@ def atualizar_posicoes_com_preco(preco, ativo=None):
 
         # ---------- PENDENTE: aguardando execução ----------
         if status == "PENDENTE":
-            tocou_entrada = (direcao == "BUY" and preco <= pos["entry"]) or \
-                             (direcao == "SELL" and preco >= pos["entry"])
+            # O preço ainda serve para MOSTRAR onde o mercado está...
+            pos["preco_atual"] = preco
             if bateu_stop:
                 # Stop rompido antes da entrada: o setup nunca foi executado.
                 pos["status"] = "CANCELADA"
                 pos["data_fechamento"] = time.strftime('%d/%m/%Y %H:%M')
                 pos["pnl_final"] = 0.0
                 eventos.append(("CANCELADA", dict(pos)))
-            elif tocou_entrada:
-                pos["status"] = "ABERTA"
-                pos["data_abertura"] = time.strftime('%d/%m/%Y %H:%M')
-                pos["preco_atual"] = preco
-                pos["pnl_atual"] = calcular_pnl_posicao(pos, preco)
-                eventos.append(("EXECUTADA", dict(pos)))
+                continue
+
+            # ...mas NÃO serve para declarar execução quando a plataforma está
+            # disponível: só ela sabe se a SUA ordem foi realmente preenchida.
+            if exigir_confirmacao_plataforma:
+                continue
+
+            # Sem plataforma: exige passar ALÉM da entrada por uma margem do
+            # risco, em leituras CONSECUTIVAS. "Encostou e voltou" não executa.
+            risco = abs(pos["entry"] - pos["stop"]) if pos.get("stop") else 0
+            margem = risco * MARGEM_CONFIRMA_FILL
+            passou = (direcao == "BUY" and preco <= pos["entry"] - margem) or \
+                      (direcao == "SELL" and preco >= pos["entry"] + margem)
+            if not passou:
+                pos["confirmacoes_entrada"] = 0
+                continue
+            pos["confirmacoes_entrada"] = pos.get("confirmacoes_entrada", 0) + 1
+            if pos["confirmacoes_entrada"] < CONFIRMACOES_FILL:
+                continue
+            pos["status"] = "ABERTA"
+            pos["execucao"] = "ESTIMADA"   # não foi confirmada pela corretora
+            pos["data_abertura"] = time.strftime('%d/%m/%Y %H:%M')
+            pos["pnl_atual"] = calcular_pnl_posicao(pos, preco)
+            eventos.append(("EXECUTADA", dict(pos)))
             continue
 
         # ---------- ABERTA: acumula P&L e pode fechar ----------
@@ -941,12 +1064,18 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
     """linhas_lidas: lista de dicts {'ativo','qtd_liquida','preco_medio','pnl'}.
     Devolve um resumo {'criadas','atualizadas','encerradas','ignoradas'}."""
     log = log or (lambda _m: None)
-    resumo = {"criadas": 0, "atualizadas": 0, "encerradas": 0, "ignoradas": 0}
+    resumo = {"criadas": 0, "atualizadas": 0, "encerradas": 0, "ignoradas": 0,
+              "corrigidas": 0, "confirmadas": 0}
     conta = conta_ativa_id()
     lista = carregar_posicoes()
 
     # --- 1) Valida e normaliza o que veio da plataforma ---
+    # `observados` = ativos que a leitura REALMENTE viu na tela (mesmo zerados).
+    # É a diferença entre "vi o MESU6 e você está zerado nele" (informação, que
+    # permite corrigir uma execução falsa) e "não vi esse ativo na tela"
+    # (ausência de informação, que NÃO autoriza concluir nada).
     validas = {}
+    observados = set()
     for ln in (linhas_lidas or []):
         try:
             ativo = str(ln.get("ativo") or "").strip().upper()
@@ -957,8 +1086,11 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
         except (TypeError, ValueError):
             resumo["ignoradas"] += 1
             continue
-        if not ativo or qtd is None or qtd == 0:
-            continue                      # sem posição líquida: nada a registrar
+        if not ativo or qtd is None:
+            continue
+        observados.add(ativo)             # vi este ativo na tela (mesmo zerado)
+        if qtd == 0:
+            continue                      # zerado: sem posição líquida a registrar
         if abs(qtd) > MAX_CONTRATOS_PLAUSIVEL:
             resumo["ignoradas"] += 1
             log(f"⚠️ Ignorei '{ativo}': quantidade implausível ({qtd}).")
@@ -967,17 +1099,22 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
             preco = float(preco) if preco is not None else None
         except (TypeError, ValueError):
             preco = None
-        if not preco or preco <= 0:
-            resumo["ignoradas"] += 1
-            log(f"⚠️ Ignorei '{ativo}': preço médio não veio legível da plataforma "
-                "(não vou inventar um preço).")
-            continue
+        if preco is not None and preco <= 0:
+            preco = None
         try:
             pnl = float(pnl) if pnl is not None else None
         except (TypeError, ValueError):
             pnl = None
         if pnl is not None and abs(pnl) > MAX_PNL_PLAUSIVEL:
             pnl = None
+        # Precisa de pelo menos UM número confiável além da quantidade: o preço
+        # médio (para calcularmos) ou o P&L (que a plataforma já calculou).
+        # Sem nenhum dos dois, não há o que registrar sem inventar.
+        if preco is None and pnl is None:
+            resumo["ignoradas"] += 1
+            log(f"⚠️ Ignorei '{ativo}': a plataforma mostrou a quantidade, mas nem "
+                "preço médio nem P&L vieram legíveis (não vou inventar número).")
+            continue
         validas[ativo] = {"ativo": ativo, "qtd": qtd, "preco": preco, "pnl": pnl}
 
     # --- 2) Atualiza/encerra as posições PLATAFORMA já existentes ---
@@ -986,14 +1123,20 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
                           and p.get("conta_id") == conta
                           and p.get("status") == "ABERTA"]
     for pos in abertas_plataforma:
-        atual = validas.get(str(pos.get("ativo", "")).upper())
+        nome = str(pos.get("ativo", "")).upper()
+        atual = validas.get(nome)
         if atual:
             pos["contratos"] = max(int(abs(atual["qtd"])), 1)
-            pos["entry"] = atual["preco"]
+            if atual["preco"] is not None:
+                pos["entry"] = atual["preco"]
+                pos["preco_atual"] = atual["preco"]
             if atual["pnl"] is not None:
                 pos["pnl_atual"] = round(atual["pnl"], 2)
-            pos["preco_atual"] = atual["preco"]
             resumo["atualizadas"] += 1
+        elif nome not in observados:
+            # Não vi esse ativo na tela agora — ausência de leitura NÃO é prova
+            # de que você encerrou. Deixa como está.
+            continue
         else:
             # Sumiu da plataforma => você encerrou a operação lá. Realizamos com
             # o ÚLTIMO P&L que a própria plataforma reportou (dado real, não
@@ -1005,6 +1148,65 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
             log(f"🔻 Posição encerrada na plataforma: {pos.get('direcao')} "
                 f"{pos.get('ativo')} — resultado US${pos['pnl_final']:+.2f} "
                 "(registrado no diário).")
+
+    # --- 2b) RECONCILIA as posições do ROBÔ com a realidade da corretora ---
+    # É aqui que se corrige a "operação aberta que nunca executou": se o diário
+    # diz que a sugestão acatada está ABERTA por ESTIMATIVA (deduzida do preço
+    # lido), mas a plataforma não mostra posição nenhuma naquele ativo, então a
+    # ordem NÃO foi preenchida — volta a PENDENTE e o P&L falso é zerado.
+    # E o inverso: se a plataforma mostra posição e o diário ainda diz PENDENTE,
+    # a execução é CONFIRMADA com o preço médio REAL do preenchimento.
+    for pos in lista:
+        if pos.get("origem") != "ROBO" or pos.get("conta_id") != conta:
+            continue
+        if pos.get("status") not in ("PENDENTE", "ABERTA"):
+            continue
+        nome = str(pos.get("ativo", "")).upper()
+        if nome not in observados:
+            continue      # ativo fora da tela: sem informação, não mexe
+        atual = validas.get(nome)
+        mesma_direcao = bool(atual) and (
+            (pos.get("direcao") == "BUY" and atual["qtd"] > 0) or
+            (pos.get("direcao") == "SELL" and atual["qtd"] < 0)
+        )
+
+        if pos["status"] == "ABERTA" and not mesma_direcao \
+                and pos.get("execucao") != "CONFIRMADA":
+            # Estava "aberta" só por estimativa e a corretora não confirma.
+            pos["status"] = "PENDENTE"
+            pos["execucao"] = None
+            pos["confirmacoes_entrada"] = 0
+            pos["data_abertura"] = None
+            pos["pnl_atual"] = 0.0
+            resumo["corrigidas"] += 1
+            log(f"↩️ Correção: {pos.get('direcao')} {pos.get('ativo')} @ "
+                f"{pos.get('entry')} NÃO está executada na plataforma — voltei "
+                "para PENDENTE e zerei o resultado falso.")
+
+        elif pos["status"] == "PENDENTE" and mesma_direcao:
+            pos["status"] = "ABERTA"
+            pos["execucao"] = "CONFIRMADA"
+            # Preço médio REAL do preenchimento, quando a plataforma informa.
+            # Se ela só mostra quantidade/P&L, mantemos a entrada planejada da
+            # sugestão (é um dado nosso, não um número inventado).
+            if atual["preco"] is not None:
+                pos["entry"] = atual["preco"]
+                pos["preco_atual"] = atual["preco"]
+            pos["contratos"] = max(int(abs(atual["qtd"])), 1)
+            pos["data_abertura"] = time.strftime('%d/%m/%Y %H:%M')
+            pos["pnl_atual"] = round(atual["pnl"], 2) if atual["pnl"] is not None else 0.0
+            resumo["confirmadas"] += 1
+            log(f"✅ Execução CONFIRMADA pela plataforma: {pos.get('direcao')} "
+                f"{pos.get('ativo')} @ {pos.get('entry')} "
+                f"({pos['contratos']} contrato(s)).")
+
+        elif pos["status"] == "ABERTA" and mesma_direcao:
+            # Posição do robô que a corretora confirma: P&L real vem de lá.
+            pos["execucao"] = "CONFIRMADA"
+            if atual["pnl"] is not None:
+                pos["pnl_atual"] = round(atual["pnl"], 2)
+            if atual["preco"] is not None:
+                pos["preco_atual"] = atual["preco"]
 
     # --- 3) Cria as que ainda não existem no diário ---
     ja_no_diario = {str(p.get("ativo", "")).upper() for p in lista
@@ -1026,6 +1228,8 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
             "contratos": max(int(abs(dados["qtd"])), 1),
             "vpp": valor_por_ponto_do_ativo(ativo),
             "status": "ABERTA",
+            "execucao": "CONFIRMADA",     # a própria corretora está reportando
+            "confirmacoes_entrada": 0,
             "preco_atual": dados["preco"],
             "pnl_atual": round(dados["pnl"], 2) if dados["pnl"] is not None else 0.0,
             "data_criacao": time.strftime('%d/%m/%Y %H:%M'),
@@ -1035,12 +1239,33 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
         }
         lista.append(pos)
         resumo["criadas"] += 1
+        onde = f" @ {dados['preco']}" if dados["preco"] is not None else ""
         log(f"🔎 Detectei que você está posicionado: {direcao} {ativo} "
-            f"{pos['contratos']} contrato(s) @ {dados['preco']} — incluído no diário "
+            f"{pos['contratos']} contrato(s){onde} — incluído no diário "
             f"da conta '{nome_conta_ativa()}'.")
 
     salvar_posicoes(lista)
     return resumo
+
+def cancelar_pendentes_do_sinal(sinal_id, motivo="cenário invalidado"):
+    """Cancela as ordens PENDENTES (não executadas) ligadas a uma sugestão que
+    perdeu validade. Só mexe no que AINDA NÃO entrou no mercado — posição já
+    executada é gerida por stop/alvo, nunca cancelada por mudança de leitura."""
+    if not sinal_id:
+        return 0
+    lista = carregar_posicoes()
+    n = 0
+    for pos in lista:
+        if (pos.get("sinal_id") == sinal_id and pos.get("origem") == "ROBO"
+                and pos.get("status") == "PENDENTE"):
+            pos["status"] = "CANCELADA"
+            pos["data_fechamento"] = time.strftime('%d/%m/%Y %H:%M')
+            pos["pnl_final"] = 0.0
+            pos["motivo_cancelamento"] = motivo
+            n += 1
+    if n:
+        salvar_posicoes(lista)
+    return n
 
 def resultados_por_dia():
     """Agrega o P&L realizado por dia (posições fechadas) + P&L aberto de hoje.
@@ -1134,6 +1359,48 @@ def sinais_da_conta_ativa():
     """Sugestões pertencentes à conta selecionada (as antigas, sem conta_id,
     ficam na Conta 1). É o que a lista do dashboard e o ACATAR enxergam."""
     return [s for s in carregar_sinais_log() if _e_da_conta_ativa(s)]
+
+def situacao_do_sinal(sinal, posicoes=None):
+    """Em que pé está uma sugestão, para mostrar DENTRO da própria lista:
+    aguardando decisão, dispensada, expirada, invalidada, ou — se você acatou —
+    se a ordem ainda está pendente, se entrou (com o P&L ao vivo) e quanto deu
+    quando encerrou. Devolve (texto, cor)."""
+    lista = carregar_posicoes() if posicoes is None else posicoes
+    sid = sinal.get("id")
+    decisao = sinal.get("decisao")
+    pos = next((p for p in lista if p.get("sinal_id") == sid), None)
+
+    if decisao in ("ACATOU_COMPRA", "ACATOU_VENDA") and pos:
+        st = pos.get("status")
+        if st == "PENDENTE":
+            return (f"⏳ ACATADA · aguardando o preço tocar {pos.get('entry')} "
+                    f"(atual: {pos.get('preco_atual', '—')})", COR["amarelo"])
+        if st == "ABERTA":
+            pnl = pos.get("pnl_atual") or 0.0
+            selo = ("✔ confirmada na plataforma"
+                    if pos.get("execucao") == "CONFIRMADA" else "≈ execução estimada")
+            return (f"🔥 EM OPERAÇÃO · {pos.get('contratos')} ctr · "
+                    f"resultado agora US${pnl:+.2f} · {selo}",
+                    COR["verde"] if pnl >= 0 else COR["vermelho"])
+        if st == "FECHADA":
+            pnl = pos.get("pnl_final") or 0.0
+            fim = pos.get("data_fechamento") or ""
+            return (f"{'✅' if pnl >= 0 else '🔴'} ENCERRADA em {fim} · "
+                    f"resultado US${pnl:+.2f}",
+                    COR["verde"] if pnl >= 0 else COR["vermelho"])
+        if st == "CANCELADA":
+            motivo = pos.get("motivo_cancelamento") or "stop rompido antes da entrada"
+            return (f"🚫 CANCELADA sem executar ({motivo})", COR["dim"])
+
+    if decisao in ("ACATOU_COMPRA", "ACATOU_VENDA"):
+        return ("✅ acatada por você", COR["verde"])
+    if decisao == "NAO_OPEROU":
+        return ("🚪 dispensada por você", COR["dim"])
+    if decisao == "EXPIRADO":
+        return ("⌛ expirou — não foi acatada no prazo", COR["dim"])
+    if decisao == "INVALIDADO":
+        return ("🔄 invalidada — o cenário mudou antes de você acatar", COR["dim"])
+    return ("⏳ aguardando sua decisão", COR["amarelo"])
 
 def registrar_novo_sinal_log(direcao, entry, stop, tp1, tp2, ativo="DESCONHECIDO"):
     lista = carregar_sinais_log()
@@ -1446,7 +1713,17 @@ class SmcQuantApp(ctk.CTk):
         # sync_posicoes: lê o painel de posições da corretora a cada ciclo para
         # descobrir se você já está posicionado (inclusive fora da sugestão).
         self.tv_sync_var = tk.BooleanVar(value=tv_cfg.get("sync_posicoes", False))
+
+        # --- Notificação no COMPUTADOR (além do WhatsApp) ---
+        self.notif_var = tk.BooleanVar(
+            value=carregar_config().get("notificar_desktop", True))
+        self._notif_abertas = []        # janelas de alerta na tela (p/ empilhar)
+        self._sinais_notificados = set()  # evita notificar o mesmo sinal 2x
         self._tv_bot = None  # instância TradovateAuto criada sob demanda
+
+        # --- Plataforma de análise (qualquer uma; a Tradovate só ganha os
+        #     recursos extras de ordem/posição por CDP) ---
+        self.plataforma_atual = carregar_config().get("plataforma", "tradovate")
 
         # Cache do handle da janela da corretora. O título do Chrome muda com a
         # aba ativa; fixar o hwnd evita "não encontrei a janela" quando a aba da
@@ -1512,13 +1789,37 @@ class SmcQuantApp(ctk.CTk):
         if api_key_salva:
             self.api_entry.insert(0, api_key_salva)
 
-        ctk.CTkLabel(master, text="Janela da corretora a monitorar:").pack(pady=(6, 0))
+        ctk.CTkLabel(master, text="Janela do gráfico a monitorar (qualquer plataforma):"
+                     ).pack(pady=(6, 0))
         nome_janela_salvo = config_atual.get("nome_janela_corretora", "")
         self.janela_var = tk.StringVar(value=nome_janela_salvo or "(clique em Atualizar lista)")
-        self.janela_dropdown = ctk.CTkOptionMenu(master, variable=self.janela_var, values=[self.janela_var.get()], width=420)
+        self.janela_dropdown = ctk.CTkOptionMenu(master, variable=self.janela_var,
+                                                 values=[self.janela_var.get()], width=420,
+                                                 command=self._ao_trocar_janela)
         self.janela_dropdown.pack(pady=4)
         ctk.CTkButton(master, text="🔄 Atualizar lista de janelas abertas", fg_color="#555555",
                       command=self._atualizar_lista_janelas).pack(pady=(0, 4))
+
+        # ---------- PLATAFORMA (detectada automaticamente) ----------
+        frame_plat = ctk.CTkFrame(master, fg_color="transparent")
+        frame_plat.pack(pady=(2, 0))
+        ctk.CTkLabel(frame_plat, text="Plataforma:").pack(side="left", padx=(4, 4))
+        self.plataforma_var = tk.StringVar(value=rotulo_plataforma(self.plataforma_atual))
+        ctk.CTkOptionMenu(frame_plat, variable=self.plataforma_var,
+                          values=[info["rotulo"] for info in PLATAFORMAS.values()],
+                          width=200, command=self._ao_trocar_plataforma
+                          ).pack(side="left", padx=4)
+        self.lbl_plataforma_info = ctk.CTkLabel(frame_plat, text="", text_color=COR["dim"],
+                                                 font=ctk.CTkFont(size=10))
+        self.lbl_plataforma_info.pack(side="left", padx=8)
+        ctk.CTkLabel(
+            master, justify="left", text_color="gray", font=ctk.CTkFont(size=10),
+            text="A ANÁLISE funciona em qualquer plataforma (TradingView, Profit/Nelogica,\n"
+                 "NinjaTrader, MT5...): o robô lê o gráfico da janela escolhida acima.\n"
+                 "Só o envio automático de ordem e a leitura de posições são exclusivos\n"
+                 "da Tradovate no Chrome. Ao trocar a janela, a plataforma é detectada."
+        ).pack(pady=(0, 4))
+        self._atualizar_info_plataforma()
 
         self.restaurar_minimizada_var = tk.BooleanVar(
             value=config_atual.get("restaurar_janela_minimizada", True)
@@ -1582,6 +1883,33 @@ class SmcQuantApp(ctk.CTk):
             width=90,
             command=self._alterar_intervalo_ao_vivo
         ).pack(side="left", padx=6)
+
+        # ---------- NOTIFICAÇÃO NO COMPUTADOR ----------
+        frame_notif = ctk.CTkFrame(master, fg_color="#1b2735",
+                                    border_color="#3d7fc0", border_width=1)
+        frame_notif.pack(padx=10, pady=(8, 2), fill="x")
+        ctk.CTkLabel(frame_notif, text="🔔 Alertas no computador",
+                     font=ctk.CTkFont(weight="bold", size=13),
+                     text_color="#63b3ed").pack(pady=(8, 0), anchor="w", padx=12)
+        ctk.CTkLabel(frame_notif, justify="left", text_color=COR["texto"],
+                     font=ctk.CTkFont(size=11),
+                     text="Além do WhatsApp, mostra um aviso na tela (com bipe) a cada nova\n"
+                          "sugestão e quando uma operação bate stop/alvo. Clique no aviso para\n"
+                          "abrir o app. Pode ligar e desligar quando quiser."
+                     ).pack(pady=(2, 4), padx=12, anchor="w")
+        ctk.CTkCheckBox(frame_notif,
+                        text="Mostrar notificações na tela do computador",
+                        variable=self.notif_var, command=self._salvar_pref_notificacao,
+                        text_color=COR["texto"], fg_color="#1f8b4c",
+                        border_color="#63b3ed", hover_color="#25a35a"
+                        ).pack(pady=(0, 4), padx=12, anchor="w")
+        ctk.CTkButton(frame_notif, text="🔔 Testar notificação", width=170,
+                      fg_color="#2a3f5f", hover_color="#3a5580",
+                      command=lambda: self._notificar_desktop(
+                          "🔔 Teste de notificação",
+                          ["Se você está vendo isto, os alertas estão funcionando.",
+                           "Novas sugestões vão aparecer assim."])
+                      ).pack(pady=(0, 10), padx=12, anchor="w")
 
         self.lbl_qr_titulo = ctk.CTkLabel(master, text="", text_color="white",
                                            font=ctk.CTkFont(size=14, weight="bold"))
@@ -1695,6 +2023,9 @@ class SmcQuantApp(ctk.CTk):
         ctk.CTkButton(linha2, text="🔎 Detectar posições agora", fg_color="#1f8b4c",
                       hover_color="#25a35a", text_color="#ffffff", width=200,
                       command=self._tv_sincronizar_posicoes).pack(side="left", padx=4)
+        ctk.CTkButton(linha2, text="🩺 Diagnosticar leitura", fg_color="#555555",
+                      hover_color="#777777", text_color="#ffffff", width=170,
+                      command=self._tv_diagnosticar).pack(side="left", padx=4)
 
     def _tv_salvar_prefs(self):
         salvar_config({"tradovate": {
@@ -1756,6 +2087,152 @@ class SmcQuantApp(ctk.CTk):
                          "Abra o 'Chamado do pedido' na Tradovate.")
         threading.Thread(target=tarefa, daemon=True).start()
 
+    # ------------------------------------------------------------------
+    # PLATAFORMA DE ANÁLISE — detecção automática + ajuste manual
+    # ------------------------------------------------------------------
+    def _atualizar_info_plataforma(self):
+        """Mostra ao lado do seletor o que aquela plataforma habilita."""
+        if not hasattr(self, "lbl_plataforma_info"):
+            return
+        if plataforma_tem_cdp(self.plataforma_atual):
+            txt, cor = "✔ análise + ordem automática + posições", COR["verde"]
+        else:
+            txt, cor = "✔ análise por imagem (ordem/posições: manual)", COR["amarelo"]
+        self.lbl_plataforma_info.configure(text=txt, text_color=cor)
+
+    def _ao_trocar_janela(self, titulo_escolhido=None):
+        """Ao escolher outra janela, tenta descobrir sozinho a plataforma."""
+        titulo = titulo_escolhido or self.janela_var.get()
+        detectada = detectar_plataforma_do_titulo(titulo)
+        if detectada != "outra" and detectada != self.plataforma_atual:
+            self.plataforma_atual = detectada
+            self.plataforma_var.set(rotulo_plataforma(detectada))
+            salvar_config({"plataforma": detectada})
+            self.log(f"🖥️ Plataforma detectada pela janela: {rotulo_plataforma(detectada)}.")
+        self._atualizar_info_plataforma()
+
+    def _ao_trocar_plataforma(self, rotulo_escolhido):
+        chave = next((k for k, v in PLATAFORMAS.items()
+                      if v["rotulo"] == rotulo_escolhido), "outra")
+        self.plataforma_atual = chave
+        salvar_config({"plataforma": chave})
+        self._atualizar_info_plataforma()
+        if plataforma_tem_cdp(chave):
+            self.log(f"🖥️ Plataforma: {rotulo_plataforma(chave)} — análise, envio de "
+                      "ordem e leitura de posições disponíveis.")
+        else:
+            self.log(f"🖥️ Plataforma: {rotulo_plataforma(chave)} — a análise do gráfico "
+                      "funciona normalmente. O envio automático de ordem e a leitura de "
+                      "posições existem só para a Tradovate; nessa plataforma você "
+                      "executa na mão e pode lançar a operação no diário.")
+
+    # ------------------------------------------------------------------
+    # NOTIFICAÇÃO NO COMPUTADOR (independente do WhatsApp)
+    # ------------------------------------------------------------------
+    def _salvar_pref_notificacao(self):
+        salvar_config({"notificar_desktop": bool(self.notif_var.get())})
+        self.log("🔔 Notificações no computador LIGADAS."
+                  if self.notif_var.get() else
+                  "🔕 Notificações no computador desligadas.")
+
+    def _notificar_desktop(self, titulo, linhas, cor="#1f8b4c", segundos=15):
+        """Mostra um aviso no canto da tela (sempre por cima) + um bipe. Não usa
+        biblioteca externa, então funciona no .exe sem nada a mais. Respeita o
+        interruptor: desligado, não aparece nada."""
+        if not (getattr(self, "notif_var", None) and self.notif_var.get()):
+            return
+
+        def mostrar():
+            try:
+                # Limpa da lista as janelas que já fecharam, para empilhar certo.
+                self._notif_abertas = [w for w in self._notif_abertas
+                                       if w.winfo_exists()]
+                win = ctk.CTkToplevel(self)
+                win.overrideredirect(True)          # sem barra de título
+                win.attributes("-topmost", True)    # sempre visível
+                larg, alt = 400, 40 + 20 * (len(linhas) + 1)
+                tela_l = win.winfo_screenwidth()
+                tela_a = win.winfo_screenheight()
+                # Empilha de baixo para cima, acima da barra de tarefas.
+                desloc = sum(w.winfo_height() + 8 for w in self._notif_abertas)
+                x = tela_l - larg - 20
+                y = tela_a - alt - 70 - desloc
+                win.geometry(f"{larg}x{alt}+{x}+{max(y, 10)}")
+
+                quadro = ctk.CTkFrame(win, fg_color="#12161f",
+                                       border_color=cor, border_width=2,
+                                       corner_radius=8)
+                quadro.pack(fill="both", expand=True)
+                ctk.CTkLabel(quadro, text=titulo, text_color=cor, anchor="w",
+                             font=ctk.CTkFont(size=13, weight="bold")
+                             ).pack(fill="x", padx=12, pady=(8, 2))
+                for ln in linhas:
+                    ctk.CTkLabel(quadro, text=ln, text_color="#e6e6e6", anchor="w",
+                                 justify="left", font=ctk.CTkFont(size=11)
+                                 ).pack(fill="x", padx=12)
+                ctk.CTkButton(quadro, text="fechar", width=60, height=20,
+                              fg_color="#333333", hover_color="#555555",
+                              font=ctk.CTkFont(size=10),
+                              command=win.destroy).pack(anchor="e", padx=10, pady=(4, 8))
+
+                # Clicar no aviso traz o app para frente.
+                def focar(_e=None):
+                    try:
+                        self.deiconify(); self.lift(); self.focus_force()
+                    except Exception:
+                        pass
+                quadro.bind("<Button-1>", focar)
+
+                self._notif_abertas.append(win)
+                win.after(int(segundos * 1000),
+                          lambda: win.winfo_exists() and win.destroy())
+
+                if WINSOUND_DISPONIVEL:
+                    try:
+                        winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                    except Exception:
+                        pass
+            except Exception as e:
+                # Notificação nunca pode derrubar o app.
+                self.log(f"⚠️ Não consegui exibir a notificação: {e}")
+
+        self.after(0, mostrar)
+
+    def _tv_diagnosticar(self):
+        """Mostra no log EXATAMENTE o que a leitura de posições está enxergando
+        na tela da corretora. Se a detecção não pegar na sua Tradovate, rode isto
+        e me mande o resultado — com ele eu ajusto sem chutar."""
+        if not TRADOVATE_DISPONIVEL:
+            self.log("ℹ️ Módulo tradovate_auto.py não está junto do app.")
+            return
+
+        def tarefa():
+            bot = self._tv_conectar()
+            if not bot:
+                self.log("❌ Sem conexão com a Tradovate. Abra o Chrome pelo botão "
+                          "e faça login primeiro.")
+                return
+            try:
+                bot.diagnosticar_posicoes()
+            except Exception as e:
+                self.log(f"⚠️ Falha no diagnóstico: {e}")
+                self._tv_bot = None
+
+        threading.Thread(target=tarefa, daemon=True).start()
+
+    def _plataforma_confirma_fills(self):
+        """True quando a leitura de posições da corretora está LIGADA e funcionou
+        há pouco. Nesse caso ela é a fonte da verdade sobre execução, e o preço
+        lido do gráfico não abre posição por conta própria."""
+        if not plataforma_tem_cdp(getattr(self, "plataforma_atual", "tradovate")):
+            return False
+        if not (getattr(self, "tv_sync_var", None) and self.tv_sync_var.get()):
+            return False
+        ultimo = getattr(self, "_tv_sync_ok_ts", 0)
+        # Vale por 10 min: se a leitura parar de funcionar, voltamos ao modo
+        # estimado em vez de travar as posições em PENDENTE para sempre.
+        return (time.time() - ultimo) < 600
+
     def _tv_sincronizar_posicoes(self, silencioso=False):
         """Lê as posições abertas na Tradovate e reconcilia com o diário da conta
         selecionada. Roda em thread para não travar a GUI.
@@ -1763,6 +2240,13 @@ class SmcQuantApp(ctk.CTk):
         if not TRADOVATE_DISPONIVEL:
             if not silencioso:
                 self.log("ℹ️ Módulo tradovate_auto.py não está junto do app.")
+            return
+        if not plataforma_tem_cdp(getattr(self, "plataforma_atual", "tradovate")):
+            if not silencioso:
+                self.log(f"ℹ️ A leitura automática de posições existe só para a "
+                          f"Tradovate. Em {rotulo_plataforma(self.plataforma_atual)}, "
+                          "lance a operação em '✍️ Incluir operação no diário' que o "
+                          "robô acompanha o resultado normalmente.")
             return
 
         def tarefa():
@@ -1781,14 +2265,21 @@ class SmcQuantApp(ctk.CTk):
                                   "Nada foi registrado — prefiro não inventar dado.")
                     return
 
+                # Leitura válida: a partir daqui a plataforma é a fonte da verdade
+                # sobre execução (usado por _plataforma_confirma_fills).
+                self._tv_sync_ok_ts = time.time()
+
                 linhas = dados.get("linhas", [])
                 resumo = sincronizar_posicoes_plataforma(linhas, log=self.log)
-                houve = any(resumo[k] for k in ("criadas", "encerradas"))
+                houve = any(resumo[k] for k in
+                            ("criadas", "encerradas", "corrigidas", "confirmadas"))
                 if houve or not silencioso:
                     self.log(
                         f"🔎 Posições da plataforma (conta '{nome_conta_ativa()}'): "
                         f"{resumo['criadas']} nova(s), {resumo['atualizadas']} atualizada(s), "
-                        f"{resumo['encerradas']} encerrada(s)"
+                        f"{resumo['encerradas']} encerrada(s), "
+                        f"{resumo['confirmadas']} confirmada(s), "
+                        f"{resumo['corrigidas']} corrigida(s)"
                         + (f", {resumo['ignoradas']} ignorada(s) por leitura duvidosa"
                            if resumo["ignoradas"] else "")
                         + "."
@@ -2523,6 +3014,9 @@ class SmcQuantApp(ctk.CTk):
         self.janela_dropdown.configure(values=titulos)
         selecionar = manter_selecao if manter_selecao in titulos else titulos[0]
         self.janela_var.set(selecionar)
+        # Detecta a plataforma pela janela escolhida (se der para reconhecer).
+        if hasattr(self, "plataforma_var"):
+            self._ao_trocar_janela(selecionar)
 
     def _alterar_intervalo_ao_vivo(self, novo_valor):
         try:
@@ -2578,8 +3072,9 @@ class SmcQuantApp(ctk.CTk):
         # redesenhadas mesmo que a assinatura anterior fosse igual.
         self._assin_posicoes = None
         self._assin_sinais = None
+        self._assin_dashboard = None
         self._recarregar_menu_contas()
-        self._atualizar_dashboard()
+        self._atualizar_dashboard(forcar=True)
 
     def _trocar_conta(self, nome_escolhido):
         conta = next((c for c in carregar_contas() if c["nome"] == nome_escolhido), None)
@@ -2693,7 +3188,29 @@ class SmcQuantApp(ctk.CTk):
             self._atualizar_dashboard()
         except Exception as e:
             self.log(f"⚠️ Erro ao atualizar dashboard (não crítico): {e}")
-        self.after(5000, self._loop_atualizar_dashboard)
+        # 2 s deixa o painel BEM mais vivo. Só é viável porque o
+        # _atualizar_dashboard sai na hora quando nada mudou (ver assinatura):
+        # o tique custa 4 os.stat, não um redesenho inteiro.
+        self.after(2000, self._loop_atualizar_dashboard)
+
+    def _assinatura_dashboard(self):
+        """Impressão digital baratíssima de tudo que alimenta o painel: se ela
+        não mudou, não há nada para redesenhar. É o que tira o travamento —
+        antes, todo tique de 5 s reconstruía KPIs, gráficos, textos e listas."""
+        partes = [conta_ativa_id(), time.strftime('%d/%m/%Y')]
+        for caminho in (POSITIONS_FILE, CONFIG_FILE, SIGNALS_LOG_FILE, PERFORMANCE_FILE):
+            try:
+                st = os.stat(caminho)
+                partes.append(f"{st.st_mtime_ns}:{st.st_size}")
+            except OSError:
+                partes.append("-")
+        # Largura do gráfico entra na conta para o painel se redesenhar quando
+        # você redimensiona a janela.
+        try:
+            partes.append(str(self.canvas_equity.winfo_width()))
+        except Exception:
+            pass
+        return "|".join(partes)
 
     def _computar_stats_plano(self):
         # Estatísticas agora vêm do DIÁRIO REAL (posições acatadas + manuais),
@@ -2755,7 +3272,18 @@ class SmcQuantApp(ctk.CTk):
             "resultado_hoje": resultado_hoje,
         }
 
-    def _atualizar_dashboard(self):
+    def _atualizar_dashboard(self, forcar=False):
+        # SAÍDA ANTECIPADA: nada mudou desde o último desenho -> não faz nada.
+        # (forcar=True para quando a mudança não está nos arquivos, p.ex. troca
+        # de conta ou redesenho pedido pelo usuário.)
+        try:
+            assin = self._assinatura_dashboard()
+            if not forcar and assin == getattr(self, "_assin_dashboard", None):
+                return
+            self._assin_dashboard = assin
+        except Exception:
+            pass   # se a assinatura falhar, segue e redesenha normalmente
+
         try:
             stats = self._computar_stats_plano()
             dd_max_config = self.plano.get("drawdown_maximo") or 0
@@ -3151,9 +3679,14 @@ class SmcQuantApp(ctk.CTk):
 
     def _renderizar_lista_sinais(self):
         sinais = list(reversed(sinais_da_conta_ativa()[-10:]))
+        posicoes = carregar_posicoes()
+        situacoes = {s["id"]: situacao_do_sinal(s, posicoes) for s in sinais}
 
-        # DESEMPENHO: só reconstrói a lista quando ela muda de verdade.
-        assinatura = tuple((s["id"], s.get("decisao")) for s in sinais)
+        # DESEMPENHO: só reconstrói a lista quando algo muda de verdade — agora
+        # a situação/P&L também entram na assinatura, para o acompanhamento
+        # aparecer atualizado sem redesenhar tudo a cada 5 s.
+        assinatura = tuple((s["id"], s.get("decisao"), situacoes[s["id"]][0])
+                           for s in sinais)
         if getattr(self, "_assin_sinais", None) == assinatura:
             return
         self._assin_sinais = assinatura
@@ -3166,23 +3699,48 @@ class SmcQuantApp(ctk.CTk):
             return
 
         for s in sinais:
-            linha = ctk.CTkFrame(self.frame_sinais)
+            texto_sit, cor_sit = situacoes[s["id"]]
+            # Cenário já resolvido fica visualmente apagado; o que ainda pede
+            # decisão (ou está em operação) fica destacado.
+            resolvido = s.get("decisao") in ("NAO_OPEROU", "EXPIRADO", "INVALIDADO")
+            linha = ctk.CTkFrame(self.frame_sinais,
+                                  fg_color="#1a1a24" if resolvido else "#20283a",
+                                  border_width=1,
+                                  border_color="#2a2a3a" if resolvido else cor_sit)
             linha.pack(fill="x", pady=3, padx=2)
 
             alvos = [a for a in (s.get("tp1"), s.get("tp2")) if a is not None]
             alvos_txt = " / ".join(f"{a}" for a in alvos) if alvos else "—"
             ativo_txt = f" {s.get('ativo', '')}" if s.get("ativo") and s["ativo"] != "DESCONHECIDO" else ""
-            texto = (f"{s['data_hora']} | {s['direcao']}{ativo_txt}  ·  "
-                     f"Entrada {s['entry']}  /  Alvo {alvos_txt}  /  Stop {s['stop']}")
-            decisao_atual = s.get("decisao")
-            if decisao_atual:
-                texto += f"   →  [{decisao_atual}]"
+            rr = None
+            try:
+                risco = abs(float(s["entry"]) - float(s["stop"]))
+                alvo1 = s.get("tp1") or s.get("tp2")
+                if risco and alvo1:
+                    rr = round(abs(float(alvo1) - float(s["entry"])) / risco, 2)
+            except (TypeError, ValueError, KeyError):
+                rr = None
 
-            ctk.CTkLabel(linha, text=texto, anchor="w").pack(side="top", fill="x", padx=6, pady=(4, 0))
+            texto = (f"{s['data_hora']} | {s['direcao']}{ativo_txt}  ·  "
+                     f"Entrada {s['entry']}  /  Alvo {alvos_txt}  /  Stop {s['stop']}"
+                     + (f"  /  R:R {rr}" if rr else ""))
+            ctk.CTkLabel(linha, text=texto, anchor="w",
+                         text_color=COR["dim"] if resolvido else COR["texto"]
+                         ).pack(side="top", fill="x", padx=8, pady=(5, 0))
+
+            # ---- ACOMPANHAMENTO: situação atual e resultado ----
+            ctk.CTkLabel(linha, text=texto_sit, anchor="w", text_color=cor_sit,
+                         font=ctk.CTkFont(size=12, weight="bold")
+                         ).pack(side="top", fill="x", padx=8, pady=(1, 2))
+
+            # Os botões só aparecem enquanto a decisão faz sentido — depois de
+            # resolvido, a linha vira só histórico (menos poluição visual).
+            if resolvido or s.get("decisao") in ("ACATOU_COMPRA", "ACATOU_VENDA"):
+                ctk.CTkLabel(linha, text="", height=2).pack(side="top")
+                continue
 
             frame_botoes = ctk.CTkFrame(linha, fg_color="transparent")
             frame_botoes.pack(side="top", pady=(2, 6))
-
             sinal_id = s["id"]
             ctk.CTkButton(frame_botoes, text="✅ Acatei (Comprei)", width=140, fg_color="#1f8b4c",
                           command=lambda i=sinal_id: self._registrar_decisao(i, "ACATOU_COMPRA")).pack(side="left", padx=3)
@@ -3771,6 +4329,9 @@ class SmcQuantApp(ctk.CTk):
         #   • probabilidade >= mínimo (cenários fracos viram HOLD)
         RR_MINIMO = float(config_horario.get("rr_minimo", 2.0))
         PROBABILIDADE_MINIMA = float(config_horario.get("probabilidade_minima", 60))
+        # Janela em que o MESMO setup (ativo+direção+entrada quase igual) não é
+        # sugerido de novo. Evita a lista cheia de cenários idênticos repetidos.
+        JANELA_ANTI_REPETICAO_SEG = 45 * 60
         HORA_INICIO = config_horario.get("hora_inicio", "09:00")
         HORA_FIM = config_horario.get("hora_fim", "17:00")
         sinal_ativo = {"estado": "ENCERRADA"}
@@ -3951,6 +4512,7 @@ class SmcQuantApp(ctk.CTk):
                 PROMPT_FINAL = (
                     f"{PROMPT_BASE}\n{memoria_dinamica}\n"
                     f"ÚLTIMO ESTADO DO LEDGER:\n{ledger_text_memory}\n"
+                    f"CONTEXTO DA TELA: {DICAS_PLATAFORMA.get(self.plataforma_atual, DICAS_PLATAFORMA['outra'])}\n"
                     "Identifique o TICKER do ativo no gráfico (asset_symbol) e leia o PREÇO "
                     "ATUAL com precisão pela última vela e pela escala de preço à direita.\n"
                     "\n"
@@ -3976,13 +4538,31 @@ class SmcQuantApp(ctk.CTk):
                     "4) PONTO DE ENTRADA (POI): a entrada deve estar num Order Block NÃO mitigado "
                     "ou num Fair Value Gap (FVG) coerente com o viés. ENTRY_PRICE é sempre ordem "
                     "PENDENTE nesse POI (não a mercado).\n"
-                    "5) STOP e ALVOS (REGRA RÍGIDA DE R:R): stop_loss logo além do POI/estrutura "
-                    "que invalida a ideia. O take_profit_1 DEVE estar a uma distância de PELO MENOS "
-                    "2x a distância do stop (R:R do 1º alvo >= 1:2, idealmente 1:3); posicione-o numa "
-                    "liquidez/estrutura REAL que justifique esse alcance. take_profit_2 na liquidez "
-                    "externa seguinte. Se o alvo lógico mais próximo não alcançar 1:2 a partir de um "
-                    "stop tecnicamente correto, o trade NÃO vale — retorne action=HOLD. NUNCA encurte "
-                    "o alvo nem alargue artificialmente o stop só para 'fechar' o R:R.\n"
+                    "4b) ONDE EXATAMENTE COLOCAR A ENTRADA (crítico — evita 'o preço encostou "
+                    "e voltou'): NÃO coloque a entrada na BORDA externa do POI, no ponto que o "
+                    "preço só alcança com a ponta do pavio. Use o MIOLO da zona: o equilíbrio "
+                    "(50%) do corpo do Order Block, ou a zona OTE (61,8%–79% de retração da "
+                    "perna de impulso), ou o meio do FVG. Se o preço já está MUITO perto do POI "
+                    "(a menos de ~20% da distância do stop), o setup perdeu a assimetria — "
+                    "retorne HOLD em vez de forçar uma entrada colada no preço atual.\n"
+                    "4c) ASSERTIVIDADE NOS EXTREMOS: priorize POIs que estejam em EXTREMOS "
+                    "REAIS de liquidez — máxima/mínima do dia anterior, extremos da sessão, "
+                    "topos/fundos iguais (equal highs/lows), abertura semanal, POIs de "
+                    "timeframe maior. É nesses extremos que existe liquidez de verdade para "
+                    "o preço reagir. POI no MEIO do range, sem liquidez atrás, é o que produz "
+                    "o 'encostou e voltou' — nesse caso, HOLD.\n"
+                    "5) STOP (crítico — evita ser varrido por um pavio): o stop_loss vai ALÉM "
+                    "do EXTREMO DO PAVIO que varreu a liquidez, mais uma folga de respiro — "
+                    "NUNCA rente ao nível, nem no meio do corpo do candle de sweep. Pergunte-se: "
+                    "'se o preço der mais uma lambida nesse extremo, meu stop sobrevive?' Se a "
+                    "resposta for não, o stop está apertado demais. O stop só é válido se, "
+                    "colocado assim (largo o suficiente), o R:R do 1º alvo AINDA fechar 1:2.\n"
+                    "5b) ALVOS: take_profit_1 a PELO MENOS 2x a distância do stop (R:R >= 1:2, "
+                    "idealmente 1:3), numa liquidez/estrutura REAL que justifique esse alcance. "
+                    "take_profit_2 na liquidez externa seguinte. Se o alvo lógico mais próximo "
+                    "não alcançar 1:2 a partir de um stop tecnicamente correto (item 5), o trade "
+                    "NÃO vale — retorne action=HOLD. NUNCA encurte o alvo nem aperte o stop só "
+                    "para 'fechar' o R:R no papel.\n"
                     "\n"
                     "REGRAS DE HONESTIDADE:\n"
                     "- NUNCA invente números, preços, níveis, teses ou confluências. "
@@ -4168,14 +4748,33 @@ class SmcQuantApp(ctk.CTk):
                     self.log("🔎 Nenhuma confluência relevante neste ciclo.")
 
                 # ---------- DIÁRIO DE TRADER: máquina de estados das posições ----------
-                eventos_pos = atualizar_posicoes_com_preco(preco, ativo)
+                # Se a leitura de posições da corretora está funcionando, é ELA
+                # que confirma execução — o preço lido não abre posição sozinho.
+                eventos_pos = atualizar_posicoes_com_preco(
+                    preco, ativo,
+                    exigir_confirmacao_plataforma=self._plataforma_confirma_fills())
                 for tipo, pos in eventos_pos:
                     if tipo == "EXECUTADA":
-                        self.log(f"✅ ENTRADA EXECUTADA: {pos['direcao']} {pos['ativo']} @ {pos['entry']} "
-                                  f"— o preço tocou a região. Posição agora conta P&L.")
+                        como = ("confirmada pela plataforma"
+                                if pos.get("execucao") == "CONFIRMADA"
+                                else "ESTIMADA pelo preço lido (a corretora não está "
+                                     "sendo consultada)")
+                        self.log(f"✅ ENTRADA EXECUTADA: {pos['direcao']} {pos['ativo']} "
+                                  f"@ {pos['entry']} — {como}.")
+                        self._notificar_desktop(
+                            f"🎯 Entrada executada — {pos['direcao']} {pos['ativo']}",
+                            [f"Entrada {pos['entry']}  ·  {pos['contratos']} contrato(s)",
+                             f"Stop {pos['stop']}  ·  Alvo {pos.get('tp1')}",
+                             f"Execução {como}."],
+                            cor="#3d7fc0")
                     elif tipo == "CANCELADA":
                         self.log(f"🚫 ORDEM CANCELADA: {pos['direcao']} {pos['ativo']} @ {pos['entry']} — "
                                   f"o preço rompeu o stop antes de tocar a entrada. Nunca foi executada.")
+                        self._notificar_desktop(
+                            f"🚫 Ordem cancelada — {pos['direcao']} {pos['ativo']}",
+                            [f"O preço rompeu o stop antes de tocar {pos['entry']}.",
+                             "A ordem nunca foi executada."],
+                            cor="#a0a0a0")
                     else:
                         # STOP ou ALVO: operação real encerrada -> notifica no WhatsApp
                         emoji = "🔴" if tipo == "STOP" else "🟢"
@@ -4185,6 +4784,12 @@ class SmcQuantApp(ctk.CTk):
                                     f"Resultado: US${pos['pnl_final']:+.2f} ({pos['contratos']} contrato(s))")
                         self.log(msg_pos.replace("*", ""))
                         enviar_relatorio_whatsapp(msg_pos, None, self.log)
+                        self._notificar_desktop(
+                            f"{emoji} Operação encerrada ({tipo}) — {pos['ativo']}",
+                            [f"{pos['direcao']} · entrada {pos['entry']} · "
+                             f"{pos['contratos']} contrato(s)",
+                             f"Resultado: US${pos['pnl_final']:+.2f}"],
+                            cor="#c53030" if tipo == "STOP" else "#1f8b4c")
 
                 if preco is not None:
                     self.after(0, self._atualizar_dashboard)
@@ -4301,10 +4906,58 @@ class SmcQuantApp(ctk.CTk):
                 rr_sinal = (abs(_alvo_rr - _ep) / _risco) if (_risco and _alvo_rr) else 0
                 qualidade_ok = (rr_sinal >= RR_MINIMO and probabilidade >= PROBABILIDADE_MINIMA)
 
+                # ---- INVALIDAÇÃO POR MUDANÇA DE CENÁRIO ----
+                # Antes, uma sugestão pendente só saía por cancelamento manual ou
+                # pelo timeout — ficava acompanhando um cenário que já morreu.
+                # Agora, se a leitura nova traz um setup VÁLIDO na direção
+                # CONTRÁRIA, a sugestão pendente é invalidada na hora e a ordem
+                # pendente ligada a ela é cancelada, liberando o robô para o
+                # cenário novo. Posição JÁ EXECUTADA não é tocada.
+                if (sinal_ativo.get("estado") == "PENDENTE"
+                        and acao in ("BUY", "SELL")
+                        and acao != sinal_ativo.get("direcao")
+                        and qualidade_ok and _ep > 0 and _sl > 0):
+                    sid_inv = sinal_ativo.get("sinal_id")
+                    atualizar_decisao_sinal(sid_inv, "INVALIDADO")
+                    self.sinais_dispensados.discard(sid_inv)
+                    self.sinais_acatados.discard(sid_inv)
+                    n_canc = cancelar_pendentes_do_sinal(
+                        sid_inv, f"cenário mudou para {acao}")
+                    self.log(
+                        f"🔄 CENÁRIO MUDOU: a sugestão {sinal_ativo.get('direcao')} "
+                        f"{ativo} @ {sinal_ativo.get('entry')} foi INVALIDADA (surgiu "
+                        f"um setup de {acao} com qualidade)."
+                        + (f" {n_canc} ordem(ns) pendente(s) cancelada(s)." if n_canc else "")
+                    )
+                    if sid_inv in getattr(self, "_sinais_notificados", set()):
+                        self._sinais_notificados.discard(sid_inv)
+                    sinal_ativo = {"estado": "ENCERRADA"}
+                    self.after(0, self._atualizar_dashboard)
+
+                # ANTI-REPETIÇÃO: se o MESMO setup (ativo + direção + entrada
+                # praticamente igual) já foi sugerido há pouco, não vira sugestão
+                # nova. Sem isso, o mesmo POI era reemitido a cada ciclo, enchendo
+                # a lista de cenários idênticos que só expiravam.
+                repetido = False
+                if acao in ("BUY", "SELL") and _ep > 0 and _risco:
+                    limite_rep = (time.time() - JANELA_ANTI_REPETICAO_SEG) * 1000
+                    for s_ant in sinais_da_conta_ativa():
+                        if s_ant.get("id", 0) < limite_rep:
+                            continue
+                        if (s_ant.get("direcao") == acao
+                                and str(s_ant.get("ativo", "")).upper() == str(ativo).upper()
+                                and s_ant.get("entry")
+                                and abs(s_ant["entry"] - _ep) <= _risco * 0.25):
+                            repetido = True
+                            break
+                if repetido:
+                    self.log(f"🔁 {acao} {ativo} @ {_ep} é o MESMO setup já sugerido há pouco "
+                              "— não vou repetir a sugestão. Aguardando cenário novo.")
+
                 # Loga a rejeição só quando havia um candidato REAL (BUY/SELL válido)
                 # com estado livre — pra você ver o filtro trabalhando.
                 if (sinal_ativo["estado"] == "ENCERRADA" and acao in ("BUY", "SELL")
-                        and preco and _ep > 0 and _sl > 0 and not qualidade_ok):
+                        and preco and _ep > 0 and _sl > 0 and not qualidade_ok and not repetido):
                     motivo = (f"R:R 1:{rr_sinal:.2f} (mínimo 1:{RR_MINIMO:.0f})"
                               if rr_sinal < RR_MINIMO
                               else f"probabilidade {probabilidade:.0f}% (mínimo {PROBABILIDADE_MINIMA:.0f}%)")
@@ -4317,7 +4970,7 @@ class SmcQuantApp(ctk.CTk):
                         and preco is not None and preco > 0 \
                         and sinal.get("entry_price") and sinal.get("stop_loss") \
                         and sinal.get("entry_price") > 0 and sinal.get("stop_loss") > 0 \
-                        and qualidade_ok:
+                        and qualidade_ok and not repetido:
                     novo_sinal_id = registrar_novo_sinal_log(
                         acao, sinal.get("entry_price"), sinal.get("stop_loss"),
                         sinal.get("take_profit_1"), sinal.get("take_profit_2"), ativo)
@@ -4392,6 +5045,16 @@ class SmcQuantApp(ctk.CTk):
                     )
                     enviar_relatorio_whatsapp(mensagem_wpp, screenshot, self.log)
                     falar(f"Novo cenário de {acao} em {ativo}, probabilidade {probabilidade:.0f} por cento.")
+
+                    # Alerta na tela do computador (além do WhatsApp).
+                    self._sinais_notificados.add(novo_sinal_id)
+                    self._notificar_desktop(
+                        f"📘 Nova sugestão — {acao} {ativo}",
+                        [f"Entrada {sinal_ativo['entry']}  ·  Stop {sinal_ativo['stop']}",
+                         f"Alvo {sinal_ativo['tp1']}" + (f"  ·  R:R {rr1}" if rr1 else ""),
+                         f"Probabilidade {probabilidade:.0f}%  ·  conta {nome_conta_ativa()}",
+                         f"Responda ACATAR em até {TIMEOUT_ACATAR_SEG // 60} min."],
+                        cor="#1f8b4c" if acao == "BUY" else "#c53030")
                     self.after(0, self._atualizar_dashboard)
 
                 else:
