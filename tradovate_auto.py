@@ -536,13 +536,19 @@ class TradovateAuto:
     #  foi lido de um rótulo reconhecido. Se não reconhecer, devolve vazio e diz
     #  o motivo. Uma leitura "POSIÇÃO 0" é informação legítima (você está zerado)
     #  e é justamente o que permite corrigir uma execução que não aconteceu.
-    _JS_POSICOES = r"""
+    # Uma única passada no DOM devolve POSIÇÕES e PREÇO ao vivo. É chamada com
+    # frequência (poller de segundos), então varre o documento uma vez só.
+    #
+    # Percorre também IFRAMES de mesma origem e SHADOW DOM: apps React como a
+    # Tradovate escondem painéis aí dentro, e um querySelectorAll comum não
+    # enxerga — foi por isso que o campo "POSIÇÃO", visível na tela, aparecia
+    # como "0 rótulos" no diagnóstico.
+    _JS_ESTADO = r"""
     (function(){
       function norm(s){
         return (s||'').toString().normalize('NFD').replace(/[̀-ͯ]/g,'')
                .toLowerCase().replace(/[^a-z0-9\/&% .-]/g,' ').replace(/\s+/g,' ').trim();
       }
-      // "1,234.50" | "1.234,50" | "(123.45)"=negativo | "-" | "US$12" -> número
       function num(s){
         if(s===null||s===undefined) return null;
         var t=s.toString().trim();
@@ -557,13 +563,41 @@ class TradovateAuto:
         if(isNaN(v)) return null;
         return neg?-v:v;
       }
-      function txt(el){return (el.innerText||el.textContent||'').trim();}
+      function txt(el){
+        try{ return (el.innerText||el.textContent||'').trim(); }catch(e){ return ''; }
+      }
       function vis(el){
         try{ var r=el.getBoundingClientRect(); return r.width>0&&r.height>0; }
         catch(e){ return false; }
       }
-      function folha(el){ return el.children.length===0; }
-      // Símbolo de futuro: MESU6, MNQU6, ESZ5, NQH6, WINFUT, WDOFUT...
+      function folha(el){ try{ return el.children.length===0; }catch(e){ return false; } }
+
+      // ---- Coleta TODOS os elementos, inclusive iframes e shadow DOM ----
+      var TODOS=null;
+      function todos(){
+        if(TODOS) return TODOS;
+        var res=[], raizes=[document];
+        var ifr=[];
+        try{ ifr=document.querySelectorAll('iframe,frame'); }catch(e){}
+        for(var i=0;i<ifr.length;i++){
+          try{ if(ifr[i].contentDocument) raizes.push(ifr[i].contentDocument); }catch(e){}
+        }
+        for(var r=0;r<raizes.length;r++){
+          var pilha=[raizes[r]];
+          var guarda=0;
+          while(pilha.length && guarda++ < 400){
+            var no=pilha.pop(), els=null;
+            try{ els=no.querySelectorAll('*'); }catch(e){ continue; }
+            for(var k=0;k<els.length;k++){
+              res.push(els[k]);
+              try{ if(els[k].shadowRoot) pilha.push(els[k].shadowRoot); }catch(e){}
+            }
+          }
+        }
+        TODOS=res;
+        return res;
+      }
+
       function ehSimbolo(t){
         if(!t) return false;
         t=t.toUpperCase().trim();
@@ -573,14 +607,76 @@ class TradovateAuto:
         if(/^[A-Z]{2,5}[0-9]{1,2}$/.test(t)) return true;
         return false;
       }
-      // Primeiro token que pareça símbolo dentro de um texto qualquer
       function simboloEm(t){
         if(!t) return null;
-        var toks=t.toUpperCase().split(/[\s |,;:()\/]+/);
+        var toks=t.toUpperCase().split(/[\s |,;:()\/]+/);
         for(var i=0;i<toks.length;i++) if(ehSimbolo(toks[i])) return toks[i];
         return null;
       }
 
+      // Acha o valor numérico associado a um rótulo (no próprio texto ou perto)
+      function valorPerto(el, textoBruto, ehRotulo){
+        var resto=textoBruto.replace(/^[^0-9+-]*/,'');
+        if(resto && resto!==textoBruto){
+          var v0=num(resto);
+          if(v0!==null) return {valor:v0, el:el};
+        }
+        var cont=el.parentElement;
+        for(var up=0; up<4 && cont; up++){
+          var fl=null;
+          try{ fl=cont.querySelectorAll('div,span,label,p,strong,b,td'); }catch(e){ break; }
+          for(var f=0; f<fl.length; f++){
+            var fe=fl[f];
+            if(!folha(fe)||fe===el) continue;
+            var ft=txt(fe);
+            if(!ft||ft.length>24) continue;
+            if(ehRotulo(norm(ft))) continue;
+            if(!/^[-+(]?[0-9]/.test(ft.trim())) continue;
+            var v=num(ft);
+            if(v!==null) return {valor:v, el:fe};
+          }
+          cont=cont.parentElement;
+        }
+        return null;
+      }
+
+      var res={ok:false, motivo:'', estrategia:'', linhas:[], preco:null,
+               diag:{amostras:[], textos_posi:[]}};
+
+      // ================= PREÇO AO VIVO =================
+      // Lê COMPRA/VENDA (bid/ask) do painel. É o preço EXATO da plataforma —
+      // muito melhor que o preço lido da imagem pela IA.
+      var ROT_BID=['compra','bid','melhor compra'];
+      var ROT_ASK=['preco de venda','venda','ask','melhor venda'];
+      function ehRotPreco(t){
+        for(var i=0;i<ROT_BID.length;i++) if(t===ROT_BID[i]) return true;
+        for(var j=0;j<ROT_ASK.length;j++) if(t===ROT_ASK[j]) return true;
+        return false;
+      }
+      var bid=null, ask=null;
+      var lista=todos();
+      for(var n=0;n<lista.length;n++){
+        var el=lista[n];
+        if(!folha(el)) continue;
+        var b=txt(el);
+        if(!b||b.length>26) continue;
+        var t=norm(b);
+        var eBid=ROT_BID.indexOf(t)>-1, eAsk=ROT_ASK.indexOf(t)>-1;
+        if(!eBid&&!eAsk) continue;
+        if(!vis(el)) continue;
+        var achado=valorPerto(el, b, ehRotPreco);
+        if(!achado) continue;
+        if(eBid && bid===null) bid=achado.valor;
+        if(eAsk && ask===null) ask=achado.valor;
+        if(bid!==null && ask!==null) break;
+      }
+      if(bid!==null && ask!==null && bid>0 && ask>0){
+        res.preco=Math.round(((bid+ask)/2)*100)/100;
+        res.diag.bid=bid; res.diag.ask=ask;
+      } else if(bid!==null && bid>0){ res.preco=bid; res.diag.bid=bid; }
+      else if(ask!==null && ask>0){ res.preco=ask; res.diag.ask=ask; }
+
+      // ================= POSIÇÕES: grade =================
       var SIN={
         ativo:['symbol','contract','instrument','simbolo','ativo','produto'],
         qtd:['netpos','net pos','net position','position','pos','posicao',
@@ -598,16 +694,20 @@ class TradovateAuto:
             if(cabs[i2].indexOf(chaves[k2])>-1) return i2;
         return -1;
       }
-
-      var res={ok:false, motivo:'', estrategia:'', linhas:[], diag:{amostras:[]}};
-
-      // ---------- ESTRATÉGIA A: grade de posições ----------
-      var grades=[].slice.call(document.querySelectorAll('table,[role=grid],[role=table]'));
+      var grades=[];
+      for(var g0=0; g0<lista.length; g0++){
+        var tag=(lista[g0].tagName||'').toLowerCase();
+        var papel='';
+        try{ papel=lista[g0].getAttribute('role')||''; }catch(e){}
+        if(tag==='table'||papel==='grid'||papel==='table') grades.push(lista[g0]);
+      }
       res.diag.grades_encontradas=grades.length;
       for(var g=0; g<grades.length; g++){
         var grade=grades[g];
         if(!vis(grade)) continue;
-        var cabEls=[].slice.call(grade.querySelectorAll('thead th,[role=columnheader],th'));
+        var cabEls=[];
+        try{ cabEls=[].slice.call(grade.querySelectorAll('thead th,[role=columnheader],th')); }
+        catch(e){ continue; }
         if(!cabEls.length) continue;
         var cabs=cabEls.map(function(e){return norm(txt(e));})
                        .filter(function(t){return t!=='';});
@@ -616,9 +716,9 @@ class TradovateAuto:
         if(iA<0||iQ<0) continue;
         var iP=achaCol(cabs,SIN.preco), iL=achaCol(cabs,SIN.pnl);
         var out=[];
-        var linhasG=[].slice.call(grade.querySelectorAll('tbody tr,[role=row]'));
-        for(var i=0;i<linhasG.length;i++){
-          var cels=[].slice.call(linhasG[i].querySelectorAll('td,[role=gridcell],[role=cell]'));
+        var lg=[].slice.call(grade.querySelectorAll('tbody tr,[role=row]'));
+        for(var i=0;i<lg.length;i++){
+          var cels=[].slice.call(lg[i].querySelectorAll('td,[role=gridcell],[role=cell]'));
           if(cels.length<2) continue;
           var tt=cels.map(txt);
           var ativo=(tt[iA]||'').split('\n')[0].trim();
@@ -634,66 +734,41 @@ class TradovateAuto:
         return JSON.stringify(res);
       }
 
-      // ---------- ESTRATÉGIA B: rótulo "POSIÇÃO" no painel ----------
+      // ================= POSIÇÕES: rótulo "POSIÇÃO" =================
       var ROT_POS=['posicao','position','net pos','netpos','posicao liquida'];
       function ehRotuloPos(t){
         if(!t) return false;
         for(var i=0;i<ROT_POS.length;i++){
           if(t===ROT_POS[i]) return true;
-          // "posicao 0" / "posicao: 0" -> rótulo + valor no MESMO elemento
           if(t.indexOf(ROT_POS[i])===0 && t.length<=ROT_POS[i].length+12) return true;
         }
         return false;
       }
-
       var achados=[], vistos=0;
-      var todos=document.querySelectorAll('div,span,label,p,td,th,dt,dd,strong,b');
-      for(var n=0;n<todos.length;n++){
-        var el=todos[n];
-        if(!folha(el)) continue;
-        var bruto=txt(el);
+      for(var m=0;m<lista.length;m++){
+        var e2=lista[m];
+        if(!folha(e2)) continue;
+        var bruto=txt(e2);
         if(!bruto||bruto.length>40) continue;
-        var t=norm(bruto);
-        if(!ehRotuloPos(t)) continue;
-        if(!vis(el)) continue;
+        var t2=norm(bruto);
+        // Diagnóstico: guarda QUALQUER texto que fale de posição, mesmo que o
+        // formato não bata — é assim que se descobre o rótulo real da tela.
+        if(t2.indexOf('posi')>-1 && res.diag.textos_posi.length<15)
+          res.diag.textos_posi.push(bruto.slice(0,40));
+        if(!ehRotuloPos(t2)) continue;
+        if(!vis(e2)) continue;
         vistos++;
-
-        // Amostra do contexto (para o diagnóstico mostrar a estrutura real)
         if(res.diag.amostras.length<12){
-          var pai=el.parentElement;
-          res.diag.amostras.push({
-            rotulo:bruto.slice(0,40),
-            pai:(pai?txt(pai):'').replace(/\s+/g,' ').slice(0,120)
-          });
+          var pai=e2.parentElement;
+          res.diag.amostras.push({rotulo:bruto.slice(0,40),
+            pai:(pai?txt(pai):'').replace(/\s+/g,' ').slice(0,120)});
         }
-
-        // 1) valor grudado no próprio rótulo? ("POSIÇÃO 0")
-        var valor=null, alvoEl=null;
-        var resto=bruto.replace(/^[^0-9+-]*/,'');
-        if(resto && resto!==bruto){ valor=num(resto); if(valor!==null) alvoEl=el; }
-
-        // 2) senão, procura o número nos vizinhos (subindo até 4 níveis)
-        var cont=el.parentElement;
-        for(var up=0; up<4 && cont && valor===null; up++){
-          var folhas=cont.querySelectorAll('div,span,label,p,strong,b,td');
-          for(var f=0; f<folhas.length; f++){
-            var fe=folhas[f];
-            if(!folha(fe)||fe===el) continue;
-            var ft=txt(fe);
-            if(!ft||ft.length>24) continue;
-            if(ehRotuloPos(norm(ft))) continue;
-            if(!/^[-+(]?[0-9]/.test(ft.trim())) continue;
-            var v=num(ft);
-            if(v!==null){ valor=v; alvoEl=fe; break; }
-          }
-          cont=cont.parentElement;
-        }
-        if(valor===null) continue;
-
-        // 3) símbolo: sobe até 8 níveis procurando um ticker
-        var simbolo=null, c2=el.parentElement;
+        var ach=valorPerto(e2, bruto, ehRotuloPos);
+        if(!ach) continue;
+        var simbolo=null, c2=e2.parentElement;
         for(var u2=0; u2<8 && c2 && !simbolo; u2++){
-          var cand=c2.querySelectorAll('div,span,label,p,h1,h2,h3,strong,b,a');
+          var cand=[];
+          try{ cand=c2.querySelectorAll('div,span,label,p,h1,h2,h3,strong,b,a'); }catch(e){}
           for(var q2=0; q2<cand.length; q2++){
             var ce=cand[q2];
             if(!folha(ce)) continue;
@@ -703,28 +778,38 @@ class TradovateAuto:
           c2=c2.parentElement;
         }
         if(!simbolo) simbolo=simboloEm(document.title);
-
-        // 4) P&L perto do valor (texto com USD/$)
-        var pnl=null, c3=alvoEl?alvoEl.parentElement:el.parentElement;
-        for(var u3=0; u3<3 && c3 && pnl===null; u3++){
-          var fl=c3.querySelectorAll('div,span,label,p,strong,b,td');
-          for(var y=0; y<fl.length; y++){
-            var ye=fl[y];
-            if(!folha(ye)||ye===alvoEl||ye===el) continue;
-            var yt=txt(ye);
-            if(!yt||yt.length>24) continue;
-            if(/usd|\$|r\$/i.test(yt)){ var pv=num(yt); if(pv!==null){ pnl=pv; break; } }
+        // P&L da POSIÇÃO: só vale se estiver no MESMO bloco do campo POSIÇÃO.
+        // Subir mais níveis fazia o robô pegar o CAPITAL DA CONTA (ex.: "106,040.57
+        // USD" da barra do topo) e reportar como resultado da operação — número
+        // completamente errado. Fica restrito ao container imediato.
+        var ROT_CONTA=['capital','conta','saldo','balance','equity','margem',
+                       'margem diaria','margem inicial'];
+        var pnl=null, c3=ach.el?ach.el.parentElement:e2.parentElement;
+        if(c3){
+          var fl3=[];
+          try{ fl3=c3.querySelectorAll('div,span,label,p,strong,b,td'); }catch(e){}
+          // Se o bloco fala de capital/conta, não é P&L de posição: ignora.
+          var blocoDeConta=false;
+          for(var w3=0; w3<fl3.length; w3++){
+            if(ROT_CONTA.indexOf(norm(txt(fl3[w3])))>-1){ blocoDeConta=true; break; }
           }
-          c3=c3.parentElement;
+          if(!blocoDeConta){
+            for(var y=0; y<fl3.length; y++){
+              var ye=fl3[y];
+              if(!folha(ye)||ye===ach.el||ye===e2) continue;
+              var yt=txt(ye);
+              if(!yt||yt.length>24) continue;
+              if(/usd|\$|r\$/i.test(yt)){ var pv=num(yt); if(pv!==null){ pnl=pv; break; } }
+            }
+          }
         }
-        achados.push({ativo:simbolo, qtd_liquida:valor, preco_medio:null,
+        achados.push({ativo:simbolo, qtd_liquida:ach.valor, preco_medio:null,
                       pnl:pnl, fonte:'rotulo'});
       }
       res.diag.rotulos_posicao=vistos;
+      res.diag.total_elementos=lista.length;
 
       if(achados.length){
-        // Deduplica por símbolo (null vira chave própria), preferindo a leitura
-        // com quantidade != 0 e com P&L.
         var mapa={}, semSimbolo=[];
         for(var a=0;a<achados.length;a++){
           var it=achados[a];
@@ -734,8 +819,6 @@ class TradovateAuto:
              (ant.pnl===null && it.pnl!==null)) mapa[it.ativo]=it;
         }
         res.linhas=Object.keys(mapa).map(function(k){return mapa[k];});
-        // Linha sem símbolo só entra se NÃO houver nenhuma com símbolo — o app
-        // decide se associa ao ativo que está analisando.
         if(!res.linhas.length && semSimbolo.length){
           var melhor=semSimbolo[0];
           for(var z=1;z<semSimbolo.length;z++)
@@ -755,49 +838,68 @@ class TradovateAuto:
     })()
     """
 
-    def ler_posicoes(self):
-        """Devolve {'ok','estrategia','motivo','linhas':[{'ativo','qtd_liquida',
-        'preco_medio','pnl'}...]}. ok=False significa que não consegui ler com
-        segurança — nesse caso nada é registrado no diário.
-        'ativo' pode vir None quando o painel não expõe o ticker perto do campo:
-        quem chama decide se associa ao ativo que está sendo analisado."""
+    def ler_estado(self):
+        """UMA passada no DOM devolvendo preço ao vivo + posições abertas."""
         try:
-            bruto = self.avaliar_js(self._JS_POSICOES)
-            dados = json.loads(bruto or "{}")
+            bruto = self.avaliar_js(self._JS_ESTADO)
+            return json.loads(bruto or "{}")
         except ConexaoPerdida as e:
-            # Sinaliza para o app derrubar a instância e reconectar do zero.
-            return {"ok": False, "motivo": str(e), "linhas": [],
+            return {"ok": False, "motivo": str(e), "linhas": [], "preco": None,
                     "conexao_perdida": True}
         except Exception as e:
-            self.log(f"⚠️ Não consegui ler as posições da plataforma: {e}")
-            return {"ok": False, "motivo": str(e), "linhas": []}
-        return dados
+            return {"ok": False, "motivo": str(e), "linhas": [], "preco": None}
+
+    def ler_preco(self):
+        """Preço ao vivo (média bid/ask) direto do painel. None se não der.
+        É o preço EXATO da plataforma — não passa por leitura de imagem."""
+        d = self.ler_estado() or {}
+        if d.get("conexao_perdida"):
+            raise ConexaoPerdida(d.get("motivo", "conexão caiu"))
+        preco = d.get("preco")
+        try:
+            preco = float(preco)
+        except (TypeError, ValueError):
+            return None
+        return preco if preco > 0 else None
+
+    def ler_posicoes(self):
+        """Posições abertas. ok=False = não consegui ler com segurança."""
+        d = self.ler_estado() or {}
+        if not d.get("ok") and not d.get("conexao_perdida"):
+            self.log(f"ℹ️ Posições: {d.get('motivo', 'leitura falhou')}.")
+        return d
 
     def diagnosticar_posicoes(self):
-        """Dump do que a leitura está enxergando na tela. Se a detecção não
-        pegar na SUA Tradovate, rode isto e me mande o resultado — com ele eu
-        acerto os seletores sem chutar."""
-        dados = self.ler_posicoes() or {}
+        """Dump do que a leitura enxerga. Se a detecção não pegar na SUA tela,
+        rode isto e me mande o resultado — com ele eu acerto sem chutar."""
+        dados = self.ler_estado() or {}
         diag = dados.get("diag") or {}
-        self.log("──── DIAGNÓSTICO DA LEITURA DE POSIÇÕES ────")
-        self.log(f"  leitura ok .......: {dados.get('ok')}")
-        self.log(f"  estratégia .......: {dados.get('estrategia') or '(nenhuma)'}")
-        self.log(f"  motivo ...........: {dados.get('motivo') or '(sem observação)'}")
-        self.log(f"  grades na tela ...: {diag.get('grades_encontradas', '?')}")
-        self.log(f"  rótulos 'POSIÇÃO' : {diag.get('rotulos_posicao', 0)}")
+        self.log("──── DIAGNÓSTICO DA LEITURA (posições + preço) ────")
+        self.log(f"  leitura ok .........: {dados.get('ok')}")
+        self.log(f"  estratégia .........: {dados.get('estrategia') or '(nenhuma)'}")
+        self.log(f"  motivo .............: {dados.get('motivo') or '(sem observação)'}")
+        self.log(f"  elementos varridos .: {diag.get('total_elementos', '?')} "
+                 "(inclui iframes e shadow DOM)")
+        self.log(f"  grades na tela .....: {diag.get('grades_encontradas', '?')}")
+        self.log(f"  rótulos 'POSIÇÃO' ..: {diag.get('rotulos_posicao', 0)}")
+        self.log(f"  PREÇO ao vivo ......: {dados.get('preco')} "
+                 f"(compra {diag.get('bid')} / venda {diag.get('ask')})")
         if diag.get("cabecalhos"):
-            self.log(f"  colunas ..........: {diag['cabecalhos']}")
+            self.log(f"  colunas ............: {diag['cabecalhos']}")
+        textos = diag.get("textos_posi") or []
+        if textos:
+            self.log("  textos com 'posi' na tela (é aqui que se descobre o rótulo real):")
+            for t in textos:
+                self.log(f"    · {t!r}")
         for am in (diag.get("amostras") or []):
             self.log(f"  ↳ rótulo: {am.get('rotulo')!r} | contexto: {am.get('pai')!r}")
         linhas = dados.get("linhas") or []
         if not linhas:
-            self.log("  linhas ...........: nenhuma")
+            self.log("  linhas .............: nenhuma")
         for ln in linhas:
             self.log(f"  • {ln.get('ativo') or '(ativo não identificado)'}: "
                      f"qtd={ln.get('qtd_liquida')} preço_médio={ln.get('preco_medio')} "
                      f"pnl={ln.get('pnl')} (via {ln.get('fonte')})")
-        self.log("  Se aparecer 0 rótulo e 0 grade, a aba da Tradovate provavelmente")
-        self.log("  não é a que o app está conectado, ou o painel não está visível.")
         self.log("────────────────────────────────────────────")
         return dados
 
@@ -810,14 +912,28 @@ class TradovateAuto:
         return bool(self.localizar("Enviar"))
 
     def _garantir_formulario(self, tentativas=5):
-        """Garante que o FORMULÁRIO está à vista; se estiver no comprovante da
-        última ordem, clica ← para voltar. Tenta várias vezes, pois o comprovante
-        pode demorar um instante a aparecer/sair."""
+        """Garante que o FORMULÁRIO do 'Chamado do pedido' está à vista.
+
+        Há DOIS motivos possíveis para ele não estar, e eles pedem ações
+        diferentes — antes o robô dizia sempre "comprovante à vista", o que
+        confundia quando o ticket simplesmente não estava aberto:
+          a) está no COMPROVANTE da última ordem  -> basta clicar na setinha ←;
+          b) o ticket NÃO ESTÁ ABERTO na tela     -> só VOCÊ pode abrir.
+        """
         for i in range(tentativas):
             if self._formulario_visivel():
                 if i > 0:
                     self.log("   ✅ formulário de ordem de volta à vista.")
                 return True
+            # O comprovante mantém a setinha de voltar. Sem ela, o painel do
+            # ticket não está na tela — insistir em clicar não resolve.
+            tem_voltar = bool(self.localizar("←") or self.localizar("Voltar"))
+            if not tem_voltar:
+                self.log("   ❌ o painel 'Chamado do pedido' NÃO está aberto na "
+                         "Tradovate (não é comprovante — o ticket não está na "
+                         "tela). Abra o ticket na plataforma e deixe-o visível; "
+                         "sem ele o robô não tem onde digitar a ordem.")
+                return False
             self.log(f"   ↩️ comprovante à vista — voltando ao formulário "
                      f"(tentativa {i + 1}/{tentativas})...")
             self.voltar_ticket()

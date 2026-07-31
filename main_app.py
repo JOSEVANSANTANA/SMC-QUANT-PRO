@@ -92,7 +92,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "1.9.3"
+VERSAO_ATUAL = "1.9.4"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -936,7 +936,8 @@ MARGEM_CONFIRMA_FILL = 0.15
 # confirmando. Duas leituras evitam "preencher" por um único preço mal lido.
 CONFIRMACOES_FILL = 2
 
-def atualizar_posicoes_com_preco(preco, ativo=None, exigir_confirmacao_plataforma=False):
+def atualizar_posicoes_com_preco(preco, ativo=None, exigir_confirmacao_plataforma=False,
+                                  preco_confiavel=False):
     """
     Governa o ciclo de vida das posições do diário, comparando com o preço real:
       PENDENTE -> ABERTA    (execução confirmada)
@@ -1005,17 +1006,26 @@ def atualizar_posicoes_com_preco(preco, ativo=None, exigir_confirmacao_plataform
             if exigir_confirmacao_plataforma:
                 continue
 
-            # Sem plataforma: exige passar ALÉM da entrada por uma margem do
-            # risco, em leituras CONSECUTIVAS. "Encostou e voltou" não executa.
-            risco = abs(pos["entry"] - pos["stop"]) if pos.get("stop") else 0
-            margem = risco * MARGEM_CONFIRMA_FILL
+            # QUAL PREÇO ESTAMOS USANDO?
+            #  • preco_confiavel=True  -> veio do DOM da corretora (número exato,
+            #    amostrado a cada poucos segundos). Tocou o nível = executou.
+            #    Sem margem e sem 2ª confirmação: era isso que fazia a ordem
+            #    "passar batido" quando o preço tocava entre duas análises.
+            #  • preco_confiavel=False -> veio da IA lendo a IMAGEM, de 5 em 5
+            #    min. Aí sim exige folga e leitura repetida, porque um erro de
+            #    leitura não pode abrir posição.
+            if preco_confiavel:
+                margem, confirmacoes_exigidas = 0.0, 1
+            else:
+                risco = abs(pos["entry"] - pos["stop"]) if pos.get("stop") else 0
+                margem, confirmacoes_exigidas = risco * MARGEM_CONFIRMA_FILL, CONFIRMACOES_FILL
             passou = (direcao == "BUY" and preco <= pos["entry"] - margem) or \
                       (direcao == "SELL" and preco >= pos["entry"] + margem)
             if not passou:
                 pos["confirmacoes_entrada"] = 0
                 continue
             pos["confirmacoes_entrada"] = pos.get("confirmacoes_entrada", 0) + 1
-            if pos["confirmacoes_entrada"] < CONFIRMACOES_FILL:
+            if pos["confirmacoes_entrada"] < confirmacoes_exigidas:
                 continue
             pos["status"] = "ABERTA"
             pos["execucao"] = "ESTIMADA"   # não foi confirmada pela corretora
@@ -1756,6 +1766,11 @@ class SmcQuantApp(ctk.CTk):
         # ar, a chamada falha em silêncio e ele tenta de novo depois.
         threading.Thread(target=self._poller_comandos_whatsapp, daemon=True).start()
 
+        # Poller do PREÇO AO VIVO da corretora: é ele que aciona entrada, stop e
+        # alvo em tempo quase real (a análise da IA é lenta demais para isso).
+        self._preco_ao_vivo = None
+        threading.Thread(target=self._poller_preco_plataforma, daemon=True).start()
+
         config_atual = carregar_config()
         # Plano da CONTA SELECIONADA (migra automaticamente a estrutura antiga).
         self.plano = plano_da_conta_ativa()
@@ -2309,6 +2324,96 @@ class SmcQuantApp(ctk.CTk):
                 self._tv_bot = None
 
         threading.Thread(target=tarefa, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # PREÇO AO VIVO — acompanhamento em tempo quase real
+    # ------------------------------------------------------------------
+    # A análise da IA roda de 5 em 5 min (custa cota de API) e lê o preço de uma
+    # IMAGEM. Isso serve para ACHAR cenário, mas é lento e impreciso demais para
+    # GERENCIAR ordem: o preço tocava a entrada entre duas análises e ninguém
+    # via. Este poller lê o preço EXATO direto do painel da corretora a cada
+    # poucos segundos (via CDP, sem custo de API) e é ele quem aciona
+    # entrada/stop/alvo. Custo zero de cota, precisão de centavo.
+    INTERVALO_POLLER_SEG = 3
+
+    def _poller_preco_plataforma(self):
+        """Roda a vida toda em segundo plano. Só trabalha quando há posição
+        PENDENTE/ABERTA na conta ativa — sem posição, nem consulta a corretora."""
+        while True:
+            time.sleep(self.INTERVALO_POLLER_SEG)
+            try:
+                if not TRADOVATE_DISPONIVEL:
+                    continue
+                if not plataforma_tem_cdp(getattr(self, "plataforma_atual", "tradovate")):
+                    continue
+                # Nada para acompanhar? não incomoda a corretora.
+                vivas = [p for p in carregar_posicoes()
+                         if p.get("conta_id") == conta_ativa_id()
+                         and p.get("status") in ("PENDENTE", "ABERTA")]
+                if not vivas:
+                    continue
+                bot = self._tv_bot
+                if bot is None or bot.ws is None:
+                    continue      # conexão é estabelecida pelo ciclo de análise
+                preco = bot.ler_preco()
+                if not preco or preco <= 0:
+                    continue
+                self._preco_ao_vivo = preco
+                ativo = vivas[0].get("ativo") or getattr(self, "_ultimo_ativo_lido", None)
+                eventos = atualizar_posicoes_com_preco(
+                    preco, ativo,
+                    exigir_confirmacao_plataforma=self._plataforma_confirma_fills(),
+                    preco_confiavel=True)
+                for tipo, pos in eventos:
+                    self._tratar_evento_posicao(tipo, pos, origem_preco="ao vivo")
+                if eventos:
+                    self.after(0, lambda: self._atualizar_dashboard(forcar=True))
+            except tradovate_auto.ConexaoPerdida:
+                self._tv_bot = None      # reconecta no próximo ciclo de análise
+            except Exception:
+                pass                      # nunca derruba o app por causa do poller
+
+    def _tratar_evento_posicao(self, tipo, pos, origem_preco="análise"):
+        """Log + WhatsApp + alerta de tela para um evento de posição. Usado tanto
+        pelo ciclo de análise quanto pelo poller de preço ao vivo."""
+        if tipo == "EXECUTADA":
+            como = ("confirmada pela plataforma"
+                    if pos.get("execucao") == "CONFIRMADA"
+                    else f"detectada pelo preço {origem_preco}")
+            self.log(f"✅ ENTRADA EXECUTADA: {pos['direcao']} {pos['ativo']} "
+                      f"@ {pos['entry']} — {como}.")
+            self._notificar_desktop(
+                f"🎯 Entrada executada — {pos['direcao']} {pos['ativo']}",
+                [f"Entrada {pos['entry']}  ·  {pos['contratos']} contrato(s)",
+                 f"Stop {pos['stop']}  ·  Alvo {pos.get('tp1')}",
+                 f"Execução {como}."],
+                cor="#3d7fc0")
+            enviar_relatorio_whatsapp(
+                f"🎯 *ENTRADA EXECUTADA — {pos['direcao']} {pos['ativo']}*\n"
+                f"Entrada {pos['entry']} · {pos['contratos']} contrato(s)\n"
+                f"Stop {pos['stop']} · Alvo {pos.get('tp1')}", None, self.log)
+        elif tipo == "CANCELADA":
+            self.log(f"🚫 ORDEM CANCELADA: {pos['direcao']} {pos['ativo']} @ {pos['entry']} — "
+                      "o preço rompeu o stop antes de tocar a entrada. Nunca foi executada.")
+            self._notificar_desktop(
+                f"🚫 Ordem cancelada — {pos['direcao']} {pos['ativo']}",
+                [f"O preço rompeu o stop antes de tocar {pos['entry']}.",
+                 "A ordem nunca foi executada."],
+                cor="#a0a0a0")
+        else:
+            emoji = "🔴" if tipo == "STOP" else "🟢"
+            msg = (f"{emoji} *Operação encerrada ({tipo})*\n"
+                   f"🕐 {time.strftime('%d/%m/%Y %H:%M:%S')}\n"
+                   f"{pos['direcao']} {pos['ativo']} | Entrada {pos['entry']}\n"
+                   f"Resultado: US${pos['pnl_final']:+.2f} ({pos['contratos']} contrato(s))")
+            self.log(msg.replace("*", ""))
+            enviar_relatorio_whatsapp(msg, None, self.log)
+            self._notificar_desktop(
+                f"{emoji} Operação encerrada ({tipo}) — {pos['ativo']}",
+                [f"{pos['direcao']} · entrada {pos['entry']} · "
+                 f"{pos['contratos']} contrato(s)",
+                 f"Resultado: US${pos['pnl_final']:+.2f}"],
+                cor="#c53030" if tipo == "STOP" else "#1f8b4c")
 
     def _plataforma_confirma_fills(self):
         """True quando a leitura de posições da corretora está LIGADA e funcionou
@@ -5065,42 +5170,8 @@ class SmcQuantApp(ctk.CTk):
                     preco, ativo,
                     exigir_confirmacao_plataforma=self._plataforma_confirma_fills())
                 for tipo, pos in eventos_pos:
-                    if tipo == "EXECUTADA":
-                        como = ("confirmada pela plataforma"
-                                if pos.get("execucao") == "CONFIRMADA"
-                                else "ESTIMADA pelo preço lido (a corretora não está "
-                                     "sendo consultada)")
-                        self.log(f"✅ ENTRADA EXECUTADA: {pos['direcao']} {pos['ativo']} "
-                                  f"@ {pos['entry']} — {como}.")
-                        self._notificar_desktop(
-                            f"🎯 Entrada executada — {pos['direcao']} {pos['ativo']}",
-                            [f"Entrada {pos['entry']}  ·  {pos['contratos']} contrato(s)",
-                             f"Stop {pos['stop']}  ·  Alvo {pos.get('tp1')}",
-                             f"Execução {como}."],
-                            cor="#3d7fc0")
-                    elif tipo == "CANCELADA":
-                        self.log(f"🚫 ORDEM CANCELADA: {pos['direcao']} {pos['ativo']} @ {pos['entry']} — "
-                                  f"o preço rompeu o stop antes de tocar a entrada. Nunca foi executada.")
-                        self._notificar_desktop(
-                            f"🚫 Ordem cancelada — {pos['direcao']} {pos['ativo']}",
-                            [f"O preço rompeu o stop antes de tocar {pos['entry']}.",
-                             "A ordem nunca foi executada."],
-                            cor="#a0a0a0")
-                    else:
-                        # STOP ou ALVO: operação real encerrada -> notifica no WhatsApp
-                        emoji = "🔴" if tipo == "STOP" else "🟢"
-                        msg_pos = (f"{emoji} *Operação encerrada ({tipo})*\n"
-                                    f"🕐 {time.strftime('%d/%m/%Y %H:%M:%S')}\n"
-                                    f"{pos['direcao']} {pos['ativo']} | Entrada {pos['entry']}\n"
-                                    f"Resultado: US${pos['pnl_final']:+.2f} ({pos['contratos']} contrato(s))")
-                        self.log(msg_pos.replace("*", ""))
-                        enviar_relatorio_whatsapp(msg_pos, None, self.log)
-                        self._notificar_desktop(
-                            f"{emoji} Operação encerrada ({tipo}) — {pos['ativo']}",
-                            [f"{pos['direcao']} · entrada {pos['entry']} · "
-                             f"{pos['contratos']} contrato(s)",
-                             f"Resultado: US${pos['pnl_final']:+.2f}"],
-                            cor="#c53030" if tipo == "STOP" else "#1f8b4c")
+                    self._tratar_evento_posicao(tipo, pos,
+                                                origem_preco="da análise")
 
                 if preco is not None:
                     self.after(0, self._atualizar_dashboard)
