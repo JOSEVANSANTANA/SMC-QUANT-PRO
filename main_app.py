@@ -92,7 +92,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "1.9.4"
+VERSAO_ATUAL = "1.9.5"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1423,6 +1423,8 @@ def situacao_do_sinal(sinal, posicoes=None):
         return ("✅ acatada por você", COR["verde"])
     if decisao == "NAO_OPEROU":
         return ("🚪 dispensada por você", COR["dim"])
+    if decisao == "CANCELADO":
+        return ("🚫 você cancelou a ordem — cenário encerrado", COR["dim"])
     if decisao == "EXPIRADO":
         return ("⌛ expirou — não foi acatada no prazo", COR["dim"])
     if decisao == "INVALIDADO":
@@ -2779,6 +2781,56 @@ class SmcQuantApp(ctk.CTk):
         valor.pack(pady=(0, 8))
         return valor
 
+    def _secao(self, master, titulo, chave, aberta_padrao=True, cor_borda=None):
+        """Cria um bloco RECOLHÍVEL e devolve o frame de conteúdo.
+
+        Era isso que faltava para o painel deixar de ser engessado: cada bloco
+        abre e fecha com um clique no título, e o app LEMBRA como você deixou.
+        Assim você monta a tela do seu jeito — só gráficos num dia, só o diário
+        no outro — sem rolar por coisa que não quer ver agora.
+        """
+        estado = carregar_config().get("secoes_abertas", {})
+        aberta = bool(estado.get(chave, aberta_padrao))
+
+        wrap = ctk.CTkFrame(master, fg_color=COR["card"], corner_radius=8,
+                             border_width=1, border_color=cor_borda or COR["borda"])
+        wrap.pack(padx=8, pady=5, fill="x")
+
+        cabecalho = ctk.CTkFrame(wrap, fg_color="transparent", cursor="hand2")
+        cabecalho.pack(fill="x")
+        seta = ctk.CTkLabel(cabecalho, text="▾" if aberta else "▸", width=16,
+                             text_color=COR["verde"],
+                             font=ctk.CTkFont(size=13, weight="bold"))
+        seta.pack(side="left", padx=(10, 2), pady=7)
+        rotulo = ctk.CTkLabel(cabecalho, text=titulo, anchor="w",
+                               font=ctk.CTkFont(size=11, weight="bold"),
+                               text_color=COR["dim"])
+        rotulo.pack(side="left", pady=7)
+        dica = ctk.CTkLabel(cabecalho, text="clique para recolher", anchor="e",
+                             font=ctk.CTkFont(size=9), text_color="#4a5163")
+        dica.pack(side="right", padx=10)
+
+        conteudo = ctk.CTkFrame(wrap, fg_color="transparent")
+        if aberta:
+            conteudo.pack(fill="both", expand=True)
+
+        def alternar(_e=None):
+            nonlocal aberta
+            aberta = not aberta
+            if aberta:
+                conteudo.pack(fill="both", expand=True)
+            else:
+                conteudo.pack_forget()
+            seta.configure(text="▾" if aberta else "▸")
+            dica.configure(text="clique para recolher" if aberta else "clique para abrir")
+            est = carregar_config().get("secoes_abertas", {})
+            est[chave] = aberta
+            salvar_config({"secoes_abertas": est})
+
+        for w in (cabecalho, seta, rotulo, dica):
+            w.bind("<Button-1>", alternar)
+        return conteudo
+
     def _montar_tab_plano(self, master):
         scroll = ctk.CTkScrollableFrame(master, fg_color=COR["fundo"])
         scroll.pack(fill="both", expand=True)
@@ -2826,14 +2878,14 @@ class SmcQuantApp(ctk.CTk):
         self.kpi_meta = self._card_kpi(frame_kpis, "Meta atingida", 4)
 
         # ================= CONFIGURAÇÃO DA CONTA =================
-        frame_config = ctk.CTkFrame(scroll, fg_color=COR["card"], corner_radius=8,
-                                     border_width=1, border_color=COR["borda"])
-        frame_config.pack(padx=8, pady=6, fill="x")
-
+        frame_config = self._secao(scroll, "⚙️  PLANO DE TRADING DESTA CONTA",
+                                    "plano", aberta_padrao=True)
+        # Rótulo mantido (o dashboard atualiza o nome da conta nele), mas agora
+        # some junto com a seção quando você a recolhe.
         self.lbl_titulo_plano = ctk.CTkLabel(
             frame_config, text="PLANO DE TRADING DESTA CONTA",
-            font=ctk.CTkFont(size=11, weight="bold"), text_color=COR["dim"])
-        self.lbl_titulo_plano.grid(row=0, column=0, columnspan=4, pady=(10, 8))
+            font=ctk.CTkFont(size=10), text_color="#4a5163")
+        self.lbl_titulo_plano.grid(row=0, column=0, columnspan=4, pady=(2, 8))
 
         # (rótulo, atributo, chave no plano, linha, coluna, valor padrão)
         campos = [
@@ -2885,8 +2937,28 @@ class SmcQuantApp(ctk.CTk):
                       command=self._imprimir_dashboard).pack(side="left", padx=6)
 
         # ================= GRÁFICOS LADO A LADO =================
-        frame_graficos = ctk.CTkFrame(scroll, fg_color="transparent")
-        frame_graficos.pack(padx=8, pady=6, fill="x")
+        sec_graf = self._secao(scroll, "📈  GRÁFICOS — EQUITY E RESULTADO POR DIA",
+                                "graficos", aberta_padrao=True)
+
+        # Altura ajustável: gráfico baixinho para caber tudo na tela, ou alto
+        # para analisar a curva com calma. Fica salvo entre sessões.
+        self._altura_graf = int(carregar_config().get("altura_graficos", 175))
+        barra_alt = ctk.CTkFrame(sec_graf, fg_color="transparent")
+        barra_alt.pack(fill="x", padx=10, pady=(2, 0))
+        ctk.CTkLabel(barra_alt, text="altura:", text_color=COR["dim"],
+                     font=ctk.CTkFont(size=9)).pack(side="left")
+        for rotulo, delta in (("⌃ maior", 40), ("⌄ menor", -40)):
+            ctk.CTkButton(barra_alt, text=rotulo, width=70, height=20,
+                          fg_color="#2a3f5f", hover_color="#3a5580",
+                          font=ctk.CTkFont(size=9),
+                          command=lambda d=delta: self._ajustar_altura_graficos(d)
+                          ).pack(side="left", padx=3)
+        ctk.CTkLabel(barra_alt,
+                     text="roda do mouse = zoom · arraste = mover · passe o mouse p/ ver o valor",
+                     text_color="#4a5163", font=ctk.CTkFont(size=9)).pack(side="left", padx=10)
+
+        frame_graficos = ctk.CTkFrame(sec_graf, fg_color="transparent")
+        frame_graficos.pack(padx=4, pady=4, fill="x")
         frame_graficos.grid_columnconfigure(0, weight=1)
         frame_graficos.grid_columnconfigure(1, weight=1)
 
@@ -2894,17 +2966,17 @@ class SmcQuantApp(ctk.CTk):
             ("📈 EQUITY — RESULTADO ACUMULADO (US$)", "canvas_equity"),
             ("📅 RESULTADO POR DIA OPERADO (US$)", "canvas_operacoes"),
         ]):
-            col = ctk.CTkFrame(frame_graficos, fg_color=COR["card"], corner_radius=8,
+            col = ctk.CTkFrame(frame_graficos, fg_color=COR["fundo"], corner_radius=8,
                                 border_width=1, border_color=COR["borda"])
-            col.grid(row=0, column=coluna, sticky="nsew", padx=(0, 6) if coluna == 0 else (6, 0))
+            col.grid(row=0, column=coluna, sticky="nsew", padx=(0, 4) if coluna == 0 else (4, 0))
             ctk.CTkLabel(col, text=titulo, font=ctk.CTkFont(size=10, weight="bold"),
                          text_color=COR["dim"]).pack(anchor="w", padx=10, pady=(8, 2))
-            canvas = tk.Canvas(col, bg=COR["card"], height=175, highlightthickness=0)
+            canvas = tk.Canvas(col, bg=COR["fundo"], height=self._altura_graf,
+                                highlightthickness=0)
             canvas.pack(fill="x", padx=6, pady=(0, 2))
             setattr(self, attr, canvas)
             self._ativar_zoom_pan(canvas)
 
-            # Barra de controles do gráfico: zoom +/-, reset e dica de uso.
             barra = ctk.CTkFrame(col, fg_color="transparent")
             barra.pack(fill="x", padx=6, pady=(0, 6))
             ctk.CTkButton(barra, text="➕", width=30, height=22, fg_color="#2a3f5f",
@@ -2916,48 +2988,38 @@ class SmcQuantApp(ctk.CTk):
             ctk.CTkButton(barra, text="⟳", width=30, height=22, fg_color="#3a3a3a",
                           hover_color="#555555",
                           command=lambda c=canvas: c._reset_zoom()).pack(side="left", padx=3)
-            ctk.CTkLabel(barra, text="roda do mouse = zoom · arraste = mover · passe o mouse p/ ver o valor",
-                         text_color=COR["dim"], font=ctk.CTkFont(size=8)
-                         ).pack(side="left", padx=8)
 
-        self.lbl_legenda_dias = ctk.CTkLabel(scroll, text="", justify="left", anchor="w",
+        self.lbl_legenda_dias = ctk.CTkLabel(sec_graf, text="", justify="left", anchor="w",
                                               text_color=COR["dim"], font=ctk.CTkFont(size=9))
-        self.lbl_legenda_dias.pack(padx=12, pady=(0, 2), fill="x")
+        self.lbl_legenda_dias.pack(padx=12, pady=(0, 6), fill="x")
 
         # ================= COMPARATIVO: ACATADAS vs TODAS AS SUGESTÕES =================
-        frame_comp = ctk.CTkFrame(scroll, fg_color=COR["card"], corner_radius=8,
-                                   border_width=1, border_color="#3a3a5a")
-        frame_comp.pack(padx=8, pady=6, fill="x")
-        ctk.CTkLabel(frame_comp, text="⚖️ COMPARATIVO DO CICLO — O QUE VOCÊ FEZ vs. TODAS AS SUGESTÕES",
-                     font=ctk.CTkFont(size=11, weight="bold"), text_color=COR["dim"]).pack(pady=(10, 6))
+        frame_comp = self._secao(
+            scroll, "⚖️  COMPARATIVO DO CICLO — O QUE VOCÊ FEZ vs. TODAS AS SUGESTÕES",
+            "comparativo", aberta_padrao=True, cor_borda="#3a3a5a")
         self.lbl_comparativo = ctk.CTkLabel(frame_comp, text="Sem dados ainda.", justify="left",
                                              anchor="w", font=("Consolas", 11))
-        self.lbl_comparativo.pack(padx=14, pady=(0, 10), fill="x")
+        self.lbl_comparativo.pack(padx=14, pady=(2, 10), fill="x")
 
         # ================= EVOLUÇÃO PATRIMONIAL =================
-        frame_patrimonio = ctk.CTkFrame(scroll, fg_color=COR["card"], corner_radius=8,
-                                         border_width=1, border_color=COR["verde_esc"])
-        frame_patrimonio.pack(padx=8, pady=6, fill="x")
-        ctk.CTkLabel(frame_patrimonio, text="💰 EVOLUÇÃO PATRIMONIAL",
-                     font=ctk.CTkFont(size=11, weight="bold"), text_color=COR["dim"]).pack(pady=(10, 6))
+        frame_patrimonio = self._secao(scroll, "💰  EVOLUÇÃO PATRIMONIAL",
+                                        "patrimonio", aberta_padrao=True,
+                                        cor_borda=COR["verde_esc"])
         self.lbl_patrimonio = ctk.CTkLabel(frame_patrimonio, text="Sem dados ainda.",
                                             justify="left", anchor="w", font=("Consolas", 11))
-        self.lbl_patrimonio.pack(padx=14, pady=(0, 10), fill="x")
+        self.lbl_patrimonio.pack(padx=14, pady=(2, 10), fill="x")
 
         # ================= POSIÇÕES =================
-        ctk.CTkLabel(scroll, text="🔥 ORDENS PENDENTES E OPERAÇÕES EM ANDAMENTO",
-                     font=ctk.CTkFont(size=11, weight="bold"), text_color=COR["dim"]
-                     ).pack(padx=12, pady=(10, 2), anchor="w")
-        self.frame_posicoes = ctk.CTkFrame(scroll, fg_color=COR["card"], corner_radius=8)
-        self.frame_posicoes.pack(padx=8, pady=4, fill="x")
+        self.frame_posicoes = self._secao(
+            scroll, "🔥  ORDENS PENDENTES E OPERAÇÕES EM ANDAMENTO",
+            "posicoes", aberta_padrao=True, cor_borda="#5a4a1a")
 
         # ================= INCLUSÃO MANUAL NO DIÁRIO =================
-        frame_manual = ctk.CTkFrame(scroll, fg_color=COR["card"], corner_radius=8,
-                                     border_width=1, border_color=COR["borda"])
-        frame_manual.pack(padx=8, pady=8, fill="x")
-        ctk.CTkLabel(frame_manual, text="✍️ INCLUIR OPERAÇÃO NO DIÁRIO (FORA DA SUGESTÃO)",
-                     font=ctk.CTkFont(size=11, weight="bold"), text_color=COR["dim"]
-                     ).grid(row=0, column=0, columnspan=8, pady=(10, 6), padx=10, sticky="w")
+        # Recolhida por padrão: só é usada de vez em quando, e ocupava muito
+        # espaço fixo no meio do painel.
+        frame_manual = self._secao(
+            scroll, "✍️  INCLUIR OPERAÇÃO NO DIÁRIO (FORA DA SUGESTÃO)",
+            "manual", aberta_padrao=False)
 
         # Situação da operação: já concluída, ou ainda rodando.
         self.manual_situacao = tk.StringVar(value="Em andamento")
@@ -3005,13 +3067,48 @@ class SmcQuantApp(ctk.CTk):
         self.lbl_dica_manual.grid(row=3, column=0, columnspan=6, padx=10, pady=(2, 10), sticky="w")
 
         # ================= SINAIS =================
-        ctk.CTkLabel(scroll, text="📋 ÚLTIMOS SINAIS — MARQUE SE VOCÊ ACATOU",
-                     font=ctk.CTkFont(size=11, weight="bold"), text_color=COR["dim"]
-                     ).pack(padx=12, pady=(10, 2), anchor="w")
-        self.frame_sinais = ctk.CTkFrame(scroll, fg_color=COR["card"], corner_radius=8)
-        self.frame_sinais.pack(padx=8, pady=(4, 12), fill="both", expand=True)
+        sec_sinais = self._secao(scroll, "📋  SUGESTÕES E ACOMPANHAMENTO",
+                                  "sinais", aberta_padrao=True)
+
+        # FILTRO: em vez de uma lista única e longa, você escolhe o que quer ver.
+        self.filtro_sinais = tk.StringVar(
+            value=carregar_config().get("filtro_sinais", "Todas"))
+        barra_filtro = ctk.CTkFrame(sec_sinais, fg_color="transparent")
+        barra_filtro.pack(fill="x", padx=10, pady=(2, 4))
+        ctk.CTkLabel(barra_filtro, text="mostrar:", text_color=COR["dim"],
+                     font=ctk.CTkFont(size=10)).pack(side="left", padx=(0, 6))
+        for opcao in ("Todas", "Aguardando", "Em operação", "Encerradas"):
+            ctk.CTkRadioButton(
+                barra_filtro, text=opcao, value=opcao, variable=self.filtro_sinais,
+                radiobutton_width=14, radiobutton_height=14, border_width_unchecked=2,
+                font=ctk.CTkFont(size=10), text_color=COR["texto"],
+                fg_color=COR["verde_esc"], hover_color=COR["verde"],
+                command=self._trocar_filtro_sinais).pack(side="left", padx=6)
+        self.lbl_qtd_sinais = ctk.CTkLabel(barra_filtro, text="", text_color="#4a5163",
+                                            font=ctk.CTkFont(size=9))
+        self.lbl_qtd_sinais.pack(side="right", padx=6)
+
+        self.frame_sinais = ctk.CTkFrame(sec_sinais, fg_color="transparent")
+        self.frame_sinais.pack(padx=4, pady=(0, 8), fill="both", expand=True)
 
         self._atualizar_dashboard()
+
+    def _ajustar_altura_graficos(self, delta):
+        """Deixa os gráficos mais altos ou mais baixos, do jeito que você prefere.
+        A escolha fica salva para as próximas vezes."""
+        nova = max(110, min(460, int(getattr(self, "_altura_graf", 175)) + delta))
+        self._altura_graf = nova
+        salvar_config({"altura_graficos": nova})
+        for attr in ("canvas_equity", "canvas_operacoes"):
+            c = getattr(self, attr, None)
+            if c is not None:
+                c.configure(height=nova)
+        self._atualizar_dashboard(forcar=True)
+
+    def _trocar_filtro_sinais(self):
+        salvar_config({"filtro_sinais": self.filtro_sinais.get()})
+        self._assin_sinais = None      # força reconstruir a lista com o filtro novo
+        self._atualizar_dashboard(forcar=True)
 
     def _alternar_campos_manual(self, _valor=None):
         """Mostra o campo 'Preço de saída' só quando a operação já foi concluída."""
@@ -3154,15 +3251,30 @@ class SmcQuantApp(ctk.CTk):
 
     def _cancelar_posicao_click(self, pos_id):
         lista = carregar_posicoes()
+        sinal_id = None
         for pos in lista:
             if pos["id"] == pos_id and pos["status"] == "PENDENTE":
                 pos["status"] = "CANCELADA"
                 pos["data_fechamento"] = time.strftime('%d/%m/%Y %H:%M')
                 pos["pnl_final"] = 0.0
+                pos["motivo_cancelamento"] = "cancelada por você"
+                sinal_id = pos.get("sinal_id")
                 self.log(f"🚫 Ordem pendente cancelada: {pos['direcao']} {pos['ativo']} @ {pos['entry']}")
                 break
         salvar_posicoes(lista)
-        self._atualizar_dashboard()
+
+        # RELATÓRIO FIEL: cancelar a ordem TEM de encerrar o acompanhamento do
+        # cenário também. Antes, o robô continuava rastreando por dentro e
+        # chegava a anunciar "ENTRADA ACIONADA" de uma ordem que você já havia
+        # cancelado — relatório contando uma história que não aconteceu.
+        if sinal_id:
+            atualizar_decisao_sinal(sinal_id, "CANCELADO")
+            self.sinais_acatados.discard(sinal_id)
+            self.sinais_dispensados.add(sinal_id)
+            self._sinais_notificados.discard(sinal_id)
+            self.log("🔗 Acompanhamento do cenário encerrado junto com a ordem — "
+                      "não haverá mais avisos de entrada/stop/alvo dele.")
+        self._atualizar_dashboard(forcar=True)
 
     def _fechar_posicao_click(self, pos_id):
         pos = fechar_posicao_manual(pos_id)
@@ -4040,15 +4152,42 @@ class SmcQuantApp(ctk.CTk):
             self.lbl_legenda_dias.configure(text="")
 
     def _renderizar_lista_sinais(self):
-        sinais = list(reversed(sinais_da_conta_ativa()[-10:]))
+        # Pega mais sugestões do histórico quando há filtro — senão, filtrar as
+        # 10 últimas costuma devolver lista vazia.
+        filtro = getattr(self, "filtro_sinais", None)
+        filtro = filtro.get() if filtro else "Todas"
+        todas = sinais_da_conta_ativa()
         posicoes = carregar_posicoes()
+        bruto = list(reversed(todas[-(60 if filtro != "Todas" else 10):]))
+
+        def _classe(s):
+            dec = s.get("decisao")
+            if dec in ("NAO_OPEROU", "EXPIRADO", "INVALIDADO", "CANCELADO"):
+                return "Encerradas"
+            if dec in ("ACATOU_COMPRA", "ACATOU_VENDA"):
+                p = next((x for x in posicoes if x.get("sinal_id") == s.get("id")), None)
+                st = (p or {}).get("status")
+                if st in ("FECHADA", "CANCELADA"):
+                    return "Encerradas"
+                return "Em operação"
+            return "Aguardando"
+
+        if filtro == "Todas":
+            sinais = bruto[:10]
+        else:
+            sinais = [s for s in bruto if _classe(s) == filtro][:10]
+
+        if hasattr(self, "lbl_qtd_sinais"):
+            self.lbl_qtd_sinais.configure(
+                text=f"{len(sinais)} de {len(todas)} no ciclo")
+
         situacoes = {s["id"]: situacao_do_sinal(s, posicoes) for s in sinais}
 
         # DESEMPENHO: só reconstrói a lista quando algo muda de verdade — agora
         # a situação/P&L também entram na assinatura, para o acompanhamento
         # aparecer atualizado sem redesenhar tudo a cada 5 s.
-        assinatura = tuple((s["id"], s.get("decisao"), situacoes[s["id"]][0])
-                           for s in sinais)
+        assinatura = (filtro,) + tuple((s["id"], s.get("decisao"), situacoes[s["id"]][0])
+                                        for s in sinais)
         if getattr(self, "_assin_sinais", None) == assinatura:
             return
         self._assin_sinais = assinatura
@@ -4064,7 +4203,8 @@ class SmcQuantApp(ctk.CTk):
             texto_sit, cor_sit = situacoes[s["id"]]
             # Cenário já resolvido fica visualmente apagado; o que ainda pede
             # decisão (ou está em operação) fica destacado.
-            resolvido = s.get("decisao") in ("NAO_OPEROU", "EXPIRADO", "INVALIDADO")
+            resolvido = s.get("decisao") in ("NAO_OPEROU", "EXPIRADO", "INVALIDADO",
+                                              "CANCELADO")
             linha = ctk.CTkFrame(self.frame_sinais,
                                   fg_color="#1a1a24" if resolvido else "#20283a",
                                   border_width=1,
@@ -5185,6 +5325,21 @@ class SmcQuantApp(ctk.CTk):
                               "acompanhamento encerrado, sem novos avisos de pendente.")
                     self.sinais_dispensados.discard(sinal_ativo.get("sinal_id"))
                     sinal_ativo = {"estado": "ENCERRADA"}
+
+                # SINCRONIA COM O DIÁRIO (relatório fiel). O cenário e a ordem no
+                # diário são duas visões da MESMA coisa. Se a ordem já saiu de
+                # cena — você cancelou, bateu stop/alvo, ou a plataforma encerrou
+                # — o acompanhamento do cenário TEM de morrer junto. Sem esta
+                # trava, o robô seguia narrando um trade que não existia mais.
+                if sinal_ativo.get("estado") != "ENCERRADA" and sinal_ativo.get("sinal_id"):
+                    _pos_lig = next((p for p in carregar_posicoes()
+                                     if p.get("sinal_id") == sinal_ativo["sinal_id"]), None)
+                    if _pos_lig and _pos_lig.get("status") not in ("PENDENTE", "ABERTA"):
+                        self.log(f"🔗 A ordem deste cenário está "
+                                  f"{_pos_lig.get('status')} — encerrando o "
+                                  "acompanhamento para o relatório não divergir.")
+                        self.sinais_acatados.discard(sinal_ativo["sinal_id"])
+                        sinal_ativo = {"estado": "ENCERRADA"}
 
                 # ACOMPANHAMENTO SÓ SE ACATADO: o robô só manda follow-up no
                 # WhatsApp (entrada acionada, alvo, stop, acompanhamento) de um

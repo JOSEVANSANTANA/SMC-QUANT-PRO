@@ -614,27 +614,59 @@ class TradovateAuto:
         return null;
       }
 
-      // Acha o valor numérico associado a um rótulo (no próprio texto ou perto)
+      // Rótulos VIZINHOS que têm número próprio e não podem ser confundidos com
+      // o valor que procuramos. Sem isto, o robô lia "QUANTIDADE 1" (o tamanho
+      // da ordem no ticket) achando que era "POSIÇÃO 1" — reportando posição
+      // aberta com você zerado.
+      var ROT_VIZINHOS=['quantidade','qty','quantity','qtd','tamanho','size',
+                        'capital','conta','saldo','balance','equity','margem',
+                        'margem diaria','margem inicial','preco de venda','compra',
+                        'bid','ask','ultimo','last','volume'];
+      function ehVizinhoProibido(t){ return ROT_VIZINHOS.indexOf(t)>-1; }
+
+      // Acha o valor numérico associado a um rótulo (no próprio texto ou perto).
+      // Procura do MAIS PERTO para o mais longe e nunca atravessa outro rótulo.
       function valorPerto(el, textoBruto, ehRotulo){
         var resto=textoBruto.replace(/^[^0-9+-]*/,'');
         if(resto && resto!==textoBruto){
           var v0=num(resto);
           if(v0!==null) return {valor:v0, el:el};
         }
+        // 1) irmão imediatamente seguinte — o caso normal (<div>RÓTULO</div><div>0</div>)
+        var irmao=el.nextElementSibling;
+        for(var s=0; s<3 && irmao; s++){
+          if(folha(irmao)){
+            var it=txt(irmao);
+            if(it && it.length<=24 && /^[-+(]?[0-9]/.test(it.trim())){
+              var vi=num(it);
+              if(vi!==null) return {valor:vi, el:irmao};
+            }
+            // Encontrou OUTRO rótulo antes do número: o valor não está por aqui.
+            if(it && ehVizinhoProibido(norm(it))) break;
+          }
+          irmao=irmao.nextElementSibling;
+        }
+        // 2) sobe pelos containers, mas parando ao esbarrar em rótulo vizinho
         var cont=el.parentElement;
-        for(var up=0; up<4 && cont; up++){
+        for(var up=0; up<3 && cont; up++){
           var fl=null;
           try{ fl=cont.querySelectorAll('div,span,label,p,strong,b,td'); }catch(e){ break; }
+          var bloqueado=false;
           for(var f=0; f<fl.length; f++){
             var fe=fl[f];
             if(!folha(fe)||fe===el) continue;
             var ft=txt(fe);
             if(!ft||ft.length>24) continue;
-            if(ehRotulo(norm(ft))) continue;
+            var nf=norm(ft);
+            if(ehRotulo(nf)) continue;
+            // Bloco contaminado por outro campo numérico: não dá para saber de
+            // quem é o número. Melhor subir do que chutar.
+            if(ehVizinhoProibido(nf)){ bloqueado=true; break; }
             if(!/^[-+(]?[0-9]/.test(ft.trim())) continue;
             var v=num(ft);
             if(v!==null) return {valor:v, el:fe};
           }
+          if(bloqueado) return null;
           cont=cont.parentElement;
         }
         return null;
