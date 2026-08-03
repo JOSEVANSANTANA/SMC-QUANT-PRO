@@ -471,52 +471,157 @@ class TradovateAuto:
         else:
             self.log(f"   ⚠️ opção '{tipo}' não apareceu no dropdown — mantendo o atual.")
 
-    def voltar_ticket(self, dry_run=False):
-        """Volta do comprovante da ordem para o FORMULÁRIO clicando na setinha ←
-        do topo do 'Chamado do pedido'. Necessário entre as ordens do bracket.
+    # Marcadores de que o painel está mostrando o COMPROVANTE da última ordem
+    # (e não o formulário). Em PT e EN, porque a Tradovate troca de idioma.
+    _RE_COMPROVANTE = r"(MODIFICAR|CANCELAR|Funcionando|Preenchido|Trabalhando|" \
+                      r"MODIFY|CANCEL|Working|Filled|Pending)"
 
-        Clica VIA DOM (.click() no elemento) — bem mais confiável que pixel para
-        achar o ícone certo. Prioriza um elemento pequeno no topo-esquerdo que
-        contenha um <svg> (o ícone de seta)."""
-        js = """
-        (function(){
-          var cands=[].slice.call(
-            document.querySelectorAll('button,[role=button],svg,i,a,span,div'));
-          var best=null;
-          for(var k=0;k<cands.length;k++){var el=cands[k];
-            var r=el.getBoundingClientRect();
-            if(r.width<=0||r.height<=0) continue;
-            var cx=r.x+r.width/2, cy=r.y+r.height/2;
-            // ícone pequeno no topo-esquerdo do painel do ticket
-            if(cx<85 && cy>165 && cy<290 && r.width<=54 && r.height<=54){
-              var temSvg = (el.tagName && el.tagName.toLowerCase()==='svg') ||
-                           (el.querySelector && !!el.querySelector('svg'));
-              // menor área é melhor; conter um svg (seta) tem prioridade forte
-              var score = (r.width*r.height) - (temSvg ? 1e6 : 0);
-              if(!best || score<best.score){
-                best={score:score, x:Math.round(cx), y:Math.round(cy), el:el};
-              }
-            }
-          }
-          if(!best) return '';
-          var achou_svg = best.score < 0;
-          try {
-            var alvo = (best.el.closest &&
-                        best.el.closest('button,[role=button],a,div')) || best.el;
-            alvo.click();               // clique real via DOM (React reconhece)
-          } catch(e){}
-          return JSON.stringify({x:best.x, y:best.y, svg:achou_svg});
-        })()
+    _JS_ESTADO_TICKET = r"""
+    (function(){
+      function vis(el){
+        try{ var r=el.getBoundingClientRect(); return r.width>0&&r.height>0; }
+        catch(e){ return false; }
+      }
+      function txt(el){
+        try{ return (el.innerText||el.textContent||''); }catch(e){ return ''; }
+      }
+      var temEnviar=false, temComprovante=false;
+      var todos=document.querySelectorAll('button,[role=button],div,span,a,p');
+      for(var i=0;i<todos.length;i++){
+        var el=todos[i];
+        if(!vis(el)) continue;
+        var t=txt(el).trim();
+        if(!t||t.length>60) continue;
+        if(/^(Enviar|Submit|Redefinir|Reset)$/i.test(t)) temEnviar=true;
+        if(/^(MODIFICAR|CANCELAR|MODIFY|CANCEL)$/i.test(t)) temComprovante=true;
+      }
+      if(!temComprovante){
+        var corpo=(document.body?txt(document.body):'');
+        if(/PLACEHOLDER_COMPROVANTE/.test(corpo)) temComprovante=true;
+      }
+      return JSON.stringify({formulario:temEnviar, comprovante:temComprovante});
+    })()
+    """
+
+    def estado_ticket(self):
+        """Em que estado o 'Chamado do pedido' está:
+        'formulario'  -> pronto para digitar a próxima ordem
+        'comprovante' -> mostrando o recibo da última ordem (precisa do ←)
+        'ausente'     -> o painel não está aberto na tela (só você abre)
         """
+        js = self._JS_ESTADO_TICKET.replace("PLACEHOLDER_COMPROVANTE",
+                                             self._RE_COMPROVANTE)
+        try:
+            d = json.loads(self.avaliar_js(js) or "{}")
+        except ConexaoPerdida:
+            raise
+        except Exception:
+            return "ausente"
+        if d.get("formulario"):
+            return "formulario"
+        if d.get("comprovante"):
+            return "comprovante"
+        return "ausente"
+
+    def voltar_ticket(self, dry_run=False):
+        """Volta do comprovante da ordem para o FORMULÁRIO clicando na setinha ←.
+        É o passo que permite enviar STOP e ALVO depois da ENTRADA.
+
+        A versão anterior procurava o ícone numa FAIXA FIXA DE PIXELS
+        (cy entre 165 e 290). Bastava a Tradovate desenhar o painel um pouco
+        mais acima — como acontece com o ticket no topo — para a seta ficar fora
+        da faixa e o robô concluir que ela "não existe": entrada enviada, stop e
+        alvo não. Agora a busca é ANCORADA NO PRÓPRIO COMPROVANTE, sem depender
+        de onde ele está na tela.
+        """
+        js = r"""
+        (function(){
+          function vis(el){
+            try{ var r=el.getBoundingClientRect(); return r.width>0&&r.height>0; }
+            catch(e){ return false; }
+          }
+          function txt(el){
+            try{ return (el.innerText||el.textContent||''); }catch(e){ return ''; }
+          }
+          function temSvg(el){
+            try{
+              return (el.tagName && el.tagName.toLowerCase()==='svg') ||
+                     (el.querySelector && !!el.querySelector('svg'));
+            }catch(e){ return false; }
+          }
+
+          // 1) Acha o MENOR container que contém o texto do comprovante.
+          var marcador=/PLACEHOLDER_COMPROVANTE/;
+          var painel=null, menorArea=Infinity;
+          var conts=document.querySelectorAll('div,section,form,aside,main');
+          for(var i=0;i<conts.length;i++){
+            var el=conts[i];
+            if(!vis(el)) continue;
+            var t=txt(el);
+            if(!marcador.test(t)) continue;
+            var r=el.getBoundingClientRect();
+            if(r.width<150||r.height<80) continue;   // pequeno demais p/ ser painel
+            var a=r.width*r.height;
+            if(a<menorArea){ menorArea=a; painel=el; }
+          }
+
+          // 2) Escopo da busca: o painel do comprovante (ou a página toda).
+          var escopo = painel || document;
+          var cx0=0, cy0=0, larg=window.innerWidth, altura=window.innerHeight;
+          if(painel){
+            var rp=painel.getBoundingClientRect();
+            cx0=rp.x; cy0=rp.y; larg=rp.width; altura=rp.height;
+          }
+
+          // 3) Dentro dele, o menor ícone clicável no ALTO À ESQUERDA.
+          var cands=escopo.querySelectorAll('button,[role=button],a,svg,i,span,div');
+          var best=null;
+          for(var k=0;k<cands.length;k++){
+            var e2=cands[k];
+            if(!vis(e2)) continue;
+            var r2=e2.getBoundingClientRect();
+            if(r2.width>60||r2.height>60) continue;      // ícone, não bloco
+            if(r2.width<8||r2.height<8) continue;
+            var relX=(r2.x+r2.width/2)-cx0, relY=(r2.y+r2.height/2)-cy0;
+            if(relX > larg*0.45) continue;               // metade esquerda
+            if(relY > Math.max(altura*0.30, 90)) continue; // topo do painel
+            var t2=txt(e2).trim();
+            var setaTexto = /^(←|<|‹|⟵|Voltar|Back)$/i.test(t2);
+            var svg = temSvg(e2);
+            if(!svg && !setaTexto) continue;
+            var score = (r2.width*r2.height) - (svg?1e6:0) - (setaTexto?2e6:0);
+            if(!best || score<best.score)
+              best={score:score, x:Math.round(r2.x+r2.width/2),
+                    y:Math.round(r2.y+r2.height/2), el:e2,
+                    svg:svg, texto:setaTexto};
+          }
+          if(!best) return JSON.stringify({achou:false, tinha_painel:!!painel});
+          try{
+            var alvo=(best.el.closest &&
+                      best.el.closest('button,[role=button],a,div')) || best.el;
+            alvo.click();
+          }catch(e){}
+          return JSON.stringify({achou:true, x:best.x, y:best.y,
+                                 svg:best.svg, texto:best.texto,
+                                 tinha_painel:!!painel});
+        })()
+        """.replace("PLACEHOLDER_COMPROVANTE", self._RE_COMPROVANTE)
+
         v = self.avaliar_js(js)
-        if not v:
-            self.log("   ⚠️ setinha ← não encontrada.")
+        try:
+            d = json.loads(v or "{}")
+        except Exception:
+            d = {}
+        if not d.get("achou"):
+            onde = ("dentro do comprovante" if d.get("tinha_painel")
+                    else "na tela (comprovante não localizado)")
+            self.log(f"   ⚠️ não achei o botão de voltar (←) {onde}.")
             return False
-        d = json.loads(v)
         if dry_run:
-            self.log(f"   [dry] voltaria (←) em ({d['x']},{d['y']}, svg={d.get('svg')})")
+            self.log(f"   [dry] voltaria (←) em ({d['x']},{d['y']})")
             return True
-        self.log(f"   ↩️ voltar (←) via DOM em ({d['x']},{d['y']}, svg={d.get('svg')}).")
+        self.log(f"   ↩️ voltar (←) clicado em ({d['x']},{d['y']}) "
+                 f"[svg={d.get('svg')} texto={d.get('texto')}].")
         time.sleep(0.5)
         return True
 
@@ -797,6 +902,11 @@ class TradovateAuto:
         }
         var ach=valorPerto(e2, bruto, ehRotuloPos);
         if(!ach) continue;
+        // SANIDADE: posição é contagem de CONTRATOS — inteiro e pequeno.
+        // Sem isto o robô lia o PREÇO vizinho (ex.: 7614.75) como se fosse a
+        // quantidade da posição. Preço nunca é posição.
+        var q=ach.valor;
+        if(Math.abs(q) > 1000 || Math.abs(q - Math.round(q)) > 1e-9) continue;
         var simbolo=null, c2=e2.parentElement;
         for(var u2=0; u2<8 && c2 && !simbolo; u2++){
           var cand=[];
@@ -953,14 +1063,18 @@ class TradovateAuto:
           b) o ticket NÃO ESTÁ ABERTO na tela     -> só VOCÊ pode abrir.
         """
         for i in range(tentativas):
-            if self._formulario_visivel():
+            estado = self.estado_ticket()
+            if estado == "formulario":
                 if i > 0:
                     self.log("   ✅ formulário de ordem de volta à vista.")
                 return True
-            # O comprovante mantém a setinha de voltar. Sem ela, o painel do
-            # ticket não está na tela — insistir em clicar não resolve.
-            tem_voltar = bool(self.localizar("←") or self.localizar("Voltar"))
-            if not tem_voltar:
+            if estado == "ausente":
+                # Depois de ENVIAR, a Tradovate leva um instante para desenhar o
+                # comprovante. Nas primeiras voltas damos esse tempo em vez de
+                # concluir logo que o ticket "não está aberto".
+                if i < 2:
+                    time.sleep(0.7)
+                    continue
                 self.log("   ❌ o painel 'Chamado do pedido' NÃO está aberto na "
                          "Tradovate (não é comprovante — o ticket não está na "
                          "tela). Abra o ticket na plataforma e deixe-o visível; "
@@ -969,10 +1083,11 @@ class TradovateAuto:
             self.log(f"   ↩️ comprovante à vista — voltando ao formulário "
                      f"(tentativa {i + 1}/{tentativas})...")
             self.voltar_ticket()
-            time.sleep(0.6)
-        ok = self._formulario_visivel()
+            time.sleep(0.7)
+        ok = self.estado_ticket() == "formulario"
         if not ok:
-            self.log("   ❌ não consegui voltar ao formulário do ticket (setinha ←).")
+            self.log("   ❌ não consegui voltar ao formulário do ticket. Clique na "
+                     "setinha ← do 'Chamado do pedido' e tente de novo.")
         return ok
 
     def enviar_ordem_ticket(self, preco, direcao, tipo="LIMITE", qtd=None,

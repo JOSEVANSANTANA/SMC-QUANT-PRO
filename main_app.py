@@ -92,7 +92,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "1.9.5"
+VERSAO_ATUAL = "2.0.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -719,7 +719,8 @@ def calcular_r_multiplo(direcao, entry, stop, preco_saida):
         ganho_pontos = entry - preco_saida
     return round(ganho_pontos / risco_pontos, 2)
 
-def salvar_resultado_performance(direcao, entry, stop, tp, preco_saida, resultado, ativo="DESCONHECIDO"):
+def salvar_resultado_performance(direcao, entry, stop, tp, preco_saida, resultado,
+                                  ativo="DESCONHECIDO", confluencias=None):
     """Registra o desfecho HIPOTÉTICO de um cenário do robô (independente de o
     trader ter acatado). Guarda o P&L em US$ que teria sido obtido usando o
     sizing do plano — é a base do comparativo 'e se eu tivesse acatado tudo'."""
@@ -762,6 +763,10 @@ def salvar_resultado_performance(direcao, entry, stop, tp, preco_saida, resultad
         "r_multiplo": r_multiplo,
         "contratos": contratos,
         "pnl_usd": pnl_usd,
+        # Guardadas para o APRENDIZADO: é assim que o robô descobre QUAIS
+        # padrões funcionam de verdade nas SUAS operações.
+        "confluencias": [str(c)[:60] for c in (confluencias or [])][:8],
+        "hora": time.strftime('%H'),
     })
     db = db[-200:]
     with open(PERFORMANCE_FILE, "w", encoding="utf-8") as f:
@@ -1317,6 +1322,76 @@ def resultados_por_dia():
             return datetime.datetime.min
     return sorted(por_dia.items(), key=lambda kv: chave(kv[0]))
 
+def _normalizar_padrao(texto):
+    """Reduz uma confluência a um RÓTULO CANÔNICO, para que 'Sweep de BSL no topo'
+    e 'Liquidity Sweep (BSL)' contem como o MESMO padrão. Sem isso, cada frase
+    da IA viraria um padrão diferente e nada seria aprendido."""
+    t = (texto or "").lower()
+    regras = [
+        ("varredura de liquidez (sweep)", ("sweep", "varredura", "liquidity sweep", "bsl", "ssl")),
+        ("quebra de estrutura (BOS/MSS/CHoCH)", ("bos", "mss", "choch", "break of structure",
+                                                  "market structure", "quebra de estrutura")),
+        ("order block", ("order block", "ob ", "bloco de ordem", "breaker", "mitigation")),
+        ("FVG / ineficiência", ("fvg", "fair value", "ineficiencia", "ineficiência",
+                                 "imbalance", "liquidity void", "bpr")),
+        ("premium/discount + OTE", ("premium", "discount", "desconto", "ote",
+                                     "equilibrium", "equilíbrio")),
+        ("topos/fundos iguais (liquidez parada)", ("equal high", "equal low", "topos iguais",
+                                                    "fundos iguais", "pdh", "pdl")),
+        ("inducement / armadilha", ("inducement", "induc", "turtle soup", "judas",
+                                     "sfp", "swing failure")),
+        ("killzone / horário", ("killzone", "kill zone", "londres", "london",
+                                 "ny am", "ny pm", "sessao", "sessão")),
+        ("indicador (RSI/VWAP/média)", ("rsi", "vwap", "media", "média", "momentum",
+                                         "divergenc", "divergênc", "volume")),
+        ("power of 3 / distribuição", ("power of 3", "distribuic", "distribuiç",
+                                        "acumulac", "acumulaç", "displacement",
+                                        "deslocamento")),
+    ]
+    for rotulo, chaves in regras:
+        for c in chaves:
+            if c in t:
+                return rotulo
+    return None
+
+def aprendizado_por_padrao(minimo=3):
+    """AUTOAPRENDIZAGEM: olha o histórico REAL e descobre quais padrões SMC vêm
+    dando certo e quais vêm falhando — nas SUAS operações, no SEU ativo.
+
+    Devolve (bons, ruins, por_hora). Tudo calculado dos registros; nada é
+    estimado ou inventado. Padrões com menos de `minimo` amostras são ignorados,
+    porque 1 acerto não é evidência de nada.
+    """
+    db = carregar_performance()
+    if not db:
+        return [], [], []
+
+    placar = {}
+    horas = {}
+    for op in db:
+        venceu = 1 if op.get("resultado") == "WIN" else 0
+        h = op.get("hora")
+        if h:
+            a, b = horas.get(h, (0, 0))
+            horas[h] = (a + venceu, b + 1)
+        vistos = set()
+        for c in (op.get("confluencias") or []):
+            rot = _normalizar_padrao(c)
+            if not rot or rot in vistos:
+                continue
+            vistos.add(rot)
+            a, b = placar.get(rot, (0, 0))
+            placar[rot] = (a + venceu, b + 1)
+
+    linhas = [(rot, v, n, v / n * 100.0) for rot, (v, n) in placar.items() if n >= minimo]
+    linhas.sort(key=lambda x: x[3], reverse=True)
+    bons = [l for l in linhas if l[3] >= 60.0][:4]
+    ruins = [l for l in linhas if l[3] < 45.0][-4:]
+
+    por_hora = [(h, v, n, v / n * 100.0) for h, (v, n) in horas.items() if n >= minimo]
+    por_hora.sort(key=lambda x: x[3], reverse=True)
+    return bons, ruins, por_hora
+
 def compilar_memoria_prompt():
     contexto = "\n--- FEEDBACK LOOP DE APRENDIZADO ---\n"
 
@@ -1351,6 +1426,26 @@ def compilar_memoria_prompt():
         contexto += f"Taxa de acerto dos cenários do robô ({total}): {winrate:.1f}%\n"
     else:
         winrate = 100.0
+
+    # 3b) AUTOAPRENDIZAGEM — o que a experiência REAL já mostrou.
+    bons, ruins, por_hora = aprendizado_por_padrao()
+    if bons or ruins:
+        contexto += ("\nO QUE O HISTÓRICO DESTE TRADER JÁ ENSINOU (aprendido dos "
+                      "resultados reais, não é teoria):\n")
+        for rot, v, n, pct in bons:
+            contexto += (f"• '{rot}' vem ACERTANDO: {v} de {n} cenários ({pct:.0f}%). "
+                          "Quando este padrão aparecer, dê MAIS peso a ele.\n")
+        for rot, v, n, pct in ruins:
+            contexto += (f"• '{rot}' vem FALHANDO: {v} de {n} cenários ({pct:.0f}%). "
+                          "Sozinho ele NÃO basta — exija outra confluência forte junto, "
+                          "ou prefira HOLD.\n")
+    if por_hora and len(por_hora) >= 2:
+        melhor, pior = por_hora[0], por_hora[-1]
+        if melhor[3] - pior[3] >= 20:
+            contexto += (f"• Horário: por volta das {melhor[0]}h o acerto é "
+                          f"{melhor[3]:.0f}% ({melhor[2]} cenários); por volta das "
+                          f"{pior[0]}h cai para {pior[3]:.0f}% ({pior[2]} cenários). "
+                          "Considere isso na sua confiança.\n")
 
     # 4) Instrução de calibragem.
     perdeu_recente = (fechadas and fechadas[-1]["pnl_final"] < 0) or \
@@ -1940,13 +2035,19 @@ class SmcQuantApp(ctk.CTk):
                         text_color=COR["texto"], fg_color="#1f8b4c",
                         border_color="#63b3ed", hover_color="#25a35a"
                         ).pack(pady=(0, 4), padx=12, anchor="w")
-        ctk.CTkButton(frame_notif, text="🔔 Testar notificação", width=170,
+        linha_notif = ctk.CTkFrame(frame_notif, fg_color="transparent")
+        linha_notif.pack(pady=(0, 10), padx=12, anchor="w")
+        ctk.CTkButton(linha_notif, text="🔔 Testar notificação", width=170,
                       fg_color="#2a3f5f", hover_color="#3a5580",
                       command=lambda: self._notificar_desktop(
                           "🔔 Teste de notificação",
                           ["Se você está vendo isto, os alertas estão funcionando.",
-                           "Novas sugestões vão aparecer assim."])
-                      ).pack(pady=(0, 10), padx=12, anchor="w")
+                           "Novas sugestões vão aparecer assim.",
+                           "Botão direito no aviso também fecha."])
+                      ).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(linha_notif, text="🔕 Fechar avisos na tela", width=180,
+                      fg_color="#5a3a3a", hover_color="#8b4513",
+                      command=self._fechar_todas_notificacoes).pack(side="left", padx=6)
 
         self.lbl_qr_titulo = ctk.CTkLabel(master, text="", text_color="white",
                                            font=ctk.CTkFont(size=14, weight="bold"))
@@ -2196,6 +2297,26 @@ class SmcQuantApp(ctk.CTk):
                   if self.notif_var.get() else
                   "🔕 Notificações no computador desligadas.")
 
+    def _fechar_notificacao(self, win):
+        """Fecha um aviso com segurança e o tira da pilha. Nunca lança erro —
+        um aviso que não fecha é pior do que aviso nenhum."""
+        try:
+            if win.winfo_exists():
+                win.destroy()
+        except Exception:
+            pass
+        try:
+            self._notif_abertas = [w for w in self._notif_abertas
+                                   if w is not win and w.winfo_exists()]
+        except Exception:
+            self._notif_abertas = []
+
+    def _fechar_todas_notificacoes(self):
+        """Limpa a tela de uma vez. Fica no botão '🔕 Fechar avisos'."""
+        for w in list(getattr(self, "_notif_abertas", [])):
+            self._fechar_notificacao(w)
+        self._notif_abertas = []
+
     def _notificar_desktop(self, titulo, linhas, cor="#1f8b4c", segundos=15,
                             sinal_id=None, direcao=None):
         """Mostra um aviso no canto da tela (sempre por cima) + um bipe. Não usa
@@ -2217,14 +2338,11 @@ class SmcQuantApp(ctk.CTk):
                 win.attributes("-topmost", True)    # sempre visível
                 decidivel = sinal_id is not None
                 larg = 430 if decidivel else 400
-                alt = 46 + 20 * (len(linhas) + 1) + (34 if decidivel else 0)
-                tela_l = win.winfo_screenwidth()
-                tela_a = win.winfo_screenheight()
-                # Empilha de baixo para cima, acima da barra de tarefas.
-                desloc = sum(w.winfo_height() + 8 for w in self._notif_abertas)
-                x = tela_l - larg - 20
-                y = tela_a - alt - 70 - desloc
-                win.geometry(f"{larg}x{alt}+{x}+{max(y, 10)}")
+                # A altura é calculada DEPOIS de montar o conteúdo (mais abaixo).
+                # Antes ela era estimada na mão e ficava curta: o botão "fechar"
+                # nascia fora da janela e o aviso não tinha como ser dispensado —
+                # ficava preso na tela até fechar o programa.
+                win.geometry(f"{larg}x60+{win.winfo_screenwidth()}+0")
 
                 quadro = ctk.CTkFrame(win, fg_color="#12161f",
                                        border_color=cor, border_width=2,
@@ -2277,22 +2395,47 @@ class SmcQuantApp(ctk.CTk):
                                   command=lambda: decidir("NAO_OPEROU")
                                   ).pack(side="left", padx=6)
 
-                ctk.CTkButton(barra, text="fechar", width=60, height=24,
-                              fg_color="#333333", hover_color="#555555",
-                              font=ctk.CTkFont(size=10),
-                              command=win.destroy).pack(side="right")
+                ctk.CTkButton(barra, text="✕ fechar", width=70, height=26,
+                              fg_color="#5a3a3a", hover_color="#8b4513",
+                              font=ctk.CTkFont(size=11, weight="bold"),
+                              command=lambda: self._fechar_notificacao(win)
+                              ).pack(side="right")
 
-                # Clicar no corpo do aviso traz o app para frente.
                 def focar(_e=None):
+                    """Clique no corpo traz o app para frente."""
                     try:
                         self.deiconify(); self.lift(); self.focus_force()
                     except Exception:
                         pass
                 quadro.bind("<Button-1>", focar)
+                # Botão DIREITO em qualquer lugar do aviso dispensa — saída de
+                # emergência caso algum botão fique escondido por tema/DPI.
+                for w in (win, quadro):
+                    w.bind("<Button-3>", lambda _e, j=win: self._fechar_notificacao(j))
+                win.bind("<Escape>", lambda _e, j=win: self._fechar_notificacao(j))
+
+                # AGORA sim: mede o conteúdo montado e dimensiona a janela para
+                # caber TUDO (inclusive os botões). Nada mais fica cortado.
+                win.update_idletasks()
+                alt = max(quadro.winfo_reqheight() + 6, 90)
+                larg = max(larg, quadro.winfo_reqwidth() + 6)
+                tela_l, tela_a = win.winfo_screenwidth(), win.winfo_screenheight()
+                desloc = 0
+                for w in self._notif_abertas:
+                    try:
+                        desloc += w.winfo_height() + 8
+                    except Exception:
+                        pass
+                x = tela_l - larg - 20
+                y = tela_a - alt - 70 - desloc
+                win.geometry(f"{larg}x{alt}+{x}+{max(y, 10)}")
 
                 self._notif_abertas.append(win)
-                win.after(int(segundos * 1000),
-                          lambda: win.winfo_exists() and win.destroy())
+                # Fechamento automático com teto de segurança: nenhum aviso passa
+                # de 90 s na tela, por mais crítico que seja. O conteúdo continua
+                # no log e no WhatsApp — a tela não é o registro.
+                espera = int(max(5, min(segundos, 90)) * 1000)
+                win.after(espera, lambda j=win: self._fechar_notificacao(j))
 
                 if WINSOUND_DISPONIVEL:
                     try:
@@ -5152,6 +5295,19 @@ class SmcQuantApp(ctk.CTk):
                     "válido estruturalmente, mantenha o viés; só inverta com CHoCH/sweep NOVO e claro.\n"
                     "\n"
                     # ---- Sizing é responsabilidade EXCLUSIVA do plano da mesa ----
+                    "COMO ESCREVER O 'market_analysis' (linguagem natural):\n"
+                    "Escreva em PORTUGUÊS CLARO E CORRIDO, como um mentor de mesa "
+                    "explicando ao vivo para o trader ao lado — não como um relatório "
+                    "técnico picotado. Conte a HISTÓRIA do gráfico nesta ordem: (1) o "
+                    "que o preço vinha fazendo; (2) o que mudou agora e por quê; "
+                    "(3) onde está a liquidez que o mercado ainda vai buscar; (4) por "
+                    "que a entrada é NESTE ponto e não noutro; (5) o que invalidaria a "
+                    "ideia. Use os nomes técnicos (BOS, order block, FVG, sweep) mas "
+                    "SEMPRE explicando o que significam naquele gráfico — 'varreu os "
+                    "fundos iguais em 7541, pegando os stops de quem estava comprado, "
+                    "e voltou' vale mais que 'SSL sweep'. Evite siglas soltas e "
+                    "listas secas. De 3 a 6 frases.\n"
+                    "\n"
                     "NUNCA sugira quantidade de contratos, tamanho de posição, número de "
                     "lotes, alavancagem ou valores de risco em dólar no texto da análise nem "
                     "nas confluências. O dimensionamento (contratos e risco) é calculado APENAS "
@@ -5402,7 +5558,8 @@ class SmcQuantApp(ctk.CTk):
                             # Resultado realizado no NÍVEL do stop (não no preço lido,
                             # que pode ter overshoot) — mantém o comparativo honesto.
                             salvar_resultado_performance(direcao, sinal_ativo["entry"], sinal_ativo["stop"],
-                                                          sinal_ativo["tp1"], sinal_ativo["stop"], "LOSS", ativo)
+                                                          sinal_ativo["tp1"], sinal_ativo["stop"], "LOSS", ativo,
+                                                          sinal_ativo.get("confluencias"))
                             sinal_ativo = {"estado": "ENCERRADA"}
                             msg = f"🔴 *STOP ATINGIDO (LOSS) — {direcao}*\nOperação invalidada em {preco}."
                             self.log(msg)
@@ -5413,7 +5570,8 @@ class SmcQuantApp(ctk.CTk):
 
                         elif bateu_tp2:
                             salvar_resultado_performance(direcao, sinal_ativo["entry"], sinal_ativo["stop"],
-                                                          sinal_ativo["tp2"], sinal_ativo["tp2"], "WIN", ativo)
+                                                          sinal_ativo["tp2"], sinal_ativo["tp2"], "WIN", ativo,
+                                                          sinal_ativo.get("confluencias"))
                             sinal_ativo = {"estado": "ENCERRADA"}
                             msg = f"🟢🟢 *TAKE PROFIT 2 (WIN) — {direcao}*\nLucro máximo em {preco}."
                             self.log(msg)
@@ -5425,7 +5583,8 @@ class SmcQuantApp(ctk.CTk):
                         elif bateu_tp1 and not sinal_ativo.get("tp1_notificado"):
                             sinal_ativo["tp1_notificado"] = True
                             salvar_resultado_performance(direcao, sinal_ativo["entry"], sinal_ativo["stop"],
-                                                          sinal_ativo["tp1"], sinal_ativo["tp1"], "WIN", ativo)
+                                                          sinal_ativo["tp1"], sinal_ativo["tp1"], "WIN", ativo,
+                                                          sinal_ativo.get("confluencias"))
                             msg = f"🟢 *TAKE PROFIT 1 (WIN PARCIAL) — {direcao}*\nParcial realizada em {preco}."
                             self.log(msg)
                             if acatado_atual:
@@ -5521,6 +5680,7 @@ class SmcQuantApp(ctk.CTk):
                         "candles": 0,
                         "tp1_notificado": False,
                         "sinal_id": novo_sinal_id,   # elo com a decisão do trader
+                        "confluencias": list(confluencias),  # p/ o aprendizado
                         "ts_criacao": time.time(),   # p/ o timeout de acatar (10 min)
                     }
 
