@@ -30,14 +30,23 @@ try:
 except ImportError:
     WINSOUND_DISPONIVEL = False
 
-# COMANDO POR VOZ (opcional). Se a biblioteca não estiver instalada, o app
-# funciona normalmente e o botão 🎤 explica como habilitar:
-#     pip install SpeechRecognition pyaudio
+# COMANDO POR VOZ (opcional). Instalação recomendada:
+#     pip install SpeechRecognition sounddevice
+# O sounddevice tem instalador pronto para QUALQUER Python (inclusive 3.14);
+# o pyaudio, não — em Python novo ele falha ao instalar. Por isso o microfone
+# aqui usa sounddevice como captador principal e pyaudio só se já existir.
+# Sem as libs, o app funciona normalmente e o botão 🎤 explica como habilitar.
 try:
     import speech_recognition as sr
-    VOZ_DISPONIVEL = True
+    VOZ_SR = True
 except ImportError:
-    VOZ_DISPONIVEL = False
+    VOZ_SR = False
+try:
+    import sounddevice as _sd
+    VOZ_SD = True
+except ImportError:
+    VOZ_SD = False
+VOZ_DISPONIVEL = VOZ_SR  # STT precisa do SpeechRecognition; captura tem fallback
 
 # --------------------------------------------------------------------
 # AUTOMAÇÃO OPCIONAL DA TRADOVATE (item #7) — envio de ordem por CDP.
@@ -102,7 +111,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.1.0"
+VERSAO_ATUAL = "2.1.1"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -2687,6 +2696,17 @@ class SmcQuantApp(ctk.CTk):
         self._chat_status("✳ pensando…", "#ff9f43")
         threading.Thread(target=self._chat_worker, args=(texto,), daemon=True).start()
 
+    def _chat_feed(self, texto):
+        """Evento da mesa entra na CONVERSA (sugestão nova, entrada executada,
+        stop/alvo). É o que deixa a IA interativa em tempo integral: o aviso
+        chega no chat e você responde ali mesmo — por texto ou voz."""
+        def escrever():
+            try:
+                self._chat_escrever("ia", texto)
+            except Exception:
+                registrar_msg_chat("ia", texto)
+        self.after(0, escrever)
+
     def _chat_responder(self, texto, falar_tb=True):
         """Resposta imediata (sem modelo): digita no terminal + voz opcional."""
         registrar_msg_chat("ia", texto)
@@ -2825,36 +2845,83 @@ class SmcQuantApp(ctk.CTk):
         self.after(0, lambda: self._chat_digitar(resposta))
 
     # ---------------- Comando por VOZ ----------------
+    def _capturar_audio(self, rec):
+        """Grava a sua fala e devolve um AudioData para transcrição.
+        1º caminho: sounddevice (instala em qualquer Python — inclusive 3.14).
+        2º caminho: sr.Microphone/pyaudio, se por acaso estiver instalado.
+        Corte automático: para de gravar após ~1s de silêncio (fala natural)."""
+        if VOZ_SD:
+            TAXA, BLOCO = 16000, 1600            # blocos de 0,1 s
+            MAX_SEG, SILENCIO_CORTE = 12, 10     # teto 12 s; corta com 1 s mudo
+            import array
+            capturado, silencio, falou = [], 0, False
+            with _sd.InputStream(samplerate=TAXA, channels=1, dtype="int16",
+                                  blocksize=BLOCO) as stream:
+                for _ in range(int(MAX_SEG * TAXA / BLOCO)):
+                    bloco, _ov = stream.read(BLOCO)
+                    dados = bytes(bloco)
+                    capturado.append(dados)
+                    amostras = array.array("h", dados)
+                    energia = (sum(a * a for a in amostras) / max(len(amostras), 1)) ** 0.5
+                    if energia > 350:
+                        falou, silencio = True, 0
+                    elif falou:
+                        silencio += 1
+                        if silencio >= SILENCIO_CORTE:
+                            break
+            if not falou:
+                raise sr.WaitTimeoutError("nenhuma fala detectada")
+            return sr.AudioData(b"".join(capturado), TAXA, 2)
+        # Fallback: microfone clássico (exige pyaudio)
+        with sr.Microphone() as mic:
+            rec.adjust_for_ambient_noise(mic, duration=0.4)
+            return rec.listen(mic, timeout=6, phrase_time_limit=15)
+
     def _chat_ouvir(self):
-        if not VOZ_DISPONIVEL:
+        if not VOZ_SR:
             self._chat_escrever(
                 "sistema",
                 "(comando por voz não instalado — rode:  pip install "
-                "SpeechRecognition pyaudio  e reabra o app)", persistir=False)
+                "SpeechRecognition sounddevice  e reabra o app)", persistir=False)
             return
+        if not VOZ_SD:
+            # Sem sounddevice, o único captador é o pyaudio — avisa se faltar.
+            try:
+                import pyaudio  # noqa: F401
+            except ImportError:
+                self._chat_escrever(
+                    "sistema",
+                    "(falta o captador de microfone — rode:  pip install "
+                    "sounddevice  e reabra o app)", persistir=False)
+                return
         if self._chat_ocupada:
             return
 
         def tarefa():
-            self.after(0, lambda: self._chat_status("🎤 ouvindo…", "#ff6b6b"))
+            self.after(0, lambda: self._chat_status("🎤 ouvindo… (fale agora)", "#ff6b6b"))
             try:
                 rec = sr.Recognizer()
                 rec.energy_threshold = 300
                 rec.dynamic_energy_threshold = True
-                with sr.Microphone() as mic:
-                    rec.adjust_for_ambient_noise(mic, duration=0.4)
-                    audio = rec.listen(mic, timeout=6, phrase_time_limit=15)
+                audio = self._capturar_audio(rec)
                 self.after(0, lambda: self._chat_status("transcrevendo…", "#ff9f43"))
                 texto = rec.recognize_google(audio, language="pt-BR")
             except sr.WaitTimeoutError:
                 self.after(0, lambda: self._chat_status("pronta", "#3fb950"))
                 self.after(0, lambda: self._chat_escrever(
-                    "sistema", "(não ouvi nada — tente de novo)", persistir=False))
+                    "sistema", "(não ouvi nada — clique no 🎤 e fale em seguida)",
+                    persistir=False))
                 return
             except sr.UnknownValueError:
                 self.after(0, lambda: self._chat_status("pronta", "#3fb950"))
                 self.after(0, lambda: self._chat_escrever(
                     "sistema", "(não entendi o áudio — pode repetir?)", persistir=False))
+                return
+            except sr.RequestError:
+                self.after(0, lambda: self._chat_status("pronta", "#3fb950"))
+                self.after(0, lambda: self._chat_escrever(
+                    "sistema", "(transcrição indisponível — sem internet no momento)",
+                    persistir=False))
                 return
             except Exception as e:
                 self.after(0, lambda: self._chat_status("pronta", "#3fb950"))
@@ -2864,7 +2931,7 @@ class SmcQuantApp(ctk.CTk):
             self.after(0, lambda: self._chat_status("pronta", "#3fb950"))
 
             def entregar(t=texto):
-                self._chat_escrever("voce", t)
+                self._chat_escrever("voce", f"🎤 {t}")
                 self._chat_processar(t)
             self.after(0, entregar)
 
@@ -3119,6 +3186,10 @@ class SmcQuantApp(ctk.CTk):
                 f"🎯 *ENTRADA EXECUTADA — {pos['direcao']} {pos['ativo']}*\n"
                 f"Entrada {pos['entry']} · {pos['contratos']} contrato(s)\n"
                 f"Stop {pos['stop']} · Alvo {pos.get('tp1')}", None, self.log)
+            self._chat_feed(f"🎯 Sua entrada {pos['direcao']} {pos['ativo']} @ "
+                            f"{pos['entry']} EXECUTOU ({pos['contratos']} contrato(s)). "
+                            "Estou acompanhando até o stop/alvo — me chame se quiser "
+                            "discutir a gestão.")
         elif tipo == "CANCELADA":
             self.log(f"🚫 ORDEM CANCELADA: {pos['direcao']} {pos['ativo']} @ {pos['entry']} — "
                       "o preço rompeu o stop antes de tocar a entrada. Nunca foi executada.")
@@ -3141,6 +3212,11 @@ class SmcQuantApp(ctk.CTk):
                  f"{pos['contratos']} contrato(s)",
                  f"Resultado: US${pos['pnl_final']:+.2f}"],
                 cor="#c53030" if tipo == "STOP" else "#1f8b4c")
+            self._chat_feed(
+                f"{emoji} Operação encerrada no {tipo}: {pos['direcao']} "
+                f"{pos['ativo']}, resultado US${pos['pnl_final']:+.2f}. "
+                + ("Quer revisar o que deu errado nesse cenário?" if tipo == "STOP"
+                   else "Parabéns pela execução — quer que eu analise o próximo?"))
 
     def _plataforma_confirma_fills(self):
         """True quando a leitura de posições da corretora está LIGADA e funcionou
@@ -6366,6 +6442,15 @@ class SmcQuantApp(ctk.CTk):
 
                     # Alerta na tela do computador (além do WhatsApp).
                     self._sinais_notificados.add(novo_sinal_id)
+                    # A sugestão também entra na CONVERSA da aba 💬 IA — você
+                    # pode responder 'acatar' / 'dispensar' ali, por texto ou voz.
+                    self._chat_feed(
+                        f"📘 Nova sugestão: {acao} {ativo} — entrada "
+                        f"{sinal_ativo['entry']}, stop {sinal_ativo['stop']}, alvo "
+                        f"{sinal_ativo['tp1']}"
+                        + (f", R:R {rr1}" if rr1 else "") +
+                        f", probabilidade {probabilidade:.0f}%. Quer conversar sobre "
+                        "o cenário? Ou diga 'acatar' / 'dispensar'.")
                     self._notificar_desktop(
                         f"📘 Nova sugestão — {acao} {ativo}",
                         [f"Entrada {sinal_ativo['entry']}  ·  Stop {sinal_ativo['stop']}",
