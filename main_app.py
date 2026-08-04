@@ -111,7 +111,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.5.0"
+VERSAO_ATUAL = "2.6.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1986,6 +1986,254 @@ def bloco_licoes_prompt():
             f"aprendidas em sessões anteriores):\n{corpo}\n")
 
 # ====================================================================
+# JANELA PARA A WEB — dados reais SEM chave de API
+# ====================================================================
+# POR QUE ISSO EXISTE: com a cota da Gemini estourada a ferramenta ficava cega
+# para o mundo, e quando respondia sobre o mercado o fazia de memória — ou seja,
+# inventando. "O S&P sobe por causa de dados de inflação e resultados de
+# tecnologia" pode estar certo ou ser puro chute: o modelo não tinha como saber.
+#
+# Aqui a TIGER busca o dado ELA MESMA, com o `requests` que o app já usa:
+#   • COTAÇÃO real (Yahoo Finance) — preço, variação e faixa do dia
+#   • NOTÍCIA fresca (RSS de 6 casas de mercado) — manchete, fonte e hora
+#   • BUSCA na web (DuckDuckGo) — para o resto
+# Nada disso precisa de chave, cota ou plano pago. E como o número vem da fonte,
+# ela não tem o que inventar: ou tem o dado e cita de onde veio, ou diz que não
+# conseguiu buscar.
+_WEB_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+           "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
+# Feeds públicos, sem cadastro. Se algum sair do ar, os outros seguem servindo —
+# por isso são vários e de casas diferentes (duas em português).
+FONTES_NOTICIAS = [
+    ("Yahoo Finance", "https://finance.yahoo.com/news/rssindex"),
+    ("CNBC Markets", "https://search.cnbc.com/rs/search/combinedcms/view.xml"
+                     "?partnerId=wrss01&id=20910258"),
+    ("Investing.com", "https://www.investing.com/rss/news_25.rss"),
+    ("MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories"),
+    ("Nasdaq", "https://www.nasdaq.com/feed/rssoutbound?category=Markets"),
+    ("InfoMoney", "https://www.infomoney.com.br/feed/"),
+]
+
+# Como o trader chama cada ativo -> símbolo do Yahoo. Os futuros que ele opera
+# (MES/MNQ) seguem o índice à vista, então apontam para o contínuo.
+SIMBOLOS_MERCADO = {
+    "s&p": "^GSPC", "sp500": "^GSPC", "s&p500": "^GSPC", "sp 500": "^GSPC",
+    "spx": "^GSPC", "es": "ES=F", "mes": "ES=F", "mini indice": "^GSPC",
+    "nasdaq": "^IXIC", "nq": "NQ=F", "mnq": "NQ=F", "ndx": "^NDX",
+    "dow": "^DJI", "dow jones": "^DJI", "ym": "YM=F",
+    "russell": "^RUT", "vix": "^VIX", "volatilidade": "^VIX",
+    "ouro": "GC=F", "gold": "GC=F", "prata": "SI=F",
+    "petroleo": "CL=F", "petróleo": "CL=F", "oil": "CL=F", "brent": "BZ=F",
+    "dolar": "BRL=X", "dólar": "BRL=X", "usdbrl": "BRL=X", "real": "BRL=X",
+    "euro": "EURUSD=X", "eurusd": "EURUSD=X",
+    "bitcoin": "BTC-USD", "btc": "BTC-USD", "ethereum": "ETH-USD",
+    "ibovespa": "^BVSP", "ibov": "^BVSP",
+    "juros": "^TNX", "treasury": "^TNX", "dxy": "DX-Y.NYB",
+}
+
+_cache_web = {}          # chave -> (quando, valor) — evita repetir a mesma busca
+
+def _web_cacheado(chave, ttl, produtor):
+    """Guarda o resultado por alguns segundos. Perguntar três vezes seguidas
+    'como está o S&P' não deve virar três downloads."""
+    agora = time.time()
+    hit = _cache_web.get(chave)
+    if hit and (agora - hit[0]) < ttl:
+        return hit[1]
+    valor = produtor()
+    if valor:
+        _cache_web[chave] = (agora, valor)
+    return valor
+
+def _web_get(url, params=None, timeout=10):
+    r = requests.get(url, params=params, timeout=timeout,
+                     headers={"User-Agent": _WEB_UA,
+                              "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8"})
+    r.raise_for_status()
+    return r
+
+def simbolo_do_texto(texto):
+    """Descobre de qual ativo ele está falando. Devolve (símbolo, nome) ou None."""
+    t = _norm_busca(texto)
+    achado = None
+    for apelido, simbolo in SIMBOLOS_MERCADO.items():
+        a = _norm_busca(apelido)
+        if re.search(rf"(^|[^a-z0-9]){re.escape(a)}([^a-z0-9]|$)", t):
+            # o apelido mais longo ganha: "s&p 500" vale mais que "es"
+            if not achado or len(a) > len(achado[0]):
+                achado = (a, simbolo, apelido)
+    return (achado[1], achado[2]) if achado else None
+
+def cotacao_mercado(simbolo):
+    """Preço REAL do ativo, direto do Yahoo Finance. Sem chave, sem cota.
+    Devolve dict ou None. É o que impede a IA de inventar cotação."""
+    def buscar():
+        try:
+            r = _web_get(f"https://query1.finance.yahoo.com/v8/finance/chart/"
+                         f"{requests.utils.quote(simbolo)}",
+                         params={"interval": "1d", "range": "5d"}, timeout=10)
+            m = r.json()["chart"]["result"][0]["meta"]
+            preco = m.get("regularMarketPrice")
+            anterior = m.get("chartPreviousClose") or m.get("previousClose")
+            if preco is None:
+                return None
+            var = (preco - anterior) if anterior else None
+            return {
+                "simbolo": m.get("symbol", simbolo),
+                "preco": preco,
+                "moeda": m.get("currency", ""),
+                "fechamento_anterior": anterior,
+                "variacao": var,
+                "variacao_pct": (var / anterior * 100) if (var and anterior) else None,
+                "maxima": m.get("regularMarketDayHigh"),
+                "minima": m.get("regularMarketDayLow"),
+                "hora": time.strftime("%H:%M"),
+                "fonte": "Yahoo Finance",
+            }
+        except Exception:
+            return None
+    return _web_cacheado(f"cot:{simbolo}", 60, buscar)
+
+def _data_do_item(texto):
+    """As casas publicam a data em três formatos diferentes. Devolve timestamp
+    ou None — sem quebrar por causa de um feed com formato exótico."""
+    texto = (texto or "").strip()
+    if not texto:
+        return None
+    try:
+        import email.utils
+        d = email.utils.parsedate_to_datetime(texto)      # "Tue, 04 Aug 2026 …"
+        if d:
+            return d.timestamp()
+    except Exception:
+        pass
+    for formato in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d %H:%M:%S",
+                    "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.datetime.strptime(texto[:19], formato).timestamp()
+        except ValueError:
+            continue
+    return None
+
+def noticias_do_mercado(maximo=8, termo=None, fontes=None):
+    """Manchetes frescas das casas de mercado, via RSS público. Sem chave.
+    Devolve lista de dicts (titulo, fonte, url, quando, resumo), do mais novo
+    para o mais velho. `termo` filtra por assunto ('inflação', 'fed', 'S&P')."""
+    def buscar():
+        import xml.etree.ElementTree as ET
+        import html as _html
+        colhidas = []
+        for nome, url in (fontes or FONTES_NOTICIAS):
+            try:
+                r = _web_get(url, timeout=8)
+                raiz = ET.fromstring(r.content)
+            except Exception:
+                continue                     # feed fora do ar: segue para o próximo
+            for item in raiz.findall(".//item")[:20]:
+                titulo = (item.findtext("title") or "").strip()
+                if not titulo:
+                    continue
+                resumo = re.sub(r"<[^>]+>", " ",
+                                item.findtext("description") or "")
+                colhidas.append({
+                    "titulo": _html.unescape(titulo),
+                    "fonte": nome,
+                    "url": (item.findtext("link") or "").strip(),
+                    "quando": _data_do_item(item.findtext("pubDate") or
+                                            item.findtext("published")),
+                    "resumo": _html.unescape(re.sub(r"\s+", " ", resumo)).strip()[:300],
+                })
+        colhidas.sort(key=lambda n: n["quando"] or 0, reverse=True)
+        return colhidas
+    todas = _web_cacheado("noticias", 180, buscar) or []
+    if termo:
+        alvo = _norm_busca(termo)
+        chaves = [w for w in re.findall(r"[a-z0-9&]+", alvo) if len(w) >= 3]
+        if chaves:
+            filtradas = [n for n in todas
+                         if any(k in _norm_busca(n["titulo"] + " " + n["resumo"])
+                                for k in chaves)]
+            if filtradas:
+                todas = filtradas
+    return todas[:maximo]
+
+def buscar_na_web(consulta, maximo=5):
+    """Busca aberta na internet, sem chave. Devolve lista (titulo, url, resumo).
+    Lista vazia = não deu para pesquisar agora; quem chama tem de dizer isso ao
+    trader, NUNCA responder de cabeça no lugar."""
+    def buscar():
+        import html as _html
+        achados = []
+        try:
+            r = _web_get("https://html.duckduckgo.com/html/",
+                         params={"q": consulta, "kl": "br-pt"}, timeout=12)
+            bruto = r.text
+            blocos = re.findall(
+                r'result__a[^>]*href="(?P<u>[^"]+)"[^>]*>(?P<t>.*?)</a>'
+                r'(?:.*?result__snippet[^>]*>(?P<s>.*?)</a>)?',
+                bruto, re.S)
+            for u, t, s in blocos[:maximo]:
+                titulo = re.sub(r"<[^>]+>", "", t).strip()
+                if not titulo:
+                    continue
+                achados.append({
+                    "titulo": _html.unescape(titulo),
+                    "url": _html.unescape(u),
+                    "resumo": _html.unescape(
+                        re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", s or ""))).strip()[:300],
+                })
+        except Exception:
+            return []
+        return achados
+    return _web_cacheado(f"busca:{_norm_busca(consulta)}", 300, buscar) or []
+
+def _idade_texto(quando):
+    if not quando:
+        return ""
+    minutos = max(0, (time.time() - quando) / 60)
+    if minutos < 60:
+        return f"há {minutos:.0f} min"
+    if minutos < 60 * 36:
+        return f"há {minutos / 60:.0f} h"
+    return f"há {minutos / 1440:.0f} dia(s)"
+
+def formatar_cotacao(cot, apelido=""):
+    """Cotação em frase natural — é lida em voz alta, então nada de tabela."""
+    if not cot:
+        return ""
+    nome = apelido or cot["simbolo"]
+    partes = [f"{nome} está em {cot['preco']:,.2f}"]
+    if cot.get("variacao_pct") is not None:
+        sinal = "alta" if cot["variacao"] >= 0 else "queda"
+        partes.append(f"{sinal} de {abs(cot['variacao']):,.2f} pontos, "
+                      f"{abs(cot['variacao_pct']):.2f} por cento no dia")
+    if cot.get("maxima") and cot.get("minima"):
+        partes.append(f"máxima do dia {cot['maxima']:,.2f} e mínima "
+                      f"{cot['minima']:,.2f}")
+    return ", ".join(partes) + f" (dado do {cot['fonte']}, às {cot['hora']})."
+
+def bloco_web_para_prompt(texto):
+    """Dados REAIS da web para injetar no prompt do modelo quando a pergunta é
+    sobre o mercado de hoje. Serve de coleira: com o número e a manchete na
+    mão, ele não tem por que inventar."""
+    partes = []
+    alvo = simbolo_do_texto(texto)
+    if alvo:
+        cot = cotacao_mercado(alvo[0])
+        if cot:
+            partes.append("COTAÇÃO REAL AGORA (use estes números, não invente "
+                          f"outros): {formatar_cotacao(cot, alvo[1].upper())}")
+    noticias = noticias_do_mercado(maximo=6, termo=alvo[1] if alvo else None)
+    if noticias:
+        linhas = "\n".join(
+            f"• [{n['fonte']}, {_idade_texto(n['quando'])}] {n['titulo']}"
+            for n in noticias)
+        partes.append("MANCHETES REAIS DO MERCADO AGORA (cite a fonte ao usar; "
+                      f"não invente notícia que não esteja aqui):\n{linhas}")
+    return "\n\n".join(partes)
+
+# ====================================================================
 # BASE DE CONHECIMENTO SMC NATIVA — a TIGER pensa sem gastar cota
 # ====================================================================
 # POR QUE ISSO EXISTE: toda pergunta ia para a API do Gemini, inclusive as que
@@ -2054,7 +2302,8 @@ BASE_SMC = [
           "das entradas mais fortes do SMC porque você opera junto de quem "
           "quebrou o nível e contra quem está preso lá dentro."},
     {"t": "Mitigation block",
-     "k": ["mitigation", "mitigation block", "mitigacao", "mitigação", "mitigado"],
+     "k": ["mitigation", "mitigation block", "mitigacao", "mitigação",
+           "mitigado", "nao mitigado", "não mitigado"],
      "r": "Mitigar é o preço voltar a uma zona para a instituição fechar ou "
           "equilibrar ordens que ficaram penduradas. Mitigation block é o bloco "
           "onde isso acontece. Na prática: uma zona não mitigada é uma zona "
@@ -2088,7 +2337,7 @@ BASE_SMC = [
           "de qualidade alta."},
     {"t": "Liquidez (BSL e SSL)",
      "k": ["liquidez", "bsl", "ssl", "buy side", "sell side", "liquidity",
-           "onde esta a liquidez", "stops"],
+           "onde esta a liquidez", "onde estao os stops", "onde estão os stops"],
      "r": "Liquidez é onde estão os stops parados, e é para lá que o preço "
           "PRECISA ir para as instituições preencherem ordem grande. Acima dos "
           "topos fica a liquidez de compra, os stops de quem está vendido. "
@@ -2098,8 +2347,8 @@ BASE_SMC = [
           "tomá-la. Liquidez externa fica nos extremos do range; interna fica "
           "nos gaps e order blocks dentro dele."},
     {"t": "Topos e fundos iguais (EQH e EQL)",
-     "k": ["topos iguais", "fundos iguais", "eqh", "eql", "equal highs", "equal lows",
-           "duplo topo", "duplo fundo"],
+     "k": ["topos iguais", "fundos iguais", "eqh", "eql", "equal highs",
+           "equal lows", "duplo topo", "duplo fundo", "topo duplo", "fundo duplo"],
      "r": "Topos iguais ou fundos iguais são um ímã de liquidez. Quando o preço "
           "faz dois topos no mesmo nível, todo mundo põe stop logo acima — e "
           "aquele bolo de stops vira alvo. No SMC, topo duplo não é sinal de "
@@ -2124,8 +2373,8 @@ BASE_SMC = [
           "eles concentram liquidez. Servem tanto como alvo de um movimento "
           "quanto como o lugar onde uma varredura acontece antes da virada."},
     {"t": "Turtle soup e SFP (falha de rompimento)",
-     "k": ["turtle soup", "sfp", "swing failure", "falso rompimento", "varredura",
-           "sweep", "pavio"],
+     "k": ["turtle soup", "sfp", "swing failure", "falso rompimento",
+           "varredura de liquidez", "sweep", "pavio que volta"],
      "r": "É a varredura clássica: o preço fura um topo ou fundo importante, pega "
           "os stops, e FECHA de volta para dentro do range. O pavio passa, o "
           "corpo não. Isso é manipulação, não rompimento. Quando aparece num "
@@ -2140,8 +2389,9 @@ BASE_SMC = [
           "primeiras horas de Londres e de Nova York. Regra prática: não "
           "confie no primeiro impulso da abertura sem ver estrutura confirmando."},
     {"t": "Premium e discount",
-     "k": ["premium", "discount", "premio", "prêmio", "desconto", "caro", "barato",
-           "equilibrio", "equilíbrio", "50%", "fibonacci"],
+     "k": ["premium", "discount", "discaunt", "premio e desconto",
+           "prêmio e desconto", "zona de desconto", "zona de premio",
+           "caro ou barato", "equilibrio do range", "equilíbrio do range"],
      "r": "Pegue o range que interessa, do fundo ao topo, e marque o meio. Acima "
           "do meio é prêmio, ou seja, caro: é ali que se VENDE. Abaixo do meio é "
           "desconto, barato: é ali que se COMPRA. Instituição não compra caro "
@@ -2167,9 +2417,9 @@ BASE_SMC = [
           "Se você identificar em qual fase o gráfico está, sabe se espera, se "
           "toma cuidado ou se entra."},
     {"t": "Killzones (janelas de horário)",
-     "k": ["killzone", "kill zone", "horario", "horário", "sessao", "sessão",
-           "londres", "nova york", "asia", "ásia", "melhor hora",
-           "quilzone", "quill zone", "kiuzone"],
+     "k": ["killzone", "kill zone", "quilzone", "quill zone", "kiuzone",
+           "melhor horario para operar", "melhor hora para operar",
+           "sessao de londres", "sessão de londres", "abertura de nova york"],
      "r": "São as janelas em que o dinheiro grande de fato opera. Londres pela "
           "manhã costuma criar o movimento do dia. Nova York na abertura traz o "
           "maior volume e é onde a manipulação da madrugada normalmente se "
@@ -2193,8 +2443,8 @@ BASE_SMC = [
           "gaps e order blocks que interessam. Trocar de dealing range no meio "
           "da análise é o erro que faz a leitura inteira sair errada."},
     {"t": "Risco e retorno (R:R)",
-     "k": ["rr", "r:r", "risco retorno", "risco e retorno", "risco/retorno",
-           "relacao risco", "quantos por um"],
+     "k": ["r:r", "risco retorno", "risco e retorno", "risco/retorno",
+           "relacao risco retorno", "relação risco retorno", "um para dois"],
      "r": "R:R é quanto você ganha para cada unidade que arrisca. O plano desta "
           "mesa exige no mínimo 1 para 2: se o stop custa cem dólares, o alvo "
           "tem que valer pelo menos duzentos. Isso não é preciosismo, é "
@@ -2203,8 +2453,8 @@ BASE_SMC = [
           "mais de 50 por cento só para empatar, e ninguém sustenta isso. Se o "
           "setup não entrega 1 para 2, ele não é setup — é vontade de operar."},
     {"t": "Onde colocar o stop",
-     "k": ["stop", "onde colocar o stop", "invalidacao", "invalidação",
-           "stop loss", "proteger"],
+     "k": ["onde colocar o stop", "onde colocar stop", "stop loss",
+           "invalidacao", "invalidação", "onde fica o stop", "stop"],
      "r": "O stop vai onde a IDEIA morre, não onde a dor aperta. Se você comprou "
           "num order block porque acredita que aquela zona segura, o stop fica "
           "logo abaixo do extremo que originou a zona — se o preço passar dali, "
@@ -2212,15 +2462,17 @@ BASE_SMC = [
           "no meio do nada só serve para você ser varrido antes do movimento "
           "que você mesmo previu."},
     {"t": "Onde colocar o alvo",
-     "k": ["alvo", "take profit", "onde realizar", "tp", "objetivo", "saida", "saída"],
+     "k": ["onde colocar o alvo", "take profit", "onde realizar",
+           "onde sair da operacao", "onde sair da operação", "alvo"],
      "r": "O alvo é a próxima liquidez do lado oposto: o topo ou fundo que ainda "
           "não foi pego, a máxima do dia anterior, um FVG que ficou aberto. Você "
           "entra onde a instituição entra e sai onde a instituição realiza. "
           "Alvo em número redondo escolhido por gosto é chute. Se entre a "
           "entrada e a próxima liquidez não cabe 1 para 2, o trade não vale."},
     {"t": "Gestão de risco e tamanho da posição",
-     "k": ["gestao de risco", "gestão de risco", "tamanho da posicao", "sizing",
-           "quantos contratos", "risco por operacao", "quanto arriscar"],
+     "k": ["gestao de risco", "gestão de risco", "tamanho da posicao",
+           "tamanho da posição", "sizing", "quantos contratos",
+           "risco por operacao", "risco por operação", "quanto arriscar"],
      "r": "O tamanho vem da conta, nunca da confiança no setup. Você define "
           "quanto por cento da margem topa perder por operação, mede a "
           "distância até o stop, e o número de contratos sai dessa divisão. Se "
@@ -2230,8 +2482,8 @@ BASE_SMC = [
           "feito pelo plano da mesa, fora da IA, justamente para não depender "
           "de opinião."},
     {"t": "Drawdown e recuperação",
-     "k": ["drawdown", "rebaixamento", "recuperar", "recuperacao", "recuperação",
-           "perdi muito", "prejuizo", "prejuízo"],
+     "k": ["drawdown", "rebaixamento", "recuperar a conta",
+           "recuperar o prejuizo", "recuperar o prejuízo", "quanto preciso ganhar para voltar"],
      "r": "Drawdown é a distância entre o topo do seu resultado e o vale depois "
           "dele. O detalhe cruel: perder 20 por cento exige ganhar 25 para "
           "voltar; perder 50 exige ganhar 100. Por isso proteger capital vale "
@@ -2240,8 +2492,8 @@ BASE_SMC = [
           "aumentar para recuperar rápido. Aumentar depois de perder é o "
           "caminho mais curto para quebrar a conta."},
     {"t": "Win rate e expectativa",
-     "k": ["win rate", "taxa de acerto", "expectativa", "acerto", "estatistica",
-           "estatística"],
+     "k": ["win rate", "winrate", "taxa de acerto", "expectativa matematica",
+           "expectativa matemática", "expectativa positiva"],
      "r": "Taxa de acerto sozinha não diz nada. O que paga a conta é a "
           "expectativa: acerto vezes ganho médio, menos erro vezes perda média. "
           "Um sistema que acerta 40 por cento com 1 para 3 ganha muito mais que "
@@ -2249,8 +2501,9 @@ BASE_SMC = [
           "mesa cobra R:R mínimo em vez de cobrar acerto: é o R:R que sustenta "
           "o resultado quando a sequência ruim chega — e ela sempre chega."},
     {"t": "Checklist de entrada",
-     "k": ["checklist", "como entrar", "roteiro", "passo a passo", "quando entrar",
-           "criterios", "critérios", "como opero"],
+     "k": ["checklist", "checklist de entrada", "roteiro de entrada",
+           "passo a passo para entrar", "quando entrar", "criterios de entrada",
+           "critérios de entrada"],
      "r": "O roteiro é este, em ordem. Um: qual a estrutura do tempo gráfico "
           "maior, alta ou baixa. Dois: onde está a liquidez que o preço ainda "
           "não pegou. Três: o preço já varreu essa liquidez. Quatro: houve CHoCH "
@@ -2259,8 +2512,8 @@ BASE_SMC = [
           "em prêmio para vender. Sete: o alvo até a liquidez oposta paga pelo "
           "menos 1 para 2. Se qualquer um desses falhar, não é entrada."},
     {"t": "Quando NÃO operar",
-     "k": ["quando nao operar", "quando não operar", "ficar de fora", "nao trade",
-           "não operar", "melhor trade", "esperar"],
+     "k": ["quando nao operar", "quando não operar", "ficar de fora",
+           "nao trade", "melhor trade e o nao feito", "hora de nao operar"],
      "r": "Fique de fora quando o preço está no meio do range, sem prêmio nem "
           "desconto claro. Quando não houve varredura de liquidez nenhuma. "
           "Quando o setup só existe se você forçar a vista. Quando está fora de "
@@ -2269,8 +2522,8 @@ BASE_SMC = [
           "prejuízo — nesse estado o gráfico mostra o que você quer ver. O "
           "melhor trade do dia muitas vezes é o que não foi feito."},
     {"t": "Confluência",
-     "k": ["confluencia", "confluência", "confirmacao", "confirmação",
-           "quantos fatores", "juntar sinais"],
+     "k": ["confluencia", "confluência", "quantos fatores", "juntar sinais",
+           "empilhar motivos"],
      "r": "Confluência é o empilhamento de motivos independentes apontando para "
           "o mesmo lugar: estrutura a favor, liquidez varrida, order block não "
           "mitigado, FVG aberto, zona em desconto, dentro da killzone. Um motivo "
@@ -2278,17 +2531,43 @@ BASE_SMC = [
           "confluência inventada: repetir o mesmo argumento com três nomes "
           "diferentes não conta como três motivos."},
     {"t": "Volume, VWAP e indicadores como apoio",
-     "k": ["volume", "vwap", "vpoc", "perfil de volume", "rsi", "media movel",
-           "média móvel", "indicador", "indicadores", "momentum", "divergencia"],
+     "k": ["vwap", "vpoc", "perfil de volume", "media movel", "média móvel",
+           "divergencia de momentum", "divergência de momentum", "rsi",
+           "indicadores como apoio", "volume confirma"],
      "r": "No SMC os indicadores não mandam, eles confirmam. Volume alto no "
           "rompimento apoia a leitura de deslocamento real; volume fraco sugere "
           "armadilha. VWAP e o pico de volume funcionam como ímã de preço e "
           "combinam bem com zona de desconto. Divergência de momentum ajuda a "
           "antecipar exaustão perto de um extremo. Use como confluência "
           "adicional, nunca como o motivo principal da entrada."},
+    {"t": "Confirmação de reversão",
+     "k": ["confirmacao de reversao", "confirmação de reversão", "confirmar reversao",
+           "confirmar reversão", "sinal de reversao", "sinal de reversão",
+           "reversao", "reversão", "reverter", "como saber que virou",
+           "topo ou fundo", "pegar o topo", "pegar o fundo", "contra a tendencia",
+           "contra a tendência"],
+     "r": "Reversão confirmada tem quatro pernas, nesta ordem, e sem elas é "
+          "chute contra a tendência — que é o jeito mais caro de operar. "
+          "Primeira: o preço tem que estar num EXTREMO do range, em prêmio se "
+          "você quer vender ou em desconto se quer comprar. No meio do caminho "
+          "não existe reversão, existe continuação. Segunda: varredura de "
+          "liquidez. O preço fura o topo ou o fundo, pega os stops, e o corpo "
+          "da vela FECHA de volta para dentro. Se só o pavio passou e voltou, é "
+          "manipulação, e é justamente isso que você quer ver. Terceira: CHoCH "
+          "no tempo gráfico menor. Depois da varredura, o preço precisa quebrar "
+          "a estrutura no sentido novo, com fechamento de corpo, não com pavio. "
+          "É a assinatura de que a mão virou. Quarta: o recuo até o ponto de "
+          "interesse que esse CHoCH deixou, um order block ou um FVG, e a "
+          "reação ali. A entrada é nesse retorno, não no rompimento. "
+          "Faltando qualquer uma das quatro, o certo é esperar. E tem um "
+          "contra-sinal que cancela tudo: se o movimento contra o qual você quer "
+          "operar veio com deslocamento forte e deixou ineficiência aberta, ele "
+          "ainda tem combustível, e vender só porque subiu muito é entregar "
+          "liquidez para quem está comprando."},
     {"t": "Estrutura interna e externa",
-     "k": ["estrutura interna", "estrutura externa", "swing interno", "swing externo",
-           "fractal", "tempo grafico", "tempo gráfico", "timeframe"],
+     "k": ["estrutura interna", "estrutura externa", "swing interno",
+           "swing externo", "fractal", "tempo grafico maior", "tempo gráfico maior",
+           "qual timeframe usar", "multi timeframe"],
      "r": "O preço é fractal: dentro de uma perna de alta do gráfico de quatro "
           "horas existem altas e baixas inteiras no de cinco minutos. Estrutura "
           "externa é a do tempo maior, e é ela que dá a direção. Interna é a do "
@@ -2308,38 +2587,59 @@ def _parecido(palavra, chave, corte=0.78):
     import difflib
     return difflib.SequenceMatcher(None, palavra, chave).ratio() >= corte
 
-def buscar_base_smc(pergunta, minimo=1):
+def _nota_base_smc(item, p, palavras):
+    """Quanto este tópico casa com a pergunta.
+    ESCALA: 3 = expressão inteira ("fair value gap"); 2 = jargão isolado
+    ("choch", "fvg"); 1 = casou só por semelhança de som. Palavra genérica não
+    entra na lista de chaves, justamente para não pontuar."""
+    nota = 0
+    for chave in item["k"]:
+        c = _norm_busca(chave)
+        if not c:
+            continue
+        if " " in c:
+            if c in p:
+                nota += 3
+            continue
+        # jargão curto casa como palavra inteira, senão 'ob' casa dentro de
+        # 'objetivo' e a resposta sai completamente errada
+        if re.search(rf"\b{re.escape(c)}\b", p):
+            nota += 2
+        elif len(c) >= 4 and any(
+                # chave longa é distintiva: dá para ser mais tolerante sem
+                # risco de casar errado ('choque' -> 'choch' dá 0,73)
+                _parecido(w, c, 0.72 if len(c) >= 5 else 0.80)
+                for w in palavras):
+            # Vale o mesmo que o acerto exato: 'iniducement' e 'bola do choque'
+            # são o jargão, só que como a transcrição de voz o escreveu. Valer
+            # menos deixava a pergunta falada abaixo do corte mínimo.
+            nota += 2
+    if _norm_busca(item["t"]).split(" (")[0] in p:
+        nota += 3
+    return nota
+
+def buscar_base_smc(pergunta, minimo=2):
     """Acha o tópico da base que responde a pergunta. Devolve o item ou None.
-    Pontua por palavra-chave encontrada; chave com mais de uma palavra vale
-    mais, porque 'fair value gap' é muito mais específico que 'gap'."""
+
+    O CORTE MÍNIMO É 2 DE PROPÓSITO. Com corte 1, "e o que seria uma
+    CONFIRMAÇÃO de reversão?" bateu na palavra 'confirmação' e ela respondeu
+    sobre CONFLUÊNCIA — assunto completamente diferente do perguntado. Uma
+    única palavra fraca nunca pode ganhar: ou o jargão aparece, ou a pergunta
+    vai para quem sabe pesquisar (internet/modelo).
+
+    Também exige DISTÂNCIA do segundo colocado: quando dois tópicos empatam, a
+    pergunta é ambígua e responder qualquer um dos dois é chutar."""
     p = _norm_busca(pergunta)
     if not p:
         return None
     palavras = [w for w in re.findall(r"[a-z0-9:.]+", p) if len(w) >= 4]
-    melhor, nota_melhor = None, 0
-    for item in BASE_SMC:
-        nota = 0
-        for chave in item["k"]:
-            c = _norm_busca(chave)
-            if not c:
-                continue
-            # palavra curta precisa casar como palavra inteira (senão 'ob' casa
-            # dentro de 'objetivo' e a resposta sai completamente errada)
-            achou = (re.search(rf"\b{re.escape(c)}\b", p) if len(c) <= 4
-                     else c in p)
-            if achou:
-                nota += 2 if " " in c else 1
-            elif " " not in c and len(c) >= 4 and any(
-                    # chave longa é distintiva: pode ser mais tolerante sem
-                    # risco de casar errado ('choque' -> 'choch' dá 0,73)
-                    _parecido(w, c, 0.72 if len(c) >= 5 else 0.80)
-                    for w in palavras):
-                nota += 1                  # casou por semelhança (voz)
-        if _norm_busca(item["t"]).split(" (")[0] in p:
-            nota += 2
-        if nota > nota_melhor:
-            melhor, nota_melhor = item, nota
-    return melhor if nota_melhor >= minimo else None
+    notas = sorted(((_nota_base_smc(i, p, palavras), i) for i in BASE_SMC),
+                   key=lambda x: x[0], reverse=True)
+    if not notas or notas[0][0] < minimo:
+        return None
+    if len(notas) > 1 and notas[1][0] == notas[0][0]:
+        return None                        # empate = ambíguo, melhor não chutar
+    return notas[0][1]
 
 # Perguntas que a base responde sozinha: são de CONCEITO, não dependem do
 # gráfico de agora nem da conta. "O que é um CHoCH" tem a mesma resposta hoje e
@@ -2351,6 +2651,20 @@ _RE_CONCEITUAL = re.compile(
     r"explica(r|-me)?|qual (a|é a|e a) (diferen[çc]a|defini[çc][ãa]o|regra)|"
     r"para que serve|quando (usar|entrar|n[ãa]o operar)|"
     r"pra que serve|o que caracteriza)", re.IGNORECASE)
+
+# Quando ele diz "NÃO PERGUNTEI SOBRE CONFLUÊNCIA, PERGUNTEI SOBRE CONFIRMAÇÃO
+# DE REVERSÃO", a resposta anterior foi REJEITADA. Insistir na mesma fonte
+# devolve o mesmo texto — foi o que aconteceu, duas vezes seguidas. Correção
+# dele manda a pergunta para quem pesquisa (modelo/web), nunca para a base.
+_RE_CORRECAO = re.compile(
+    r"(n[ãa]o (foi|era) (isso|essa)|n[ãa]o perguntei|n[ãa]o [ée] isso|"
+    r"n[ãa]o entendi|nada a ver|fora do contexto|voc[êe] errou|"
+    r"repetiu|de novo a mesma|mesma resposta|eu perguntei sobre|"
+    r"n[ãa]o foi o que (eu )?pedi|preste aten[çc][ãa]o)", re.IGNORECASE)
+
+def e_correcao_do_trader(texto):
+    """Ele está dizendo que a resposta anterior não serviu."""
+    return bool(_RE_CORRECAO.search(_norm_busca(texto) or ""))
 
 def pergunta_conceitual(texto):
     """É pergunta de metodologia (responde offline) e não sobre o gráfico
@@ -2577,6 +2891,21 @@ def interpretar_intencao(texto):
         return "DESLIGAR_MOTOR"
     if _motor(_MOTOR_LIGAR):
         return "LIGAR_MOTOR"
+    # NOTÍCIA E COTAÇÃO: buscadas na web pela PRÓPRIA ferramenta, sem chave de
+    # API. É o que impede ela de responder "o S&P sobe por causa da inflação"
+    # de cabeça, sem ter visto manchete nenhuma.
+    if re.search(r"\b(not[íi]cias?|manchetes?|aconteceu|acontecendo|movend[oa]|"
+                 r"movimentou|agenda|calend[áa]rio|fato relevante|por que|porqu[êe]|"
+                 r"pq)\b", t) and \
+            re.search(r"\b(mercado|s&p|sp500|nasdaq|d[óo]lar|ouro|bitcoin|hoje|"
+                      r"agora|economia|fed|juros|infla[çc][ãa]o|not[íi]cias?)\b", t):
+        return "NOTICIAS"
+    if re.search(r"\b(cota[çc][ãa]o|pre[çc]o|quanto (est[áa]|vale|custa)|"
+                 r"em quanto|quanto t[áa])\b", t) and simbolo_do_texto(t):
+        return "COTACAO"
+    if re.search(r"\b(pesquis(a|ar|e)|busc(a|ar|e)|procur(a|ar|e)|"
+                 r"d[áa] uma olhada na (internet|web)|na internet|no google)\b", t):
+        return "PESQUISAR"
     # O QUE ELA SABE SEM GASTAR COTA: os assuntos da base nativa.
     if re.search(r"\b(sabe|conhece|domina|treinada|treinado|treinamento|"
                  r"conhecimento|base)\b", t) and \
@@ -2673,7 +3002,8 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
         return (intencao, None)
     if intencao in ("DISPENSAR", "CANCELAR", "STATUS", "AJUDA",
                     "LIGAR_MOTOR", "DESLIGAR_MOTOR", "ENVIAR_WHATSAPP",
-                    "CONECTAR_WHATSAPP", "LISTAR_LICOES", "LISTAR_CONHECIMENTO"):
+                    "CONECTAR_WHATSAPP", "LISTAR_LICOES", "LISTAR_CONHECIMENTO",
+                    "NOTICIAS", "COTACAO", "PESQUISAR"):
         return ("EXECUTAR", intencao)
     return ("IA", None)
 
@@ -2721,17 +3051,36 @@ def montar_persona_ia():
         "• 'status' — o placar da conta.\n"
         "• '<a regra>, aprenda isso' — grava a regra na sua memória permanente.\n"
         "\n"
+        "DE ONDE VEM A SUA RESPOSTA — NESTA ORDEM, SEMPRE:\n"
+        "1) BASE PRÓPRIA DE SMC: a ferramenta carrega a metodologia SMC/ICT "
+        "dentro dela — a MESMA que o motor usa para ler o gráfico. Conceito e "
+        "metodologia saem daqui, na hora, sem gastar cota.\n"
+        "2) WEB: se NÃO estiver na base, o dado é buscado na internet pela "
+        "própria ferramenta (cotação real do Yahoo Finance e manchetes das "
+        "casas de mercado). Quando esses dados vierem no contexto, eles são a "
+        "VERDADE: use os números de lá, cite a fonte e a hora.\n"
+        "3) SEU RACIOCÍNIO, em cima de 1 e 2 — nunca no lugar deles.\n"
+        "Se o assunto não está na base E a busca não trouxe nada, a resposta "
+        "certa é: 'não tenho esse dado e não consegui pesquisar agora'. Ele "
+        "prefere mil vezes ouvir isso a receber um número inventado.\n"
+        "\n"
+        "PROIBIDO INVENTAR — a regra que mais importa numa mesa:\n"
+        "• NUNCA cite preço, cotação, variação, horário de evento ou número de "
+        "qualquer espécie que não esteja no contexto, no arquivo anexado ou nos "
+        "dados da web. Se não tem, diga que não tem.\n"
+        "• NUNCA explique um movimento do mercado por 'dados de inflação', "
+        "'resultados corporativos' ou qualquer motivo que você não leu numa "
+        "manchete real desta conversa. Motivo sem fonte é chute, e chute numa "
+        "mesa vira prejuízo.\n"
+        "• Ao usar notícia, diga a casa e quando saiu ('segundo a CNBC, há 20 "
+        "minutos'). Sem fonte, não fale.\n"
+        "\n"
         "O QUE VOCÊ FAZ SOZINHA (isto sim é seu):\n"
-        "• BASE PRÓPRIA DE SMC: a ferramenta carrega uma base de metodologia "
-        "SMC/ICT dentro dela — a MESMA que o motor usa para ler o gráfico. "
-        "Pergunta de conceito é respondida por ela, na hora, sem gastar cota "
-        "de API. Se você já sabe a resposta pela metodologia, responda direto "
-        "em vez de enrolar.\n"
         "• VER O GRÁFICO: quando a imagem vier anexada, analise-a de verdade. "
         "Descreva só o que está visível; nunca invente preço que não aparece.\n"
-        "• PESQUISAR NA INTERNET: você tem busca ao vivo. Use para notícia, "
-        "calendário econômico, dado macro, horário de evento — e diga de onde "
-        "veio a informação. Se a busca não trouxer nada, diga isso; não invente.\n"
+        "• RESPONDER O QUE ELE PERGUNTOU: se ele disser que a resposta não foi "
+        "sobre o que perguntou, ele está certo. Não repita o texto anterior: "
+        "leia de novo a pergunta e responda EXATAMENTE aquilo.\n"
         "• CONTAS: os números da mesa (resultado, meta, quanto falta, ritmo por "
         "dia) vêm calculados no contexto. Use os números de lá, tal como estão. "
         "Se precisar de uma conta nova, faça a aritmética com CUIDADO e mostre "
@@ -3279,6 +3628,8 @@ class SmcQuantApp(ctk.CTk):
         self._ouvindo = False           # microfone em uso (botão ou OLÁ TIGER)
         self._tiger_rodando = False     # loop da palavra de ativação ativo?
         self._chat_anexo = None         # arquivo (foto/vídeo/doc) aguardando envio
+        self._ultimo_pedido = ""        # fala deste turno (as buscas web usam)
+        self._ultima_resposta_local = None   # evita repetir a mesma resposta da base
         # Última captura do gráfico feita pelo motor — os "olhos" dela no chat.
         # Se o app reabriu e o print da sessão passada ainda está no disco, ela
         # já começa enxergando (com a idade correta, para não tratá-lo como novo).
@@ -3590,6 +3941,9 @@ class SmcQuantApp(ctk.CTk):
             threading.Thread(target=self._chat_worker, args=(texto, anexo),
                              daemon=True).start()
             return
+        # Guarda a fala deste turno: as ações de web precisam do texto original
+        # para saber o que pesquisar.
+        self._ultimo_pedido = texto
         tipo, dado = processar_turno_chat(texto, self._chat_conf)
         self._chat_conf = None
 
@@ -3688,9 +4042,12 @@ class SmcQuantApp(ctk.CTk):
         # CHoCH?") tem resposta fixa — não faz sentido queimar cota com ela. Sai
         # na hora, funciona sem internet, e sobra cota para o que é do momento
         # (leitura de gráfico, notícia, análise da posição de agora).
-        if pergunta_conceitual(texto):
+        # ...MENOS quando ele acabou de dizer que a resposta anterior não
+        # serviu. Aí a base já falhou uma vez: insistir devolve o mesmo texto.
+        if pergunta_conceitual(texto) and not e_correcao_do_trader(texto):
             local = responder_do_conhecimento(texto)
-            if local:
+            if local and local != getattr(self, "_ultima_resposta_local", None):
+                self._ultima_resposta_local = local
                 self._chat_responder(local)
                 return
         # Conversa livre -> modelo
@@ -3726,6 +4083,101 @@ class SmcQuantApp(ctk.CTk):
             self._ia_falar(dito, forcar=True)
         elif falar_tb:
             self._ia_falar(dito)
+
+    # ---------------- Janela para a web (sem chave de API) ----------------
+    def _chat_web(self, acao, texto):
+        """Notícia, cotação e busca — a ferramenta vai à internet SOZINHA.
+
+        Nada aqui passa pela Gemini: é o `requests` do próprio app batendo em
+        RSS público e no Yahoo Finance. Por isso funciona com a cota estourada,
+        e por isso o número é REAL — ela cita a fonte e a hora, em vez de
+        responder de cabeça como fazia antes ("o S&P sobe por causa da
+        inflação", sem ter visto manchete nenhuma)."""
+        try:
+            self.after(0, lambda: self._chat_status("🌐 buscando na internet…",
+                                                     "#79c0ff"))
+            if acao == "COTACAO":
+                self._chat_web_cotacao(texto)
+            elif acao == "NOTICIAS":
+                self._chat_web_noticias(texto)
+            else:
+                self._chat_web_pesquisa(texto)
+        except Exception as e:
+            self._chat_entregar_resposta(
+                "Não consegui buscar na internet agora. Confira a conexão e me "
+                f"peça de novo. (detalhe técnico: {str(e)[:120]})")
+
+    def _chat_web_cotacao(self, texto):
+        alvo = simbolo_do_texto(texto)
+        cot = cotacao_mercado(alvo[0]) if alvo else None
+        if not cot:
+            self._chat_entregar_resposta(
+                "Não consegui puxar essa cotação agora — ou o ativo não está na "
+                "minha lista, ou a internet falhou. Eu acompanho S&P, Nasdaq, "
+                "Dow, Russell, VIX, ouro, prata, petróleo, dólar, euro, "
+                "bitcoin, Ibovespa e juros de 10 anos. Não vou chutar um número.")
+            return
+        self._chat_entregar_resposta(formatar_cotacao(cot, alvo[1].upper()))
+
+    def _chat_web_noticias(self, texto):
+        alvo = simbolo_do_texto(texto)
+        cot = cotacao_mercado(alvo[0]) if alvo else None
+        noticias = noticias_do_mercado(maximo=6,
+                                       termo=alvo[1] if alvo else None)
+        if not noticias and not cot:
+            self._chat_entregar_resposta(
+                "Não consegui alcançar as fontes de notícia agora — parece "
+                "internet. Prefiro dizer isso a inventar um motivo para o "
+                "movimento. Tente de novo em instantes.")
+            return
+        partes = []
+        if cot:
+            partes.append(formatar_cotacao(cot, alvo[1].upper()))
+        if noticias:
+            partes.append("O que as casas de mercado estão publicando agora:")
+            for n in noticias:
+                partes.append(f"• [{n['fonte']} · {_idade_texto(n['quando'])}] "
+                              f"{n['titulo']}")
+            partes.append("Essas são as manchetes reais das fontes, não leitura "
+                          "minha. Se quiser que eu ligue alguma delas ao "
+                          "gráfico, me diga qual.")
+        self._chat_entregar_resposta("\n".join(partes))
+
+    def _chat_web_pesquisa(self, texto):
+        # Tira as palavras de comando para sobrar só o assunto.
+        consulta = re.sub(r"\b(pesquis\w*|busc\w*|procur\w*|na internet|no google|"
+                          r"pra mim|para mim|por favor|sobre|d[áa] uma olhada)\b",
+                          " ", texto, flags=re.IGNORECASE)
+        consulta = re.sub(r"\s+", " ", consulta).strip(" ,.?!")
+        if len(consulta) < 3:
+            self._chat_entregar_resposta("Pesquisar o quê? Me diga o assunto — "
+                                          "por exemplo: 'pesquisa na internet "
+                                          "sobre a decisão do Fed de hoje'.")
+            return
+        achados = buscar_na_web(consulta)
+        if not achados:
+            # Notícia é a fonte que quase sempre responde quando a busca falha.
+            noticias = noticias_do_mercado(maximo=5, termo=consulta)
+            if noticias:
+                linhas = "\n".join(f"• [{n['fonte']} · {_idade_texto(n['quando'])}] "
+                                   f"{n['titulo']}" for n in noticias)
+                self._chat_entregar_resposta(
+                    f"A busca aberta não respondeu agora, mas achei isso nas "
+                    f"fontes de mercado sobre “{consulta}”:\n{linhas}")
+                return
+            self._chat_entregar_resposta(
+                f"Não consegui pesquisar “{consulta}” agora — a busca não "
+                "respondeu. Não vou responder de cabeça para não te passar "
+                "informação inventada. Tente de novo em instantes; se for "
+                "assunto de mercado, posso trazer as manchetes das casas.")
+            return
+        linhas = [f"O que encontrei na internet sobre “{consulta}”:"]
+        for a in achados:
+            linhas.append(f"• {a['titulo']}" +
+                          (f" — {a['resumo']}" if a['resumo'] else ""))
+        linhas.append("Fontes acima, não interpretação minha. Quer que eu ligue "
+                      "isso ao seu cenário no gráfico?")
+        self._chat_entregar_resposta("\n".join(linhas))
 
     # ---------------- Mão no motor (ação real, não conversa) ----------------
     def _chat_motor(self, ligar):
@@ -3942,6 +4394,11 @@ class SmcQuantApp(ctk.CTk):
             return
         if acao == "ZERAR_CICLO":
             self._chat_zerar_ciclo()
+            return
+        if acao in ("NOTICIAS", "COTACAO", "PESQUISAR"):
+            # Estes rodam na WEB, pela própria ferramenta — sem chave, sem cota.
+            threading.Thread(target=self._chat_web, args=(acao, self._ultimo_pedido),
+                             daemon=True).start()
             return
         if acao == "LISTAR_CONHECIMENTO":
             temas = indice_da_base_smc()
@@ -4307,7 +4764,19 @@ class SmcQuantApp(ctk.CTk):
             corpo = "\n".join(
                 f"{'TRADER' if m['papel'] == 'voce' else 'IA'}: {m['texto']}"
                 for m in historico if m["papel"] in ("voce", "ia"))
-            prompt = (f"{self._chat_contexto()}\n\n--- CONVERSA RECENTE ---\n"
+            # DADOS REAIS DA WEB junto do prompt: preço de agora e manchetes das
+            # casas de mercado. É a coleira contra invenção — com o número na
+            # mão, o modelo não tem por que chutar um motivo para o movimento.
+            bloco_web = ""
+            if not anexo:
+                try:
+                    bloco_web = bloco_web_para_prompt(pergunta)
+                except Exception:
+                    bloco_web = ""
+            prompt = (f"{self._chat_contexto()}\n"
+                      + (f"\n--- DADOS REAIS DA WEB AGORA ---\n{bloco_web}\n"
+                         if bloco_web else "")
+                      + f"\n--- CONVERSA RECENTE ---\n"
                       f"{corpo}\nTRADER: {pergunta}\nIA:")
             parte_anexo = None
             if anexo:
@@ -4386,14 +4855,32 @@ class SmcQuantApp(ctk.CTk):
                             "sem usar a API — ela está indisponível agora: "
                             f"{self._diagnostico_erro(ultimo_erro)})")
             else:
-                resposta = (
-                    f"{self._diagnostico_erro(ultimo_erro)} "
-                    "Mas eu continuo útil sem a API: pergunte metodologia que eu "
-                    "respondo da minha base própria (estrutura, liquidez, order "
-                    "block, FVG, premium e desconto, gestão de risco…), e os "
-                    "comandos seguem funcionando: 'status', 'acatar', "
-                    "'dispensar', 'cancelar ordem', 'liga o motor', 'zera o "
-                    "ciclo', 'manda no whatsapp' e '<regra>, aprenda isso'.")
+                # Sem a API e sem base: ainda dá para ir à WEB sozinha. É melhor
+                # trazer manchete real do que só reclamar da cota.
+                web = ""
+                try:
+                    if not anexo:
+                        web = bloco_web_para_prompt(pergunta)
+                except Exception:
+                    web = ""
+                if web:
+                    resposta = (
+                        "Isso não está na minha base de metodologia e a API está "
+                        f"fora ({self._diagnostico_erro(ultimo_erro)}) — então "
+                        "fui buscar na internet por conta própria. O que as "
+                        f"fontes dizem agora:\n\n{web}\n\nSão dados das fontes, "
+                        "não interpretação minha.")
+                else:
+                    resposta = (
+                        "Isso não está na minha base de metodologia SMC, e agora "
+                        "eu também não consigo pesquisar: "
+                        f"{self._diagnostico_erro(ultimo_erro)} Prefiro dizer "
+                        "isso a inventar uma resposta. O que continua "
+                        "funcionando: metodologia (estrutura, liquidez, order "
+                        "block, FVG, premium e desconto, confirmação de "
+                        "reversão, gestão de risco), os comandos ('status', "
+                        "'acatar', 'liga o motor', 'zera o ciclo', 'manda no "
+                        "whatsapp'), e '<regra>, aprenda isso'.")
         self._chat_entregar_resposta(resposta)
 
     def _completar_resposta(self, client, modelo, config, conteudo, comeco):
