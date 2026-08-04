@@ -111,7 +111,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.8.0"
+VERSAO_ATUAL = "2.8.1"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -2075,8 +2075,11 @@ FONTES_NOTICIAS = [
 # (MES/MNQ) seguem o índice à vista, então apontam para o contínuo.
 SIMBOLOS_MERCADO = {
     "s&p": "^GSPC", "sp500": "^GSPC", "s&p500": "^GSPC", "sp 500": "^GSPC",
+    "s&p 500": "^GSPC", "sp-500": "^GSPC", "smp500": "^GSPC", "smp 500": "^GSPC",
+    "esse p 500": "^GSPC", "es e pe 500": "^GSPC", "s e p 500": "^GSPC",
     "spx": "^GSPC", "es": "ES=F", "mes": "ES=F", "mini indice": "^GSPC",
-    "nasdaq": "^IXIC", "nq": "NQ=F", "mnq": "NQ=F", "ndx": "^NDX",
+    "nasdaq": "^IXIC", "nasdac": "^IXIC", "nasdak": "^IXIC", "nasdaq 100": "^NDX",
+    "nq": "NQ=F", "mnq": "NQ=F", "ndx": "^NDX",
     "dow": "^DJI", "dow jones": "^DJI", "ym": "YM=F",
     "russell": "^RUT", "vix": "^VIX", "volatilidade": "^VIX",
     "ouro": "GC=F", "gold": "GC=F", "prata": "SI=F",
@@ -2109,8 +2112,17 @@ def _web_get(url, params=None, timeout=10):
     r.raise_for_status()
     return r
 
+def _compacto(texto):
+    """Só letras e números: 'sp-500' e 's&p 500' viram 'sp500'. É como o ativo
+    sobrevive à transcrição de voz, que escreve o mesmo índice de cinco jeitos."""
+    return re.sub(r"[^a-z0-9]", "", _norm_busca(texto))
+
 def simbolo_do_texto(texto):
-    """Descobre de qual ativo ele está falando. Devolve (símbolo, nome) ou None."""
+    """Descobre de qual ativo ele está falando. Devolve (símbolo, nome) ou None.
+
+    Três passadas, da mais segura para a mais tolerante. A terceira existe
+    porque o microfone devolveu 'smp500' e 'sp-500' para S&P 500, e a ferramenta
+    respondia 'não tenho como responder' para uma cotação que ela tinha."""
     t = _norm_busca(texto)
     achado = None
     for apelido, simbolo in SIMBOLOS_MERCADO.items():
@@ -2119,7 +2131,33 @@ def simbolo_do_texto(texto):
             # o apelido mais longo ganha: "s&p 500" vale mais que "es"
             if not achado or len(a) > len(achado[0]):
                 achado = (a, simbolo, apelido)
-    return (achado[1], achado[2]) if achado else None
+    if achado:
+        return (achado[1], achado[2])
+
+    # 2ª passada: sem pontuação nenhuma ("sp-500" e "s&p500" viram "sp500").
+    palavras = re.findall(r"[a-z0-9&.\-]+", t)
+    compactas = [(_compacto(p), p) for p in palavras]
+    compactas = [(c, p) for c, p in compactas if len(c) >= 2]
+    for apelido, simbolo in SIMBOLOS_MERCADO.items():
+        a = _compacto(apelido)
+        if len(a) >= 3 and any(c == a for c, _ in compactas):
+            return (simbolo, apelido)
+
+    # 3ª passada: semelhança, para a transcrição torta ('smp500' -> 'sp500').
+    # O corte é alto de propósito: 'ouro' e 'euro' dão 0,75 e NÃO podem casar.
+    melhor, nota_melhor = None, 0.0
+    for apelido, simbolo in SIMBOLOS_MERCADO.items():
+        a = _compacto(apelido)
+        if len(a) < 4:
+            continue                       # sigla curta erra demais por som
+        for c, _ in compactas:
+            if len(c) < 4:
+                continue
+            import difflib
+            nota = difflib.SequenceMatcher(None, c, a).ratio()
+            if nota >= 0.85 and nota > nota_melhor:
+                melhor, nota_melhor = (simbolo, apelido), nota
+    return melhor
 
 def cotacao_mercado(simbolo):
     """Preço REAL do ativo, direto do Yahoo Finance. Sem chave, sem cota.
@@ -4281,6 +4319,14 @@ class SmcQuantApp(ctk.CTk):
         ctk.CTkButton(barra, text="📎 Anexar", width=90, height=28,
                       fg_color="#21262d", hover_color="#30363d",
                       command=self._chat_anexar).pack(side="left")
+        # BOTÃO DE CALAR: um clique e ela para de falar na hora. Fica sempre à
+        # vista (não só quando ela fala) porque procurar botão que aparece e
+        # some, no meio do pregão, é pior que ter um botão a mais.
+        ctk.CTkButton(barra, text="⏹ Parar fala", width=100, height=28,
+                      fg_color="#3d1f24", hover_color="#5a2a32",
+                      text_color="#ff9f9f",
+                      font=ctk.CTkFont(size=12, weight="bold"),
+                      command=self._chat_parar_fala).pack(side="left", padx=6)
         # Chip do anexo pendente: aparece quando há arquivo esperando envio;
         # clicar nele cancela o anexo.
         self.btn_anexo = ctk.CTkButton(barra, text="", width=10, height=28,
@@ -4602,7 +4648,20 @@ class SmcQuantApp(ctk.CTk):
                 threading.Thread(target=self._chat_worker,
                                  args=(pedido, caminho), daemon=True).start()
                 return
-            # Sem print: segue para o modelo com o texto original.
+            # SEM PRINT GUARDADO: tenta capturar NA HORA em vez de desistir.
+            # "analise meu gráfico agora" caía no genérico "não tenho como
+            # responder" — sendo que bastava tirar o print.
+            novo = self._capturar_print_agora()
+            if novo:
+                self._ultimo_print = novo
+                self._chat_processar(texto)
+                return
+            self._chat_responder(
+                "Não consegui capturar o gráfico agora. Se o motor estiver "
+                "desligado, diga 'liga o motor'; se estiver ligado, confira na "
+                "aba Motor qual janela está selecionada e deixe ela visível. "
+                "Se preferir, me mande o print pelo 📎 que eu analiso na hora.")
+            return
         if tipo == "EXECUTAR":
             self._chat_executar_acao(dado)
             return
@@ -5622,6 +5681,13 @@ class SmcQuantApp(ctk.CTk):
         with sr.Microphone() as mic:
             rec.adjust_for_ambient_noise(mic, duration=0.4)
             return rec.listen(mic, timeout=8, phrase_time_limit=25)
+
+    def _chat_parar_fala(self):
+        """Botão ⏹ Parar fala. Cala na hora, sem esperar o fim do parágrafo."""
+        if parar_fala():
+            self._chat_status("⏹ parei de falar", "#ff9f9f")
+        else:
+            self._chat_status("não estava falando", "#8a92a5")
 
     def _chat_ouvir(self):
         # CLICOU NO 🎤 = "cala a boca e me escuta". Se ela estiver falando,

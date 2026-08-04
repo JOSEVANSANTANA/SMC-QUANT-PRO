@@ -1,4 +1,4 @@
-# Como compilar o SMC Quant Pro v2.8.0 (TIGER)
+# Como compilar o SMC Quant Pro v2.8.1 (TIGER)
 
 > **Resumo:** o processo de build **não mudou**. É o mesmo fluxo do `.spec`
 > que você já usa. Nesta versão só o `main_app.py` mudou — substitua-o e compile.
@@ -12,7 +12,7 @@
 O **motor NÃO mudou** — reaproveite a pasta `motor\` com o `node_modules` que
 você já tem. O `tradovate_auto.py` também não mudou.
 
-Novidades da v2.8.0 (aba 🐯 TIGER) — **ela lê o seu cenário e você pode
+Novidades da v2.8.1 (aba 🐯 TIGER) — **ela lê o seu cenário e você pode
 cortá-la no meio da fala**:
 
 - 🎯 **Fim da resposta de manual.** A teoria da base agora vem **amarrada ao que
@@ -24,13 +24,24 @@ cortá-la no meio da fala**:
   dia que o plano exige. Macro vem ancorada no **preço real**, com a fonte.
   Sem posição, usa a última leitura do gráfico. Sem cenário, volta ao texto
   puro — **nunca inventa ligação**.
-- 🔇 **Fala interrompível.** A escuta **pausava** enquanto ela falava — por isso
-  era impossível cortá-la. Agora ela **continua ouvindo durante a própria fala**
-  (filtrando o eco da própria voz) e para na hora quando você:
+- ⏹ **BOTÃO "PARAR FALA"** na barra do chat — o que faltava. Um clique e ela
+  cala na hora, sem esperar o fim do parágrafo. Fica sempre à vista.
+- 🔇 **Fala interrompível por 4 caminhos.** A escuta **pausava** enquanto ela
+  falava — por isso era impossível cortá-la. Agora ela **continua ouvindo
+  durante a própria fala** (filtrando o eco) e para quando você:
+  - clica em **⏹ Parar fala**;
   - diz **"Olá Tiger"** por cima;
   - clica no botão **🎤**;
   - manda **"para de falar"** / *"silêncio"* / *"chega"*.
   Uma fala nova também cancela a anterior.
+- 🎙️ **O ativo sobrevive à transcrição torta.** *"smp500"*, *"sp-500"*,
+  *"s&p 500"* e *"nasdac"* recebiam *"não tenho como responder"* — para uma
+  cotação que a ferramenta tinha na mão. A busca do ativo agora tem 3 passadas
+  (exata, sem pontuação e por semelhança com corte alto — **euro e ouro não se
+  confundem**).
+- 🖼️ **"Analise meu gráfico agora" captura na hora.** Sem print guardado ela
+  caía no genérico; agora tira o print na hora e, se nem isso der, diz
+  exatamente o que fazer (ligar o motor, conferir a janela, ou mandar pelo 📎).
 - 🔴 **CORREÇÃO:** *"como confirmar uma reversão"* caía no tópico de
   **recessão** — as duas palavras são quase idênticas para o casamento por som.
   Agora quem casa **exato** sempre ganha de quem só se parece.
@@ -133,13 +144,17 @@ cd C:\Users\jovan\Documents\SMC_QUANT_PRO
 python main_app.py
 ```
 
-Checklist da v2.8.0 (aba **🐯 TIGER**) — comece pelos dois primeiros, que são
+Checklist da v2.8.1 (aba **🐯 TIGER**) — comece pelos dois primeiros, que são
 os erros do pregão de 04/08:
 
 000. **Cortar a fala.** Peça algo longo (*"me explica o power of 3"*) com a voz
-   ligada e, no meio da fala, **clique no 🎤** — ela tem que **parar na hora**.
-   Repita dizendo **"Olá Tiger"** por cima, com o modo 🐯 ligado. E teste
-   *"para de falar"* — que **não pode** desligar o motor.
+   ligada e, no meio da fala, clique em **⏹ Parar fala** — tem que parar na
+   hora. Repita clicando no **🎤**, depois dizendo **"Olá Tiger"** por cima
+   (modo 🐯 ligado), e por fim mandando *"para de falar"* — que **não pode**
+   desligar o motor.
+000a. **Ativo por voz.** Pergunte *"quanto está o smp500"* e *"como está o
+   sp-500 agora"* — os dois têm que trazer o **preço real**, não o genérico.
+   E *"analise meu gráfico agora"* tem que **tirar o print**, não desistir.
 000b. **Cenário aplicado.** Com uma posição aberta, pergunte *"o que seria uma
    confirmação de reversão?"* — depois da teoria tem que vir *"No SEU caso
    agora: você está …"* com a sua direção, entrada e o preço real. Depois
@@ -237,17 +252,17 @@ Repita o checklist do passo 2 dentro do `.exe`.
 ## 6. Gerar o instalador (Inno Setup)
 
 1. Abra `instalador\SMC_Quant_Pro.iss` no Inno Setup Compiler.
-2. Confira que `MyAppVersion` está **"2.8.0"** (já está).
+2. Confira que `MyAppVersion` está **"2.8.1"** (já está).
 3. Pressione **F9** (Compile).
 
-Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.8.0.exe`.
+Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.8.1.exe`.
 
 ---
 
 ## 7. Publicar a atualização
 
-1. Suba o `SMC_Quant_Pro_Setup_2.8.0.exe` na pasta do Google Drive.
-2. O `versao.json` **já está publicado como 2.8.0** — assim que o arquivo
+1. Suba o `SMC_Quant_Pro_Setup_2.8.1.exe` na pasta do Google Drive.
+2. O `versao.json` **já está publicado como 2.8.1** — assim que o arquivo
    estiver no Drive, os clientes veem o aviso de nova versão.
 
 ---
@@ -261,7 +276,7 @@ Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.8.0.exe`.
 | "Não vou chutar um número" | ativo fora da lista dela | ela cobre S&P, Nasdaq, Dow, Russell, VIX, ouro, prata, petróleo, dólar, euro, bitcoin, Ibovespa e juros 10a |
 | Ela respondeu outro assunto | pergunta ambígua para a base | diga "não foi isso que perguntei" — isso bloqueia a base e força resposta nova |
 | Ela responde teoria quando eu quero o gráfico | pergunta sem referência ao agora | diga "agora", "nesse gráfico" ou "minha posição" — aí ela usa a API e olha o print |
-| O motor desligou sozinho | era o bug do "para" (v2.4 e antes) | corrigido na v2.8.0; se voltar a acontecer, me mande a frase exata que você digitou |
+| O motor desligou sozinho | era o bug do "para" (v2.4 e antes) | corrigido na v2.8.1; se voltar a acontecer, me mande a frase exata que você digitou |
 | "A chave da Gemini foi recusada" | chave errada/expirada | cole a chave de novo na aba Motor e ligue o motor uma vez para salvar |
 | "Não consegui alcançar o servidor" | internet | verifique a conexão — o chat e a transcrição de voz usam a rede |
 | Ela diz que não tem print do gráfico | motor nunca rodou um ciclo | ligue o motor e espere uma análise, ou mande um print pelo 📎 |
