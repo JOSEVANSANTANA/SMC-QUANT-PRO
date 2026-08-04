@@ -111,7 +111,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.7.1"
+VERSAO_ATUAL = "2.8.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1900,13 +1900,38 @@ def ajustar_velocidade_da_voz(passo):
     salvar_config({"voz_rate": novo})
     return novo, novo == atual
 
+# FALA INTERROMPÍVEL: guarda o motor de voz em uso para que outra thread possa
+# calar a boca dela na hora. Sem isso, o trader falava por cima e tinha de
+# esperar o parágrafo inteiro terminar — numa mesa, esperar é perder o momento.
+_TTS_ENGINE = None
+_TTS_LOCK = threading.Lock()
+_TTS_TEXTO = ""              # o que ela está dizendo agora (para ignorar o eco)
+
+def parar_fala():
+    """Cala a TIGER imediatamente. Pode ser chamada de qualquer thread —
+    do botão 🎤, do 'Olá Tiger' ouvido por cima, ou do comando 'para de falar'.
+    Devolve True se havia mesmo algo sendo falado."""
+    global _TTS_ENGINE
+    with _TTS_LOCK:
+        engine, _TTS_ENGINE = _TTS_ENGINE, None
+    if engine is None:
+        return False
+    try:
+        engine.stop()
+    except Exception:
+        pass
+    return True
+
 def falar(texto: str):
-    global TTS_FALANDO
+    global TTS_FALANDO, _TTS_ENGINE, _TTS_TEXTO
     try:
         texto = limpar_para_voz(texto)
         if not texto:
             return
+        # Uma fala nova cancela a anterior: ela não acumula parágrafos.
+        parar_fala()
         TTS_FALANDO = True
+        _TTS_TEXTO = texto
         engine = pyttsx3.init()
         # Velocidade ajustável pelo trader ("acelere a fala" / "fala mais
         # devagar"). 165 é o padrão; a faixa evita ficar ininteligível.
@@ -1915,13 +1940,22 @@ def falar(texto: str):
             if 'brazil' in v.name.lower() or 'portugu' in v.name.lower():
                 engine.setProperty('voice', v.id)
                 break
+        with _TTS_LOCK:
+            _TTS_ENGINE = engine
         engine.say(texto)
-        engine.runAndWait()
-        engine.stop()
+        engine.runAndWait()          # parar_fala() faz este retornar na hora
+        try:
+            engine.stop()
+        except Exception:
+            pass
     except Exception:
         pass
     finally:
         TTS_FALANDO = False
+        _TTS_TEXTO = ""
+        with _TTS_LOCK:
+            if _TTS_ENGINE is not None:
+                _TTS_ENGINE = None
 
 def enviar_relatorio_whatsapp(mensagem: str, imagem_print, log_callback):
     log_callback("📲 Disparando relatório para o WhatsApp...")
@@ -2297,7 +2331,98 @@ def formatar_cotacao(cot, apelido=""):
                       f"{cot['minima']:,.2f}")
     return ", ".join(partes) + f" (dado do {cot['fonte']}, às {cot['hora']})."
 
-def responder_offline(pergunta):
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+def ler_cenario_do_topico(item, cenario):
+    """A parte que faz a resposta deixar de ser de manual: pega a teoria do
+    tópico e AMARRA ao que está acontecendo na mesa dele agora.
+
+    `cenario` é o dicionário montado por _cenario_da_mesa(): posição aberta,
+    última leitura do gráfico, sugestão pendente, preço real e estado do motor.
+    Devolve a leitura aplicada, ou "" quando não há nada de concreto a dizer —
+    inventar ligação é pior que não fazer nenhuma."""
+    if not item or not cenario:
+        return ""
+    tema = _norm_busca(item.get("t", ""))
+    pos = cenario.get("posicao") or {}
+    ua = cenario.get("analise") or {}
+    cot = cenario.get("cotacao") or {}
+    linhas = []
+
+    # --- Posição aberta: é o que ele mais precisa ouvir aplicado ---
+    if pos:
+        entrada, atual = _num(pos.get("entry")), _num(cot.get("preco"))
+        direcao = str(pos.get("direcao", "")).upper()
+        contra = None
+        if entrada and atual:
+            subiu = atual > entrada
+            contra = (subiu and direcao in ("SELL", "VENDA")) or \
+                     (not subiu and direcao in ("BUY", "COMPRA"))
+        if "revers" in tema:
+            linhas.append(
+                f"No SEU caso agora: você está {direcao} {pos.get('ativo','')} "
+                f"em {pos.get('entry')}" +
+                (f", e o preço está em {atual:,.2f}" if atual else "") +
+                (". Essa posição está CONTRA o movimento do momento, então "
+                 "vale conferir uma a uma as quatro etapas acima — se elas não "
+                 "estavam presentes na entrada, o trade foi contra a tendência "
+                 "sem confirmação, que é exatamente o cenário mais caro."
+                 if contra else
+                 ". Enquanto as quatro etapas seguirem válidas, não há motivo "
+                 "para antecipar a saída."))
+        elif any(k in tema for k in ("stop", "alvo", "gestao", "drawdown", "r:r",
+                                     "risco")):
+            linhas.append(
+                f"Aplicando à sua posição aberta: {direcao} {pos.get('ativo','')} "
+                f"@ {pos.get('entry')}, stop {pos.get('stop')}, alvo "
+                f"{pos.get('tp1')}" +
+                (f", P&L agora de US$ {_num(pos.get('pnl_atual')) or 0:+,.2f}"
+                 if pos.get("pnl_atual") is not None else "") + ".")
+        elif contra:
+            linhas.append(
+                f"Vale para agora: você está {direcao} {pos.get('ativo','')} "
+                "contra o movimento do momento — leia o que está acima com essa "
+                "posição em mente.")
+
+    # --- Sem posição, mas com leitura recente do gráfico ---
+    elif ua.get("ativo"):
+        if any(k in tema for k in ("revers", "checklist", "quando nao operar",
+                                   "premium", "estrutura", "liquidez")):
+            linhas.append(
+                f"No gráfico que o motor leu às {ua.get('hora','—')}: "
+                f"{ua.get('acao')} {ua.get('ativo')} em {ua.get('preco')}, "
+                f"probabilidade {_num(ua.get('probabilidade')) or 0:.0f}%. "
+                "Confira o que está acima contra essa leitura antes de decidir.")
+
+    # --- Macro: amarra ao preço real e ao que ele opera ---
+    if cot.get("preco") is not None and any(
+            k in tema for k in ("juros", "payroll", "inflacao", "fomc", "vix",
+                                "balanco", "petroleo", "recessao", "pmi",
+                                "dia de noticia", "correlacao")):
+        var = cot.get("variacao_pct")
+        linhas.append(
+            f"Referência de agora: {cenario.get('ativo_nome','o ativo')} está em "
+            f"{cot['preco']:,.2f}" +
+            (f", {'alta' if var >= 0 else 'queda'} de {abs(var):.2f}% no dia"
+             if var is not None else "") +
+            f" (dado do {cot.get('fonte','Yahoo Finance')}).")
+
+    # --- Meta apertada muda o peso do conselho ---
+    ritmo = cenario.get("ritmo_dia")
+    if ritmo and any(k in tema for k in ("gestao", "risco", "drawdown",
+                                         "quando nao operar", "checklist")):
+        linhas.append(
+            f"E lembre do seu plano: faltam US$ {cenario.get('falta', 0):,.0f} "
+            f"em {cenario.get('dias_restantes', 0)} dia(s), o que exige "
+            f"US$ {ritmo:,.0f} por dia. Prazo apertado é justamente quando o "
+            "tamanho da posição deve ser respeitado, não aumentado.")
+    return " ".join(linhas)
+
+def responder_offline(pergunta, cenario=None):
     """A MELHOR resposta que dá para montar sem a API, nesta ordem:
     capacidades da ferramenta → base (SMC + macro) → cotação real → notícia
     relevante. Devolve texto pronto para o trader, ou None se não há nada.
@@ -2311,10 +2436,13 @@ def responder_offline(pergunta):
         return None
     if pergunta_sobre_capacidades(pergunta):
         return texto_das_capacidades()
-    # Base própria (metodologia + macro) responde de verdade a pergunta.
-    do_conhecimento = responder_do_conhecimento(pergunta)
-    if do_conhecimento:
-        return do_conhecimento
+    # Base própria (metodologia + macro) responde de verdade a pergunta —
+    # e, quando há cenário, a teoria vem AMARRADA ao que está na mesa dele.
+    item = buscar_base_smc(pergunta)
+    if item:
+        do_conhecimento = responder_do_conhecimento(pergunta)
+        leitura = ler_cenario_do_topico(item, cenario)
+        return f"{do_conhecimento}\n\n{leitura}" if leitura else do_conhecimento
     # Cotação: só quando ele realmente pediu preço de um ativo.
     alvo = simbolo_do_texto(pergunta)
     quer_preco = re.search(r"\b(cota[çc][ãa]o|pre[çc]o|quanto|quanto est|"
@@ -2950,35 +3078,37 @@ def _parecido(palavra, chave, corte=0.78):
     return difflib.SequenceMatcher(None, palavra, chave).ratio() >= corte
 
 def _nota_base_smc(item, p, palavras):
-    """Quanto este tópico casa com a pergunta.
+    """Quanto este tópico casa com a pergunta. Devolve (exata, aproximada).
+
     ESCALA: 3 = expressão inteira ("fair value gap"); 2 = jargão isolado
-    ("choch", "fvg"); 1 = casou só por semelhança de som. Palavra genérica não
-    entra na lista de chaves, justamente para não pontuar."""
-    nota = 0
-    for chave in item["k"]:
-        c = _norm_busca(chave)
-        if not c:
-            continue
+    ("choch", "fvg"). Palavra genérica não entra na lista de chaves,
+    justamente para não pontuar.
+
+    AS DUAS NOTAS ANDAM SEPARADAS de propósito. "reversão" e "recessão" são
+    quase idênticas para o casamento por som, e empatavam: a pergunta sobre
+    CONFIRMAÇÃO DE REVERSÃO caía em RECESSÃO. Com as notas separadas, quem
+    casou EXATO sempre ganha de quem casou só por semelhança."""
+    exata = aprox = 0
+    # 'inflacao' e 'inflação' viram a mesma coisa ao normalizar; sem o set,
+    # a mesma chave contava duas vezes e inflava a nota do tópico.
+    for c in {_norm_busca(k) for k in item["k"] if _norm_busca(k)}:
         if " " in c:
             if c in p:
-                nota += 3
+                exata += 3
             continue
         # jargão curto casa como palavra inteira, senão 'ob' casa dentro de
         # 'objetivo' e a resposta sai completamente errada
         if re.search(rf"\b{re.escape(c)}\b", p):
-            nota += 2
+            exata += 2
         elif len(c) >= 4 and any(
                 # chave longa é distintiva: dá para ser mais tolerante sem
                 # risco de casar errado ('choque' -> 'choch' dá 0,73)
                 _parecido(w, c, 0.72 if len(c) >= 5 else 0.80)
                 for w in palavras):
-            # Vale o mesmo que o acerto exato: 'iniducement' e 'bola do choque'
-            # são o jargão, só que como a transcrição de voz o escreveu. Valer
-            # menos deixava a pergunta falada abaixo do corte mínimo.
-            nota += 2
+            aprox += 2                     # transcrição torta da voz
     if _norm_busca(item["t"]).split(" (")[0] in p:
-        nota += 3
-    return nota
+        exata += 3
+    return exata, aprox
 
 def _todos_os_topicos():
     """As duas bases juntas: metodologia SMC e macro de mercado."""
@@ -2999,12 +3129,18 @@ def buscar_base_smc(pergunta, minimo=2):
     if not p:
         return None
     palavras = [w for w in re.findall(r"[a-z0-9:.]+", p) if len(w) >= 4]
-    notas = sorted(((_nota_base_smc(i, p, palavras), i) for i in _todos_os_topicos()),
-                   key=lambda x: x[0], reverse=True)
-    if not notas or notas[0][0] < minimo:
+    notas = []
+    for item in _todos_os_topicos():
+        exata, aprox = _nota_base_smc(item, p, palavras)
+        if exata + aprox:
+            notas.append(((exata, aprox), item))
+    # Ordena por nota EXATA e só depois pela aproximada: quem tem o jargão
+    # escrito ganha de quem só se parece com ele.
+    notas.sort(key=lambda x: x[0], reverse=True)
+    if not notas or sum(notas[0][0]) < minimo:
         return None
     if len(notas) > 1 and notas[1][0] == notas[0][0]:
-        return None                        # empate = ambíguo, melhor não chutar
+        return None                        # empate real = ambíguo, não chuta
     return notas[0][1]
 
 # Perguntas que a base responde sozinha: são de CONCEITO, não dependem do
@@ -3305,6 +3441,12 @@ def interpretar_intencao(texto):
         return "DESLIGAR_MOTOR"
     if _motor(_MOTOR_LIGAR):
         return "LIGAR_MOTOR"
+    # CALAR: "para de falar", "silêncio", "chega". Vem ANTES do bloco do motor
+    # porque "para de falar" tem o verbo 'para' e não pode desligar o robô.
+    if re.search(r"\b(par(a|e|ar) de falar|cala(-se| a boca)?|silencio|"
+                 r"sil[êe]ncio|quieta|chega|shh+|pode parar de falar|"
+                 r"n[ãa]o precisa falar)\b", t):
+        return "CALAR"
     # VELOCIDADE DA FALA: "acelere a fala" é comando da ferramenta, não assunto
     # de mercado — antes caía no despejo de manchetes.
     if re.search(r"\b(fala|voz|leitura|narra[çc][ãa]o)\b", t) and \
@@ -3426,7 +3568,7 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
                     "LIGAR_MOTOR", "DESLIGAR_MOTOR", "ENVIAR_WHATSAPP",
                     "CONECTAR_WHATSAPP", "LISTAR_LICOES", "LISTAR_CONHECIMENTO",
                     "NOTICIAS", "COTACAO", "PESQUISAR",
-                    "VOZ_RAPIDA", "VOZ_LENTA"):
+                    "VOZ_RAPIDA", "VOZ_LENTA", "CALAR"):
         return ("EXECUTAR", intencao)
     return ("IA", None)
 
@@ -4480,10 +4622,13 @@ class SmcQuantApp(ctk.CTk):
                                             "você me ensina.")
             return
         if pergunta_conceitual(texto) and not e_correcao_do_trader(texto):
-            local = responder_do_conhecimento(texto)
-            if local and local != getattr(self, "_ultima_resposta_local", None):
-                self._ultima_resposta_local = local
-                self._chat_responder(local)
+            # A leitura do cenário toca a rede (cotação real), então sai da
+            # thread da interface — senão a janela congela por alguns segundos.
+            if buscar_base_smc(texto):
+                self._chat_ocupada = True
+                self._chat_status("🔎 lendo o seu cenário…", "#ff9f43")
+                threading.Thread(target=self._responder_com_cenario,
+                                 args=(texto,), daemon=True).start()
                 return
         # Conversa livre -> modelo
         if self._chat_ocupada:
@@ -4513,11 +4658,73 @@ class SmcQuantApp(ctk.CTk):
         de status, por exemplo, é ótimo na tela e horrível lido em voz alta)."""
         registrar_msg_chat("ia", texto)
         self._chat_digitar(texto)
+        if texto_voz == "":
+            return                 # resposta muda de propósito (ex.: 'cala')
         dito = texto_voz or texto
         if getattr(self, "_chat_por_voz", False):
             self._ia_falar(dito, forcar=True)
         elif falar_tb:
             self._ia_falar(dito)
+
+    def _responder_com_cenario(self, texto):
+        """Resposta local COM leitura da mesa. Roda fora da interface porque
+        busca o preço real na web."""
+        try:
+            local = responder_offline(texto, self._cenario_da_mesa(texto))
+        except Exception:
+            local = responder_do_conhecimento(texto)
+        if not local or local == getattr(self, "_ultima_resposta_local", None):
+            # Sem resposta nova aqui, o turno segue para o modelo em vez de
+            # repetir o que ele acabou de ler.
+            self.after(0, lambda: self._chat_status("✳ pensando…", "#ff9f43"))
+            threading.Thread(target=self._chat_worker, args=(texto,),
+                             daemon=True).start()
+            return
+        self._ultima_resposta_local = local
+        self._chat_ocupada = False
+        self.after(0, lambda: self._chat_responder(local))
+
+    def _cenario_da_mesa(self, pergunta=""):
+        """Fotografia do que está acontecendo AGORA, para a resposta deixar de
+        ser de manual: posição aberta, última leitura do gráfico, sugestão
+        pendente, ritmo exigido e o preço real do ativo citado.
+
+        Tudo aqui é dado REAL da ferramenta ou da web — nada é estimado."""
+        cenario = {}
+        try:
+            for p in posicoes_do_ciclo():
+                if p.get("status") == "ABERTA":
+                    cenario["posicao"] = p
+                    break
+        except Exception:
+            pass
+        cenario["analise"] = getattr(self, "_ultima_analise", None) or {}
+        try:
+            cenario["pendente"] = self._ultimo_sinal_pendente()
+        except Exception:
+            cenario["pendente"] = None
+        try:
+            stats = self._computar_stats_plano()
+            cenario["ritmo_dia"] = stats.get("meta_diaria")
+            cenario["falta"] = stats.get("falta")
+            cenario["dias_restantes"] = stats.get("dias_restantes")
+        except Exception:
+            pass
+        cenario["motor"] = bool(getattr(self, "motor_rodando", False) or
+                                getattr(self, "robo_ativo", False))
+        # Preço real: do ativo que ele citou, ou do que ele está operando.
+        alvo = simbolo_do_texto(pergunta)
+        if not alvo:
+            ativo = (cenario.get("posicao") or {}).get("ativo") or \
+                    cenario["analise"].get("ativo") or ""
+            alvo = simbolo_do_texto(ativo) if ativo else None
+        if alvo:
+            try:
+                cenario["cotacao"] = cotacao_mercado(alvo[0]) or {}
+                cenario["ativo_nome"] = alvo[1].upper()
+            except Exception:
+                pass
+        return cenario
 
     # ---------------- Janela para a web (sem chave de API) ----------------
     def _chat_web(self, acao, texto):
@@ -4822,6 +5029,13 @@ class SmcQuantApp(ctk.CTk):
             return
         if acao == "ZERAR_CICLO":
             self._chat_zerar_ciclo()
+            return
+        if acao == "CALAR":
+            estava = parar_fala()
+            # Responde só por texto: falar aqui seria contrariar o pedido.
+            self._chat_responder(
+                "Calei." if estava else "Já estava calada.", falar_tb=False,
+                texto_voz="")
             return
         if acao in ("VOZ_RAPIDA", "VOZ_LENTA"):
             passo = 25 if acao == "VOZ_RAPIDA" else -25
@@ -5298,7 +5512,8 @@ class SmcQuantApp(ctk.CTk):
             local = None
             try:
                 if not anexo:
-                    local = responder_offline(pergunta)
+                    local = responder_offline(pergunta,
+                                              self._cenario_da_mesa(pergunta))
             except Exception:
                 local = None
             if local:
@@ -5409,6 +5624,10 @@ class SmcQuantApp(ctk.CTk):
             return rec.listen(mic, timeout=8, phrase_time_limit=25)
 
     def _chat_ouvir(self):
+        # CLICOU NO 🎤 = "cala a boca e me escuta". Se ela estiver falando,
+        # para na hora: quem clicou quer falar AGORA, não no fim do parágrafo.
+        if parar_fala():
+            self._chat_status("🐯 parei de falar — pode falar", "#3fb950")
         if not VOZ_SR:
             self._chat_escrever(
                 "sistema",
@@ -5519,10 +5738,33 @@ class SmcQuantApp(ctk.CTk):
         threading.Thread(target=self._tiger_loop, daemon=True).start()
 
     def _tiger_pausada(self):
-        """A escuta contínua dá lugar quando: o 🎤 está gravando um pedido, a
-        TIGER está pensando/digitando, ou o alto-falante está falando (para o
-        microfone não transcrever a voz DELA)."""
-        return self._ouvindo or self._chat_ocupada or TTS_FALANDO
+        """A escuta contínua dá lugar quando o 🎤 está gravando um pedido ou a
+        TIGER está pensando/digitando.
+
+        ELA NÃO PAUSA MAIS ENQUANTO FALA — de propósito. Antes pausava, e por
+        isso era impossível cortá-la no meio: você falava por cima e ela seguia
+        até o fim do parágrafo. Agora continua ouvindo durante a própria fala,
+        justamente para pegar o 'Olá Tiger' e se calar na hora. O eco da voz
+        dela é filtrado em _tiger_eco()."""
+        return self._ouvindo or self._chat_ocupada
+
+    @staticmethod
+    def _tiger_eco(texto):
+        """O que o microfone captou é a VOZ DELA saindo do alto-falante?
+        Enquanto fala, o mic ouve o próprio programa; sem este filtro ela
+        transcreveria a si mesma e responderia à própria fala."""
+        dito = _norm_busca(_TTS_TEXTO)
+        ouvido = _norm_busca(texto)
+        if not dito or not ouvido:
+            return False
+        if ouvido in dito:
+            return True
+        # Trecho do meio da fala: compara palavra a palavra.
+        palavras = [p for p in re.findall(r"[a-z0-9]+", ouvido) if len(p) > 3]
+        if not palavras:
+            return False
+        dentro = sum(1 for p in palavras if p in dito)
+        return dentro >= max(2, len(palavras) * 0.6)
 
     def _tiger_capturar_frase(self, stream, rms):
         """Escuta pelo stream JÁ ABERTO até pegar uma FRASE completa.
@@ -5661,7 +5903,16 @@ class SmcQuantApp(ctk.CTk):
                     time.sleep(2)
                     continue
                 self._tiger_avisou_erro = False     # transcreveu: zera o aviso
+                # ENQUANTO ELA FALA: só o chamado interessa, e o eco da própria
+                # voz é descartado. É isso que permite você cortá-la no meio.
+                if TTS_FALANDO and self._tiger_eco(texto):
+                    continue
                 acordou, resto = extrair_comando_tiger(texto)
+                if acordou and TTS_FALANDO:
+                    parar_fala()
+                    self._tiger_status_ate = time.time() + 3
+                    self.after(0, lambda: self._chat_status(
+                        "🐯 parei de falar — pode falar", "#3fb950"))
                 if not acordou:
                     # TRANSPARÊNCIA TOTAL: o que ela ouviu aparece NO CHAT.
                     # Você vê que a escuta está viva e como a fala foi
