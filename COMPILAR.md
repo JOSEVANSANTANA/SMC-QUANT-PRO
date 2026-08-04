@@ -1,4 +1,4 @@
-# Como compilar o SMC Quant Pro v2.2.0 (TIGER)
+# Como compilar o SMC Quant Pro v2.3.0 (TIGER)
 
 > **Resumo:** o processo de build **não mudou**. É o mesmo fluxo do `.spec`
 > que você já usa. Nesta versão só o `main_app.py` mudou — substitua-o e compile.
@@ -12,13 +12,23 @@
 O **motor NÃO mudou** — reaproveite a pasta `motor\` com o `node_modules` que
 você já tem. O `tradovate_auto.py` também não mudou.
 
-Novidades da v2.2.0 (aba 🐯 TIGER):
-- O chamado agora é **"Olá Tiger"** e o reconhecimento ficou **tolerante**:
-  aceita as variações que a transcrição devolve (Tigre, taiguer, tigger…).
-- A escuta ficou **visível**: tudo o que ela ouve aparece no chat, e se algo
-  falhar (internet, microfone mudo) ela **diz o motivo** em vez de ficar calada.
-- Novo botão **📎 Anexar**: mande prints, fotos, **vídeos** da tela, PDFs e
-  planilhas (até ~1,9 GB) para a TIGER analisar.
+Novidades da v2.3.0 (aba 🐯 TIGER):
+
+- **Ela liga e desliga o motor.** Diga *"liga o motor"* ou *"desliga o robô"* e
+  ela chama o mesmo botão da aba Motor — e depois **confirma** se subiu mesmo.
+  Antes o modelo respondia "motor ligado" sem ligar nada.
+- **Ela enxerga o gráfico.** Cada captura do motor fica salva; peça *"olha o
+  gráfico"* e ela analisa a **mesma imagem** que gerou a sugestão.
+- **Ela pesquisa na internet** (notícia, agenda econômica, dado macro) e diz de
+  onde tirou.
+- **Fim das respostas cortadas** no meio da conta ("faltam 7.6"). O teto de
+  saída subiu, o "raciocínio interno" que comia esse teto foi zerado, e se ainda
+  assim bater no limite ela pede a continuação e emenda sozinha.
+- **Perguntas viraram conversa de novo.** "Como está a situação?" não devolve
+  mais o card fixo — ela responde pensando, com o **ritmo exigido por dia** já
+  calculado e o detalhe das posições abertas.
+- **Falha com motivo.** Em vez de "sem acesso à rede", ela diz se foi **cota da
+  chave**, **chave recusada** ou **internet**.
 
 ---
 
@@ -40,27 +50,30 @@ hiddenimports=['speech_recognition', 'sounddevice',
 
 ---
 
-## 2. Rodar local primeiro (recomendado — 2 minutos)
+## 2. Rodar local primeiro (recomendado — 3 minutos)
 
 ```cmd
 cd C:\Users\jovan\Documents\SMC_QUANT_PRO
 python main_app.py
 ```
 
-Checklist da v2.2.0 (aba **🐯 TIGER**):
+Checklist da v2.3.0 (aba **🐯 TIGER**):
 
-1. Marque **🐯 OLÁ TIGER**. Ela escreve no chat qual **microfone** está usando —
-   confira que é o seu. Se não for, troque o dispositivo de entrada padrão em
-   *Configurações → Sistema → Som* e desligue/religue o checkbox.
-2. Fale qualquer coisa perto do microfone. **Tudo o que ela ouvir aparece no
-   chat** (`🐯 ouvi: "..."`). É assim que você confirma que a escuta está viva.
-3. Diga **"Olá Tiger, qual o status?"** — ela responde falando.
-4. Diga só **"Olá Tiger"** — ela responde "Oi! Pode falar" e abre o microfone.
-5. Clique em **📎 Anexar**, escolha um print do gráfico, aperte Enter — ela lê
-   a imagem e comenta. Repita com um **vídeo** curto da tela.
+1. Com o motor **desligado**, pergunte *"você está acompanhando o mercado?"* —
+   ela deve dizer que **não**, porque o motor está parado, e oferecer ligar.
+2. Diga **"liga o motor"**. Ela avisa que está ligando e, quando o motor sobe,
+   escreve *"Motor no ar"*. Confira na aba Motor que ligou mesmo.
+3. Espere um ciclo de análise e peça **"olha o gráfico"** — ela analisa o print
+   que o motor capturou e diz de que horas é a captura.
+4. Pergunte **"quanto precisamos fazer por dia para bater a meta?"** — a
+   resposta tem que vir **inteira**, com o número fechado (esse era o bug).
+5. Pergunte algo que só a internet responde: *"tem notícia de CPI hoje?"*.
+6. Diga **"desliga o motor"** e confirme que ele parou.
+7. Repita 2, 3 e 6 **por voz**, com o modo 🐯 OLÁ TIGER ligado.
 
 > Se aparecer *"estou escutando pelo microfone X mas não chega som nenhum"*, é
-> microfone errado selecionado no Windows — o passo 1 resolve.
+> microfone errado selecionado no Windows — troque em *Configurações → Sistema
+> → Som* e desligue/religue o checkbox.
 
 ---
 
@@ -114,17 +127,17 @@ Repita o checklist do passo 2 dentro do `.exe`.
 ## 6. Gerar o instalador (Inno Setup)
 
 1. Abra `instalador\SMC_Quant_Pro.iss` no Inno Setup Compiler.
-2. Confira que `MyAppVersion` está **"2.2.0"** (já está).
+2. Confira que `MyAppVersion` está **"2.3.0"** (já está).
 3. Pressione **F9** (Compile).
 
-Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.2.0.exe`.
+Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.3.0.exe`.
 
 ---
 
 ## 7. Publicar a atualização
 
-1. Suba o `SMC_Quant_Pro_Setup_2.2.0.exe` na pasta do Google Drive.
-2. O `versao.json` **já está publicado como 2.2.0** — assim que o arquivo
+1. Suba o `SMC_Quant_Pro_Setup_2.3.0.exe` na pasta do Google Drive.
+2. O `versao.json` **já está publicado como 2.3.0** — assim que o arquivo
    estiver no Drive, os clientes veem o aviso de nova versão.
 
 ---
@@ -133,8 +146,12 @@ Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.2.0.exe`.
 
 | Sintoma | Causa provável | O que fazer |
 |---|---|---|
+| "A cota da sua chave Gemini estourou" | limite do plano gratuito | espere alguns minutos ou cole uma chave paga na aba Motor |
+| "A chave da Gemini foi recusada" | chave errada/expirada | cole a chave de novo na aba Motor e ligue o motor uma vez para salvar |
+| "Não consegui alcançar o servidor" | internet | verifique a conexão — o chat e a transcrição de voz usam a rede |
+| Ela diz que não tem print do gráfico | motor nunca rodou um ciclo | ligue o motor e espere uma análise, ou mande um print pelo 📎 |
+| Ela não liga o motor quando peço | frase sem o substantivo | diga "liga **o motor**" / "desliga **o robô**" — só o verbo não vale, de propósito |
 | "não chega som nenhum" no chat | microfone errado no Windows | *Configurações → Sistema → Som* → escolha o mic certo como entrada padrão |
-| "não consegui transcrever" | sem internet | a transcrição da voz usa a internet; verifique a conexão |
 | "não consegui abrir o microfone" | outro programa segurando o mic | feche Zoom/Meet/OBS e religue o OLÁ TIGER |
 | Ela ouve mas não reage ao chamado | fala rápida demais no começo | diga "Olá Tiger" e faça uma pausa curta antes do pedido |
 | 🎤 diz "voz não instalada" | faltam as libs de voz | `pip install SpeechRecognition sounddevice` e recompile |

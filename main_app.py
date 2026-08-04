@@ -111,7 +111,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.2.0"
+VERSAO_ATUAL = "2.3.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -190,6 +190,10 @@ LICENCA_FILE = os.path.join(pasta_dados_usuario(), "licenca.json")
 # IA interativa: conversa persistida + lições que VOCÊ ensina ao robô.
 CHAT_FILE = os.path.join(pasta_dados_usuario(), "chat_ia.json")
 LICOES_FILE = os.path.join(pasta_dados_usuario(), "licoes_trader.json")
+# OLHOS DA TIGER: a última captura que o motor fez do gráfico fica salva aqui.
+# É o que permite perguntar no chat "olha o gráfico agora" e ela ver de fato a
+# MESMA imagem que gerou a sugestão — sem você precisar tirar print à mão.
+ULTIMO_PRINT_FILE = os.path.join(pasta_dados_usuario(), "ultimo_print.png")
 
 # ====================================================================
 # SISTEMA DE LICENÇA
@@ -1768,6 +1772,33 @@ def hash_imagem(imagem_pil):
     except Exception:
         return None
 
+def salvar_ultimo_print(imagem_pil, janela=""):
+    """Guarda em disco a captura que o motor acabou de fazer do gráfico.
+
+    POR QUE ISSO EXISTE: sem isso, a TIGER só enxergava o gráfico pelo TEXTO da
+    última análise. Perguntas como "olha o gráfico agora" ou "confere pelo
+    último print" não tinham resposta possível. Salvando a imagem, o chat pode
+    mandá-la ao modelo e ela vê exatamente o que o motor viu — a mesma imagem
+    que gerou a sugestão, sem você tirar print à mão.
+    Devolve o dicionário com o que foi salvo, ou None se não deu para salvar.
+    """
+    try:
+        imagem_pil.convert("RGB").save(ULTIMO_PRINT_FILE, format="PNG")
+        return {"caminho": ULTIMO_PRINT_FILE, "hora": time.strftime("%H:%M"),
+                "quando": time.time(), "janela": janela or ""}
+    except Exception:
+        return None
+
+def idade_do_ultimo_print(info):
+    """Minutos desde a captura. None se não há print. Serve para a TIGER dizer
+    'esse print é de 3 minutos atrás' em vez de tratar imagem velha como atual."""
+    if not info or not os.path.exists(info.get("caminho", "")):
+        return None
+    try:
+        return max(0.0, (time.time() - float(info.get("quando", 0))) / 60.0)
+    except Exception:
+        return None
+
 def listar_janelas_abertas():
     """Retorna os títulos de todas as janelas visíveis abertas no Windows,
     para popular o dropdown de seleção (em vez do usuário digitar na mão)."""
@@ -1954,10 +1985,22 @@ def bloco_licoes_prompt():
     return ("\nLIÇÕES QUE O TRADER TE ENSINOU (obedeça — são ordens dele, "
             f"aprendidas em sessões anteriores):\n{corpo}\n")
 
+# Como o trader chama o motor de análise ao falar: "liga o motor", "desliga o
+# robô", "para a análise". Precisa do SUBSTANTIVO junto do verbo — sem isso,
+# "ok, pode parar" (parar de explicar) desligaria o robô no meio do pregão.
+_MOTOR_SUBSTANTIVOS = (r"\b(motor|rob[ôo]|an[áa]lises?|monitoramento|sistema|"
+                       r"m[áa]quina|opera[çc][ãa]o autom[áa]tica|autom[áa]tico)\b")
+_MOTOR_LIGAR = r"(lig(a|ar|ue|a[- ]?o)|ativ(a|ar|e)|inici(a|ar|e)|sobe|subir|comec(a|ar|e)|começ(a|ar|e)|start)"
+_MOTOR_DESLIGAR = (r"(deslig(a|ar|ue)|par(a|ar|e)|paus(a|ar|e)|encerr(a|ar|e)|"
+                   r"desativ(a|ar|e)|interromp(e|er|a)|stop)")
+
 def interpretar_intencao(texto):
-    """Detecta comandos em LINGUAGEM NATURAL, sem depender da IA (dinheiro não
-    passa por modelo). Retorna:
+    """Detecta comandos em LINGUAGEM NATURAL, sem depender da IA (dinheiro e
+    controle do motor não passam por modelo — o modelo ALUCINA "motor ligado"
+    sem ligar nada; aqui é código, então o que ela diz é o que aconteceu).
+    Retorna:
       'ACATAR' | 'DISPENSAR' | 'CANCELAR' | 'STATUS' | 'AJUDA' | 'SIM' | 'NAO'
+      | 'LIGAR_MOTOR' | 'DESLIGAR_MOTOR' | 'VER_GRAFICO'
       | ('APRENDER', conteudo) | None (conversa livre -> vai para a IA).
     """
     t = (texto or "").strip().lower()
@@ -1984,8 +2027,23 @@ def interpretar_intencao(texto):
     if re.search(r"\b(acat\w*|aceito|bora|entra(r)? nessa)\b", t) \
             and not re.search(r"\b(não|nao|nunca|sem)\b", t):
         return "ACATAR"
-    if curto and (palavras & {"status", "resumo", "situação", "situacao", "posições",
-                               "posicoes", "placar"} or "como estamos" in t):
+    # MOTOR: só vale com verbo E substantivo do motor na mesma frase.
+    if re.search(_MOTOR_SUBSTANTIVOS, t):
+        if re.search(rf"\b{_MOTOR_DESLIGAR}\b", t):
+            return "DESLIGAR_MOTOR"
+        if re.search(rf"\b{_MOTOR_LIGAR}\b", t):
+            return "LIGAR_MOTOR"
+    # OLHAR O GRÁFICO: ela busca o último print capturado pelo motor e analisa
+    # a imagem de verdade, em vez de responder de memória sobre o texto velho.
+    if re.search(r"\b(gr[áa]fico|print|tela|captura|imagem|screenshot)\b", t) and \
+            re.search(r"\b(olh(a|ar|e)|v[êe]|ver|vendo|visualiz\w*|analis\w*|"
+                      r"confer(e|ir|indo)|l[êe]|ler|mostra|checa|checar|"
+                      r"o que|como est[áa]|qual)\b", t):
+        return "VER_GRAFICO"
+    # STATUS é o CARD determinístico. Só para pedido literal e curto: perguntas
+    # conversacionais ("como está a situação?", "como estamos?") merecem a
+    # resposta pensada da IA, que recebe estes mesmos números no contexto.
+    if curto and palavras & {"status", "placar", "resumo"}:
         return "STATUS"
     if curto and palavras & {"ajuda", "comandos", "help"}:
         return "AJUDA"
@@ -2019,7 +2077,10 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
         return ("APRENDER", intencao[1])
     if intencao == "ACATAR":
         return ("PEDIR_CONFIRMACAO", "ACATAR")
-    if intencao in ("DISPENSAR", "CANCELAR", "STATUS", "AJUDA"):
+    if intencao == "VER_GRAFICO":
+        return ("VER_GRAFICO", None)
+    if intencao in ("DISPENSAR", "CANCELAR", "STATUS", "AJUDA",
+                    "LIGAR_MOTOR", "DESLIGAR_MOTOR"):
         return ("EXECUTAR", intencao)
     return ("IA", None)
 
@@ -2036,7 +2097,26 @@ def montar_persona_ia():
         "FORMATO DAS RESPOSTAS: escreva em TEXTO CORRIDO natural, SEM asteriscos, "
         "sem markdown (nada de **negrito**, listas com * ou #) — suas respostas "
         "também são LIDAS EM VOZ ALTA, e símbolos estragam a fala. Seja objetiva: "
-        "responda em poucas frases, direto ao ponto.\n"
+        "responda em poucas frases, direto ao ponto. REGRA DE OURO: TERMINE o "
+        "raciocínio dentro da resposta. É melhor uma resposta curta e COMPLETA "
+        "do que uma longa cortada no meio — nunca deixe uma conta ou uma frase "
+        "pela metade.\n"
+        "\n"
+        "O QUE VOCÊ CONSEGUE FAZER DE VERDADE (não são metáforas — são ações "
+        "reais que a ferramenta executa quando o trader pede):\n"
+        "• LIGAR e DESLIGAR o motor de análise: ele diz 'liga o motor' / "
+        "'desliga o robô' e o app liga/desliga na hora. Você não precisa fazer "
+        "nada além de confirmar o que aconteceu.\n"
+        "• VER O GRÁFICO: o motor captura a tela da corretora a cada ciclo e "
+        "essa imagem fica disponível para você. Quando ele pedir 'olha o "
+        "gráfico', a imagem vem anexada e você analisa de verdade.\n"
+        "• PESQUISAR NA INTERNET: você tem busca ao vivo. Use para notícia, "
+        "calendário econômico, dado macro, horário de evento — e diga de onde "
+        "veio a informação. Se a busca não trouxer nada, diga isso; não invente.\n"
+        "• CONTAS: os números da mesa (resultado, meta, quanto falta, ritmo por "
+        "dia) vêm calculados no contexto. Use os números de lá, tal como estão. "
+        "Se precisar de uma conta nova, faça a aritmética com CUIDADO e mostre "
+        "o resultado fechado.\n"
         "\n"
         "SUA BÚSSOLA METODOLÓGICA (nesta ordem de prioridade):\n"
         "1) SMART MONEY CONCEPTS — leia o mercado pelas pegadas das instituições: "
@@ -2060,9 +2140,16 @@ def montar_persona_ia():
         "números, preços ou resultados — se não estiver nos dados do contexto, "
         "diga que não tem o dado. Nada de promessa de ganho. Se ele estiver "
         "emocionado (raiva/medo/revanche), traga-o de volta ao plano de trading.\n"
-        "• AÇÕES: você NÃO executa ordens. Quando ele quiser agir, ensine o "
-        "comando: 'acatar' (com confirmação), 'dispensar', 'cancelar ordem', "
-        "'status', e 'aprenda: <lição>' para você memorizar uma regra dele.\n"
+        "• AÇÕES: você NÃO executa ordens (isso é decisão dele, sempre com "
+        "confirmação). Quando ele quiser agir, ensine o comando: 'acatar' (com "
+        "confirmação), 'dispensar', 'cancelar ordem', 'status', 'liga o motor', "
+        "'desliga o motor', 'olha o gráfico' e 'aprenda: <lição>' para você "
+        "memorizar uma regra dele.\n"
+        "• NUNCA DIGA QUE FEZ ALGO QUE VOCÊ NÃO FEZ. Você não liga o motor "
+        "sozinha, não envia ordem, não fica 'monitorando em segundo plano' por "
+        "conta própria — quem monitora é o motor, e só quando está ligado. Se "
+        "ele pedir algo que depende do motor e o motor estiver desligado, diga "
+        "isso e ofereça ligar.\n"
         "• AUTOAPRENDIZAGEM: use as lições dele e o histórico de padrões (nos "
         "dados do contexto) para calibrar suas opiniões — e diga quando uma "
         "opinião vem do histórico dele ('esse padrão vem acertando nas suas "
@@ -2570,6 +2657,20 @@ class SmcQuantApp(ctk.CTk):
         self._ouvindo = False           # microfone em uso (botão ou OLÁ TIGER)
         self._tiger_rodando = False     # loop da palavra de ativação ativo?
         self._chat_anexo = None         # arquivo (foto/vídeo/doc) aguardando envio
+        # Última captura do gráfico feita pelo motor — os "olhos" dela no chat.
+        # Se o app reabriu e o print da sessão passada ainda está no disco, ela
+        # já começa enxergando (com a idade correta, para não tratá-lo como novo).
+        self._ultimo_print = None
+        if os.path.exists(ULTIMO_PRINT_FILE):
+            try:
+                self._ultimo_print = {
+                    "caminho": ULTIMO_PRINT_FILE,
+                    "quando": os.path.getmtime(ULTIMO_PRINT_FILE),
+                    "hora": time.strftime("%H:%M", time.localtime(
+                        os.path.getmtime(ULTIMO_PRINT_FILE))),
+                    "janela": carregar_config().get("nome_janela_corretora", "")}
+            except Exception:
+                self._ultimo_print = None
         cfg = carregar_config()
         self.ia_voz_var = tk.BooleanVar(value=cfg.get("ia_voz", False))
         self.ia_tiger_var = tk.BooleanVar(value=cfg.get("ia_tiger", False))
@@ -2659,8 +2760,9 @@ class SmcQuantApp(ctk.CTk):
         ctk.CTkButton(barra, text="🧹 limpar", width=80, height=28,
                       fg_color="#21262d", hover_color="#30363d",
                       command=self._chat_limpar).pack(side="right")
-        ctk.CTkLabel(barra, text="Enter envia · acatar · dispensar · cancelar "
-                                 "ordem · status · aprenda: <lição>",
+        ctk.CTkLabel(barra, text="Enter envia · acatar · dispensar · cancelar ordem · "
+                                 "status · liga/desliga o motor · olha o gráfico · "
+                                 "aprenda: <lição>",
                      text_color="#4a5163", font=ctk.CTkFont(size=9)
                      ).pack(side="right", padx=10)
 
@@ -2675,9 +2777,11 @@ class SmcQuantApp(ctk.CTk):
                 "Olá, Josevan! Eu sou a TIGER, a IA da sua mesa — leitura Smart "
                 "Money com confluência de análise técnica clássica. Fale comigo "
                 "por texto, pelo 🎤, ou ligue o modo OLÁ TIGER e me chame de "
-                "qualquer lugar: 'Olá Tiger, qual o status?'. Me mande prints, "
-                "fotos e vídeos do gráfico pelo 📎 que eu analiso. Você me "
-                "ensina regras com 'aprenda: ...'. Como quer começar?",
+                "qualquer lugar: 'Olá Tiger, qual o status?'. Eu ligo e desligo o "
+                "motor quando você pedir, olho o último print que ele capturou "
+                "('olha o gráfico'), pesquiso notícia e agenda do mercado na "
+                "internet, e analiso prints, fotos e vídeos que você mandar pelo "
+                "📎. Você me ensina regras com 'aprenda: ...'. Como quer começar?",
                 persistir=False)
         # Retoma a escuta da palavra de ativação se ficou ligada da última vez.
         if self.ia_tiger_var.get():
@@ -2891,6 +2995,31 @@ class SmcQuantApp(ctk.CTk):
             else:
                 self._chat_responder("Essa lição já estava na minha memória (ou veio vazia).")
             return
+        if tipo == "VER_GRAFICO":
+            # Ela olha a imagem que o MOTOR capturou — a mesma que gerou a
+            # sugestão. Sem print disponível, vira conversa normal (o contexto
+            # já explica que não há captura, então ela não inventa).
+            info = getattr(self, "_ultimo_print", None)
+            caminho = (info or {}).get("caminho")
+            if caminho and os.path.exists(caminho):
+                if self._chat_ocupada:
+                    self._chat_escrever("sistema", "(aguarde — ainda estou "
+                                         "respondendo a anterior)", persistir=False)
+                    return
+                self._chat_ocupada = True
+                idade = idade_do_ultimo_print(info)
+                self._chat_status(f"🔎 olhando o gráfico (print de "
+                                   f"{info.get('hora', '—')})…", "#ff9f43")
+                pedido = (f"{texto}\n\n[A imagem anexada é a captura que o MOTOR "
+                          f"fez da janela '{info.get('janela', '—')}' às "
+                          f"{info.get('hora', '—')}"
+                          + (f", há cerca de {idade:.0f} minuto(s)" if idade is not None else "")
+                          + ". É o gráfico que ele está lendo. Se a captura "
+                          "estiver velha demais para a pergunta, avise.]")
+                threading.Thread(target=self._chat_worker,
+                                 args=(pedido, caminho), daemon=True).start()
+                return
+            # Sem print: segue para o modelo com o texto original.
         if tipo == "EXECUTAR":
             self._chat_executar_acao(dado)
             return
@@ -2914,33 +3043,119 @@ class SmcQuantApp(ctk.CTk):
                 registrar_msg_chat("ia", texto)
         self.after(0, escrever)
 
-    def _chat_responder(self, texto, falar_tb=True):
+    def _chat_responder(self, texto, falar_tb=True, texto_voz=None):
         """Resposta imediata (sem modelo): digita no terminal + voz.
         REGRA: se o pedido veio por VOZ, a resposta SEMPRE sai por voz também
-        (com o registro em texto no histórico) — independente do checkbox 🔊."""
+        (com o registro em texto no histórico) — independente do checkbox 🔊.
+        `texto_voz` permite falar uma versão natural do que está escrito (o card
+        de status, por exemplo, é ótimo na tela e horrível lido em voz alta)."""
         registrar_msg_chat("ia", texto)
         self._chat_digitar(texto)
+        dito = texto_voz or texto
         if getattr(self, "_chat_por_voz", False):
-            self._ia_falar(texto, forcar=True)
+            self._ia_falar(dito, forcar=True)
         elif falar_tb:
-            self._ia_falar(texto)
+            self._ia_falar(dito)
+
+    # ---------------- Mão no motor (ação real, não conversa) ----------------
+    def _chat_motor(self, ligar):
+        """Liga/desliga o MOTOR de análise a pedido do trader.
+
+        POR QUE É CÓDIGO E NÃO CONVERSA: pedindo ao modelo, ele respondia
+        "motor ligado" sem ligar coisa alguma — alucinação com custo real (o
+        trader achava que estava sendo monitorado e não estava). Aqui quem liga
+        é a mesma função do botão da aba Motor, e o que ela responde é o que de
+        fato aconteceu."""
+        ligado = bool(getattr(self, "motor_rodando", False) or
+                      getattr(self, "robo_ativo", False))
+        if ligar:
+            if ligado:
+                self._chat_responder("O motor já está ligado — sigo analisando o "
+                                      "gráfico a cada ciclo. Se quiser, digo o status.")
+                return
+            chave = ""
+            try:
+                chave = (self.api_entry.get() or "").strip() or carregar_api_key()
+            except Exception:
+                chave = carregar_api_key()
+            if not chave:
+                self._chat_responder(
+                    "Não consigo ligar sem a chave da Gemini: vá na aba Motor, "
+                    "cole a chave da API no campo dela e peça de novo que eu ligo.")
+                return
+            janela = carregar_config().get("nome_janela_corretora", "").strip()
+            alvo = f"a janela '{janela}'" if janela else "a tela inteira (nenhuma janela escolhida na aba Motor)"
+            self._chat_responder(f"Ligando o motor agora — vou analisar {alvo}. "
+                                  "Te aviso assim que ele estiver de pé.")
+            self.after(0, self.iniciar)
+            threading.Thread(target=self._confirmar_motor, args=(True,),
+                             daemon=True).start()
+            return
+        if not ligado:
+            self._chat_responder("O motor já está desligado — nenhuma análise "
+                                  "rodando. Suas posições e o histórico seguem salvos.")
+            return
+        self._chat_responder("Desligando o motor. Paro as análises e os "
+                              "relatórios; as posições abertas continuam "
+                              "registradas no dashboard.")
+        self.after(0, self.desligar)
+        threading.Thread(target=self._confirmar_motor, args=(False,),
+                         daemon=True).start()
+
+    def _confirmar_motor(self, esperado_ligado):
+        """Confere o que REALMENTE aconteceu e avisa no chat. Subir o motor pode
+        levar minutos na primeira vez (npm install), por isso a espera é longa e
+        o silêncio nunca é tratado como sucesso."""
+        limite = 180 if esperado_ligado else 20
+        for _ in range(limite):
+            time.sleep(1)
+            ligado = bool(getattr(self, "motor_rodando", False) or
+                          getattr(self, "robo_ativo", False))
+            if ligado == esperado_ligado:
+                if esperado_ligado:
+                    self._chat_feed("Motor no ar: já estou capturando e "
+                                     "analisando o gráfico. Quando aparecer um "
+                                     "cenário válido eu te aviso aqui.")
+                else:
+                    self._chat_feed("Motor desligado, confirmado. Nenhuma "
+                                     "análise nova sai até você mandar ligar.")
+                return
+        self._chat_feed(
+            "Não consegui confirmar que o motor " +
+            ("subiu" if esperado_ligado else "parou") +
+            ". Dá uma olhada no log da aba Motor — costuma ser Node.js "
+            "faltando, chave da API recusada ou a janela da corretora fechada.")
 
     def _ia_falar(self, texto, forcar=False):
         if forcar or (getattr(self, "ia_voz_var", None) and self.ia_voz_var.get()):
             # falar() já limpa asteriscos/markdown/emoji para fala natural.
-            threading.Thread(target=falar, args=(texto[:600],), daemon=True).start()
+            # O corte era 600 e engolia o fim de respostas mais longas — agora
+            # cabe a resposta inteira (a persona é que pede concisão).
+            threading.Thread(target=falar, args=(texto[:1800],), daemon=True).start()
 
     # ---------------- Ações locais (determinísticas) ----------------
     def _chat_executar_acao(self, acao):
         if acao == "STATUS":
-            self._chat_responder(self._chat_status_texto(), falar_tb=False)
+            # Na tela vai o card completo; na VOZ vai a frase falada (ler
+            # bullet por bullet em voz alta é insuportável).
+            self._chat_responder(self._chat_status_texto(), falar_tb=False,
+                                  texto_voz=self._status_falado())
+            return
+        if acao == "LIGAR_MOTOR":
+            self._chat_motor(True)
+            return
+        if acao == "DESLIGAR_MOTOR":
+            self._chat_motor(False)
             return
         if acao == "AJUDA":
             self._chat_responder(
                 "Comandos que executo na hora: 'acatar' (com confirmação), "
-                "'dispensar', 'cancelar ordem', 'status', 'aprenda: <regra>'. "
-                "Fora isso, conversa comigo normalmente: pergunte por que sugeri "
-                "um cenário, peça leitura do contexto, discuta o plano — texto ou 🎤.")
+                "'dispensar', 'cancelar ordem', 'status', 'liga o motor', "
+                "'desliga o motor', 'olha o gráfico' (eu analiso o último print "
+                "que o motor capturou) e 'aprenda: <regra>'. Fora isso, conversa "
+                "comigo normalmente: pergunte por que sugeri um cenário, peça "
+                "notícia do mercado que eu pesquiso na internet, discuta o "
+                "plano — por texto, pelo 🎤 ou dizendo 'Olá Tiger'.")
             return
         if acao == "ACATAR":
             sinal = self._ultimo_sinal_pendente()
@@ -2987,8 +3202,30 @@ class SmcQuantApp(ctk.CTk):
                   f"win rate {stats['winrate']:.0f}%)",
                   f"• Meta: US$ {stats['meta']:,.2f} em {stats.get('dias_meta', 5)} dia(s) "
                   f"— faltam US$ {stats['falta']:,.2f} "
-                  f"({stats['dias_restantes']} dia(s) restantes)",
-                  f"• Posições abertas agora: {stats['abertas']}"]
+                  f"({stats['dias_restantes']} dia(s) restantes)"]
+        # RITMO EXIGIDO: a conta que o trader mais pergunta ("quanto por dia?").
+        # Sai daqui pronta, calculada em código — a IA não precisa (nem deve)
+        # fazer essa divisão de cabeça e arriscar errar.
+        ritmo = stats.get("meta_diaria")
+        if ritmo is not None:
+            partes.append(f"• Ritmo necessário: US$ {ritmo:,.2f} por dia nos "
+                          f"{stats['dias_restantes']} dia(s) que restam")
+        elif stats.get("falta", 0) > 0:
+            partes.append("• Ritmo necessário: o prazo da meta já venceu — "
+                          "reinicie o ciclo no Plano de Trading para um novo prazo")
+        partes.append(f"• Posições abertas agora: {stats['abertas']}")
+        # Detalhe das posições abertas: sem isso ela só sabia o NÚMERO e não
+        # conseguia responder "como está minha operação agora".
+        try:
+            for p in posicoes_do_ciclo():
+                if p.get("status") == "ABERTA":
+                    partes.append(
+                        f"   – {p.get('direcao')} {p.get('ativo')} "
+                        f"{p.get('contratos', '?')} contrato(s) @ {p.get('entry')} · "
+                        f"stop {p.get('stop')} · alvo {p.get('tp1')} · "
+                        f"P&L agora US$ {p.get('pnl_atual', 0):+,.2f}")
+        except Exception:
+            pass
         ua = getattr(self, "_ultima_analise", None) or {}
         if ua.get("ativo"):
             partes.append(
@@ -3002,6 +3239,29 @@ class SmcQuantApp(ctk.CTk):
                           "diga 'acatar' ou 'dispensar'.")
         return "\n".join(partes)
 
+    def _status_falado(self):
+        """O mesmo status, em UMA frase natural — é isso que sai pelo alto-falante
+        quando ele pede status por voz. Bullet lido em voz alta é ruído."""
+        try:
+            stats = self._computar_stats_plano()
+        except Exception:
+            return "Ainda não tenho dados suficientes do ciclo para um status."
+        frase = (f"Na conta {nome_conta_ativa()}, hoje você está em "
+                 f"{stats['resultado_hoje']:+,.0f} dólares e o ciclo em "
+                 f"{stats['lucro_usd']:+,.0f}, com {stats['total_ops']} operações "
+                 f"fechadas e {stats['winrate']:.0f} por cento de acerto. ")
+        if stats.get("falta", 0) > 0:
+            frase += (f"Faltam {stats['falta']:,.0f} dólares para a meta em "
+                      f"{stats['dias_restantes']} dia ou dias")
+            ritmo = stats.get("meta_diaria")
+            frase += (f", o que dá {ritmo:,.0f} dólares por dia. " if ritmo is not None
+                      else ", mas o prazo já venceu. ")
+        else:
+            frase += "A meta do ciclo já foi batida. "
+        frase += (f"Você tem {stats['abertas']} posição ou posições abertas agora."
+                  if stats["abertas"] else "Você não tem posição aberta agora.")
+        return frase
+
     # ---------------- Conversa com o modelo ----------------
     def _chat_contexto(self):
         """Tudo o que a IA precisa saber AGORA: persona, estado real da mesa,
@@ -3009,6 +3269,39 @@ class SmcQuantApp(ctk.CTk):
         não estiver aqui, ela deve dizer que não tem."""
         partes = [montar_persona_ia()]
         partes.append("\n--- DADOS REAIS DA MESA NESTE MOMENTO ---")
+        partes.append(f"AGORA SÃO {time.strftime('%H:%M de %d/%m/%Y')} "
+                      "(horário do computador do trader).")
+        # ESTADO DO MOTOR: sem isso ela dizia "estou monitorando em segundo
+        # plano" com o motor desligado — mentira que custa dinheiro.
+        ligado = bool(getattr(self, "motor_rodando", False) or
+                      getattr(self, "robo_ativo", False))
+        janela = carregar_config().get("nome_janela_corretora", "").strip()
+        if ligado:
+            partes.append(
+                f"MOTOR DE ANÁLISE: LIGADO — capturando e analisando "
+                f"{'a janela ' + repr(janela) if janela else 'a tela inteira'} a cada "
+                f"{carregar_config().get('intervalo_minutos', 15)} minuto(s). "
+                "Pode dizer que está acompanhando, porque está mesmo.")
+        else:
+            partes.append(
+                "MOTOR DE ANÁLISE: DESLIGADO — NENHUMA análise nova está "
+                "rodando e nenhum gráfico está sendo capturado agora. NÃO diga "
+                "que está monitorando ou acompanhando o mercado. Se ele quiser "
+                "que você acompanhe, diga que basta pedir 'liga o motor'.")
+        # OLHOS: existe print recente do gráfico para ela pedir/analisar?
+        info_print = getattr(self, "_ultimo_print", None)
+        idade = idade_do_ultimo_print(info_print)
+        if idade is None:
+            partes.append("PRINT DO GRÁFICO: não há nenhuma captura disponível "
+                          "ainda (o motor precisa rodar ao menos um ciclo). Se "
+                          "ele pedir para você olhar o gráfico, explique isso e "
+                          "ofereça: ou ele liga o motor, ou manda um print pelo 📎.")
+        else:
+            partes.append(
+                f"PRINT DO GRÁFICO: existe uma captura de "
+                f"{(info_print or {}).get('hora', '—')} (há {idade:.0f} minuto(s)), "
+                "da janela que o motor monitora. Quando ele pedir 'olha o "
+                "gráfico', essa imagem chega anexada para você analisar.")
         # Vínculo com a conta SELECIONADA no Plano de Trading: a TIGER opina
         # sempre com o plano DESTA conta (meta, prazo, risco, R:R mínimo).
         try:
@@ -3064,14 +3357,95 @@ class SmcQuantApp(ctk.CTk):
             arq = client.files.get(name=arq.name)
         return None
 
+    def _chat_configs(self, modelo, teto, com_busca):
+        """Configurações a tentar para UM modelo, da melhor para a mais simples.
+
+        Duas coisas importam aqui:
+        • BUSCA NA INTERNET (google_search): é o que dá acesso a notícia,
+          calendário econômico e dado macro atual. Nem todo modelo/SDK aceita a
+          ferramenta, então sempre existe uma configuração sem ela como reserva.
+        • RACIOCÍNIO INTERNO ZERADO nos modelos que pensam por padrão: o
+          "pensamento" consome o orçamento de saída e era o que fazia a resposta
+          chegar cortada no meio da frase — ou vazia.
+        """
+        tentativas = []
+        ferramentas = None
+        if com_busca:
+            try:
+                ferramentas = [types.Tool(google_search=types.GoogleSearch())]
+            except Exception:
+                ferramentas = None            # SDK sem a ferramenta de busca
+        pensa = "latest" in modelo or "-3-" in modelo
+        for tools in ([ferramentas, None] if ferramentas else [None]):
+            base = {"temperature": 0.6, "max_output_tokens": teto}
+            if tools:
+                base["tools"] = tools
+            if pensa:
+                try:
+                    tentativas.append(types.GenerateContentConfig(
+                        thinking_config=types.ThinkingConfig(thinking_budget=0),
+                        **base))
+                except Exception:
+                    pass                      # SDK antigo sem ThinkingConfig
+            try:
+                tentativas.append(types.GenerateContentConfig(**base))
+            except Exception:
+                pass
+        return tentativas
+
+    @staticmethod
+    def _resposta_cortada(r):
+        """A resposta bateu no teto de tokens e parou no meio da frase?
+        É o que produzia aquelas respostas como 'faltam 7.6' — a conta certa,
+        interrompida antes do número terminar."""
+        try:
+            return "MAX_TOKEN" in str(
+                getattr(r.candidates[0], "finish_reason", "") or "").upper()
+        except Exception:
+            return False
+
+    @staticmethod
+    def _diagnostico_erro(erro):
+        """Traduz a falha do SDK para uma frase que diz O QUE FAZER. Antes tudo
+        virava 'estou sem acesso à rede ou ao modelo' — o trader não tinha como
+        saber se era cota, chave ou internet."""
+        e = str(erro or "").upper()
+        if not e:
+            return ("Não consegui resposta de nenhum modelo agora. Se acabou de "
+                    "acontecer, tente de novo em alguns segundos.")
+        if "429" in e or "RESOURCE_EXHAUSTED" in e or "QUOTA" in e:
+            return ("A cota da sua chave Gemini estourou (o plano gratuito tem "
+                    "limite por minuto e por dia). Espere alguns minutos ou use "
+                    "uma chave paga — é só colar na aba Motor.")
+        if any(x in e for x in ("API KEY", "API_KEY", "PERMISSION", "UNAUTHENTICATED",
+                                "401", "403")):
+            return ("A chave da Gemini foi recusada. Cole a chave de novo no "
+                    "campo da aba Motor e ligue o motor uma vez para salvar.")
+        if any(x in e for x in ("TIMEOUT", "TIMED OUT", "CONNECTION", "SSL", "DNS",
+                                "NETWORK", "UNREACHABLE", "GETADDRINFO", "PROXY")):
+            return ("Não consegui alcançar o servidor do modelo — parece "
+                    "internet. Confira a conexão e me chame de novo.")
+        if "404" in e or "NOT_FOUND" in e:
+            return ("Os modelos que eu uso não respondem para essa chave. "
+                    "Confira se a API Gemini está habilitada para ela no "
+                    "Google AI Studio.")
+        if "500" in e or "503" in e or "INTERNAL" in e or "UNAVAILABLE" in e:
+            return ("O servidor do modelo está sobrecarregado neste momento. "
+                    "Me chame de novo em instantes.")
+        return f"Falhou aqui: {str(erro)[:180]}"
+
     def _chat_worker(self, pergunta, anexo=None):
         resposta = None
+        ultimo_erro = None
         try:
-            # Com anexo o tempo é maior (upload + vídeo processando).
+            # Com anexo o tempo é maior (upload + vídeo processando). Sem anexo
+            # o limite subiu de 15 s para 60 s: com busca na internet ligada a
+            # primeira resposta demora mais, e 15 s estourava ANTES de responder
+            # — foi o que gerava tanto "estou sem acesso à rede".
             client = genai.Client(
                 api_key=carregar_api_key(),
                 http_options=types.HttpOptions(
-                    timeout=300_000 if anexo else 15_000))
+                    timeout=300_000 if anexo else 60_000))
             historico = carregar_chat()[-12:]
             corpo = "\n".join(
                 f"{'TRADER' if m['papel'] == 'voce' else 'IA'}: {m['texto']}"
@@ -3103,7 +3477,10 @@ class SmcQuantApp(ctk.CTk):
                           f"TRADER: {pergunta}\nIA:")
             # O que vai para o modelo: só o texto, ou texto + arquivo anexado.
             conteudo = [prompt] if parte_anexo is None else [parte_anexo, prompt]
-            teto = 1200 if anexo else 500      # análise de arquivo pede espaço
+            # TETO DE SAÍDA: era 500 e cortava a resposta no meio da conta
+            # ("faltam 7.6"). Com espaço de sobra ela termina o raciocínio; a
+            # persona é quem pede concisão, não a guilhotina do token.
+            teto = 4096 if anexo else 2048
             # Começa pelo modelo que respondeu por último (evita re-tentar os
             # que estão sem cota a cada pergunta — era boa parte da demora).
             modelos = ["gemini-2.0-flash", "gemini-2.0-flash-001",
@@ -3117,22 +3494,7 @@ class SmcQuantApp(ctk.CTk):
                 modelos.remove(bom)
                 modelos.insert(0, bom)
             for modelo in modelos:
-                # Nos modelos com "raciocínio interno" ligado por padrão
-                # (flash-latest/3-preview), zera o pensamento: é ELE que fazia
-                # a resposta demorar 10-20 s. Se o modelo recusar o parâmetro,
-                # tenta de novo sem ele.
-                basica = types.GenerateContentConfig(temperature=0.6,
-                                                      max_output_tokens=teto)
-                configs = [basica]
-                if "latest" in modelo or "-3-" in modelo:
-                    try:
-                        configs.insert(0, types.GenerateContentConfig(
-                            temperature=0.6, max_output_tokens=teto,
-                            thinking_config=types.ThinkingConfig(thinking_budget=0)))
-                    except Exception:
-                        pass               # SDK antigo sem ThinkingConfig
-
-                for config in configs:
+                for config in self._chat_configs(modelo, teto, com_busca=not anexo):
                     try:
                         r = client.models.generate_content(
                             model=modelo, contents=conteudo, config=config)
@@ -3140,21 +3502,50 @@ class SmcQuantApp(ctk.CTk):
                             resposta = r.text.strip()
                             # Só memoriza o modelo em turno SEM arquivo: a lista
                             # de anexo é diferente e não deve viciar a de texto.
+                            # Vem ANTES da emenda de propósito: o modelo já
+                            # provou que responde, mesmo que a continuação falhe.
                             if not anexo:
                                 self._chat_modelo_bom = modelo
+                            # Cortou no teto? Pede a continuação e emenda, para
+                            # a frase nunca morrer pela metade na tela.
+                            if self._resposta_cortada(r):
+                                resposta = self._completar_resposta(
+                                    client, modelo, config, conteudo, resposta)
                             break
-                    except Exception:
+                    except Exception as e:
+                        ultimo_erro = e
                         continue
                 if resposta:
                     break
-        except Exception:
-            pass
+        except Exception as e:
+            ultimo_erro = e
         if not resposta:
-            resposta = ("Estou sem acesso à rede ou ao modelo agora (cota da API "
-                        "ou internet). Os comandos locais seguem funcionando: "
-                        "'status', 'acatar', 'dispensar', 'cancelar ordem', "
+            resposta = (f"{self._diagnostico_erro(ultimo_erro)} "
+                        "Enquanto isso, os comandos locais seguem funcionando "
+                        "normalmente: 'status', 'acatar', 'dispensar', "
+                        "'cancelar ordem', 'liga o motor', 'desliga o motor' e "
                         "'aprenda: ...'.")
         self._chat_entregar_resposta(resposta)
+
+    def _completar_resposta(self, client, modelo, config, conteudo, comeco):
+        """Pede a continuação de uma resposta que bateu no teto e emenda as duas.
+        Uma rodada só: se ainda assim não fechar, devolve o que tem em vez de
+        ficar queimando cota."""
+        try:
+            pedido = list(conteudo) + [
+                f"\nVocê já escreveu isto:\n{comeco}\n\n"
+                "Continue EXATAMENTE de onde parou, sem repetir nada do que já "
+                "está escrito, e FECHE o raciocínio em no máximo 3 frases."]
+            r2 = client.models.generate_content(
+                model=modelo, contents=pedido, config=config)
+            if r2 and r2.text:
+                emenda = r2.text.strip()
+                if emenda:
+                    junta = "" if comeco.endswith((" ", "\n")) else " "
+                    return f"{comeco}{junta}{emenda}"
+        except Exception:
+            pass
+        return comeco
 
     def _chat_entregar_resposta(self, resposta):
         """Fim de um turno com o modelo: registra em texto, fala se for o caso
@@ -6383,6 +6774,14 @@ class SmcQuantApp(ctk.CTk):
                     capturas_congeladas = 0
                 hash_captura_anterior = hash_atual
                 self.log(f"🖼️ Imagem atual obtida via: {metodo}")
+
+                # OLHOS DA TIGER: guarda esta captura para o chat. A partir daqui
+                # dá para perguntar "olha o gráfico agora" e ela analisa ESTA
+                # imagem — a mesma que o motor está lendo neste ciclo.
+                info_print = salvar_ultimo_print(
+                    screenshot, nome_janela or "tela inteira")
+                if info_print:
+                    self._ultimo_print = info_print
 
                 # DETECÇÃO DE POSIÇÃO NA PLATAFORMA: antes de analisar, confere na
                 # corretora se você já está posicionado (inclusive numa operação
