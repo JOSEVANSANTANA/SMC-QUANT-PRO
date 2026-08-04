@@ -1,5 +1,5 @@
 {
-  "versao": "2.1.1",
+  "versao": "2.1.2",
   "url_download": "https://drive.google.com/drive/folders/1IF61HDi95bcDUrJNUKgnNtKm4czRwooA",
-  "notas": "VOZ ROBUSTA E IA MAIS INTERATIVA. O comando por voz deixou de depender do pyaudio (que falha ao instalar em Python 3.13/3.14) - agora usa sounddevice, que instala em qualquer versao: pip install SpeechRecognition sounddevice. A gravacao ganhou corte automatico por silencio (voce clica no microfone, fala, e ela para sozinha ~1s depois que voce termina). A conversa da aba IA virou um FEED VIVO: toda sugestao nova, entrada executada e stop/alvo aparecem dentro do chat - e voce responde ali mesmo ('acatar', 'dispensar', ou discute o cenario), por texto ou voz. Corrigido o erro de compilacao 'Icon input file icone.ico not found' (icone novo incluido no pacote; instrucoes no COMPILAR.md)."
+  "notas": "CONHEÇA A TIGER. A IA da mesa agora tem nome e ouvidos: ligue o modo 'EI TIGER' e chame por voz de qualquer lugar - 'Ei Tiger, qual o status?' - como Alexa/Siri. A voz ficou NATURAL (nao le mais asteriscos nem simbolos), o microfone ganhou paciencia (so encerra ~2s depois que voce termina de falar, com teto de 25s), e vale a regra: pedido por VOZ, resposta por VOZ - sempre com o texto registrado no historico. O chat parou de embaralhar mensagens (fila unica de escrita) e responde mais rapido. A TIGER fica visivelmente vinculada a conta selecionada: o cabecalho mostra a conta e toda orientacao respeita o plano de trading DELA (meta, dias, risco, R:R minimo)."
 }

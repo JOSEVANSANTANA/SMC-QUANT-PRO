@@ -111,7 +111,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.1.1"
+VERSAO_ATUAL = "2.1.2"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1791,8 +1791,55 @@ def listar_janelas_abertas():
 # --------------------------------------------------------------------
 # NÚCLEO DE SUPORTE
 # --------------------------------------------------------------------
+def limpar_para_voz(texto: str) -> str:
+    """Prepara um texto de chat para ser FALADO: remove asteriscos, marcação
+    markdown, bullets e emojis, para a voz soar como conversa natural — e não
+    ler símbolo por símbolo."""
+    t = str(texto or "")
+    t = re.sub(r"```.*?```", " ", t, flags=re.DOTALL)            # blocos de código
+    t = re.sub(r"^[ \t]*[-•▸·*]+[ \t]+", "", t, flags=re.MULTILINE)  # bullets
+    t = re.sub(r"[*_`#>|~\[\]{}]+", " ", t)                      # marcação markdown
+    t = re.sub("[\U0001F000-\U0001FAFF"      # emojis (blocos principais)
+               "\u2190-\u21FF\u2300-\u27BF"  # setas e símbolos diversos
+               "\u2B00-\u2BFF\uFE0F\u200D]", " ", t)
+    t = t.replace("R:R", "risco-retorno").replace("US$", "")
+    t = t.replace("·", ", ")
+    t = re.sub(r"[ \t]+", " ", t)
+    t = re.sub(r"\n{2,}", ". ", t).replace("\n", ". ")
+    return re.sub(r"\s+", " ", t).strip()
+
+# Palavra de ativação da TIGER ("EI TIGER", como Alexa/Siri/Ok Google).
+# O Google costuma transcrever de vários jeitos — aceitamos as variações.
+_RE_TIGER = re.compile(
+    r"(?:\b(?:e[iy]|hey|hei|oi|ok|o[páa]|a[íi])[\s,]+)?"
+    r"\b(?:tiger|taiguer|t[áa]iguer|tigre|taigher|tayger)\b[\s,.!?:;-]*",
+    re.IGNORECASE)
+
+def extrair_comando_tiger(texto):
+    """Detecta a palavra de ativação numa fala transcrita.
+    Devolve (acordou, resto): 'acordou' diz se a TIGER foi chamada, e 'resto'
+    é o pedido que veio junto na MESMA frase ("ei tiger, qual o status?" →
+    resto = "qual o status?"). Resto vazio = só chamou, aguardar o pedido."""
+    t = (texto or "").strip()
+    if not t:
+        return (False, "")
+    import unicodedata
+    plano = unicodedata.normalize("NFD", t)
+    plano = "".join(c for c in plano if unicodedata.category(c) != "Mn")
+    m = _RE_TIGER.search(plano)
+    if not m:
+        return (False, "")
+    # Recorta o pedido no texto ORIGINAL (com acentos) quando os tamanhos batem;
+    # senão usa a versão sem acento — o interpretador de comandos entende ambas.
+    base = t if len(plano) == len(t) else plano
+    resto = base[m.end():].strip(" ,.!?:;-")
+    return (True, resto)
+
 def falar(texto: str):
     try:
+        texto = limpar_para_voz(texto)
+        if not texto:
+            return
         engine = pyttsx3.init()
         engine.setProperty('rate', 165)
         for v in engine.getProperty('voices'):
@@ -1964,8 +2011,14 @@ def montar_persona_ia():
     (tendência, momentum, divergência, suportes/resistências e pontos de
     virada) — as escolas dos livros de referência do trader."""
     return (
-        "Você é a IA da mesa SMC Quant Pro: mentora de trading institucional do "
-        "Josevan, conversando em tempo real dentro da ferramenta dele.\n"
+        "Você é a TIGER: a IA da mesa SMC Quant Pro, mentora de trading "
+        "institucional do Josevan, conversando em tempo real dentro da "
+        "ferramenta dele. Seu nome é TIGER e ele te chama por voz com 'Ei Tiger'.\n"
+        "\n"
+        "FORMATO DAS RESPOSTAS: escreva em TEXTO CORRIDO natural, SEM asteriscos, "
+        "sem markdown (nada de **negrito**, listas com * ou #) — suas respostas "
+        "também são LIDAS EM VOZ ALTA, e símbolos estragam a fala. Seja objetiva: "
+        "responda em poucas frases, direto ao ponto.\n"
         "\n"
         "SUA BÚSSOLA METODOLÓGICA (nesta ordem de prioridade):\n"
         "1) SMART MONEY CONCEPTS — leia o mercado pelas pegadas das instituições: "
@@ -2070,10 +2123,10 @@ class SmcQuantApp(ctk.CTk):
         self.tabview.pack(padx=10, pady=10, fill="both", expand=True)
         self.tabview.add("⚙️ Motor & WhatsApp")
         self.tabview.add("📊 Plano de Trading")
-        self.tabview.add("💬 IA")
+        self.tabview.add("🐯 TIGER")
         tab_motor = self.tabview.tab("⚙️ Motor & WhatsApp")
         tab_plano = self.tabview.tab("📊 Plano de Trading")
-        tab_ia = self.tabview.tab("💬 IA")
+        tab_ia = self.tabview.tab("🐯 TIGER")
 
         self._montar_tab_motor(tab_motor, config_atual)
         self._montar_tab_plano(tab_plano)
@@ -2486,14 +2539,21 @@ class SmcQuantApp(ctk.CTk):
                       "executa na mão e pode lançar a operação no diário.")
 
     # ==================================================================
-    # ABA 💬 IA — chat por mensagem e voz, estilo terminal (Claude Code)
+    # ABA 🐯 TIGER — chat por mensagem e voz, estilo terminal (Claude Code)
     # ==================================================================
     def _montar_tab_ia(self, master):
         # Estado da conversa
         self._chat_conf = None          # ação aguardando "sim" (ex.: ACATAR)
         self._chat_ocupada = False      # evita duas perguntas simultâneas
         self._ultima_analise = {}       # última leitura do gráfico (p/ contexto)
-        self.ia_voz_var = tk.BooleanVar(value=carregar_config().get("ia_voz", False))
+        self._chat_por_voz = False      # o último pedido veio por VOZ? → responde por voz
+        self._chat_fila = []            # fila ÚNICA de escrita no terminal
+        self._chat_render_ativo = False # há algo sendo escrito/digitado agora?
+        self._ouvindo = False           # microfone em uso (botão ou EI TIGER)
+        self._tiger_rodando = False     # loop da palavra de ativação ativo?
+        cfg = carregar_config()
+        self.ia_voz_var = tk.BooleanVar(value=cfg.get("ia_voz", False))
+        self.ia_tiger_var = tk.BooleanVar(value=cfg.get("ia_tiger", False))
 
         raiz = ctk.CTkFrame(master, fg_color="#0d1117")
         raiz.pack(fill="both", expand=True)
@@ -2501,11 +2561,17 @@ class SmcQuantApp(ctk.CTk):
         # ---------- Cabeçalho (barra do terminal) ----------
         topo = ctk.CTkFrame(raiz, fg_color="#161b22", corner_radius=0, height=40)
         topo.pack(fill="x")
-        ctk.CTkLabel(topo, text="✳", text_color="#ff9f43",
+        ctk.CTkLabel(topo, text="🐯", text_color="#ff9f43",
                      font=ctk.CTkFont(size=16, weight="bold")).pack(side="left", padx=(12, 4), pady=8)
-        ctk.CTkLabel(topo, text="SMC IA — mentora da mesa",
+        ctk.CTkLabel(topo, text="TIGER — IA da mesa",
                      text_color="#e6edf3",
                      font=ctk.CTkFont(size=13, weight="bold")).pack(side="left", pady=8)
+        # Vínculo EXPLÍCITO com a conta selecionada: a TIGER conversa sempre
+        # sobre o plano/números DESTA conta (mesma seleção do Plano de Trading).
+        self.lbl_ia_conta = ctk.CTkLabel(topo, text=f"🏦 {nome_conta_ativa()}",
+                                          text_color="#79c0ff",
+                                          font=ctk.CTkFont(size=11, weight="bold"))
+        self.lbl_ia_conta.pack(side="left", padx=10)
         self.lbl_ia_status = ctk.CTkLabel(topo, text="pronta", text_color="#3fb950",
                                            font=ctk.CTkFont(size=11))
         self.lbl_ia_status.pack(side="right", padx=12)
@@ -2556,11 +2622,16 @@ class SmcQuantApp(ctk.CTk):
                         text_color="#8a92a5", fg_color="#1f6feb",
                         checkbox_width=18, checkbox_height=18,
                         font=ctk.CTkFont(size=11)).pack(side="left", padx=10)
+        ctk.CTkCheckBox(barra, text="🐯 EI TIGER (sempre à escuta)",
+                        variable=self.ia_tiger_var, command=self._tiger_alternar,
+                        text_color="#ff9f43", fg_color="#ff9f43",
+                        checkbox_width=18, checkbox_height=18,
+                        font=ctk.CTkFont(size=11)).pack(side="left", padx=4)
         ctk.CTkButton(barra, text="🧹 limpar", width=80, height=28,
                       fg_color="#21262d", hover_color="#30363d",
                       command=self._chat_limpar).pack(side="right")
-        ctk.CTkLabel(barra, text="Enter envia · comandos: acatar · dispensar · "
-                                 "cancelar ordem · status · aprenda: <lição>",
+        ctk.CTkLabel(barra, text="Enter envia · acatar · dispensar · cancelar "
+                                 "ordem · status · aprenda: <lição>",
                      text_color="#4a5163", font=ctk.CTkFont(size=9)
                      ).pack(side="right", padx=10)
 
@@ -2572,14 +2643,43 @@ class SmcQuantApp(ctk.CTk):
         if not historico:
             self._chat_escrever(
                 "ia",
-                "Olá, Josevan! Sou a IA da sua mesa — leitura Smart Money com "
-                "confluência de análise técnica clássica. Posso discutir a análise "
-                "do momento, o plano da conta, suas posições, e você me ensina "
+                "Olá, Josevan! Eu sou a TIGER, a IA da sua mesa — leitura Smart "
+                "Money com confluência de análise técnica clássica. Fale comigo "
+                "por texto, pelo 🎤, ou ligue o modo EI TIGER e me chame de "
+                "qualquer lugar: 'Ei Tiger, qual o status?'. Você me ensina "
                 "regras com 'aprenda: ...'. Como quer começar?",
                 persistir=False)
+        # Retoma a escuta da palavra de ativação se ficou ligada da última vez.
+        if self.ia_tiger_var.get():
+            self.after(1500, self._tiger_iniciar)
 
     # ---------------- Escrita no terminal ----------------
-    def _chat_escrever(self, papel, texto, persistir=True, hora=None):
+    # REGRA DE OURO: NADA escreve direto no txt_chat. Toda mensagem entra numa
+    # FILA ÚNICA e é escrita uma por vez. Antes, duas animações de digitação
+    # simultâneas (resposta + evento do feed) intercalavam os caracteres e a
+    # conversa saía embaralhada na tela — isto elimina o problema na raiz.
+    def _chat_agendar(self, modo, papel, texto, hora=None):
+        try:
+            self._chat_fila.append((modo, papel, texto, hora))
+            if not self._chat_render_ativo:
+                self._chat_render_ativo = True
+                self.after(0, self._chat_render_proximo)
+        except Exception:
+            pass
+
+    def _chat_render_proximo(self):
+        if not self._chat_fila:
+            self._chat_render_ativo = False
+            return
+        modo, papel, texto, hora = self._chat_fila.pop(0)
+        if modo == "digitar":
+            self._chat_digitar_passo(texto, 0)
+        else:
+            self._chat_inserir(papel, texto, hora)
+            self.after(1, self._chat_render_proximo)
+
+    def _chat_inserir(self, papel, texto, hora=None):
+        """Escreve uma mensagem INTEIRA no terminal (sem animação)."""
         try:
             self.txt_chat.configure(state="normal")
             hora = hora or time.strftime('%H:%M')
@@ -2596,34 +2696,43 @@ class SmcQuantApp(ctk.CTk):
             self.txt_chat.see("end")
         except Exception:
             pass
+
+    def _chat_escrever(self, papel, texto, persistir=True, hora=None):
         if persistir:
             registrar_msg_chat(papel, texto)
+        self._chat_agendar("inteira", papel, texto, hora)
 
-    def _chat_digitar(self, texto, _pos=0):
-        """Efeito de digitação (como resposta em streaming no terminal)."""
-        PASSO = 4
+    def _chat_digitar(self, texto):
+        """Resposta da TIGER com efeito de digitação (entra na fila única)."""
+        self._chat_agendar("digitar", "ia", texto)
+
+    def _chat_digitar_passo(self, texto, _pos):
+        """Um quadro da animação. VELOCIDADE ADAPTATIVA: o passo cresce com o
+        tamanho do texto, então mesmo resposta longa termina em ~0,5 s."""
+        passo = max(4, len(texto) // 50)
         try:
             if _pos == 0:
                 self.txt_chat.configure(state="normal")
                 self.txt_chat.insert("end", f"{time.strftime('%H:%M')}  ", "hora")
                 self.txt_chat.insert("end", "✳ ", "ia_pref")
                 self.txt_chat.configure(state="disabled")
-            trecho = texto[_pos:_pos + PASSO]
+            trecho = texto[_pos:_pos + passo]
             if trecho:
                 self.txt_chat.configure(state="normal")
                 self.txt_chat.insert("end", trecho, "ia")
                 self.txt_chat.configure(state="disabled")
                 self.txt_chat.see("end")
-                self.after(12, lambda: self._chat_digitar(texto, _pos + PASSO))
-            else:
-                self.txt_chat.configure(state="normal")
-                self.txt_chat.insert("end", "\n\n", "ia")
-                self.txt_chat.configure(state="disabled")
-                self.txt_chat.see("end")
-                self._chat_status("pronta", "#3fb950")
-                self._chat_ocupada = False
+                self.after(8, lambda: self._chat_digitar_passo(texto, _pos + passo))
+                return
+            self.txt_chat.configure(state="normal")
+            self.txt_chat.insert("end", "\n\n", "ia")
+            self.txt_chat.configure(state="disabled")
+            self.txt_chat.see("end")
         except Exception:
-            self._chat_ocupada = False
+            pass
+        self._chat_status("pronta", "#3fb950")
+        self._chat_ocupada = False
+        self.after(1, self._chat_render_proximo)
 
     def _chat_status(self, texto, cor="#8a92a5"):
         try:
@@ -2651,6 +2760,7 @@ class SmcQuantApp(ctk.CTk):
         if not texto:
             return "break"
         self.entrada_chat.delete("1.0", "end")
+        self._chat_por_voz = False   # pedido digitado → resposta segue o checkbox 🔊
         self._chat_escrever("voce", texto)
         self._chat_processar(texto)
         return "break"
@@ -2708,15 +2818,20 @@ class SmcQuantApp(ctk.CTk):
         self.after(0, escrever)
 
     def _chat_responder(self, texto, falar_tb=True):
-        """Resposta imediata (sem modelo): digita no terminal + voz opcional."""
+        """Resposta imediata (sem modelo): digita no terminal + voz.
+        REGRA: se o pedido veio por VOZ, a resposta SEMPRE sai por voz também
+        (com o registro em texto no histórico) — independente do checkbox 🔊."""
         registrar_msg_chat("ia", texto)
         self._chat_digitar(texto)
-        if falar_tb:
+        if getattr(self, "_chat_por_voz", False):
+            self._ia_falar(texto, forcar=True)
+        elif falar_tb:
             self._ia_falar(texto)
 
-    def _ia_falar(self, texto):
-        if getattr(self, "ia_voz_var", None) and self.ia_voz_var.get():
-            threading.Thread(target=falar, args=(texto[:400],), daemon=True).start()
+    def _ia_falar(self, texto, forcar=False):
+        if forcar or (getattr(self, "ia_voz_var", None) and self.ia_voz_var.get()):
+            # falar() já limpa asteriscos/markdown/emoji para fala natural.
+            threading.Thread(target=falar, args=(texto[:600],), daemon=True).start()
 
     # ---------------- Ações locais (determinísticas) ----------------
     def _chat_executar_acao(self, acao):
@@ -2797,6 +2912,21 @@ class SmcQuantApp(ctk.CTk):
         não estiver aqui, ela deve dizer que não tem."""
         partes = [montar_persona_ia()]
         partes.append("\n--- DADOS REAIS DA MESA NESTE MOMENTO ---")
+        # Vínculo com a conta SELECIONADA no Plano de Trading: a TIGER opina
+        # sempre com o plano DESTA conta (meta, prazo, risco, R:R mínimo).
+        try:
+            p = plano_da_conta_ativa()
+            partes.append(
+                f"PLANO DE TRADING DA CONTA SELECIONADA ('{nome_conta_ativa()}'): "
+                f"margem US$ {p.get('margem', 0):,.0f} · meta US$ "
+                f"{p.get('meta_alvo', 0):,.0f} em {p.get('dias_meta', 5)} dia(s) · "
+                f"drawdown máximo US$ {p.get('drawdown_maximo', 0):,.0f} · risco "
+                f"por operação {p.get('risco_pct', 1.0)}% · R:R mínimo "
+                f"1:{p.get('rr_minimo', 2.0)} · probabilidade mínima "
+                f"{p.get('probabilidade_minima', 55)}%. Todas as suas orientações "
+                "devem respeitar ESTE plano.")
+        except Exception:
+            pass
         partes.append(self._chat_status_texto())
         ua = getattr(self, "_ultima_analise", None) or {}
         if ua.get("analise"):
@@ -2815,7 +2945,7 @@ class SmcQuantApp(ctk.CTk):
         resposta = None
         try:
             client = genai.Client(api_key=carregar_api_key(),
-                                   http_options=types.HttpOptions(timeout=30_000))
+                                   http_options=types.HttpOptions(timeout=20_000))
             historico = carregar_chat()[-16:]
             corpo = "\n".join(
                 f"{'TRADER' if m['papel'] == 'voce' else 'IA'}: {m['texto']}"
@@ -2837,11 +2967,15 @@ class SmcQuantApp(ctk.CTk):
         except Exception:
             pass
         if not resposta:
-            resposta = ("Estou sem acesso ao modelo agora (cota da API ou rede). "
-                        "Os comandos locais seguem funcionando: 'status', 'acatar', "
-                        "'dispensar', 'cancelar ordem', 'aprenda: ...'.")
+            resposta = ("Estou sem acesso à rede ou ao modelo agora (cota da API "
+                        "ou internet). Os comandos locais seguem funcionando: "
+                        "'status', 'acatar', 'dispensar', 'cancelar ordem', "
+                        "'aprenda: ...'.")
         registrar_msg_chat("ia", resposta)
-        self._ia_falar(resposta)
+        if getattr(self, "_chat_por_voz", False):
+            self._ia_falar(resposta, forcar=True)
+        else:
+            self._ia_falar(resposta)
         self.after(0, lambda: self._chat_digitar(resposta))
 
     # ---------------- Comando por VOZ ----------------
@@ -2849,25 +2983,32 @@ class SmcQuantApp(ctk.CTk):
         """Grava a sua fala e devolve um AudioData para transcrição.
         1º caminho: sounddevice (instala em qualquer Python — inclusive 3.14).
         2º caminho: sr.Microphone/pyaudio, se por acaso estiver instalado.
-        Corte automático: para de gravar após ~1s de silêncio (fala natural)."""
+        PACIÊNCIA: só corta após ~2,2 s de silêncio — pausa para pensar no meio
+        da frase NÃO encerra a gravação (antes cortava com 1 s e atropelava)."""
         if VOZ_SD:
             TAXA, BLOCO = 16000, 1600            # blocos de 0,1 s
-            MAX_SEG, SILENCIO_CORTE = 12, 10     # teto 12 s; corta com 1 s mudo
+            MAX_SEG = 25                         # teto de 25 s de fala
+            SILENCIO_CORTE = 22                  # corta com 2,2 s mudo
+            ESPERA_INICIO = 80                   # até 8 s esperando começar a falar
             import array
-            capturado, silencio, falou = [], 0, False
+            capturado, silencio, falou, mudo_inicio = [], 0, False, 0
             with _sd.InputStream(samplerate=TAXA, channels=1, dtype="int16",
                                   blocksize=BLOCO) as stream:
-                for _ in range(int(MAX_SEG * TAXA / BLOCO)):
+                for _ in range(int(MAX_SEG * TAXA / BLOCO) + ESPERA_INICIO):
                     bloco, _ov = stream.read(BLOCO)
                     dados = bytes(bloco)
                     capturado.append(dados)
                     amostras = array.array("h", dados)
                     energia = (sum(a * a for a in amostras) / max(len(amostras), 1)) ** 0.5
-                    if energia > 350:
+                    if energia > 300:
                         falou, silencio = True, 0
                     elif falou:
                         silencio += 1
                         if silencio >= SILENCIO_CORTE:
+                            break
+                    else:
+                        mudo_inicio += 1
+                        if mudo_inicio >= ESPERA_INICIO:
                             break
             if not falou:
                 raise sr.WaitTimeoutError("nenhuma fala detectada")
@@ -2875,7 +3016,7 @@ class SmcQuantApp(ctk.CTk):
         # Fallback: microfone clássico (exige pyaudio)
         with sr.Microphone() as mic:
             rec.adjust_for_ambient_noise(mic, duration=0.4)
-            return rec.listen(mic, timeout=6, phrase_time_limit=15)
+            return rec.listen(mic, timeout=8, phrase_time_limit=25)
 
     def _chat_ouvir(self):
         if not VOZ_SR:
@@ -2894,11 +3035,13 @@ class SmcQuantApp(ctk.CTk):
                     "(falta o captador de microfone — rode:  pip install "
                     "sounddevice  e reabra o app)", persistir=False)
                 return
-        if self._chat_ocupada:
+        if self._chat_ocupada or self._ouvindo:
             return
 
         def tarefa():
-            self.after(0, lambda: self._chat_status("🎤 ouvindo… (fale agora)", "#ff6b6b"))
+            self._ouvindo = True
+            self.after(0, lambda: self._chat_status(
+                "🎤 ouvindo… (pode falar com calma)", "#ff6b6b"))
             try:
                 rec = sr.Recognizer()
                 rec.energy_threshold = 300
@@ -2928,14 +3071,113 @@ class SmcQuantApp(ctk.CTk):
                 self.after(0, lambda er=e: self._chat_escrever(
                     "sistema", f"(voz indisponível: {er})", persistir=False))
                 return
+            finally:
+                self._ouvindo = False
             self.after(0, lambda: self._chat_status("pronta", "#3fb950"))
 
             def entregar(t=texto):
+                # Pedido chegou por VOZ → toda a resposta deste turno sai por
+                # voz também (com o texto registrado no histórico).
+                self._chat_por_voz = True
                 self._chat_escrever("voce", f"🎤 {t}")
                 self._chat_processar(t)
             self.after(0, entregar)
 
         threading.Thread(target=tarefa, daemon=True).start()
+
+    # ---------------- "EI TIGER" — palavra de ativação ----------------
+    # Escuta contínua e leve em segundo plano (como Alexa/Siri/Ok Google):
+    # grava trechos curtos, ignora silêncio, e só transcreve quando há som.
+    # Ao ouvir "Ei Tiger" ela atende — se o pedido veio na mesma frase
+    # ("Ei Tiger, qual o status?"), já executa direto.
+    def _tiger_alternar(self):
+        salvar_config({"ia_tiger": bool(self.ia_tiger_var.get())})
+        if self.ia_tiger_var.get():
+            self._tiger_iniciar()
+        else:
+            self._chat_escrever("sistema", "(modo EI TIGER desligado)",
+                                 persistir=False)
+
+    def _tiger_iniciar(self):
+        if not (VOZ_SR and VOZ_SD):
+            self.ia_tiger_var.set(False)
+            salvar_config({"ia_tiger": False})
+            self._chat_escrever(
+                "sistema",
+                "(para o modo EI TIGER, rode:  pip install SpeechRecognition "
+                "sounddevice  e reabra o app)", persistir=False)
+            return
+        if self._tiger_rodando:
+            return
+        self._tiger_rodando = True
+        self._chat_escrever(
+            "sistema",
+            "(🐯 modo EI TIGER LIGADO — estou à escuta. Diga 'Ei Tiger' para me "
+            "chamar, ou já emende o pedido: 'Ei Tiger, qual o status?')",
+            persistir=False)
+        threading.Thread(target=self._tiger_loop, daemon=True).start()
+
+    def _tiger_escutar_trecho(self):
+        """Grava ~2,5 s. Devolve AudioData se houve som relevante, senão None
+        (silêncio não gasta transcrição nem rede)."""
+        TAXA, BLOCO = 16000, 1600
+        import array
+        blocos, energia_max = [], 0.0
+        with _sd.InputStream(samplerate=TAXA, channels=1, dtype="int16",
+                              blocksize=BLOCO) as stream:
+            for _ in range(25):
+                bloco, _ov = stream.read(BLOCO)
+                dados = bytes(bloco)
+                blocos.append(dados)
+                amostras = array.array("h", dados)
+                energia = (sum(a * a for a in amostras) / max(len(amostras), 1)) ** 0.5
+                energia_max = max(energia_max, energia)
+        if energia_max < 300:
+            return None
+        return sr.AudioData(b"".join(blocos), TAXA, 2)
+
+    def _tiger_loop(self):
+        rec = sr.Recognizer()
+        try:
+            while True:
+                try:
+                    if not self.ia_tiger_var.get():
+                        break
+                except Exception:
+                    break                      # janela fechada
+                if self._ouvindo or self._chat_ocupada:
+                    time.sleep(0.5)
+                    continue
+                try:
+                    trecho = self._tiger_escutar_trecho()
+                except Exception:
+                    time.sleep(2)
+                    continue
+                if trecho is None:
+                    continue
+                try:
+                    texto = rec.recognize_google(trecho, language="pt-BR")
+                except Exception:
+                    continue                   # ruído/sem rede — segue escutando
+                acordou, resto = extrair_comando_tiger(texto)
+                if not acordou:
+                    continue
+                if resto:
+                    # O pedido veio junto do chamado — executa direto.
+                    def entregar(t=resto):
+                        self._chat_por_voz = True
+                        self._chat_escrever("voce", f"🎤 Ei Tiger, {t}")
+                        self._chat_processar(t)
+                    self.after(0, entregar)
+                    time.sleep(1.5)
+                else:
+                    # Só chamou: responde (síncrono, para o mic não gravar a
+                    # própria voz) e abre a escuta do pedido.
+                    falar("Oi! Pode falar.")
+                    self.after(0, self._chat_ouvir)
+                    time.sleep(1.0)
+        finally:
+            self._tiger_rodando = False
 
     # ------------------------------------------------------------------
     # NOTIFICAÇÃO NO COMPUTADOR (independente do WhatsApp)
@@ -4270,6 +4512,16 @@ class SmcQuantApp(ctk.CTk):
         self._assin_sinais = None
         self._assin_dashboard = None
         self._recarregar_menu_contas()
+        # A TIGER acompanha a troca: o cabeçalho do chat mostra a conta e a
+        # conversa passa a usar o plano/números dela imediatamente.
+        try:
+            self.lbl_ia_conta.configure(text=f"🏦 {nome_conta_ativa()}")
+            self._chat_escrever(
+                "sistema",
+                f"(conversa agora vinculada à conta '{nome_conta_ativa()}' — "
+                "plano de trading e números são desta conta)", persistir=False)
+        except Exception:
+            pass
         self._atualizar_dashboard(forcar=True)
 
     def _trocar_conta(self, nome_escolhido):
@@ -6442,7 +6694,7 @@ class SmcQuantApp(ctk.CTk):
 
                     # Alerta na tela do computador (além do WhatsApp).
                     self._sinais_notificados.add(novo_sinal_id)
-                    # A sugestão também entra na CONVERSA da aba 💬 IA — você
+                    # A sugestão também entra na CONVERSA da aba 🐯 TIGER — você
                     # pode responder 'acatar' / 'dispensar' ali, por texto ou voz.
                     self._chat_feed(
                         f"📘 Nova sugestão: {acao} {ativo} — entrada "
