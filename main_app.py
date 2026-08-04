@@ -111,7 +111,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.1.3"
+VERSAO_ATUAL = "2.2.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1808,35 +1808,45 @@ def limpar_para_voz(texto: str) -> str:
     t = re.sub(r"\n{2,}", ". ", t).replace("\n", ". ")
     return re.sub(r"\s+", " ", t).strip()
 
-# Palavra de ativação da TIGER ("EI TIGER", como Alexa/Siri/Ok Google).
-# O Google costuma transcrever de vários jeitos — aceitamos as variações.
-_RE_TIGER = re.compile(
-    r"(?:\b(?:e[iy]|hey|hei|oi|ok|o[páa]|a[íi])[\s,]+)?"
-    r"\b(?:tiger|taiguer|t[áa]iguer|tigre|taigher|tayger)\b[\s,.!?:;-]*",
-    re.IGNORECASE)
+# Palavra de ativação da TIGER ("OLÁ TIGER", como Alexa/Siri/Ok Google).
+# A comparação é TOLERANTE de propósito: o Google transcreve o chamado de
+# vários jeitos (tiger, Tigre, taiguer, tagger, Tayler...) e a versão anterior,
+# de regex exata, descartava tudo isso em silêncio — parecia que ela era surda.
+def _sem_acento(texto):
+    import unicodedata
+    plano = unicodedata.normalize("NFD", texto)
+    return "".join(c for c in plano if unicodedata.category(c) != "Mn")
+
+def _parece_tiger(palavra):
+    """A palavra transcrita parece 'tiger'? Aceita variações e transcrições
+    imperfeitas via similaridade (difflib), não só igualdade exata."""
+    p = _sem_acento((palavra or "").lower()).strip(",.!?;:-()\"'")
+    if len(p) < 4:
+        return False
+    if p.startswith(("tig", "taig", "tayg", "tyg")):
+        return True
+    import difflib
+    return any(difflib.SequenceMatcher(None, p, alvo).ratio() >= 0.72
+               for alvo in ("tiger", "tigre", "taiguer", "tigrer"))
 
 def extrair_comando_tiger(texto):
-    """Detecta a palavra de ativação numa fala transcrita.
+    """Detecta o chamado 'Olá Tiger' (ou variações) numa fala transcrita.
     Devolve (acordou, resto): 'acordou' diz se a TIGER foi chamada, e 'resto'
-    é o pedido que veio junto na MESMA frase ("ei tiger, qual o status?" →
-    resto = "qual o status?"). Resto vazio = só chamou, aguardar o pedido."""
+    é o pedido que veio junto na MESMA frase ("olá tiger, qual o status?" →
+    resto = "qual o status?"). Resto vazio = só chamou, aguardar o pedido.
+    O resto preserva o texto ORIGINAL (acentos e pontuação das palavras)."""
     t = (texto or "").strip()
     if not t:
         return (False, "")
-    import unicodedata
-    plano = unicodedata.normalize("NFD", t)
-    plano = "".join(c for c in plano if unicodedata.category(c) != "Mn")
-    m = _RE_TIGER.search(plano)
-    if not m:
-        return (False, "")
-    # Recorta o pedido no texto ORIGINAL (com acentos) quando os tamanhos batem;
-    # senão usa a versão sem acento — o interpretador de comandos entende ambas.
-    base = t if len(plano) == len(t) else plano
-    resto = base[m.end():].strip(" ,.!?:;-")
-    return (True, resto)
+    palavras = t.split()
+    for i, palavra in enumerate(palavras):
+        if _parece_tiger(palavra):
+            resto = " ".join(palavras[i + 1:]).strip(" ,.!?:;-")
+            return (True, resto)
+    return (False, "")
 
 # Verdadeiro enquanto o alto-falante está falando. A escuta contínua do modo
-# EI TIGER pausa nesse período — senão o microfone transcreveria a própria voz.
+# OLÁ TIGER pausa nesse período — senão o microfone transcreveria a própria voz.
 TTS_FALANDO = False
 
 def falar(texto: str):
@@ -2021,7 +2031,7 @@ def montar_persona_ia():
     return (
         "Você é a TIGER: a IA da mesa SMC Quant Pro, mentora de trading "
         "institucional do Josevan, conversando em tempo real dentro da "
-        "ferramenta dele. Seu nome é TIGER e ele te chama por voz com 'Ei Tiger'.\n"
+        "ferramenta dele. Seu nome é TIGER e ele te chama por voz com 'Olá Tiger'.\n"
         "\n"
         "FORMATO DAS RESPOSTAS: escreva em TEXTO CORRIDO natural, SEM asteriscos, "
         "sem markdown (nada de **negrito**, listas com * ou #) — suas respostas "
@@ -2557,8 +2567,9 @@ class SmcQuantApp(ctk.CTk):
         self._chat_por_voz = False      # o último pedido veio por VOZ? → responde por voz
         self._chat_fila = []            # fila ÚNICA de escrita no terminal
         self._chat_render_ativo = False # há algo sendo escrito/digitado agora?
-        self._ouvindo = False           # microfone em uso (botão ou EI TIGER)
+        self._ouvindo = False           # microfone em uso (botão ou OLÁ TIGER)
         self._tiger_rodando = False     # loop da palavra de ativação ativo?
+        self._chat_anexo = None         # arquivo (foto/vídeo/doc) aguardando envio
         cfg = carregar_config()
         self.ia_voz_var = tk.BooleanVar(value=cfg.get("ia_voz", False))
         self.ia_tiger_var = tk.BooleanVar(value=cfg.get("ia_tiger", False))
@@ -2625,12 +2636,22 @@ class SmcQuantApp(ctk.CTk):
         ctk.CTkButton(barra, text="🎤 Falar", width=90, height=28,
                       fg_color="#21262d", hover_color="#30363d",
                       command=self._chat_ouvir).pack(side="left", padx=6)
+        ctk.CTkButton(barra, text="📎 Anexar", width=90, height=28,
+                      fg_color="#21262d", hover_color="#30363d",
+                      command=self._chat_anexar).pack(side="left")
+        # Chip do anexo pendente: aparece quando há arquivo esperando envio;
+        # clicar nele cancela o anexo.
+        self.btn_anexo = ctk.CTkButton(barra, text="", width=10, height=28,
+                                        fg_color="#1c2a3a", hover_color="#30363d",
+                                        text_color="#79c0ff",
+                                        font=ctk.CTkFont(size=10),
+                                        command=self._chat_anexo_limpar)
         ctk.CTkCheckBox(barra, text="🔊 responder por voz", variable=self.ia_voz_var,
                         command=lambda: salvar_config({"ia_voz": self.ia_voz_var.get()}),
                         text_color="#8a92a5", fg_color="#1f6feb",
                         checkbox_width=18, checkbox_height=18,
                         font=ctk.CTkFont(size=11)).pack(side="left", padx=10)
-        ctk.CTkCheckBox(barra, text="🐯 EI TIGER (sempre à escuta)",
+        ctk.CTkCheckBox(barra, text="🐯 OLÁ TIGER (sempre à escuta)",
                         variable=self.ia_tiger_var, command=self._tiger_alternar,
                         text_color="#ff9f43", fg_color="#ff9f43",
                         checkbox_width=18, checkbox_height=18,
@@ -2653,9 +2674,10 @@ class SmcQuantApp(ctk.CTk):
                 "ia",
                 "Olá, Josevan! Eu sou a TIGER, a IA da sua mesa — leitura Smart "
                 "Money com confluência de análise técnica clássica. Fale comigo "
-                "por texto, pelo 🎤, ou ligue o modo EI TIGER e me chame de "
-                "qualquer lugar: 'Ei Tiger, qual o status?'. Você me ensina "
-                "regras com 'aprenda: ...'. Como quer começar?",
+                "por texto, pelo 🎤, ou ligue o modo OLÁ TIGER e me chame de "
+                "qualquer lugar: 'Olá Tiger, qual o status?'. Me mande prints, "
+                "fotos e vídeos do gráfico pelo 📎 que eu analiso. Você me "
+                "ensina regras com 'aprenda: ...'. Como quer começar?",
                 persistir=False)
         # Retoma a escuta da palavra de ativação se ficou ligada da última vez.
         if self.ia_tiger_var.get():
@@ -2759,21 +2781,88 @@ class SmcQuantApp(ctk.CTk):
         self._chat_escrever("sistema", "(conversa limpa — as lições ensinadas "
                                         "continuam guardadas)", persistir=False)
 
+    # ---------------- Anexos (fotos, vídeos e arquivos) ----------------
+    def _chat_anexar(self):
+        """Escolhe um arquivo para mandar à TIGER: print/foto do gráfico,
+        VÍDEO da tela, PDF, planilha... Imagens vão inline; arquivos grandes
+        (vídeos até ~1,9 GB) sobem pela File API do Gemini."""
+        from tkinter import filedialog
+        caminho = filedialog.askopenfilename(
+            parent=self, title="Enviar arquivo para a TIGER",
+            filetypes=[
+                ("Tudo que a TIGER lê", "*.png *.jpg *.jpeg *.webp *.gif *.bmp "
+                                         "*.mp4 *.mov *.avi *.mkv *.webm *.mpeg "
+                                         "*.pdf *.txt *.csv *.log *.md"),
+                ("Imagens (prints do gráfico)", "*.png *.jpg *.jpeg *.webp *.gif *.bmp"),
+                ("Vídeos (gravação da tela)", "*.mp4 *.mov *.avi *.mkv *.webm *.mpeg"),
+                ("Documentos", "*.pdf *.txt *.csv *.log *.md"),
+                ("Todos os arquivos", "*.*")])
+        if not caminho:
+            return
+        try:
+            tamanho = os.path.getsize(caminho)
+        except OSError:
+            self._chat_escrever("sistema", "(não consegui ler esse arquivo)",
+                                 persistir=False)
+            return
+        if tamanho > 1_900_000_000:
+            self._chat_escrever(
+                "sistema", "(arquivo grande demais — o limite é ~1,9 GB. "
+                "Para vídeos longos, grave um trecho menor.)", persistir=False)
+            return
+        self._chat_anexo = caminho
+        nome = os.path.basename(caminho)
+        mb = tamanho / 1_000_000
+        self.btn_anexo.configure(text=f"📎 {nome[:28]} ({mb:.1f} MB)  ✕")
+        self.btn_anexo.pack(side="left", padx=6)
+        self._chat_escrever(
+            "sistema",
+            f"(📎 anexado: {nome} ({mb:.1f} MB) — escreva a pergunta e aperte "
+            "Enter; ou Enter direto para eu analisar já. Clique no chip para "
+            "cancelar.)", persistir=False)
+
+    def _chat_anexo_limpar(self):
+        self._chat_anexo = None
+        try:
+            self.btn_anexo.pack_forget()
+        except Exception:
+            pass
+
     # ---------------- Fluxo de um turno ----------------
     def _chat_enviar(self, event=None):
         # Shift+Enter deixa quebrar linha; Enter puro envia.
         if event is not None and getattr(event, "state", 0) & 0x0001:
             return None
         texto = self.entrada_chat.get("1.0", "end").strip()
-        if not texto:
+        anexo = self._chat_anexo
+        if not texto and not anexo:
             return "break"
+        if not texto:
+            texto = "Analise este arquivo para mim, no contexto da mesa."
         self.entrada_chat.delete("1.0", "end")
         self._chat_por_voz = False   # pedido digitado → resposta segue o checkbox 🔊
-        self._chat_escrever("voce", texto)
-        self._chat_processar(texto)
+        if anexo:
+            self._chat_anexo_limpar()
+            self._chat_escrever("voce", f"{texto}\n📎 {os.path.basename(anexo)}")
+            self._chat_processar(texto, anexo=anexo)
+        else:
+            self._chat_escrever("voce", texto)
+            self._chat_processar(texto)
         return "break"
 
-    def _chat_processar(self, texto):
+    def _chat_processar(self, texto, anexo=None):
+        # Com arquivo junto, o turno é sempre conversa com o modelo (não faz
+        # sentido interpretar 'acatar/status' num envio de vídeo/print).
+        if anexo:
+            if self._chat_ocupada:
+                self._chat_escrever("sistema", "(aguarde — ainda estou "
+                                     "respondendo a anterior)", persistir=False)
+                return
+            self._chat_ocupada = True
+            self._chat_status("📎 lendo o arquivo…", "#ff9f43")
+            threading.Thread(target=self._chat_worker, args=(texto, anexo),
+                             daemon=True).start()
+            return
         tipo, dado = processar_turno_chat(texto, self._chat_conf)
         self._chat_conf = None
 
@@ -2949,22 +3038,80 @@ class SmcQuantApp(ctk.CTk):
         partes.append(bloco_licoes_prompt())
         return "\n".join(p for p in partes if p)
 
-    def _chat_worker(self, pergunta):
+    def _preparar_anexo(self, client, anexo):
+        """Transforma o arquivo em conteúdo para o modelo. Imagem pequena vai
+        inline; vídeo/PDF/arquivo grande sobe pela File API (até ~1,9 GB) e
+        espera o processamento terminar. Devolve a parte pronta, ou None."""
+        import mimetypes
+        mime = mimetypes.guess_type(anexo)[0] or "application/octet-stream"
+        tamanho = os.path.getsize(anexo)
+        if mime.startswith("image/") and tamanho <= 15_000_000:
+            with open(anexo, "rb") as f:
+                return types.Part.from_bytes(data=f.read(), mime_type=mime)
+        # Arquivo grande/vídeo: sobe e aguarda ficar ATIVO (vídeo processa).
+        self.after(0, lambda: self._chat_status("📎 enviando o arquivo…", "#ff9f43"))
+        try:
+            arq = client.files.upload(file=anexo)
+        except TypeError:
+            arq = client.files.upload(path=anexo)      # SDK mais antigo
+        for _ in range(90):                            # até ~3 min de processamento
+            estado = str(getattr(arq, "state", "") or "")
+            if "ACTIVE" in estado:
+                return arq
+            if "FAILED" in estado:
+                return None
+            time.sleep(2)
+            arq = client.files.get(name=arq.name)
+        return None
+
+    def _chat_worker(self, pergunta, anexo=None):
         resposta = None
         try:
-            client = genai.Client(api_key=carregar_api_key(),
-                                   http_options=types.HttpOptions(timeout=15_000))
+            # Com anexo o tempo é maior (upload + vídeo processando).
+            client = genai.Client(
+                api_key=carregar_api_key(),
+                http_options=types.HttpOptions(
+                    timeout=300_000 if anexo else 15_000))
             historico = carregar_chat()[-12:]
             corpo = "\n".join(
                 f"{'TRADER' if m['papel'] == 'voce' else 'IA'}: {m['texto']}"
                 for m in historico if m["papel"] in ("voce", "ia"))
             prompt = (f"{self._chat_contexto()}\n\n--- CONVERSA RECENTE ---\n"
                       f"{corpo}\nTRADER: {pergunta}\nIA:")
+            parte_anexo = None
+            if anexo:
+                try:
+                    parte_anexo = self._preparar_anexo(client, anexo)
+                except Exception:
+                    parte_anexo = None
+                if parte_anexo is None:
+                    self._chat_entregar_resposta(
+                        "Não consegui processar esse arquivo "
+                        f"({os.path.basename(anexo)}). Confere se ele abre "
+                        "normal na sua máquina e tenta de novo — vídeos muito "
+                        "longos podem falhar; um trecho menor resolve.")
+                    return
+                prompt = (f"{self._chat_contexto()}\n\n"
+                          "O TRADER ENVIOU UM ARQUIVO (anexado nesta mensagem: "
+                          f"{os.path.basename(anexo)}). Analise-o de verdade — "
+                          "se for print/vídeo de gráfico, faça a leitura SMC "
+                          "(estrutura, liquidez, order blocks, FVG) com a "
+                          "análise técnica clássica de confluência. Descreva "
+                          "APENAS o que está visível no arquivo: NUNCA invente "
+                          "preços ou números que não apareçam nele.\n\n"
+                          f"--- CONVERSA RECENTE ---\n{corpo}\n"
+                          f"TRADER: {pergunta}\nIA:")
+            # O que vai para o modelo: só o texto, ou texto + arquivo anexado.
+            conteudo = [prompt] if parte_anexo is None else [parte_anexo, prompt]
+            teto = 1200 if anexo else 500      # análise de arquivo pede espaço
             # Começa pelo modelo que respondeu por último (evita re-tentar os
             # que estão sem cota a cada pergunta — era boa parte da demora).
             modelos = ["gemini-2.0-flash", "gemini-2.0-flash-001",
                        "gemini-2.0-flash-lite", "gemini-flash-latest",
                        "gemini-3-flash-preview"]
+            if anexo:
+                # O 'lite' não lê vídeo bem; com arquivo, sai da frente.
+                modelos.remove("gemini-2.0-flash-lite")
             bom = getattr(self, "_chat_modelo_bom", None)
             if bom in modelos:
                 modelos.remove(bom)
@@ -2975,12 +3122,12 @@ class SmcQuantApp(ctk.CTk):
                 # a resposta demorar 10-20 s. Se o modelo recusar o parâmetro,
                 # tenta de novo sem ele.
                 basica = types.GenerateContentConfig(temperature=0.6,
-                                                      max_output_tokens=500)
+                                                      max_output_tokens=teto)
                 configs = [basica]
                 if "latest" in modelo or "-3-" in modelo:
                     try:
                         configs.insert(0, types.GenerateContentConfig(
-                            temperature=0.6, max_output_tokens=500,
+                            temperature=0.6, max_output_tokens=teto,
                             thinking_config=types.ThinkingConfig(thinking_budget=0)))
                     except Exception:
                         pass               # SDK antigo sem ThinkingConfig
@@ -2988,10 +3135,13 @@ class SmcQuantApp(ctk.CTk):
                 for config in configs:
                     try:
                         r = client.models.generate_content(
-                            model=modelo, contents=prompt, config=config)
+                            model=modelo, contents=conteudo, config=config)
                         if r and r.text:
                             resposta = r.text.strip()
-                            self._chat_modelo_bom = modelo
+                            # Só memoriza o modelo em turno SEM arquivo: a lista
+                            # de anexo é diferente e não deve viciar a de texto.
+                            if not anexo:
+                                self._chat_modelo_bom = modelo
                             break
                     except Exception:
                         continue
@@ -3004,11 +3154,13 @@ class SmcQuantApp(ctk.CTk):
                         "ou internet). Os comandos locais seguem funcionando: "
                         "'status', 'acatar', 'dispensar', 'cancelar ordem', "
                         "'aprenda: ...'.")
+        self._chat_entregar_resposta(resposta)
+
+    def _chat_entregar_resposta(self, resposta):
+        """Fim de um turno com o modelo: registra em texto, fala se for o caso
+        e digita no terminal (sempre pela fila única)."""
         registrar_msg_chat("ia", resposta)
-        if getattr(self, "_chat_por_voz", False):
-            self._ia_falar(resposta, forcar=True)
-        else:
-            self._ia_falar(resposta)
+        self._ia_falar(resposta, forcar=bool(getattr(self, "_chat_por_voz", False)))
         self.after(0, lambda: self._chat_digitar(resposta))
 
     # ---------------- Comando por VOZ ----------------
@@ -3025,15 +3177,27 @@ class SmcQuantApp(ctk.CTk):
             ESPERA_INICIO = 80                   # até 8 s esperando começar a falar
             import array
             capturado, silencio, falou, mudo_inicio = [], 0, False, 0
+
+            def energia_de(dados):
+                amostras = array.array("h", dados)
+                return (sum(a * a for a in amostras) / max(len(amostras), 1)) ** 0.5
+
             with _sd.InputStream(samplerate=TAXA, channels=1, dtype="int16",
                                   blocksize=BLOCO) as stream:
+                # Limiar calibrado pelo silêncio da SUA sala (com piso e teto):
+                # microfone de ganho baixo passava despercebido com valor fixo.
+                ambiente = []
+                for _ in range(4):
+                    bloco, _ov = stream.read(BLOCO)
+                    capturado.append(bytes(bloco))
+                    ambiente.append(energia_de(bytes(bloco)))
+                limiar = min(max(min(ambiente) * 2.5, 90), 400)
                 for _ in range(int(MAX_SEG * TAXA / BLOCO) + ESPERA_INICIO):
                     bloco, _ov = stream.read(BLOCO)
                     dados = bytes(bloco)
                     capturado.append(dados)
-                    amostras = array.array("h", dados)
-                    energia = (sum(a * a for a in amostras) / max(len(amostras), 1)) ** 0.5
-                    if energia > 300:
+                    energia = energia_de(dados)
+                    if energia > limiar:
                         falou, silencio = True, 0
                     elif falou:
                         silencio += 1
@@ -3070,9 +3234,13 @@ class SmcQuantApp(ctk.CTk):
                 return
         if self._chat_ocupada or self._ouvindo:
             return
+        # Marca ANTES de abrir a thread: assim a escuta contínua (OLÁ TIGER)
+        # enxerga na hora que o microfone foi tomado e não abre um segundo
+        # stream em cima deste — dois streams brigando deixavam o microfone
+        # "em uso" sem ninguém conseguir ouvir de fato.
+        self._ouvindo = True
 
         def tarefa():
-            self._ouvindo = True
             self.after(0, lambda: self._chat_status(
                 "🎤 ouvindo… (pode falar com calma)", "#ff6b6b"))
             try:
@@ -3118,17 +3286,17 @@ class SmcQuantApp(ctk.CTk):
 
         threading.Thread(target=tarefa, daemon=True).start()
 
-    # ---------------- "EI TIGER" — palavra de ativação ----------------
+    # ---------------- "OLÁ TIGER" — palavra de ativação ----------------
     # Escuta contínua e leve em segundo plano (como Alexa/Siri/Ok Google):
     # grava trechos curtos, ignora silêncio, e só transcreve quando há som.
-    # Ao ouvir "Ei Tiger" ela atende — se o pedido veio na mesma frase
-    # ("Ei Tiger, qual o status?"), já executa direto.
+    # Ao ouvir "Olá Tiger" ela atende — se o pedido veio na mesma frase
+    # ("Olá Tiger, qual o status?"), já executa direto.
     def _tiger_alternar(self):
         salvar_config({"ia_tiger": bool(self.ia_tiger_var.get())})
         if self.ia_tiger_var.get():
             self._tiger_iniciar()
         else:
-            self._chat_escrever("sistema", "(modo EI TIGER desligado)",
+            self._chat_escrever("sistema", "(modo OLÁ TIGER desligado)",
                                  persistir=False)
 
     def _tiger_iniciar(self):
@@ -3137,17 +3305,24 @@ class SmcQuantApp(ctk.CTk):
             salvar_config({"ia_tiger": False})
             self._chat_escrever(
                 "sistema",
-                "(para o modo EI TIGER, rode:  pip install SpeechRecognition "
+                "(para o modo OLÁ TIGER, rode:  pip install SpeechRecognition "
                 "sounddevice  e reabra o app)", persistir=False)
             return
         if self._tiger_rodando:
             return
         self._tiger_rodando = True
+        self._tiger_avisou_mudo = False
+        self._tiger_avisou_erro = False
+        try:
+            dispositivo = _sd.query_devices(kind="input")["name"]
+        except Exception:
+            dispositivo = "padrão do Windows"
         self._chat_escrever(
             "sistema",
-            "(🐯 modo EI TIGER LIGADO — estou à escuta. Diga 'Ei Tiger' para me "
-            "chamar, ou já emende o pedido: 'Ei Tiger, qual o status?')",
-            persistir=False)
+            "(🐯 modo OLÁ TIGER LIGADO — escutando pelo microfone "
+            f"“{dispositivo}”. Diga 'Olá Tiger' para me chamar, ou já emende o "
+            "pedido: 'Olá Tiger, qual o status?'. Tudo o que eu ouvir aparece "
+            "aqui no chat — você VÊ que estou escutando.)", persistir=False)
         threading.Thread(target=self._tiger_loop, daemon=True).start()
 
     def _tiger_pausada(self):
@@ -3159,21 +3334,27 @@ class SmcQuantApp(ctk.CTk):
     def _tiger_capturar_frase(self, stream, rms):
         """Escuta pelo stream JÁ ABERTO até pegar uma FRASE completa.
         Diferente da versão anterior (que gravava blocos fixos de 2,5 s e
-        perdia o 'Ei Tiger' dito na fronteira ou durante a transcrição), aqui:
+        perdia o chamado dito na fronteira ou durante a transcrição), aqui:
         • o microfone fica aberto o tempo todo (sem janelas surdas);
         • a gravação começa quando há som e só fecha após ~1 s de silêncio;
         • um pré-rolo de 0,4 s garante que o 'Ei' do começo não seja cortado.
-        Devolve os bytes da frase, ou None se a escuta foi interrompida."""
+        Devolve: os bytes da frase; b"" se ficou um bom tempo sem captar som
+        nenhum (o loop usa isso para avisar que o microfone está mudo); ou
+        None se a escuta foi interrompida (🎤 / pensando / TTS / desligada)."""
         import collections
         BLOCO = 1600
+        SEM_SOM_LIMITE = 450                       # ~45 s sem nada = mudo
+        sem_som = 0
         # Calibração do ambiente (~0,5 s): o limiar de "tem voz" se adapta ao
-        # ruído da SUA sala, em vez do valor fixo que ignorava fala mais baixa.
+        # ruído da sala, MAS com piso e TETO fixos. O teto é essencial: se a
+        # calibração pegar um momento barulhento, sem ele o limiar subia tanto
+        # que a fala normal nunca disparava — e a escuta parecia surda.
         ambiente = []
         for _ in range(5):
             bloco, _ov = stream.read(BLOCO)
             ambiente.append(rms(bytes(bloco)))
-        limiar = max((sum(ambiente) / len(ambiente)) * 2.5, 120)
-        prerolo = collections.deque(maxlen=4)      # 0,4 s antes do 1º som
+        limiar = min(max(min(ambiente) * 2.5, 90), 400)
+        prerolo = collections.deque(maxlen=6)      # 0,6 s antes do 1º som
         frase, silencio, falando = [], 0, False
         while True:
             try:
@@ -3192,13 +3373,17 @@ class SmcQuantApp(ctk.CTk):
                     falando = True
                     frase = list(prerolo)
                     silencio = 0
+                else:
+                    sem_som += 1
+                    if sem_som >= SEM_SOM_LIMITE:
+                        return b""                 # microfone mudo — avisa
             else:
                 frase.append(dados)
                 if energia > limiar:
                     silencio = 0
                 else:
                     silencio += 1
-                    if silencio >= 10:             # ~1 s calado = frase completa
+                    if silencio >= 12:             # ~1,2 s calado = frase completa
                         return b"".join(frase)
                 if len(frase) >= 80:               # teto de 8 s por frase
                     return b"".join(frase)
@@ -3222,35 +3407,91 @@ class SmcQuantApp(ctk.CTk):
                 if self._tiger_pausada():
                     time.sleep(0.3)
                     continue
-                self.after(0, lambda: self._chat_status("🐯 à escuta — diga 'Ei Tiger'",
-                                                         "#ff9f43"))
+                # Não sobrescreve na hora um aviso recente de "ouvi ..." — era
+                # por isso que o retorno visual sumia antes de você conseguir ler.
+                if time.time() >= getattr(self, "_tiger_status_ate", 0):
+                    self.after(0, lambda: self._chat_status(
+                        "🐯 à escuta — diga 'Olá Tiger'", "#ff9f43"))
                 try:
                     with _sd.InputStream(samplerate=TAXA, channels=1,
                                           dtype="int16", blocksize=BLOCO) as stream:
                         frase = self._tiger_capturar_frase(stream, rms)
-                except Exception:
-                    time.sleep(2)
+                except Exception as e:
+                    self.after(0, lambda er=e: self._chat_escrever(
+                        "sistema",
+                        f"(🐯 não consegui abrir o microfone: {str(er)[:120]}. "
+                        "Feche outros programas que estejam usando o mic e "
+                        "confira as permissões do Windows.)", persistir=False))
+                    time.sleep(5)
                     continue
-                if not frase:
+                if frase is None:
                     continue                       # interrompida (🎤/pensando/TTS)
+                if frase == b"":
+                    # Microfone aberto, mas NENHUM som chegou. Isso é quase
+                    # sempre microfone errado selecionado no Windows — e é
+                    # exatamente o caso de "o mic consta em uso mas ela não me
+                    # ouve". Diz qual dispositivo está sendo usado.
+                    if not getattr(self, "_tiger_avisou_mudo", False):
+                        self._tiger_avisou_mudo = True
+                        try:
+                            dev = _sd.query_devices(kind="input")["name"]
+                        except Exception:
+                            dev = "desconhecido"
+                        self.after(0, lambda d=dev: self._chat_escrever(
+                            "sistema",
+                            f"(🐯 estou escutando pelo microfone “{d}” mas não "
+                            "chega som nenhum há um tempo. Se esse não é o seu "
+                            "microfone, troque o dispositivo de ENTRADA padrão "
+                            "no Windows (Configurações → Sistema → Som) e "
+                            "desligue/religue o OLÁ TIGER.)", persistir=False))
+                    continue
+                self._tiger_avisou_mudo = False    # chegou som: zera o aviso
                 try:
                     texto = rec.recognize_google(
                         sr.AudioData(frase, TAXA, 2), language="pt-BR")
-                except Exception:
-                    continue                       # ruído/sem rede — segue escutando
+                except sr.UnknownValueError:
+                    continue                       # ruído sem fala — segue escutando
+                except Exception as e:
+                    # Falha de transcrição NUNCA fica muda: se a internet ou o
+                    # serviço do Google cair, você vê o motivo no chat (a versão
+                    # anterior engolia o erro e parecia que ela era surda).
+                    self._tiger_status_ate = time.time() + 4
+                    self.after(0, lambda: self._chat_status(
+                        "🐯 falha ao transcrever — tentando de novo", "#ff6b6b"))
+                    if not getattr(self, "_tiger_avisou_erro", False):
+                        self._tiger_avisou_erro = True
+                        self.after(0, lambda er=e: self._chat_escrever(
+                            "sistema",
+                            "(🐯 eu OUVI você, mas não consegui transcrever: "
+                            f"{str(er)[:120]}. A transcrição usa a internet — "
+                            "confira a conexão. Sigo tentando.)", persistir=False))
+                    time.sleep(2)
+                    continue
+                self._tiger_avisou_erro = False     # transcreveu: zera o aviso
                 acordou, resto = extrair_comando_tiger(texto)
                 if not acordou:
-                    # Mostra o que ouviu no status: você VÊ que ela está viva
-                    # e percebe se a transcrição veio diferente do esperado.
-                    self.after(0, lambda t=texto: self._chat_status(
-                        f"🐯 ouvi “{t[:38]}” — não era comigo", "#8a92a5"))
+                    # TRANSPARÊNCIA TOTAL: o que ela ouviu aparece NO CHAT.
+                    # Você vê que a escuta está viva e como a fala foi
+                    # transcrita — sem adivinhação.
+                    self._tiger_status_ate = time.time() + 5
+                    agora = time.time()
+                    if agora - getattr(self, "_tiger_ult_feedback", 0) > 6:
+                        self._tiger_ult_feedback = agora
+                        self.after(0, lambda t=texto: self._chat_escrever(
+                            "sistema",
+                            f"(🐯 ouvi: “{t[:70]}” — para me chamar, diga "
+                            "'Olá Tiger')", persistir=False))
+                    else:
+                        self.after(0, lambda t=texto: self._chat_status(
+                            f"🐯 ouvi “{t[:38]}” — não era comigo", "#8a92a5"))
                     continue
+                self._tiger_status_ate = time.time() + 3
                 self.after(0, lambda: self._chat_status("🐯 te ouvi!", "#3fb950"))
                 if resto:
                     # O pedido veio junto do chamado — executa direto.
                     def entregar(t=resto):
                         self._chat_por_voz = True
-                        self._chat_escrever("voce", f"🎤 Ei Tiger, {t}")
+                        self._chat_escrever("voce", f"🎤 Olá Tiger, {t}")
                         self._chat_processar(t)
                     self.after(0, entregar)
                     time.sleep(1.5)
