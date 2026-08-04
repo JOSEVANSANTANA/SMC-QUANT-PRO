@@ -111,7 +111,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.1.2"
+VERSAO_ATUAL = "2.1.3"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1835,11 +1835,17 @@ def extrair_comando_tiger(texto):
     resto = base[m.end():].strip(" ,.!?:;-")
     return (True, resto)
 
+# Verdadeiro enquanto o alto-falante está falando. A escuta contínua do modo
+# EI TIGER pausa nesse período — senão o microfone transcreveria a própria voz.
+TTS_FALANDO = False
+
 def falar(texto: str):
+    global TTS_FALANDO
     try:
         texto = limpar_para_voz(texto)
         if not texto:
             return
+        TTS_FALANDO = True
         engine = pyttsx3.init()
         engine.setProperty('rate', 165)
         for v in engine.getProperty('voices'):
@@ -1851,6 +1857,8 @@ def falar(texto: str):
         engine.stop()
     except Exception:
         pass
+    finally:
+        TTS_FALANDO = False
 
 def enviar_relatorio_whatsapp(mensagem: str, imagem_print, log_callback):
     log_callback("📲 Disparando relatório para o WhatsApp...")
@@ -2945,25 +2953,50 @@ class SmcQuantApp(ctk.CTk):
         resposta = None
         try:
             client = genai.Client(api_key=carregar_api_key(),
-                                   http_options=types.HttpOptions(timeout=20_000))
-            historico = carregar_chat()[-16:]
+                                   http_options=types.HttpOptions(timeout=15_000))
+            historico = carregar_chat()[-12:]
             corpo = "\n".join(
                 f"{'TRADER' if m['papel'] == 'voce' else 'IA'}: {m['texto']}"
                 for m in historico if m["papel"] in ("voce", "ia"))
             prompt = (f"{self._chat_contexto()}\n\n--- CONVERSA RECENTE ---\n"
                       f"{corpo}\nTRADER: {pergunta}\nIA:")
-            for modelo in ("gemini-2.0-flash", "gemini-2.0-flash-001",
-                           "gemini-3-flash-preview", "gemini-flash-latest",
-                           "gemini-2.0-flash-lite"):
-                try:
-                    r = client.models.generate_content(
-                        model=modelo, contents=prompt,
-                        config=types.GenerateContentConfig(temperature=0.6))
-                    if r and r.text:
-                        resposta = r.text.strip()
-                        break
-                except Exception:
-                    continue
+            # Começa pelo modelo que respondeu por último (evita re-tentar os
+            # que estão sem cota a cada pergunta — era boa parte da demora).
+            modelos = ["gemini-2.0-flash", "gemini-2.0-flash-001",
+                       "gemini-2.0-flash-lite", "gemini-flash-latest",
+                       "gemini-3-flash-preview"]
+            bom = getattr(self, "_chat_modelo_bom", None)
+            if bom in modelos:
+                modelos.remove(bom)
+                modelos.insert(0, bom)
+            for modelo in modelos:
+                # Nos modelos com "raciocínio interno" ligado por padrão
+                # (flash-latest/3-preview), zera o pensamento: é ELE que fazia
+                # a resposta demorar 10-20 s. Se o modelo recusar o parâmetro,
+                # tenta de novo sem ele.
+                basica = types.GenerateContentConfig(temperature=0.6,
+                                                      max_output_tokens=500)
+                configs = [basica]
+                if "latest" in modelo or "-3-" in modelo:
+                    try:
+                        configs.insert(0, types.GenerateContentConfig(
+                            temperature=0.6, max_output_tokens=500,
+                            thinking_config=types.ThinkingConfig(thinking_budget=0)))
+                    except Exception:
+                        pass               # SDK antigo sem ThinkingConfig
+
+                for config in configs:
+                    try:
+                        r = client.models.generate_content(
+                            model=modelo, contents=prompt, config=config)
+                        if r and r.text:
+                            resposta = r.text.strip()
+                            self._chat_modelo_bom = modelo
+                            break
+                    except Exception:
+                        continue
+                if resposta:
+                    break
         except Exception:
             pass
         if not resposta:
@@ -3117,26 +3150,67 @@ class SmcQuantApp(ctk.CTk):
             persistir=False)
         threading.Thread(target=self._tiger_loop, daemon=True).start()
 
-    def _tiger_escutar_trecho(self):
-        """Grava ~2,5 s. Devolve AudioData se houve som relevante, senão None
-        (silêncio não gasta transcrição nem rede)."""
-        TAXA, BLOCO = 16000, 1600
-        import array
-        blocos, energia_max = [], 0.0
-        with _sd.InputStream(samplerate=TAXA, channels=1, dtype="int16",
-                              blocksize=BLOCO) as stream:
-            for _ in range(25):
-                bloco, _ov = stream.read(BLOCO)
-                dados = bytes(bloco)
-                blocos.append(dados)
-                amostras = array.array("h", dados)
-                energia = (sum(a * a for a in amostras) / max(len(amostras), 1)) ** 0.5
-                energia_max = max(energia_max, energia)
-        if energia_max < 300:
-            return None
-        return sr.AudioData(b"".join(blocos), TAXA, 2)
+    def _tiger_pausada(self):
+        """A escuta contínua dá lugar quando: o 🎤 está gravando um pedido, a
+        TIGER está pensando/digitando, ou o alto-falante está falando (para o
+        microfone não transcrever a voz DELA)."""
+        return self._ouvindo or self._chat_ocupada or TTS_FALANDO
+
+    def _tiger_capturar_frase(self, stream, rms):
+        """Escuta pelo stream JÁ ABERTO até pegar uma FRASE completa.
+        Diferente da versão anterior (que gravava blocos fixos de 2,5 s e
+        perdia o 'Ei Tiger' dito na fronteira ou durante a transcrição), aqui:
+        • o microfone fica aberto o tempo todo (sem janelas surdas);
+        • a gravação começa quando há som e só fecha após ~1 s de silêncio;
+        • um pré-rolo de 0,4 s garante que o 'Ei' do começo não seja cortado.
+        Devolve os bytes da frase, ou None se a escuta foi interrompida."""
+        import collections
+        BLOCO = 1600
+        # Calibração do ambiente (~0,5 s): o limiar de "tem voz" se adapta ao
+        # ruído da SUA sala, em vez do valor fixo que ignorava fala mais baixa.
+        ambiente = []
+        for _ in range(5):
+            bloco, _ov = stream.read(BLOCO)
+            ambiente.append(rms(bytes(bloco)))
+        limiar = max((sum(ambiente) / len(ambiente)) * 2.5, 120)
+        prerolo = collections.deque(maxlen=4)      # 0,4 s antes do 1º som
+        frase, silencio, falando = [], 0, False
+        while True:
+            try:
+                if not self.ia_tiger_var.get():
+                    return None
+            except Exception:
+                return None                        # janela fechada
+            if self._tiger_pausada():
+                return None
+            bloco, _ov = stream.read(BLOCO)
+            dados = bytes(bloco)
+            energia = rms(dados)
+            if not falando:
+                prerolo.append(dados)
+                if energia > limiar:
+                    falando = True
+                    frase = list(prerolo)
+                    silencio = 0
+            else:
+                frase.append(dados)
+                if energia > limiar:
+                    silencio = 0
+                else:
+                    silencio += 1
+                    if silencio >= 10:             # ~1 s calado = frase completa
+                        return b"".join(frase)
+                if len(frase) >= 80:               # teto de 8 s por frase
+                    return b"".join(frase)
 
     def _tiger_loop(self):
+        TAXA, BLOCO = 16000, 1600
+        import array
+
+        def rms(dados):
+            amostras = array.array("h", dados)
+            return (sum(a * a for a in amostras) / max(len(amostras), 1)) ** 0.5
+
         rec = sr.Recognizer()
         try:
             while True:
@@ -3144,24 +3218,34 @@ class SmcQuantApp(ctk.CTk):
                     if not self.ia_tiger_var.get():
                         break
                 except Exception:
-                    break                      # janela fechada
-                if self._ouvindo or self._chat_ocupada:
-                    time.sleep(0.5)
+                    break                          # janela fechada
+                if self._tiger_pausada():
+                    time.sleep(0.3)
                     continue
+                self.after(0, lambda: self._chat_status("🐯 à escuta — diga 'Ei Tiger'",
+                                                         "#ff9f43"))
                 try:
-                    trecho = self._tiger_escutar_trecho()
+                    with _sd.InputStream(samplerate=TAXA, channels=1,
+                                          dtype="int16", blocksize=BLOCO) as stream:
+                        frase = self._tiger_capturar_frase(stream, rms)
                 except Exception:
                     time.sleep(2)
                     continue
-                if trecho is None:
-                    continue
+                if not frase:
+                    continue                       # interrompida (🎤/pensando/TTS)
                 try:
-                    texto = rec.recognize_google(trecho, language="pt-BR")
+                    texto = rec.recognize_google(
+                        sr.AudioData(frase, TAXA, 2), language="pt-BR")
                 except Exception:
-                    continue                   # ruído/sem rede — segue escutando
+                    continue                       # ruído/sem rede — segue escutando
                 acordou, resto = extrair_comando_tiger(texto)
                 if not acordou:
+                    # Mostra o que ouviu no status: você VÊ que ela está viva
+                    # e percebe se a transcrição veio diferente do esperado.
+                    self.after(0, lambda t=texto: self._chat_status(
+                        f"🐯 ouvi “{t[:38]}” — não era comigo", "#8a92a5"))
                     continue
+                self.after(0, lambda: self._chat_status("🐯 te ouvi!", "#3fb950"))
                 if resto:
                     # O pedido veio junto do chamado — executa direto.
                     def entregar(t=resto):
@@ -3178,6 +3262,7 @@ class SmcQuantApp(ctk.CTk):
                     time.sleep(1.0)
         finally:
             self._tiger_rodando = False
+            self.after(0, lambda: self._chat_status("pronta", "#3fb950"))
 
     # ------------------------------------------------------------------
     # NOTIFICAÇÃO NO COMPUTADOR (independente do WhatsApp)

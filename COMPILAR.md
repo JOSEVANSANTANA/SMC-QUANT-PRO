@@ -1,4 +1,4 @@
-# Como compilar o SMC Quant Pro v2.1.2 (TIGER)
+# Como compilar o SMC Quant Pro v2.1.3 (TIGER)
 
 > **Resumo:** o processo de build **não mudou**. É o mesmo fluxo do `.spec`
 > que você já usa. Nesta versão só o `main_app.py` mudou — substitua-o e compile.
@@ -12,7 +12,7 @@
 O **motor NÃO mudou** — reaproveite a pasta `motor\` com o `node_modules` que
 você já tem. O `tradovate_auto.py` também não mudou.
 
-Novidades da v2.1.2 (aba 🐯 TIGER):
+Novidades da v2.1.2/2.1.3 (aba 🐯 TIGER):
 - A IA agora se chama **TIGER** e tem palavra de ativação: ligue o checkbox
   **🐯 EI TIGER (sempre à escuta)** e chame por voz: *"Ei Tiger, qual o status?"*
 - Voz **natural**: ela não lê mais asteriscos/símbolos das respostas.
@@ -51,7 +51,7 @@ cd C:\Users\jovan\Documents\SMC_QUANT_PRO
 python main_app.py
 ```
 
-Checklist rápido da v2.1.2 (aba **🐯 TIGER**):
+Checklist rápido (aba **🐯 TIGER**):
 - O cabeçalho mostra **🏦 <nome da conta ativa>**; troque de conta no Plano de
   Trading e veja o aviso "(conversa agora vinculada à conta ...)" no chat.
 - Clique no **🎤 Falar**, faça uma pergunta LONGA com pausas — ela espera você
@@ -114,17 +114,17 @@ modo EI TIGER).
 ## 6. Gerar o instalador (Inno Setup)
 
 1. Abra `instalador\SMC_Quant_Pro.iss` no Inno Setup Compiler.
-2. Confira que `MyAppVersion` está **"2.1.2"** (já está).
+2. Confira que `MyAppVersion` está **"2.1.3"** (já está).
 3. Pressione **F9** (Compile).
 
-Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.1.2.exe`.
+Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.1.3.exe`.
 
 ---
 
 ## 7. Publicar a atualização
 
-1. Suba o `SMC_Quant_Pro_Setup_2.1.2.exe` na pasta do Google Drive.
-2. O `versao.json` **já está publicado como 2.1.2** — assim que o arquivo
+1. Suba o `SMC_Quant_Pro_Setup_2.1.3.exe` na pasta do Google Drive.
+2. O `versao.json` **já está publicado como 2.1.3** — assim que o arquivo
    estiver no Drive, os clientes veem o aviso de nova versão.
 
 ---
