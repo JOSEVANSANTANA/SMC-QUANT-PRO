@@ -3,6 +3,7 @@ import base64
 import copy
 import datetime
 import ctypes
+import re
 import requests
 from io import BytesIO
 from PIL import ImageGrab, Image
@@ -28,6 +29,15 @@ try:
     WINSOUND_DISPONIVEL = True
 except ImportError:
     WINSOUND_DISPONIVEL = False
+
+# COMANDO POR VOZ (opcional). Se a biblioteca não estiver instalada, o app
+# funciona normalmente e o botão 🎤 explica como habilitar:
+#     pip install SpeechRecognition pyaudio
+try:
+    import speech_recognition as sr
+    VOZ_DISPONIVEL = True
+except ImportError:
+    VOZ_DISPONIVEL = False
 
 # --------------------------------------------------------------------
 # AUTOMAÇÃO OPCIONAL DA TRADOVATE (item #7) — envio de ordem por CDP.
@@ -92,7 +102,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.0.0"
+VERSAO_ATUAL = "2.1.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -168,6 +178,9 @@ PERFORMANCE_FILE = os.path.join(pasta_dados_usuario(), "performance_db.json")
 SIGNALS_LOG_FILE = os.path.join(pasta_dados_usuario(), "signals_log.json")
 POSITIONS_FILE = os.path.join(pasta_dados_usuario(), "positions_db.json")
 LICENCA_FILE = os.path.join(pasta_dados_usuario(), "licenca.json")
+# IA interativa: conversa persistida + lições que VOCÊ ensina ao robô.
+CHAT_FILE = os.path.join(pasta_dados_usuario(), "chat_ia.json")
+LICOES_FILE = os.path.join(pasta_dados_usuario(), "licoes_trader.json")
 
 # ====================================================================
 # SISTEMA DE LICENÇA
@@ -1804,6 +1817,178 @@ def enviar_relatorio_whatsapp(mensagem: str, imagem_print, log_callback):
 # --------------------------------------------------------------------
 # INTERFACE GRÁFICA (GUI) E GERENCIADOR DE PROCESSOS
 # --------------------------------------------------------------------
+# ====================================================================
+# IA INTERATIVA — converse com o robô por MENSAGEM ou VOZ, em tempo real
+# ====================================================================
+# É o mentor de mesa dentro do app: você pergunta sobre a análise, discute a
+# sugestão, pede o status, acata/dispensa por linguagem natural e ENSINA lições
+# que passam a valer tanto no chat quanto nas próximas análises do gráfico.
+
+def carregar_chat():
+    dados = _ler_json_cache(CHAT_FILE)
+    if isinstance(dados, list):
+        return _copia_rasa([m for m in dados
+                            if isinstance(m, dict) and m.get("papel") and m.get("texto")])
+    return []
+
+def salvar_chat(lista):
+    with open(CHAT_FILE, "w", encoding="utf-8") as f:
+        json.dump(lista[-200:], f, ensure_ascii=False, indent=1)
+    _cache_json.pop(CHAT_FILE, None)
+
+def registrar_msg_chat(papel, texto):
+    """papel: 'voce' | 'ia' | 'sistema'."""
+    lista = carregar_chat()
+    lista.append({"papel": papel, "texto": str(texto)[:4000],
+                  "hora": time.strftime('%d/%m %H:%M')})
+    salvar_chat(lista)
+    return lista
+
+def carregar_licoes():
+    dados = _ler_json_cache(LICOES_FILE)
+    if isinstance(dados, list):
+        return [str(x)[:300] for x in dados if str(x).strip()]
+    return []
+
+def adicionar_licao(texto):
+    """Uma LIÇÃO é conhecimento que VOCÊ dá ao robô ('aprenda: não opere contra
+    a tendência do H4 depois das 15h'). Fica salva e entra em TODA análise e em
+    TODA conversa dali em diante — é a autoaprendizagem dirigida por você."""
+    texto = (texto or "").strip()
+    if not texto:
+        return False
+    licoes = carregar_licoes()
+    if texto in licoes:
+        return False
+    licoes.append(texto[:300])
+    with open(LICOES_FILE, "w", encoding="utf-8") as f:
+        json.dump(licoes[-40:], f, ensure_ascii=False, indent=1)
+    _cache_json.pop(LICOES_FILE, None)
+    return True
+
+def apagar_licoes():
+    with open(LICOES_FILE, "w", encoding="utf-8") as f:
+        json.dump([], f)
+    _cache_json.pop(LICOES_FILE, None)
+
+def bloco_licoes_prompt():
+    """Bloco injetado no prompt da ANÁLISE e no chat. Vazio se não há lições."""
+    licoes = carregar_licoes()
+    if not licoes:
+        return ""
+    corpo = "\n".join(f"• {l}" for l in licoes)
+    return ("\nLIÇÕES QUE O TRADER TE ENSINOU (obedeça — são ordens dele, "
+            f"aprendidas em sessões anteriores):\n{corpo}\n")
+
+def interpretar_intencao(texto):
+    """Detecta comandos em LINGUAGEM NATURAL, sem depender da IA (dinheiro não
+    passa por modelo). Retorna:
+      'ACATAR' | 'DISPENSAR' | 'CANCELAR' | 'STATUS' | 'AJUDA' | 'SIM' | 'NAO'
+      | ('APRENDER', conteudo) | None (conversa livre -> vai para a IA).
+    """
+    t = (texto or "").strip().lower()
+    if not t:
+        return None
+    # lição: "aprenda: ..." / "aprende que ..." / "lição: ..."
+    for pref in ("aprenda:", "aprende:", "lição:", "licao:", "aprenda que ",
+                 "aprende que ", "lição que ", "licao que "):
+        if t.startswith(pref):
+            return ("APRENDER", texto.strip()[len(pref):].strip())
+    palavras = set(re.findall(r"[a-zà-ú]+", t))
+    curto = len(palavras) <= 6
+
+    # ORDEM IMPORTA: ações específicas ANTES dos genéricos sim/não — senão
+    # "pode acatar essa" vira SIM (por causa do "pode") em vez de ACATAR.
+    # E nada de gírias ambíguas no ACATAR: "topo" dispararia numa conversa
+    # sobre "topo duplo" do gráfico.
+    if re.search(r"\b(dispens\w*|não opero|nao opero|não vou operar|nao vou operar|"
+                 r"passo essa|fico de fora)\b", t):
+        return "DISPENSAR"
+    if re.search(r"\bcancel\w*\b.*\b(ordem|pendente|entrada)\b", t) or \
+            re.search(r"\b(ordem|pendente)\b.*\bcancel\w*\b", t) or t == "cancelar":
+        return "CANCELAR"
+    if re.search(r"\b(acat\w*|aceito|bora|entra(r)? nessa)\b", t) \
+            and not re.search(r"\b(não|nao|nunca|sem)\b", t):
+        return "ACATAR"
+    if curto and (palavras & {"status", "resumo", "situação", "situacao", "posições",
+                               "posicoes", "placar"} or "como estamos" in t):
+        return "STATUS"
+    if curto and palavras & {"ajuda", "comandos", "help"}:
+        return "AJUDA"
+    if curto and palavras & {"sim", "confirmo", "confirmar", "pode", "manda"} \
+            and not palavras & {"não", "nao"}:
+        return "SIM"
+    if curto and palavras & {"não", "nao", "negativo", "deixa", "espera"}:
+        return "NAO"
+    return None
+
+def processar_turno_chat(texto, confirmacao_pendente=None):
+    """Máquina de turno do chat (pura, testável).
+    Devolve (tipo, dado):
+      ('EXECUTAR', acao)        -> ação local imediata (STATUS/DISPENSAR/...)
+      ('PEDIR_CONFIRMACAO', a)  -> ação com dinheiro pede 'sim' antes
+      ('CONF_CANCELADA', None)  -> usuário desistiu da confirmação
+      ('APRENDER', conteudo)    -> gravar lição
+      ('IA', None)              -> conversa livre com o modelo
+    Regra de responsabilidade: ACATAR (que pode enviar ordem real) SEMPRE passa
+    por confirmação explícita. A IA nunca dispara ação — só estes comandos
+    determinísticos disparam.
+    """
+    intencao = interpretar_intencao(texto)
+    if confirmacao_pendente:
+        if intencao == "SIM":
+            return ("EXECUTAR", confirmacao_pendente)
+        if intencao in ("NAO", "DISPENSAR"):
+            return ("CONF_CANCELADA", None)
+        # qualquer outra coisa derruba a confirmação e segue o fluxo normal
+    if isinstance(intencao, tuple) and intencao[0] == "APRENDER":
+        return ("APRENDER", intencao[1])
+    if intencao == "ACATAR":
+        return ("PEDIR_CONFIRMACAO", "ACATAR")
+    if intencao in ("DISPENSAR", "CANCELAR", "STATUS", "AJUDA"):
+        return ("EXECUTAR", intencao)
+    return ("IA", None)
+
+def montar_persona_ia():
+    """Quem é a IA do chat. A bússola é a metodologia Smart Money Concepts
+    (leitura institucional) somada aos princípios clássicos de análise técnica
+    (tendência, momentum, divergência, suportes/resistências e pontos de
+    virada) — as escolas dos livros de referência do trader."""
+    return (
+        "Você é a IA da mesa SMC Quant Pro: mentora de trading institucional do "
+        "Josevan, conversando em tempo real dentro da ferramenta dele.\n"
+        "\n"
+        "SUA BÚSSOLA METODOLÓGICA (nesta ordem de prioridade):\n"
+        "1) SMART MONEY CONCEPTS — leia o mercado pelas pegadas das instituições: "
+        "estrutura (topos/fundos, BOS, CHoCH, MSS), o preço como fractal, liquidez "
+        "interna vs externa, inducement como armadilha, tipos de manipulação, "
+        "order blocks e breaker/mitigation, FVG e ineficiências, premium/discount "
+        "com OTE, Power of 3 (acumulação → manipulação → distribuição), killzones. "
+        "A pergunta-mestra é sempre: onde está a liquidez parada, quem está preso, "
+        "e para onde o preço PRECISA ir para as instituições preencherem ordem?\n"
+        "2) ANÁLISE TÉCNICA CLÁSSICA (a escola de identificação de tendências e "
+        "pontos de virada): a tendência é sua amiga até dar sinais objetivos de "
+        "reversão; momentum antecede preço (divergências importam); suportes e "
+        "resistências trocam de papel; volume confirma movimento; rompimento sem "
+        "confirmação é armadilha. Use-a como CONFLUÊNCIA da leitura SMC.\n"
+        "\n"
+        "COMO SE COMPORTAR:\n"
+        "• LINGUAGEM NATURAL: converse como gente, em português claro, direto e "
+        "caloroso — como um mentor experiente do lado da mesa. Explique os termos "
+        "técnicos quando usar. Respostas curtas por padrão; aprofunde se pedirem.\n"
+        "• RESPONSÁVEL: você orienta, quem decide é o trader. NUNCA invente "
+        "números, preços ou resultados — se não estiver nos dados do contexto, "
+        "diga que não tem o dado. Nada de promessa de ganho. Se ele estiver "
+        "emocionado (raiva/medo/revanche), traga-o de volta ao plano de trading.\n"
+        "• AÇÕES: você NÃO executa ordens. Quando ele quiser agir, ensine o "
+        "comando: 'acatar' (com confirmação), 'dispensar', 'cancelar ordem', "
+        "'status', e 'aprenda: <lição>' para você memorizar uma regra dele.\n"
+        "• AUTOAPRENDIZAGEM: use as lições dele e o histórico de padrões (nos "
+        "dados do contexto) para calibrar suas opiniões — e diga quando uma "
+        "opinião vem do histórico dele ('esse padrão vem acertando nas suas "
+        "operações').\n"
+    )
+
 class SmcQuantApp(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -1876,11 +2061,14 @@ class SmcQuantApp(ctk.CTk):
         self.tabview.pack(padx=10, pady=10, fill="both", expand=True)
         self.tabview.add("⚙️ Motor & WhatsApp")
         self.tabview.add("📊 Plano de Trading")
+        self.tabview.add("💬 IA")
         tab_motor = self.tabview.tab("⚙️ Motor & WhatsApp")
         tab_plano = self.tabview.tab("📊 Plano de Trading")
+        tab_ia = self.tabview.tab("💬 IA")
 
         self._montar_tab_motor(tab_motor, config_atual)
         self._montar_tab_plano(tab_plano)
+        self._montar_tab_ia(tab_ia)
 
         self.verificar_node()
         self.after(3000, self._loop_atualizar_dashboard)
@@ -2287,6 +2475,400 @@ class SmcQuantApp(ctk.CTk):
                       "funciona normalmente. O envio automático de ordem e a leitura de "
                       "posições existem só para a Tradovate; nessa plataforma você "
                       "executa na mão e pode lançar a operação no diário.")
+
+    # ==================================================================
+    # ABA 💬 IA — chat por mensagem e voz, estilo terminal (Claude Code)
+    # ==================================================================
+    def _montar_tab_ia(self, master):
+        # Estado da conversa
+        self._chat_conf = None          # ação aguardando "sim" (ex.: ACATAR)
+        self._chat_ocupada = False      # evita duas perguntas simultâneas
+        self._ultima_analise = {}       # última leitura do gráfico (p/ contexto)
+        self.ia_voz_var = tk.BooleanVar(value=carregar_config().get("ia_voz", False))
+
+        raiz = ctk.CTkFrame(master, fg_color="#0d1117")
+        raiz.pack(fill="both", expand=True)
+
+        # ---------- Cabeçalho (barra do terminal) ----------
+        topo = ctk.CTkFrame(raiz, fg_color="#161b22", corner_radius=0, height=40)
+        topo.pack(fill="x")
+        ctk.CTkLabel(topo, text="✳", text_color="#ff9f43",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(side="left", padx=(12, 4), pady=8)
+        ctk.CTkLabel(topo, text="SMC IA — mentora da mesa",
+                     text_color="#e6edf3",
+                     font=ctk.CTkFont(size=13, weight="bold")).pack(side="left", pady=8)
+        self.lbl_ia_status = ctk.CTkLabel(topo, text="pronta", text_color="#3fb950",
+                                           font=ctk.CTkFont(size=11))
+        self.lbl_ia_status.pack(side="right", padx=12)
+        ctk.CTkLabel(topo, text="Smart Money Concepts + análise técnica clássica",
+                     text_color="#4a5163", font=ctk.CTkFont(size=10)
+                     ).pack(side="right", padx=8)
+
+        # ---------- Transcript (a "tela" do terminal) ----------
+        self.txt_chat = tk.Text(raiz, bg="#0d1117", fg="#c9d1d9", wrap="word",
+                                 relief="flat", padx=14, pady=10,
+                                 font=("Consolas", 11), insertbackground="#c9d1d9",
+                                 selectbackground="#264f78", state="disabled")
+        self.txt_chat.pack(fill="both", expand=True, padx=2, pady=(2, 0))
+        self.txt_chat.tag_configure("prompt", foreground="#00E676",
+                                     font=("Consolas", 11, "bold"))
+        self.txt_chat.tag_configure("voce", foreground="#e6edf3")
+        self.txt_chat.tag_configure("ia_pref", foreground="#ff9f43",
+                                     font=("Consolas", 11, "bold"))
+        self.txt_chat.tag_configure("ia", foreground="#c9d1d9")
+        self.txt_chat.tag_configure("sistema", foreground="#8a92a5",
+                                     font=("Consolas", 10, "italic"))
+        self.txt_chat.tag_configure("hora", foreground="#3d434f",
+                                     font=("Consolas", 8))
+
+        # ---------- Entrada ----------
+        rodape = ctk.CTkFrame(raiz, fg_color="#161b22", corner_radius=0)
+        rodape.pack(fill="x", side="bottom")
+
+        self.entrada_chat = ctk.CTkTextbox(rodape, height=58, fg_color="#0d1117",
+                                            text_color="#e6edf3", corner_radius=8,
+                                            border_width=1, border_color="#30363d",
+                                            font=ctk.CTkFont(family="Consolas", size=12))
+        self.entrada_chat.pack(fill="x", padx=10, pady=(8, 4))
+        self.entrada_chat.bind("<Return>", self._chat_enviar)
+        self.entrada_chat.bind("<Shift-Return>", lambda e: None)  # quebra de linha
+
+        barra = ctk.CTkFrame(rodape, fg_color="transparent")
+        barra.pack(fill="x", padx=10, pady=(0, 8))
+        ctk.CTkButton(barra, text="➤ Enviar", width=100, height=28,
+                      fg_color="#1f6feb", hover_color="#388bfd",
+                      font=ctk.CTkFont(size=12, weight="bold"),
+                      command=self._chat_enviar).pack(side="left")
+        ctk.CTkButton(barra, text="🎤 Falar", width=90, height=28,
+                      fg_color="#21262d", hover_color="#30363d",
+                      command=self._chat_ouvir).pack(side="left", padx=6)
+        ctk.CTkCheckBox(barra, text="🔊 responder por voz", variable=self.ia_voz_var,
+                        command=lambda: salvar_config({"ia_voz": self.ia_voz_var.get()}),
+                        text_color="#8a92a5", fg_color="#1f6feb",
+                        checkbox_width=18, checkbox_height=18,
+                        font=ctk.CTkFont(size=11)).pack(side="left", padx=10)
+        ctk.CTkButton(barra, text="🧹 limpar", width=80, height=28,
+                      fg_color="#21262d", hover_color="#30363d",
+                      command=self._chat_limpar).pack(side="right")
+        ctk.CTkLabel(barra, text="Enter envia · comandos: acatar · dispensar · "
+                                 "cancelar ordem · status · aprenda: <lição>",
+                     text_color="#4a5163", font=ctk.CTkFont(size=9)
+                     ).pack(side="right", padx=10)
+
+        # Recarrega a conversa anterior (persistida em disco)
+        historico = carregar_chat()
+        for m in historico[-40:]:
+            self._chat_escrever(m["papel"], m["texto"], persistir=False,
+                                 hora=m.get("hora", ""))
+        if not historico:
+            self._chat_escrever(
+                "ia",
+                "Olá, Josevan! Sou a IA da sua mesa — leitura Smart Money com "
+                "confluência de análise técnica clássica. Posso discutir a análise "
+                "do momento, o plano da conta, suas posições, e você me ensina "
+                "regras com 'aprenda: ...'. Como quer começar?",
+                persistir=False)
+
+    # ---------------- Escrita no terminal ----------------
+    def _chat_escrever(self, papel, texto, persistir=True, hora=None):
+        try:
+            self.txt_chat.configure(state="normal")
+            hora = hora or time.strftime('%H:%M')
+            self.txt_chat.insert("end", f"{hora}  ", "hora")
+            if papel == "voce":
+                self.txt_chat.insert("end", "❯ ", "prompt")
+                self.txt_chat.insert("end", texto + "\n\n", "voce")
+            elif papel == "ia":
+                self.txt_chat.insert("end", "✳ ", "ia_pref")
+                self.txt_chat.insert("end", texto + "\n\n", "ia")
+            else:
+                self.txt_chat.insert("end", texto + "\n\n", "sistema")
+            self.txt_chat.configure(state="disabled")
+            self.txt_chat.see("end")
+        except Exception:
+            pass
+        if persistir:
+            registrar_msg_chat(papel, texto)
+
+    def _chat_digitar(self, texto, _pos=0):
+        """Efeito de digitação (como resposta em streaming no terminal)."""
+        PASSO = 4
+        try:
+            if _pos == 0:
+                self.txt_chat.configure(state="normal")
+                self.txt_chat.insert("end", f"{time.strftime('%H:%M')}  ", "hora")
+                self.txt_chat.insert("end", "✳ ", "ia_pref")
+                self.txt_chat.configure(state="disabled")
+            trecho = texto[_pos:_pos + PASSO]
+            if trecho:
+                self.txt_chat.configure(state="normal")
+                self.txt_chat.insert("end", trecho, "ia")
+                self.txt_chat.configure(state="disabled")
+                self.txt_chat.see("end")
+                self.after(12, lambda: self._chat_digitar(texto, _pos + PASSO))
+            else:
+                self.txt_chat.configure(state="normal")
+                self.txt_chat.insert("end", "\n\n", "ia")
+                self.txt_chat.configure(state="disabled")
+                self.txt_chat.see("end")
+                self._chat_status("pronta", "#3fb950")
+                self._chat_ocupada = False
+        except Exception:
+            self._chat_ocupada = False
+
+    def _chat_status(self, texto, cor="#8a92a5"):
+        try:
+            self.lbl_ia_status.configure(text=texto, text_color=cor)
+        except Exception:
+            pass
+
+    def _chat_limpar(self):
+        salvar_chat([])
+        try:
+            self.txt_chat.configure(state="normal")
+            self.txt_chat.delete("1.0", "end")
+            self.txt_chat.configure(state="disabled")
+        except Exception:
+            pass
+        self._chat_escrever("sistema", "(conversa limpa — as lições ensinadas "
+                                        "continuam guardadas)", persistir=False)
+
+    # ---------------- Fluxo de um turno ----------------
+    def _chat_enviar(self, event=None):
+        # Shift+Enter deixa quebrar linha; Enter puro envia.
+        if event is not None and getattr(event, "state", 0) & 0x0001:
+            return None
+        texto = self.entrada_chat.get("1.0", "end").strip()
+        if not texto:
+            return "break"
+        self.entrada_chat.delete("1.0", "end")
+        self._chat_escrever("voce", texto)
+        self._chat_processar(texto)
+        return "break"
+
+    def _chat_processar(self, texto):
+        tipo, dado = processar_turno_chat(texto, self._chat_conf)
+        self._chat_conf = None
+
+        if tipo == "PEDIR_CONFIRMACAO":
+            self._chat_conf = dado
+            sinal = self._ultimo_sinal_pendente()
+            if not sinal:
+                self._chat_conf = None
+                self._chat_responder("Não há cenário aguardando decisão agora. "
+                                      "Assim que sair uma sugestão nova, é só dizer 'acatar'.")
+                return
+            self._chat_responder(
+                f"Confirmando: ACATAR o {sinal.get('direcao')} {sinal.get('ativo','')} "
+                f"com entrada {sinal.get('entry')} e stop {sinal.get('stop')}? "
+                "Responda 'sim' para eu registrar (e enviar as ordens, se a "
+                "automação estiver ligada) ou 'não' para deixar quieto.")
+            return
+        if tipo == "CONF_CANCELADA":
+            self._chat_responder("Certo, deixei como estava — nada foi acatado.")
+            return
+        if tipo == "APRENDER":
+            if adicionar_licao(dado):
+                self._chat_responder(
+                    f"Anotado e aprendido: “{dado}”. Isso agora vale para TODAS as "
+                    "minhas análises e conversas daqui pra frente.")
+            else:
+                self._chat_responder("Essa lição já estava na minha memória (ou veio vazia).")
+            return
+        if tipo == "EXECUTAR":
+            self._chat_executar_acao(dado)
+            return
+        # Conversa livre -> modelo
+        if self._chat_ocupada:
+            self._chat_escrever("sistema", "(aguarde — ainda estou respondendo a anterior)",
+                                 persistir=False)
+            return
+        self._chat_ocupada = True
+        self._chat_status("✳ pensando…", "#ff9f43")
+        threading.Thread(target=self._chat_worker, args=(texto,), daemon=True).start()
+
+    def _chat_responder(self, texto, falar_tb=True):
+        """Resposta imediata (sem modelo): digita no terminal + voz opcional."""
+        registrar_msg_chat("ia", texto)
+        self._chat_digitar(texto)
+        if falar_tb:
+            self._ia_falar(texto)
+
+    def _ia_falar(self, texto):
+        if getattr(self, "ia_voz_var", None) and self.ia_voz_var.get():
+            threading.Thread(target=falar, args=(texto[:400],), daemon=True).start()
+
+    # ---------------- Ações locais (determinísticas) ----------------
+    def _chat_executar_acao(self, acao):
+        if acao == "STATUS":
+            self._chat_responder(self._chat_status_texto(), falar_tb=False)
+            return
+        if acao == "AJUDA":
+            self._chat_responder(
+                "Comandos que executo na hora: 'acatar' (com confirmação), "
+                "'dispensar', 'cancelar ordem', 'status', 'aprenda: <regra>'. "
+                "Fora isso, conversa comigo normalmente: pergunte por que sugeri "
+                "um cenário, peça leitura do contexto, discuta o plano — texto ou 🎤.")
+            return
+        if acao == "ACATAR":
+            sinal = self._ultimo_sinal_pendente()
+            if not sinal:
+                self._chat_responder("Não há cenário aguardando decisão para acatar.")
+                return
+            direcao = "ACATOU_VENDA" if str(sinal.get("direcao")).upper() == "SELL" \
+                else "ACATOU_COMPRA"
+            self.after(0, lambda s=sinal["id"], d=direcao: self._registrar_decisao(s, d))
+            self._chat_responder(
+                f"Feito: {sinal.get('direcao')} {sinal.get('ativo','')} ACATADO e "
+                "registrado no diário. Acompanho entrada, stop e alvo daqui.")
+            return
+        if acao == "DISPENSAR":
+            sinal = self._ultimo_sinal_pendente()
+            if not sinal:
+                self._chat_responder("Não há cenário pendente para dispensar.")
+                return
+            self.after(0, lambda s=sinal["id"]: self._registrar_decisao(s, "NAO_OPEROU"))
+            self._chat_responder(f"Dispensado o {sinal.get('direcao')} "
+                                  f"{sinal.get('ativo','')} — sem acompanhamento dele.")
+            return
+        if acao == "CANCELAR":
+            pendentes = [p for p in posicoes_do_ciclo() if p.get("status") == "PENDENTE"]
+            if not pendentes:
+                self._chat_responder("Não há ordem pendente para cancelar nesta conta.")
+                return
+            alvo = pendentes[-1]
+            self.after(0, lambda i=alvo["id"]: self._cancelar_posicao_click(i))
+            self._chat_responder(
+                f"Cancelada a ordem pendente {alvo.get('direcao')} "
+                f"{alvo.get('ativo')} @ {alvo.get('entry')} — e encerrei o "
+                "acompanhamento do cenário junto.")
+            return
+
+    def _chat_status_texto(self):
+        try:
+            stats = self._computar_stats_plano()
+        except Exception:
+            return "Ainda não tenho dados suficientes do ciclo para um status."
+        partes = [f"Conta '{nome_conta_ativa()}':",
+                  f"• Hoje: US$ {stats['resultado_hoje']:+,.2f} · ciclo: "
+                  f"US$ {stats['lucro_usd']:+,.2f} ({stats['total_ops']} op. fechadas, "
+                  f"win rate {stats['winrate']:.0f}%)",
+                  f"• Meta: US$ {stats['meta']:,.2f} em {stats.get('dias_meta', 5)} dia(s) "
+                  f"— faltam US$ {stats['falta']:,.2f} "
+                  f"({stats['dias_restantes']} dia(s) restantes)",
+                  f"• Posições abertas agora: {stats['abertas']}"]
+        ua = getattr(self, "_ultima_analise", None) or {}
+        if ua.get("ativo"):
+            partes.append(
+                f"• Última leitura ({ua.get('hora', '—')}): {ua.get('acao')} "
+                f"{ua.get('ativo')} @ {ua.get('preco')} · probabilidade "
+                f"{ua.get('probabilidade', 0):.0f}%")
+        pend = self._ultimo_sinal_pendente()
+        if pend:
+            partes.append(f"• Sugestão AGUARDANDO decisão: {pend.get('direcao')} "
+                          f"{pend.get('ativo','')} entrada {pend.get('entry')} — "
+                          "diga 'acatar' ou 'dispensar'.")
+        return "\n".join(partes)
+
+    # ---------------- Conversa com o modelo ----------------
+    def _chat_contexto(self):
+        """Tudo o que a IA precisa saber AGORA: persona, estado real da mesa,
+        última análise, aprendizado e lições. Nada de número inventado — o que
+        não estiver aqui, ela deve dizer que não tem."""
+        partes = [montar_persona_ia()]
+        partes.append("\n--- DADOS REAIS DA MESA NESTE MOMENTO ---")
+        partes.append(self._chat_status_texto())
+        ua = getattr(self, "_ultima_analise", None) or {}
+        if ua.get("analise"):
+            partes.append(f"\nÚLTIMA ANÁLISE COMPLETA DO GRÁFICO "
+                          f"({ua.get('hora')}):\n{ua.get('analise')}")
+            if ua.get("confluencias"):
+                partes.append("Confluências vistas: " + "; ".join(ua["confluencias"]))
+        try:
+            partes.append(compilar_memoria_prompt())
+        except Exception:
+            pass
+        partes.append(bloco_licoes_prompt())
+        return "\n".join(p for p in partes if p)
+
+    def _chat_worker(self, pergunta):
+        resposta = None
+        try:
+            client = genai.Client(api_key=carregar_api_key(),
+                                   http_options=types.HttpOptions(timeout=30_000))
+            historico = carregar_chat()[-16:]
+            corpo = "\n".join(
+                f"{'TRADER' if m['papel'] == 'voce' else 'IA'}: {m['texto']}"
+                for m in historico if m["papel"] in ("voce", "ia"))
+            prompt = (f"{self._chat_contexto()}\n\n--- CONVERSA RECENTE ---\n"
+                      f"{corpo}\nTRADER: {pergunta}\nIA:")
+            for modelo in ("gemini-2.0-flash", "gemini-2.0-flash-001",
+                           "gemini-3-flash-preview", "gemini-flash-latest",
+                           "gemini-2.0-flash-lite"):
+                try:
+                    r = client.models.generate_content(
+                        model=modelo, contents=prompt,
+                        config=types.GenerateContentConfig(temperature=0.6))
+                    if r and r.text:
+                        resposta = r.text.strip()
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        if not resposta:
+            resposta = ("Estou sem acesso ao modelo agora (cota da API ou rede). "
+                        "Os comandos locais seguem funcionando: 'status', 'acatar', "
+                        "'dispensar', 'cancelar ordem', 'aprenda: ...'.")
+        registrar_msg_chat("ia", resposta)
+        self._ia_falar(resposta)
+        self.after(0, lambda: self._chat_digitar(resposta))
+
+    # ---------------- Comando por VOZ ----------------
+    def _chat_ouvir(self):
+        if not VOZ_DISPONIVEL:
+            self._chat_escrever(
+                "sistema",
+                "(comando por voz não instalado — rode:  pip install "
+                "SpeechRecognition pyaudio  e reabra o app)", persistir=False)
+            return
+        if self._chat_ocupada:
+            return
+
+        def tarefa():
+            self.after(0, lambda: self._chat_status("🎤 ouvindo…", "#ff6b6b"))
+            try:
+                rec = sr.Recognizer()
+                rec.energy_threshold = 300
+                rec.dynamic_energy_threshold = True
+                with sr.Microphone() as mic:
+                    rec.adjust_for_ambient_noise(mic, duration=0.4)
+                    audio = rec.listen(mic, timeout=6, phrase_time_limit=15)
+                self.after(0, lambda: self._chat_status("transcrevendo…", "#ff9f43"))
+                texto = rec.recognize_google(audio, language="pt-BR")
+            except sr.WaitTimeoutError:
+                self.after(0, lambda: self._chat_status("pronta", "#3fb950"))
+                self.after(0, lambda: self._chat_escrever(
+                    "sistema", "(não ouvi nada — tente de novo)", persistir=False))
+                return
+            except sr.UnknownValueError:
+                self.after(0, lambda: self._chat_status("pronta", "#3fb950"))
+                self.after(0, lambda: self._chat_escrever(
+                    "sistema", "(não entendi o áudio — pode repetir?)", persistir=False))
+                return
+            except Exception as e:
+                self.after(0, lambda: self._chat_status("pronta", "#3fb950"))
+                self.after(0, lambda er=e: self._chat_escrever(
+                    "sistema", f"(voz indisponível: {er})", persistir=False))
+                return
+            self.after(0, lambda: self._chat_status("pronta", "#3fb950"))
+
+            def entregar(t=texto):
+                self._chat_escrever("voce", t)
+                self._chat_processar(t)
+            self.after(0, entregar)
+
+        threading.Thread(target=tarefa, daemon=True).start()
 
     # ------------------------------------------------------------------
     # NOTIFICAÇÃO NO COMPUTADOR (independente do WhatsApp)
@@ -5205,6 +5787,7 @@ class SmcQuantApp(ctk.CTk):
                     f"ÚLTIMO ESTADO DO LEDGER:\n{ledger_text_memory}\n"
                     f"CONTEXTO DA TELA: {DICAS_PLATAFORMA.get(self.plataforma_atual, DICAS_PLATAFORMA['outra'])}\n"
                     f"{contexto_meta}"
+                    f"{bloco_licoes_prompt()}"
                     "Identifique o TICKER do ativo no gráfico (asset_symbol) e leia o PREÇO "
                     "ATUAL com precisão pela última vela e pela escala de preço à direita.\n"
                     "\n"
@@ -5436,6 +6019,18 @@ class SmcQuantApp(ctk.CTk):
                     return round(max(0.0, min(100.0, v)), 1)
                 confianca = _pct(confianca)
                 probabilidade = _pct(probabilidade)
+
+                # Alimenta o CHAT da IA com a leitura mais recente do gráfico —
+                # é o que permite conversar "sobre a análise de agora".
+                self._ultima_analise = {
+                    "hora": time.strftime('%H:%M'),
+                    "ativo": ativo, "acao": acao, "preco": preco,
+                    "confianca": confianca, "probabilidade": probabilidade,
+                    "confluencias": list(confluencias),
+                    "analise": str(sinal.get("market_analysis", ""))[:1200],
+                    "entry": sinal.get("entry_price"), "stop": sinal.get("stop_loss"),
+                    "tp1": sinal.get("take_profit_1"), "tp2": sinal.get("take_profit_2"),
+                }
 
                 self.log(f"📊 Ativo: {ativo} | Leitura IA: {acao} | Confiança: {confianca}% | "
                           f"Probabilidade: {probabilidade}% | Preço: {preco}")
