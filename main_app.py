@@ -111,7 +111,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.8.1"
+VERSAO_ATUAL = "2.9.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -3257,6 +3257,16 @@ def texto_das_capacidades():
         "whatsapp' e 'conecta o whatsapp'; 'acatar', 'dispensar' e 'cancelar "
         "ordem'; e 'status', com o placar da conta e o ritmo por dia.\n"
         "\n"
+        "CONFIGURO a própria ferramenta quando você manda, e mostro o valor de "
+        "antes e o de depois: horário em que o seu dia começa e termina, "
+        "intervalo entre as análises, e os números do Plano de Trading da conta "
+        "(margem, meta, prazo da meta, drawdown máximo, risco por operação, "
+        "R:R mínimo, probabilidade mínima, prazo para acatar e início do "
+        "ciclo). Diga como se fala mesmo: 'o dia da conta 1 começa às 19h', "
+        "'analisa a cada 5 minutos', 'risco de 1% por operação', 'meta de 6 mil "
+        "em 10 dias'. E para conferir: 'como está configurado o risco do plano "
+        "da conta 1'.\n"
+        "\n"
         "BUSCO na internet sozinha, sem gastar cota de API: cotação real com "
         "preço, variação e faixa do dia (S&P, Nasdaq, Dow, Russell, VIX, ouro, "
         "prata, petróleo, dólar, euro, bitcoin, Ibovespa e juros de dez anos), e "
@@ -3440,6 +3450,415 @@ def extrair_licao(texto):
         return ""
     return None
 
+# --------------------------------------------------------------------
+# A IA CONFIGURA A PRÓPRIA FERRAMENTA (autorizado pelo trader)
+# --------------------------------------------------------------------
+# "deixa registrado que o dia para a conta 1 começa as 19hs" caía no genérico
+# "não tenho como responder isso com segurança agora" — e "como está
+# configurado o risco do plano da conta 1" também. Ela tinha o dado na mão e
+# não olhava; tinha a chave do arquivo e não escrevia.
+#
+# Aqui é CÓDIGO, não modelo: quem lê e grava a configuração é a mesma função
+# que os botões do app usam. E vale a REGRA DE OURO da casa — grava, RELÊ DO
+# DISCO, e só então confirma, mostrando o valor de antes e o de depois. Se a
+# releitura não bater, ela diz que NÃO conseguiu, em vez de dizer que fez.
+PADRAO_CONFIG_APP = {
+    "hora_inicio": "09:00",
+    "hora_fim": "17:00",
+    "intervalo_minutos": 15,
+}
+
+ROTULO_CONFIG = {
+    "hora_inicio": "início do pregão",
+    "hora_fim": "fim do pregão",
+    "intervalo_minutos": "intervalo entre análises",
+    "margem": "margem (banca)",
+    "meta_alvo": "meta do ciclo",
+    "drawdown_maximo": "drawdown máximo",
+    "risco_pct": "risco por operação",
+    "rr_minimo": "R:R mínimo",
+    "probabilidade_minima": "probabilidade mínima",
+    "dias_meta": "prazo da meta",
+    "timeout_acatar_min": "prazo para acatar",
+    "data_inicio": "início do ciclo",
+}
+
+# Onde cada campo mora: "config" é da FERRAMENTA (o motor é um só, vale para
+# todas as contas); "plano" é da CONTA (cada conta tem o seu).
+DESTINO_CONFIG = {
+    "hora_inicio": "config",
+    "hora_fim": "config",
+    "intervalo_minutos": "config",
+    "margem": "plano",
+    "meta_alvo": "plano",
+    "drawdown_maximo": "plano",
+    "risco_pct": "plano",
+    "rr_minimo": "plano",
+    "probabilidade_minima": "plano",
+    "dias_meta": "plano",
+    "timeout_acatar_min": "plano",
+    "data_inicio": "plano",
+}
+
+def formatar_valor_config(campo, valor):
+    """Como o valor aparece para o trader (e na leitura em voz alta)."""
+    if valor is None or valor == "":
+        return "não definido"
+    if campo in ("hora_inicio", "hora_fim"):
+        return str(valor)
+    if campo == "data_inicio":
+        try:
+            return datetime.date.fromisoformat(str(valor)).strftime("%d/%m/%Y")
+        except (TypeError, ValueError):
+            return str(valor)
+    n = _num(valor)
+    if n is None:
+        return str(valor)
+    if campo in ("margem", "meta_alvo", "drawdown_maximo"):
+        return f"US$ {n:,.2f}"
+    if campo in ("risco_pct", "probabilidade_minima"):
+        return f"{n:g}%"
+    if campo == "rr_minimo":
+        return f"1:{n:g}"
+    if campo == "dias_meta":
+        return f"{int(n)} dia(s)"
+    if campo in ("intervalo_minutos", "timeout_acatar_min"):
+        return f"{int(n)} minuto(s)"
+    return f"{n:g}"
+
+_RE_NUMERO_PT = re.compile(r"(\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+(?:[.,]\d+)?)")
+
+def _numero_pt(trecho):
+    """Número como o brasileiro escreve: '6.000' -> 6000 · '1.234,56' ->
+    1234.56 · '2,5' -> 2.5 · '6 mil' -> 6000. Devolve float ou None."""
+    m = _RE_NUMERO_PT.search(trecho or "")
+    if not m:
+        return None
+    bruto = m.group(1)
+    if re.search(r"\.\d{3}", bruto):      # 6.000 / 1.234,56 -> ponto é milhar
+        bruto = bruto.replace(".", "")
+    try:
+        v = float(bruto.replace(",", "."))
+    except ValueError:
+        return None
+    if re.match(r"\s*(mil\b|k\b)", (trecho or "")[m.end():], re.IGNORECASE):
+        v *= 1000
+    return v
+
+# "19hs", "19h30", "19:30", "9 horas" — e a forma solta "às 19".
+_RE_HORA_A = re.compile(r"(\d{1,2})\s*(?::|h(?:s|rs|oras?)?)\s*(\d{2})?(?!\d)",
+                        re.IGNORECASE)
+_RE_HORA_B = re.compile(r"\b(?:[àáa]s|at[ée]|pras|para as)\s+(\d{1,2})(?![\d:h,.])",
+                        re.IGNORECASE)
+# "o pregão vai das 9h às 17h" configura os DOIS lados de uma vez.
+_MEIA_HORA = r"(\d{1,2})(?:\s*(?::|h(?:s|rs|oras?)?)\s*(\d{2})?)?"
+_RE_FAIXA_HORA = re.compile(r"\bd(?:as|e|os)\s+" + _MEIA_HORA +
+                            r"\s*(?:[àáa]s|at[ée]|a|-|–)\s*" + _MEIA_HORA,
+                            re.IGNORECASE)
+
+def _hhmm(h, m=0):
+    """'HH:MM' válido, ou None se o número não é hora de relógio."""
+    try:
+        h, m = int(h), int(m or 0)
+    except (TypeError, ValueError):
+        return None
+    return f"{h:02d}:{m:02d}" if 0 <= h <= 23 and 0 <= m <= 59 else None
+
+def _horas_no_texto(t):
+    """Todas as horas citadas, como [(posição do número, 'HH:MM')]."""
+    achados = {}
+    for m in _RE_HORA_A.finditer(t):
+        hora = _hhmm(m.group(1), m.group(2))
+        if hora:
+            achados[m.start(1)] = hora
+    for m in _RE_HORA_B.finditer(t):
+        if m.start(1) in achados:
+            continue
+        hora = _hhmm(m.group(1))
+        if hora:
+            achados[m.start(1)] = hora
+    return sorted(achados.items())
+
+# Do que ele está falando quando diz "começa às 19h": o DIA DELE, não o pregão
+# de Nova York. Sem esse sujeito (ou sem um verbo de comando), a frase não
+# mexe em nada — é conversa sobre o mercado.
+_CFG_SUJEITO = (r"\b(dia|preg[ãa]o|sess[ãa]o|opera[çc][ãa]o|opera[çc][õo]es|"
+                r"expediente|rotina|motor|an[áa]lises?|rob[ôo]|turno|mesa|"
+                r"hor[áa]rio|ferramenta|jornada)\b")
+_CFG_INICIO = (r"(come[çc]\w+|inici\w+|abr\w+|abertura|in[íi]cio|start|"
+               r"entr(a|o|ar)\w*|ligo|liga\w*)")
+_CFG_FIM = (r"(termin\w+|acab\w+|encerr\w+|fech\w+|finaliz\w+|t[ée]rmino|"
+            r"\bfim\b|at[ée]\b|saio|sair|desligo|desliga\w*)")
+# Pregão dos OUTROS: "o pregão americano abre às 9:30" é informação de mercado,
+# não configuração da mesa dele.
+_CFG_MERCADO_ALHEIO = (r"\b(americano|americana|eua|nova york|nova iorque|ny|"
+                       r"brasileir[oa]|europeu|europeia|de chicago|de londres|"
+                       r"asi[áa]tic[oa]|japon[êe]s|wall street|nyse|cme|b3|"
+                       r"nasdaq|forex)\b")
+
+# Verbo de comando: o que transforma uma frase em pedido de configuração.
+_CFG_GATILHO = re.compile(
+    r"\b(configur\w+|ajust(a|ar|e|em)\w*|defin(a|e|ir|o)\w*|"
+    r"deix(a|e|ar)\s+\w*\s*(registrad\w+|configurad\w+|anotad\w+|marcad\w+|gravad\w+)|"
+    r"registr(a|e|ar)\b|anot(a|e|ar)\b|mud(a|ar|e|ei)\b|alter(a|ar|e)\b|"
+    r"troc(a|ar|e)\b|coloc(a|ar|e|ou)\b|p[õo]e\b|set(a|ar|e)\b|passa\s+a\b|"
+    r"a partir de agora\b|de agora em diante\b|quero que\b|preciso que\b|"
+    r"grav(a|ar|e)\b|salv(a|ar|e)\b|atualiz(a|ar|e)\b|aument(a|ar|e)\b|"
+    r"reduz(a|ir|e)\b|diminu(a|ir|i)\b|sob(e|ir)\b|baix(a|ar|e)\b|"
+    r"limit(a|ar|e)\b|meu\s+risco\b|minha\s+meta\b)", re.IGNORECASE)
+
+# Pergunta nunca configura nada — "qual a meta do S&P hoje, 7800?" não pode
+# virar "meta do ciclo = 7800".
+_RE_SO_PERGUNTA = re.compile(
+    r"^\s*\W*(qual|quais|quanto|quantos|quantas|como|quando|que horas|"
+    r"a que horas|o que|onde|por que|porqu[êe]|pq|me diz|me fala|me mostra|"
+    r"voc[êe] sabe)\b", re.IGNORECASE)
+
+def interpretar_configuracao(texto):
+    """Lê o pedido em português e devolve a LISTA de mudanças de configuração
+    que ele pediu — sem tocar em disco (função pura, testável).
+
+    Cada item: {"campo", "valor", "destino", "rotulo"}.
+
+    REGRA DE SEGURANÇA (a mesma lição cara do motor): pergunta não configura,
+    e número solto no meio de uma conversa sobre mercado não configura. Para
+    um campo NUMÉRICO mudar, é preciso um verbo de comando na frase. Para o
+    HORÁRIO mudar, é preciso o verbo de comando OU o sujeito ser o dia dele.
+    """
+    bruto = (texto or "").strip()
+    if not bruto:
+        return []
+    t = bruto.lower()
+    if _RE_SO_PERGUNTA.match(t):
+        return []
+    tem_gatilho = bool(_CFG_GATILHO.search(t))
+    if "?" in t and not tem_gatilho:
+        return []
+    achados = {}
+    usados = []          # trechos já consumidos: um número não vira dois campos
+
+    def livre(ini, fim):
+        return not any(ini < b and a < fim for a, b in usados)
+
+    def guardar(campo, valor, ini=None, fim=None):
+        if campo in achados:
+            return
+        achados[campo] = valor
+        if ini is not None:
+            usados.append((ini, fim))
+
+    # ---------------- HORÁRIO DO DIA DE OPERAÇÃO ----------------
+    tem_sujeito = bool(re.search(_CFG_SUJEITO, t))
+    alheio = bool(re.search(_CFG_MERCADO_ALHEIO, t))
+    if (tem_gatilho or tem_sujeito) and not (alheio and not tem_gatilho):
+        faixa = _RE_FAIXA_HORA.search(t)
+        if faixa and tem_sujeito:
+            ini, fim = _hhmm(faixa.group(1), faixa.group(2)), \
+                       _hhmm(faixa.group(3), faixa.group(4))
+            if ini and fim:
+                guardar("hora_inicio", ini, faixa.start(), faixa.end())
+                guardar("hora_fim", fim)
+        for pos, hora in _horas_no_texto(t):
+            if not livre(pos, pos + 2):
+                continue
+            antes = t[max(0, pos - 70):pos]
+            if re.search(_CFG_INICIO, antes) and "hora_inicio" not in achados:
+                guardar("hora_inicio", hora, pos, pos + 2)
+            elif re.search(_CFG_FIM, antes) and "hora_fim" not in achados:
+                guardar("hora_fim", hora, pos, pos + 2)
+
+    # ---------------- CAMPOS NUMÉRICOS ----------------
+    # A ordem IMPORTA: quem fala em "minutos" vem antes de quem fala em
+    # "dias"/"dólares", e o trecho consumido não é reaproveitado.
+    _NUM = r"(\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+(?:[.,]\d+)?)"
+    especs = [
+        ("timeout_acatar_min", r"\bacatar\b",
+         r"(\d{1,3})\s*(?:min\b|minutos?\b)"),
+        ("intervalo_minutos",
+         r"\b(intervalo|a cada|de quanto em quanto|frequ[êe]ncia|periodicidade)\b",
+         r"(\d{1,3})\s*(?:min\b|minutos?\b)"),
+        ("dias_meta", r"\b(prazo|meta|ciclo|dias?)\b", r"(\d{1,3})\s*dias?\b"),
+        ("risco_pct", r"\brisco\b(?![^.;]{0,12}retorno)",
+         r"(\d{1,3}(?:[.,]\d+)?)\s*(?:%|por cento)"),
+        ("probabilidade_minima",
+         r"\b(probabilidade|assertividade|taxa de acerto)\b",
+         r"(\d{1,3}(?:[.,]\d+)?)\s*(?:%|por cento)?"),
+        ("rr_minimo",
+         r"(\br\s*[:/x]\s*r\b|\brr\b|risco\s*[:/x]\s*retorno|"
+         r"risco\s+(?:por|para)\s+retorno|rela[çc][ãa]o risco[\s/-]*retorno)",
+         r"(\d{1,2}(?:[.,]\d+)?)"),
+        ("drawdown_maximo",
+         r"\b(drawdown|draw down|perda m[áa]xima|limite de perda|dd)\b", _NUM),
+        ("margem", r"\b(margem|banca|capital|saldo inicial)\b", _NUM),
+        ("meta_alvo", r"\b(meta|alvo do ciclo|objetivo)\b", _NUM),
+    ]
+    if tem_gatilho:
+        for campo, chave_re, valor_re in especs:
+            if campo in achados:
+                continue
+            chave = re.search(chave_re, t)
+            if not chave:
+                continue
+            # O valor vem DEPOIS da palavra-chave ("risco de 1%") ou, mais
+            # raramente, ANTES dela ("1% de risco por operação").
+            alvo = None
+            for janela_ini, janela_fim in ((chave.end(), chave.end() + 45),
+                                           (max(0, chave.start() - 25), chave.start())):
+                for m in re.finditer(valor_re, t[janela_ini:janela_fim]):
+                    ini = janela_ini + m.start(1)
+                    if livre(ini, janela_ini + m.end()):
+                        alvo = (ini, janela_ini + m.end())
+                        break
+                if alvo:
+                    break
+            if not alvo:
+                continue
+            valor = _numero_pt(t[alvo[0]:alvo[0] + 24])
+            if valor is None:
+                continue
+            # "R:R de 1:2" quer dizer 2, não 1.
+            if campo == "rr_minimo":
+                par = re.match(r"\s*\d+(?:[.,]\d+)?\s*[:x]\s*(\d+(?:[.,]\d+)?)",
+                               t[alvo[0]:alvo[0] + 24])
+                if par:
+                    valor = _numero_pt(par.group(1)) or valor
+            valor = _valor_config_valido(campo, valor)
+            if valor is not None:
+                guardar(campo, valor, alvo[0], alvo[1])
+
+    # ---------------- DATA DE INÍCIO DO CICLO ----------------
+    if tem_gatilho and "data_inicio" not in achados and \
+            re.search(r"\b(data|in[íi]cio|come[çc]\w+|desde|a partir|ciclo)\b", t):
+        m = re.search(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b", t)
+        if m:
+            dia, mes = int(m.group(1)), int(m.group(2))
+            ano = int(m.group(3) or datetime.date.today().year)
+            if ano < 100:
+                ano += 2000
+            try:
+                guardar("data_inicio",
+                        datetime.date(ano, mes, dia).isoformat(), m.start(), m.end())
+            except ValueError:
+                pass
+        elif re.search(r"\bhoje\b", t):
+            guardar("data_inicio", datetime.date.today().isoformat())
+
+    return [{"campo": c, "valor": v, "destino": DESTINO_CONFIG.get(c, "plano"),
+             "rotulo": ROTULO_CONFIG.get(c, c)}
+            for c, v in achados.items()]
+
+def _valor_config_valido(campo, valor):
+    """Mesmos limites que os campos da tela aceitam. Devolve o valor já
+    ajustado, ou None quando o número não faz sentido para o campo."""
+    if valor is None:
+        return None
+    if campo in ("intervalo_minutos", "timeout_acatar_min", "dias_meta"):
+        n = int(round(valor))
+        return max(1, n) if n >= 1 else None
+    if campo == "risco_pct":
+        return round(valor, 4) if 0 < valor <= 100 else None
+    if campo == "probabilidade_minima":
+        return max(0.0, min(95.0, float(valor))) if 0 <= valor <= 100 else None
+    if campo == "rr_minimo":
+        return max(1.0, float(valor)) if valor > 0 else None
+    if campo in ("margem", "meta_alvo", "drawdown_maximo"):
+        return float(valor) if valor >= 0 else None
+    return valor
+
+# Sobre qual campo ele está perguntando quando pede "como está configurado".
+_PALAVRAS_CAMPO = {
+    "risco_pct": r"\brisco\b",
+    "meta_alvo": r"\bmeta\b|\balvo\b",
+    "margem": r"\bmargem\b|\bbanca\b|\bcapital\b",
+    "drawdown_maximo": r"\bdrawdown\b|\bdraw down\b|\bdd\b|\bperda maxima\b",
+    "rr_minimo": r"\br ?[:/x] ?r\b|\brr\b|risco[ /-]*retorno",
+    "probabilidade_minima": r"\bprobabilidade\b|\bassertividade\b",
+    "dias_meta": r"\bprazo da meta\b|\bdias\b",
+    "timeout_acatar_min": r"\bacatar\b",
+    "hora_inicio": r"\bcomec\w*\b|\binicio\b|\babre\b|\babertura\b",
+    "hora_fim": r"\btermin\w*\b|\bfim\b|\bfecha\b|\bencerr\w*\b",
+    "intervalo_minutos": r"\bintervalo\b|\ba cada\b|\bfrequencia\b",
+}
+
+_RE_VER_CONFIG = re.compile(
+    r"(como\s+(esta|estao|ficou|anda|ta)\w*\s+(configurad|o\s+plano|a\s+configura|"
+    r"o\s+risco|a\s+meta|a\s+margem|o\s+drawdown|o\s+prazo|o\s+horario|o\s+intervalo)|"
+    # "qual o MEU risco" é sobre a configuração; "qual o risco DISSO" é sobre o
+    # trade que está na mesa. Sem essa diferença ela sequestrava a conversa.
+    r"qual\s+(e\s+)?(o|a|os|as)?\s*(meu|minha|meus|minhas)\s*(configura|plano|meta|"
+    r"risco|margem|drawdown|horario|prazo|intervalo|rr|probabilidade)|"
+    r"qual\s+(e\s+)?(o|a|os|as)?\s*(configura\w*|plano|meta|risco|margem|drawdown|"
+    r"horario|prazo|intervalo|rr|probabilidade)\b[^?]{0,30}?\b(do plano|da conta|"
+    r"por operacao|da ferramenta|configurad|do ciclo|das analises|de analise|"
+    r"do motor|do pregao|do dia)|"
+    r"quais\s+(sao\s+)?((as|os|minhas|meus)\s+)*(configura|regras|parametros|"
+    r"horarios|numeros do plano)|"
+    r"(me\s+)?(mostr|list|diz|fal|lembr|repet)\w*\s+.{0,30}(configura|plano de trading|"
+    r"parametros|horario|meu risco|minha meta)|"
+    r"(configuracao|configuracoes|parametros)\s+(atual|atuais|da conta|do plano|"
+    r"da ferramenta)|"
+    r"(que|a que)\s+horas\s+.{0,30}(comec|termin|abre|fecha|acaba)|"
+    r"esta\s+configurad|como\s+voce\s+esta\s+configurad)", re.IGNORECASE)
+
+def pergunta_sobre_configuracao(texto):
+    """'como está configurado o risco do plano da conta 1' e parentes."""
+    return bool(_RE_VER_CONFIG.search(_norm_busca(texto) or ""))
+
+def campos_citados(texto):
+    """Os campos que ele nomeou na pergunta (vazio = quer ver tudo)."""
+    t = _norm_busca(texto) or ""
+    return [c for c, padrao in _PALAVRAS_CAMPO.items() if re.search(padrao, t)]
+
+def conta_por_referencia(texto, contas):
+    """De qual conta ele está falando ('na conta 1', 'na conta real').
+    Devolve a conta, ou None quando ele não citou nenhuma (= a ativa)."""
+    t = _norm_busca(texto) or ""
+    for c in (contas or []):
+        nome = _norm_busca(c.get("nome", ""))
+        if nome and nome in t:
+            return c
+    m = re.search(r"\bconta\s*(?:n[uo]mero\s*)?(\d{1,2})\b", t)
+    if m:
+        i = int(m.group(1))
+        if 1 <= i <= len(contas or []):
+            return contas[i - 1]
+    return None
+
+def resumo_da_configuracao(cfg, plano, nome_conta="", campos=None):
+    """O 'como está configurado' — SÓ com valores lidos do disco, nunca
+    estimados. `campos` limita a resposta ao que ele perguntou."""
+    cfg = cfg or {}
+    plano = plano or {}
+    ordem = ["hora_inicio", "hora_fim", "intervalo_minutos", "margem",
+             "meta_alvo", "dias_meta", "drawdown_maximo", "risco_pct",
+             "rr_minimo", "probabilidade_minima", "timeout_acatar_min",
+             "data_inicio"]
+    escolhidos = [c for c in ordem if not campos or c in campos]
+    if not escolhidos:
+        escolhidos = ordem
+    linhas_app, linhas_plano = [], []
+    for campo in escolhidos:
+        if DESTINO_CONFIG.get(campo) == "config":
+            valor = cfg.get(campo, PADRAO_CONFIG_APP.get(campo))
+            linhas_app.append(f"• {ROTULO_CONFIG[campo]}: "
+                              f"{formatar_valor_config(campo, valor)}")
+        else:
+            valor = plano.get(campo, PLANO_PADRAO.get(campo))
+            linhas_plano.append(f"• {ROTULO_CONFIG[campo]}: "
+                                f"{formatar_valor_config(campo, valor)}")
+    partes = []
+    if linhas_app:
+        partes.append("FERRAMENTA (vale para todas as contas — o motor é um "
+                      "só):\n" + "\n".join(linhas_app))
+    if linhas_plano:
+        partes.append(f"PLANO DA CONTA '{nome_conta or 'ativa'}':\n" +
+                      "\n".join(linhas_plano))
+    partes.append("Isto é o que está gravado no arquivo agora, não é "
+                  "estimativa. Para mudar qualquer um, é só me dizer — por "
+                  "exemplo: 'o dia começa às 19h', 'risco de 1% por operação', "
+                  "'meta de 6 mil em 10 dias'.")
+    return "\n\n".join(partes)
+
 def interpretar_intencao(texto):
     """Detecta comandos em LINGUAGEM NATURAL, sem depender da IA (dinheiro e
     controle do motor não passam por modelo — o modelo ALUCINA "motor ligado"
@@ -3493,6 +3912,14 @@ def interpretar_intencao(texto):
         return "VOZ_RAPIDA" if re.search(
             r"\b(aceler\w*|r[áa]pid\w*|aument\w*|mais r[áa]pido)\b", t) \
             else "VOZ_LENTA"
+    # CONFIGURAR A PRÓPRIA FERRAMENTA — ele autorizou, e é código que faz.
+    # Vem ANTES da busca na web: "o dia da conta 1 começa às 19h" é ordem de
+    # configuração, não pergunta de mercado (era aí que ela se perdia).
+    mudancas = interpretar_configuracao(texto)
+    if mudancas:
+        return ("CONFIGURAR", mudancas)
+    if pergunta_sobre_configuracao(texto):
+        return "VER_CONFIG"
     # NOTÍCIA E COTAÇÃO: buscadas na web pela PRÓPRIA ferramenta, sem chave de
     # API. É o que impede ela de responder "o S&P sobe por causa da inflação"
     # de cabeça, sem ter visto manchete nenhuma.
@@ -3594,6 +4021,11 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
         # qualquer outra coisa derruba a confirmação e segue o fluxo normal
     if isinstance(intencao, tuple) and intencao[0] == "APRENDER":
         return ("APRENDER", intencao[1])
+    # CONFIGURAR não pede confirmação de propósito: ele deu autonomia explícita
+    # para a IA configurar a ferramenta. A trava é outra — ela mostra o valor
+    # de ANTES e o de DEPOIS, relidos do disco, para ele conferir e desfazer.
+    if isinstance(intencao, tuple) and intencao[0] == "CONFIGURAR":
+        return ("CONFIGURAR", intencao[1])
     if intencao == "ACATAR":
         return ("PEDIR_CONFIRMACAO", "ACATAR")
     # Zerar o ciclo limpa o dashboard da conta: passa por confirmação, igual
@@ -3605,7 +4037,7 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
     if intencao in ("DISPENSAR", "CANCELAR", "STATUS", "AJUDA",
                     "LIGAR_MOTOR", "DESLIGAR_MOTOR", "ENVIAR_WHATSAPP",
                     "CONECTAR_WHATSAPP", "LISTAR_LICOES", "LISTAR_CONHECIMENTO",
-                    "NOTICIAS", "COTACAO", "PESQUISAR",
+                    "NOTICIAS", "COTACAO", "PESQUISAR", "VER_CONFIG",
                     "VOZ_RAPIDA", "VOZ_LENTA", "CALAR"):
         return ("EXECUTAR", intencao)
     return ("IA", None)
@@ -3653,6 +4085,14 @@ def montar_persona_ia():
         "• 'acatar' / 'dispensar' / 'cancelar ordem' — decisão sobre o cenário.\n"
         "• 'status' — o placar da conta.\n"
         "• '<a regra>, aprenda isso' — grava a regra na sua memória permanente.\n"
+        "• CONFIGURAR A FERRAMENTA — ele te autorizou a isso. 'o dia da conta 1 "
+        "começa às 19h', 'analisa a cada 5 minutos', 'risco de 1% por "
+        "operação', 'meta de 6 mil em 10 dias', 'drawdown máximo de 2000'. "
+        "Quem grava é o app, que relê o arquivo e mostra o de-para. E 'como "
+        "está configurado o risco do plano da conta 1' mostra o que está "
+        "gravado agora. NUNCA responda de cabeça sobre a configuração dele: se "
+        "o valor não veio no contexto, mande ele perguntar assim que o app "
+        "responde com o número real.\n"
         "\n"
         "DE ONDE VEM A SUA RESPOSTA — NESTA ORDEM, SEMPRE:\n"
         "1) BASE PRÓPRIA DE SMC: a ferramenta carrega a metodologia SMC/ICT "
@@ -4586,6 +5026,9 @@ class SmcQuantApp(ctk.CTk):
         if tipo == "CONF_CANCELADA":
             self._chat_responder("Certo, deixei como estava — nada foi feito.")
             return
+        if tipo == "CONFIGURAR":
+            self._chat_configurar(dado, texto)
+            return
         if tipo == "APRENDER":
             # "aprenda isso" sozinho: a lição é o que ELE disse no turno
             # anterior, que é exatamente o que "isso" quer dizer.
@@ -4955,6 +5398,145 @@ class SmcQuantApp(ctk.CTk):
                 f"Motivo: {str(e)[:150]}. Dá para zerar na mão pelo botão "
                 "'Reiniciar Ciclo', na aba Plano de Trading.")
 
+    # ---------------- A IA MEXE NA CONFIGURAÇÃO (autorizado) ----------------
+    @staticmethod
+    def _mesmo_valor(a, b):
+        """Compara o que foi pedido com o que ficou no disco. Número é
+        comparado como número (1 e 1.0 são o mesmo valor)."""
+        na, nb = _num(a), _num(b)
+        if na is not None and nb is not None:
+            return abs(na - nb) < 1e-9
+        return str(a).strip() == str(b).strip()
+
+    def _chat_configurar(self, mudancas, texto=""):
+        """Configura a PRÓPRIA ferramenta a pedido dele — horário do pregão,
+        intervalo das análises e os números do Plano de Trading da conta.
+
+        Ele autorizou explicitamente ("mediante solicitação, autonomia para
+        configurar e editar"). Mesmo assim vale a regra da casa: GRAVA, RELÊ DO
+        DISCO e só então confirma, mostrando de-para. O que não gravou, ela diz
+        que não gravou."""
+        if not mudancas:
+            return
+        contas = carregar_contas()
+        alvo = conta_por_referencia(texto, contas) or conta_ativa() or \
+            (contas[0] if contas else None)
+        nome_alvo = (alvo or {}).get("nome", "conta ativa")
+        cfg_antes = carregar_config()
+        plano_antes = dict(PLANO_PADRAO)
+        plano_antes.update((alvo or {}).get("plano_trading") or {})
+        novo_cfg, novo_plano = {}, dict(plano_antes)
+        for m in mudancas:
+            if m["destino"] == "config":
+                m["antes"] = cfg_antes.get(m["campo"],
+                                           PADRAO_CONFIG_APP.get(m["campo"]))
+                novo_cfg[m["campo"]] = m["valor"]
+            else:
+                m["antes"] = plano_antes.get(m["campo"], PLANO_PADRAO.get(m["campo"]))
+                novo_plano[m["campo"]] = m["valor"]
+        try:
+            if novo_cfg:
+                salvar_config(novo_cfg)
+            if novo_plano != plano_antes:
+                if not alvo:
+                    raise RuntimeError("nenhuma conta cadastrada para receber o plano")
+                salvar_plano_da_conta(novo_plano, alvo["id"])
+        except Exception as e:
+            self._chat_responder(
+                f"NÃO consegui gravar a configuração — está tudo como estava. "
+                f"Motivo: {str(e)[:150]}. Dá para ajustar na mão: horário e "
+                "intervalo na aba Motor, e os números na aba Plano de Trading.")
+            return
+        # PROVA: relê do disco. O que não bater aqui NÃO é dito como feito.
+        cfg_lido = carregar_config()
+        plano_lido = {}
+        for c in carregar_contas():
+            if alvo and c.get("id") == alvo.get("id"):
+                plano_lido = dict(PLANO_PADRAO)
+                plano_lido.update(c.get("plano_trading") or {})
+        aplicadas, falhas = [], []
+        for m in mudancas:
+            lido = cfg_lido.get(m["campo"]) if m["destino"] == "config" \
+                else plano_lido.get(m["campo"])
+            (aplicadas if self._mesmo_valor(lido, m["valor"]) else falhas).append(m)
+        self.after(0, lambda: self._refletir_config_na_tela(aplicadas, alvo))
+        for m in aplicadas:
+            self.log(f"⚙️ TIGER configurou {m['rotulo']}: "
+                     f"{formatar_valor_config(m['campo'], m.get('antes'))} → "
+                     f"{formatar_valor_config(m['campo'], m['valor'])}"
+                     + (f" (conta '{nome_alvo}')" if m["destino"] == "plano" else ""))
+        if not aplicadas:
+            self._chat_responder(
+                "NÃO consegui aplicar a configuração: gravei e, ao reler o "
+                "arquivo, o valor continuava o antigo. Prefiro te dizer isso a "
+                "dizer que fiz. Ajuste na mão — horário e intervalo na aba "
+                "Motor, os números na aba Plano de Trading.")
+            return
+        linhas = [f"• {m['rotulo']}: "
+                  f"{formatar_valor_config(m['campo'], m.get('antes'))} → "
+                  f"{formatar_valor_config(m['campo'], m['valor'])}"
+                  for m in aplicadas]
+        corpo = ["Pronto, configurei a ferramenta:", "\n".join(linhas)]
+        if any(m["destino"] == "plano" for m in aplicadas):
+            corpo.append(f"O que é do plano ficou gravado na conta '{nome_alvo}'.")
+        if any(m["destino"] == "config" for m in aplicadas):
+            aviso = ("O horário e o intervalo são da FERRAMENTA, não de uma "
+                     "conta só — o motor é um só, então valem para todas as "
+                     "contas.")
+            if getattr(self, "motor_rodando", False) or getattr(self, "robo_ativo", False):
+                aviso += " Como o motor está ligado, passa a valer no próximo ciclo."
+            corpo.append(aviso)
+        if falhas:
+            corpo.append("Não consegui aplicar: " +
+                         ", ".join(m["rotulo"] for m in falhas) +
+                         ". Esses continuam como estavam.")
+        corpo.append("Já reli o arquivo para conferir — é isso que está "
+                     "gravado. Confere na tela; se quiser voltar, me diga o "
+                     "valor antigo que eu reconfiguro.")
+        voz = ("Configurei: " +
+               "; ".join(f"{m['rotulo']} agora é "
+                         f"{formatar_valor_config(m['campo'], m['valor'])}"
+                         for m in aplicadas) + ".")
+        self._chat_responder("\n\n".join(corpo), falar_tb=False, texto_voz=voz)
+
+    def _refletir_config_na_tela(self, mudancas, alvo=None):
+        """Leva a mudança para os campos da interface. Sem isso, o valor certo
+        estaria no arquivo e o antigo continuaria na tela — e o botão Ligar
+        regravaria o antigo por cima."""
+        try:
+            valores = {m["campo"]: m["valor"] for m in mudancas}
+            for campo, attr in (("hora_inicio", "entry_hora_inicio"),
+                                ("hora_fim", "entry_hora_fim")):
+                widget = getattr(self, attr, None)
+                if campo in valores and widget is not None:
+                    widget.delete(0, tk.END)
+                    widget.insert(0, str(valores[campo]))
+            if "intervalo_minutos" in valores and hasattr(self, "intervalo_vivo_var"):
+                self.intervalo_vivo_var.set(str(int(valores["intervalo_minutos"])))
+            if any(m["destino"] == "plano" for m in mudancas) and \
+                    alvo and alvo.get("id") == conta_ativa_id():
+                self._aplicar_conta_na_tela()
+        except Exception as e:
+            self.log(f"⚠️ Configuração gravada, mas a tela não recarregou: {e}")
+
+    def _chat_ver_configuracao(self, texto=""):
+        """'Como está configurado o risco do plano da conta 1' — lê do disco e
+        mostra. Ela tinha esse dado na mão e respondia 'não sei'."""
+        contas = carregar_contas()
+        alvo = conta_por_referencia(texto, contas) or conta_ativa() or \
+            (contas[0] if contas else None)
+        plano = dict(PLANO_PADRAO)
+        plano.update((alvo or {}).get("plano_trading") or {})
+        campos = campos_citados(texto)
+        resumo = resumo_da_configuracao(carregar_config(), plano,
+                                        (alvo or {}).get("nome", ""), campos)
+        curtos = campos or ["risco_pct", "meta_alvo", "hora_inicio", "hora_fim"]
+        voz = "; ".join(
+            f"{ROTULO_CONFIG[c]}: "
+            f"{formatar_valor_config(c, (carregar_config() if DESTINO_CONFIG.get(c) == 'config' else plano).get(c, PADRAO_CONFIG_APP.get(c, PLANO_PADRAO.get(c))))}"
+            for c in curtos if c in ROTULO_CONFIG)
+        self._chat_responder(resumo, falar_tb=False, texto_voz=voz)
+
     def _chat_enviar_whatsapp(self):
         """Manda para o WhatsApp pelo MOTOR — que é quem tem a ponte.
 
@@ -5089,6 +5671,9 @@ class SmcQuantApp(ctk.CTk):
         if acao == "ZERAR_CICLO":
             self._chat_zerar_ciclo()
             return
+        if acao == "VER_CONFIG":
+            self._chat_ver_configuracao(getattr(self, "_ultimo_pedido", ""))
+            return
         if acao == "CALAR":
             estava = parar_fala()
             # Responde só por texto: falar aqui seria contrariar o pedido.
@@ -5178,7 +5763,11 @@ class SmcQuantApp(ctk.CTk):
                 "dashboard da conta, com confirmação); 'manda no whatsapp' e "
                 "'conecta o whatsapp'; 'tira um print' (captura a tela na hora) "
                 "e 'olha o gráfico' (analiso a última captura); 'acatar' (com "
-                "confirmação), 'dispensar', 'cancelar ordem'; 'status'; e para "
+                "confirmação), 'dispensar', 'cancelar ordem'; 'status'; "
+                "CONFIGURAR a ferramenta em português ('o dia da conta 1 "
+                "começa às 19h', 'analisa a cada 5 minutos', 'risco de 1% por "
+                "operação', 'meta de 6 mil em 10 dias') e conferir com 'como "
+                "está configurado o risco do plano da conta 1'; e para "
                 "eu gravar uma regra sua, termine a frase com 'aprenda isso' — "
                 "por exemplo: 'nunca opere contra o H4 depois das 15h, aprenda "
                 "isso'. Fora esses comandos, é conversa: pergunte por que "
@@ -5344,6 +5933,22 @@ class SmcQuantApp(ctk.CTk):
                 f"1:{p.get('rr_minimo', 2.0)} · probabilidade mínima "
                 f"{p.get('probabilidade_minima', 55)}%. Todas as suas orientações "
                 "devem respeitar ESTE plano.")
+        except Exception:
+            pass
+        # Configuração da FERRAMENTA (horário do dia dele e ritmo das análises).
+        # Sem isto no contexto ela respondia "não sei" sobre a própria casa.
+        try:
+            c = carregar_config()
+            partes.append(
+                f"CONFIGURAÇÃO DA FERRAMENTA (vale para todas as contas): o dia "
+                f"de operação dele começa às "
+                f"{c.get('hora_inicio', PADRAO_CONFIG_APP['hora_inicio'])} e "
+                f"termina às {c.get('hora_fim', PADRAO_CONFIG_APP['hora_fim'])}; "
+                f"o motor analisa a cada "
+                f"{c.get('intervalo_minutos', PADRAO_CONFIG_APP['intervalo_minutos'])} "
+                "minuto(s). Ele PODE mudar qualquer um desses valores falando "
+                "com você (o app é que grava e confirma) — nunca diga que não "
+                "dá para configurar.")
         except Exception:
             pass
         partes.append(self._chat_status_texto())
@@ -5591,7 +6196,11 @@ class SmcQuantApp(ctk.CTk):
                     "macro (Fed e juros, payroll, inflação, VIX, balanços, dia "
                     "de notícia), cotação real e notícia das casas de mercado. "
                     "E os comandos seguem: 'status', 'liga o motor', 'zera o "
-                    "ciclo', 'manda no whatsapp', 'olha o gráfico'.")
+                    "ciclo', 'manda no whatsapp', 'olha o gráfico' — e a "
+                    "configuração da ferramenta ('o dia da conta 1 começa às "
+                    "19h', 'risco de 1% por operação', ou 'como está "
+                    "configurado o risco do plano da conta 1'), que eu leio e "
+                    "gravo aqui mesmo, sem depender da API.")
         self._chat_entregar_resposta(resposta)
 
     def _completar_resposta(self, client, modelo, config, conteudo, comeco):
@@ -8749,12 +9358,25 @@ class SmcQuantApp(ctk.CTk):
         self.log(f"⚙️ Intervalo: {INTERVALO_MINUTOS} min | Pregão: {HORA_INICIO}–{HORA_FIM} "
                   "(fora desse horário, ciclos são pulados pra economizar cota da API)")
 
+        def horario_pregao_atual():
+            """Relê o horário a CADA ciclo — a TIGER pode reconfigurar o pregão
+            pelo chat com o motor ligado, e a mudança tem de valer sem
+            reiniciar (era lido uma vez só, na subida)."""
+            cfg = carregar_config()
+            return (cfg.get("hora_inicio", HORA_INICIO) or HORA_INICIO,
+                    cfg.get("hora_fim", HORA_FIM) or HORA_FIM)
+
         def dentro_do_horario_pregao():
+            ini_txt, fim_txt = horario_pregao_atual()
             try:
                 agora = datetime.datetime.now().time()
-                inicio = datetime.datetime.strptime(HORA_INICIO, "%H:%M").time()
-                fim = datetime.datetime.strptime(HORA_FIM, "%H:%M").time()
-                return inicio <= agora <= fim
+                inicio = datetime.datetime.strptime(ini_txt, "%H:%M").time()
+                fim = datetime.datetime.strptime(fim_txt, "%H:%M").time()
+                # Pregão que vira o dia (ex.: 19:00 às 02:00) é legítimo para
+                # quem opera índice americano de madrugada.
+                if inicio <= fim:
+                    return inicio <= agora <= fim
+                return agora >= inicio or agora <= fim
             except ValueError:
                 return True  # horário mal configurado — não bloqueia, roda sempre
 
@@ -8786,7 +9408,8 @@ class SmcQuantApp(ctk.CTk):
                     break
 
                 if not dentro_do_horario_pregao():
-                    self.log(f"🌙 Fora do horário de pregão ({HORA_INICIO}–{HORA_FIM}) — ciclo pulado sem consumir a API.")
+                    _ini, _fim = horario_pregao_atual()
+                    self.log(f"🌙 Fora do horário de pregão ({_ini}–{_fim}) — ciclo pulado sem consumir a API.")
                     continue
 
                 # --------------------------------------------------------

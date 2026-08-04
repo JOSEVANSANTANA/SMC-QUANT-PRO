@@ -1,4 +1,4 @@
-# Como compilar o SMC Quant Pro v2.8.1 (TIGER)
+# Como compilar o SMC Quant Pro v2.9.0 (TIGER)
 
 > **Resumo:** o processo de build **não mudou**. É o mesmo fluxo do `.spec`
 > que você já usa. Nesta versão só o `main_app.py` mudou — substitua-o e compile.
@@ -12,7 +12,39 @@
 O **motor NÃO mudou** — reaproveite a pasta `motor\` com o `node_modules` que
 você já tem. O `tradovate_auto.py` também não mudou.
 
-Novidades da v2.8.1 (aba 🐯 TIGER) — **ela lê o seu cenário e você pode
+Novidades da v2.9.0 (aba 🐯 TIGER) — **ela configura a própria ferramenta,
+falando**:
+
+- ⚙️ **VOCÊ MANDA, ELA CONFIGURA.** *"deixa registrado que o dia para a conta 1
+  começa as 19hs"* caía no genérico *"não tenho como responder isso com
+  segurança"*. Agora ela configura de verdade, em português:
+  - **horário do seu dia** — *"o dia da conta 1 começa às 19h"*, *"o pregão vai
+    das 19h às 23h"*, *"muda o fim do dia para 17:30"*;
+  - **ritmo das análises** — *"analisa a cada 5 minutos"*;
+  - **os números do Plano de Trading da conta** — margem, meta, prazo da meta,
+    drawdown máximo, risco por operação, R:R mínimo, probabilidade mínima,
+    prazo para acatar e início do ciclo: *"risco de 1% por operação"*, *"meta de
+    6 mil em 10 dias"*, *"drawdown máximo de 2000"*, *"R:R mínimo 1:3"*.
+  Se você citar a conta (*"na conta 2"*), é **naquela conta** que grava.
+- 🔎 **E CONSULTA.** *"COMO ESTÁ CONFIGURADO O RISCO DO PLANO DA CONTA 1"* dava
+  a mesma resposta genérica. Agora ela **lê o arquivo** e mostra o que está
+  gravado — da conta que você citar.
+- ✅ **A REGRA DA CASA VALE AQUI TAMBÉM:** ela **grava, relê o arquivo do disco
+  e só então confirma**, mostrando **o valor de antes e o de depois**. Se a
+  releitura não bater, ela diz que **NÃO** conseguiu, em vez de dizer que fez.
+  Cada mudança também entra no **log do motor**.
+- 🖥️ **A tela acompanha o arquivo:** o campo de horário, o intervalo e os
+  campos do Plano de Trading são atualizados junto — assim o botão **Ligar**
+  não regrava o valor antigo por cima.
+- ⏱️ **O motor relê o horário a cada ciclo:** dá para mudar o pregão com o motor
+  **ligado**, sem reiniciar. E **pregão que vira o dia** (19h às 02h) passou a
+  ser aceito.
+- 🛡️ **A trava de segurança continua:** **pergunta NUNCA configura nada**.
+  *"qual a meta do S&P hoje, 7800?"*, *"o pregão americano abre às 9:30"* e
+  *"qual o risco disso?"* continuam sendo conversa — só muda a configuração
+  quem manda mudar.
+
+Continua valendo tudo da v2.8.1 — **ela lê o seu cenário e você pode
 cortá-la no meio da fala**:
 
 - 🎯 **Fim da resposta de manual.** A teoria da base agora vem **amarrada ao que
@@ -144,8 +176,22 @@ cd C:\Users\jovan\Documents\SMC_QUANT_PRO
 python main_app.py
 ```
 
-Checklist da v2.8.1 (aba **🐯 TIGER**) — comece pelos dois primeiros, que são
+Checklist da v2.9.0 (aba **🐯 TIGER**) — comece pelos três primeiros, que são
 os erros do pregão de 04/08:
+
+0000. **CONFIGURAR FALANDO.** Digite exatamente: *"deixa registrado que o dia
+   para a conta 1 começa as 19hs"*. Ela tem que responder **"Pronto, configurei
+   a ferramenta"** com o de-para (*09:00 → 19:00*) — e o campo **Início** da aba
+   Motor tem que estar em **19:00**. Repita com *"configura o risco de 1% por
+   operação"* e confira o campo **Risco/operação (%)** no Plano de Trading.
+   Depois teste em outra conta: *"na conta 2, meta de 6 mil em 10 dias"* — tem
+   que gravar **na Conta 2** e **não** mexer na Conta 1.
+0000a. **CONSULTAR.** Digite *"COMO ESTÁ CONFIGURADO O RISCO DO PLANO DA CONTA
+   1"* — tem que vir o número real, não o genérico. Depois *"quais são as
+   minhas configurações?"* — vem o bloco da FERRAMENTA e o do PLANO DA CONTA.
+0000b. **PERGUNTA NÃO CONFIGURA (importante).** Digite *"qual a meta do S&P
+   hoje, 7800?"* e *"o pregão americano abre às 9:30"*. **Nada** pode mudar no
+   Plano de Trading nem na aba Motor — confira os dois depois.
 
 000. **Cortar a fala.** Peça algo longo (*"me explica o power of 3"*) com a voz
    ligada e, no meio da fala, clique em **⏹ Parar fala** — tem que parar na
@@ -252,17 +298,17 @@ Repita o checklist do passo 2 dentro do `.exe`.
 ## 6. Gerar o instalador (Inno Setup)
 
 1. Abra `instalador\SMC_Quant_Pro.iss` no Inno Setup Compiler.
-2. Confira que `MyAppVersion` está **"2.8.1"** (já está).
+2. Confira que `MyAppVersion` está **"2.9.0"** (já está).
 3. Pressione **F9** (Compile).
 
-Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.8.1.exe`.
+Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.9.0.exe`.
 
 ---
 
 ## 7. Publicar a atualização
 
-1. Suba o `SMC_Quant_Pro_Setup_2.8.1.exe` na pasta do Google Drive.
-2. O `versao.json` **já está publicado como 2.8.1** — assim que o arquivo
+1. Suba o `SMC_Quant_Pro_Setup_2.9.0.exe` na pasta do Google Drive.
+2. O `versao.json` **já está publicado como 2.9.0** — assim que o arquivo
    estiver no Drive, os clientes veem o aviso de nova versão.
 
 ---
@@ -276,7 +322,11 @@ Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.8.1.exe`.
 | "Não vou chutar um número" | ativo fora da lista dela | ela cobre S&P, Nasdaq, Dow, Russell, VIX, ouro, prata, petróleo, dólar, euro, bitcoin, Ibovespa e juros 10a |
 | Ela respondeu outro assunto | pergunta ambígua para a base | diga "não foi isso que perguntei" — isso bloqueia a base e força resposta nova |
 | Ela responde teoria quando eu quero o gráfico | pergunta sem referência ao agora | diga "agora", "nesse gráfico" ou "minha posição" — aí ela usa a API e olha o print |
-| O motor desligou sozinho | era o bug do "para" (v2.4 e antes) | corrigido na v2.8.1; se voltar a acontecer, me mande a frase exata que você digitou |
+| O motor desligou sozinho | era o bug do "para" (v2.4 e antes) | corrigido desde a v2.5.0; se voltar a acontecer, me mande a frase exata que você digitou |
+| Ela não configurou o que pedi | frase sem verbo de comando | comece com um verbo — "configura", "muda", "ajusta", "define", "deixa registrado que…". Perguntar **nunca** configura, de propósito |
+| Ela disse "NÃO consegui aplicar a configuração" | o arquivo não gravou | é a guarda funcionando (ela releu o disco e o valor era o antigo): ajuste na mão — horário e intervalo na aba Motor, os números no Plano de Trading |
+| Configurou na conta errada | conta não citada na frase | ela usa a **conta selecionada** quando você não cita nenhuma; diga "na conta 2" para gravar em outra |
+| Mudei o horário e o motor ignorou | motor lê o pregão a cada ciclo | vale no **próximo ciclo** (até 15 min, conforme o intervalo) — não precisa reiniciar |
 | "A chave da Gemini foi recusada" | chave errada/expirada | cole a chave de novo na aba Motor e ligue o motor uma vez para salvar |
 | "Não consegui alcançar o servidor" | internet | verifique a conexão — o chat e a transcrição de voz usam a rede |
 | Ela diz que não tem print do gráfico | motor nunca rodou um ciclo | ligue o motor e espere uma análise, ou mande um print pelo 📎 |
