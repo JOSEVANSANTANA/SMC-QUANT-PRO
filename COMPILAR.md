@@ -1,4 +1,4 @@
-# Como compilar o SMC Quant Pro v2.3.0 (TIGER)
+# Como compilar o SMC Quant Pro v2.4.0 (TIGER)
 
 > **Resumo:** o processo de build **não mudou**. É o mesmo fluxo do `.spec`
 > que você já usa. Nesta versão só o `main_app.py` mudou — substitua-o e compile.
@@ -12,23 +12,28 @@
 O **motor NÃO mudou** — reaproveite a pasta `motor\` com o `node_modules` que
 você já tem. O `tradovate_auto.py` também não mudou.
 
-Novidades da v2.3.0 (aba 🐯 TIGER):
+Novidades da v2.4.0 (aba 🐯 TIGER) — **ela parou de mentir e começou a
+aprender de verdade**:
 
-- **Ela liga e desliga o motor.** Diga *"liga o motor"* ou *"desliga o robô"* e
-  ela chama o mesmo botão da aba Motor — e depois **confirma** se subiu mesmo.
-  Antes o modelo respondia "motor ligado" sem ligar nada.
-- **Ela enxerga o gráfico.** Cada captura do motor fica salva; peça *"olha o
-  gráfico"* e ela analisa a **mesma imagem** que gerou a sugestão.
-- **Ela pesquisa na internet** (notícia, agenda econômica, dado macro) e diz de
-  onde tirou.
-- **Fim das respostas cortadas** no meio da conta ("faltam 7.6"). O teto de
-  saída subiu, o "raciocínio interno" que comia esse teto foi zerado, e se ainda
-  assim bater no limite ela pede a continuação e emenda sozinha.
-- **Perguntas viraram conversa de novo.** "Como está a situação?" não devolve
-  mais o card fixo — ela responde pensando, com o **ritmo exigido por dia** já
-  calculado e o detalhe das posições abertas.
-- **Falha com motivo.** Em vez de "sem acesso à rede", ela diz se foi **cota da
-  chave**, **chave recusada** ou **internet**.
+- **"aprenda isso" no FIM da frase agora grava.** Antes só valia `aprenda:` no
+  começo, então lições ditas do jeito natural (*"sempre confira o R:R antes de
+  sugerir, aprenda isso"*) **nunca eram salvas** — o modelo só dizia que tinha
+  aprendido. Pergunte *"o que você aprendeu?"* e ela lista o que está gravado.
+- **Guarda anti-mentira.** Toda resposta do modelo passa por um filtro que
+  **remove** alegações de ação já feita ("acabei de zerar", "já enviei no seu
+  WhatsApp", "lição registrada") e coloca no lugar o comando que resolve.
+- **Mão na ferramenta**, com prova:
+  - *"zera o ciclo"* — zera mesmo o dashboard (pede confirmação; só confirma
+    depois de reler o arquivo do disco; o histórico fica arquivado).
+  - *"manda no whatsapp"* — dispara pelo motor; só diz "enviado" se o disparo
+    confirmar, senão diz o motivo.
+  - *"conecta o whatsapp"* — liga o motor e aponta onde está o QR code.
+  - *"tira um print"* — captura a tela **na hora**, sem esperar o ciclo.
+- **Persona reescrita** com a regra número um: **escrever não é fazer**.
+
+Da v2.3.0, que veio junto: liga/desliga o motor, enxerga o último print,
+pesquisa na internet, respostas não saem mais cortadas no meio da conta, e
+falha com motivo (cota da chave, chave recusada ou internet).
 
 ---
 
@@ -57,19 +62,26 @@ cd C:\Users\jovan\Documents\SMC_QUANT_PRO
 python main_app.py
 ```
 
-Checklist da v2.3.0 (aba **🐯 TIGER**):
+Checklist da v2.4.0 (aba **🐯 TIGER**) — os 4 primeiros são os que estavam
+quebrados no pregão de 04/08:
 
-1. Com o motor **desligado**, pergunte *"você está acompanhando o mercado?"* —
-   ela deve dizer que **não**, porque o motor está parado, e oferecer ligar.
-2. Diga **"liga o motor"**. Ela avisa que está ligando e, quando o motor sobe,
-   escreve *"Motor no ar"*. Confira na aba Motor que ligou mesmo.
-3. Espere um ciclo de análise e peça **"olha o gráfico"** — ela analisa o print
-   que o motor capturou e diz de que horas é a captura.
-4. Pergunte **"quanto precisamos fazer por dia para bater a meta?"** — a
-   resposta tem que vir **inteira**, com o número fechado (esse era o bug).
-5. Pergunte algo que só a internet responde: *"tem notícia de CPI hoje?"*.
-6. Diga **"desliga o motor"** e confirme que ele parou.
-7. Repita 2, 3 e 6 **por voz**, com o modo 🐯 OLÁ TIGER ligado.
+1. **Aprender:** diga *"sempre confira o R:R antes de sugerir, aprenda isso"*.
+   Ela responde **"Anotado e aprendido: …"**. Agora pergunte *"o que você
+   aprendeu?"* — a lição tem que aparecer na lista. Feche e reabra o app e
+   pergunte de novo: tem que continuar lá.
+2. **Zerar:** diga *"zera o ciclo"*, responda **sim** e olhe o Plano de
+   Trading — os números têm que ter zerado de verdade.
+3. **Print na hora:** com o motor ligado, diga *"tira um print e vê minha
+   posição"*. Ela captura e analisa **na hora** (antes mandava esperar 5 min).
+4. **WhatsApp:** com o motor **desligado**, diga *"manda no whatsapp"* — ela
+   tem que dizer que **não dá**, porque o motor está parado. Ligue o motor e
+   repita: aí ela envia (ou diz o motivo exato da falha).
+5. Com o motor desligado, pergunte *"você está acompanhando o mercado?"* — ela
+   deve dizer que **não**.
+6. Diga **"liga o motor"** e confira na aba Motor que ligou mesmo.
+7. Pergunte **"quanto precisamos fazer por dia?"** — resposta **inteira**, com
+   o número fechado.
+8. Repita 1, 2, 3 e 6 **por voz**, com o modo 🐯 OLÁ TIGER ligado.
 
 > Se aparecer *"estou escutando pelo microfone X mas não chega som nenhum"*, é
 > microfone errado selecionado no Windows — troque em *Configurações → Sistema
@@ -127,17 +139,17 @@ Repita o checklist do passo 2 dentro do `.exe`.
 ## 6. Gerar o instalador (Inno Setup)
 
 1. Abra `instalador\SMC_Quant_Pro.iss` no Inno Setup Compiler.
-2. Confira que `MyAppVersion` está **"2.3.0"** (já está).
+2. Confira que `MyAppVersion` está **"2.4.0"** (já está).
 3. Pressione **F9** (Compile).
 
-Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.3.0.exe`.
+Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.4.0.exe`.
 
 ---
 
 ## 7. Publicar a atualização
 
-1. Suba o `SMC_Quant_Pro_Setup_2.3.0.exe` na pasta do Google Drive.
-2. O `versao.json` **já está publicado como 2.3.0** — assim que o arquivo
+1. Suba o `SMC_Quant_Pro_Setup_2.4.0.exe` na pasta do Google Drive.
+2. O `versao.json` **já está publicado como 2.4.0** — assim que o arquivo
    estiver no Drive, os clientes veem o aviso de nova versão.
 
 ---
@@ -151,6 +163,10 @@ Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.3.0.exe`.
 | "Não consegui alcançar o servidor" | internet | verifique a conexão — o chat e a transcrição de voz usam a rede |
 | Ela diz que não tem print do gráfico | motor nunca rodou um ciclo | ligue o motor e espere uma análise, ou mande um print pelo 📎 |
 | Ela não liga o motor quando peço | frase sem o substantivo | diga "liga **o motor**" / "desliga **o robô**" — só o verbo não vale, de propósito |
+| A lição não foi gravada | frase sem o gatilho | termine com "**aprenda isso**" (ou comece com "aprenda:") e confira com "o que você aprendeu?" |
+| Aparece "Só um ajuste importante…" | ela tentou alegar uma ação que não fez | é a guarda funcionando: use o comando que ela indica (zera o ciclo, manda no whatsapp…) |
+| "manda no whatsapp" não envia | motor desligado ou QR não lido | ligue o motor e leia o QR code na aba Motor |
+| "zera o ciclo" não zerou | o plano não gravou | ela avisa e diz o motivo; dá para zerar no botão "Reiniciar Ciclo" do Plano de Trading |
 | "não chega som nenhum" no chat | microfone errado no Windows | *Configurações → Sistema → Som* → escolha o mic certo como entrada padrão |
 | "não consegui abrir o microfone" | outro programa segurando o mic | feche Zoom/Meet/OBS e religue o OLÁ TIGER |
 | Ela ouve mas não reage ao chamado | fala rápida demais no começo | diga "Olá Tiger" e faça uma pausa curta antes do pedido |

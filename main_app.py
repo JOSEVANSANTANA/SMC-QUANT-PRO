@@ -111,7 +111,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.3.0"
+VERSAO_ATUAL = "2.4.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1994,6 +1994,75 @@ _MOTOR_LIGAR = r"(lig(a|ar|ue|a[- ]?o)|ativ(a|ar|e)|inici(a|ar|e)|sobe|subir|com
 _MOTOR_DESLIGAR = (r"(deslig(a|ar|ue)|par(a|ar|e)|paus(a|ar|e)|encerr(a|ar|e)|"
                    r"desativ(a|ar|e)|interromp(e|er|a)|stop)")
 
+# --------------------------------------------------------------------
+# GUARDA ANTI-MENTIRA
+# --------------------------------------------------------------------
+# O modelo NÃO executa nada. Mesmo assim ele escrevia "acabei de zerar os dados
+# da Conta 1", "acabei de reenviar para o seu WhatsApp", "lição aprendida e
+# registrada" — e nada disso tinha acontecido. O trader confiou, conferiu e o
+# dashboard estava igual. É o pior tipo de erro numa mesa: a ferramenta mentindo
+# sobre o próprio estado.
+#
+# Quem executa de verdade é o código (ZERAR_CICLO, ENVIAR_WHATSAPP, LIGAR_MOTOR,
+# APRENDER) e essas respostas nunca passam por aqui. Então: em resposta VINDA DO
+# MODELO, qualquer alegação de ação concluída é falsa por construção, e some.
+#
+# CUIDADO AO MEXER AQUI: só o VERBO NA PRIMEIRA PESSOA DO PASSADO ("zerei",
+# "enviei") ou o "acabei de <fazer>" contam como alegação. O infinitivo NÃO —
+# senão a guarda comeria a frase mais útil que ela tem: "para zerar o ciclo,
+# diga zera o ciclo que eu executo".
+_ALEGACOES_FALSAS = [
+    # "zerei os dados", "resetei a conta", "limpei o histórico"
+    r"\b(zerei|resetei|reiniciei|limpei|apaguei)\b[^.!?]{0,60}?"
+    r"\b(ciclo|dashboard|painel|dados|conta|hist[óo]rico|n[úu]meros|registros)",
+    # "enviei para o seu WhatsApp", "reenviei no zap"
+    r"\b(enviei|mandei|disparei|reenviei|encaminhei)\b[^.!?]{0,60}?"
+    r"\b(whats?app?|zap|wpp)",
+    # "acabei de executar", "já processei a regra"
+    r"\b(acabei de|acabo de|j[áa])\s+(\w+\s+){0,2}"
+    r"(zerar|resetar|reiniciar|limpar|apagar|enviar|mandar|disparar|reenviar|"
+    r"encaminhar|registrar|gravar|memorizar|salvar|processar|executar|realizar|"
+    r"ligar|desligar|ativar|desativar|capturar|tirar)\b",
+    # "aprendi essa regra", "registrei a lição", "gravei na memória"
+    r"\b(aprendi|registrei|memorizei|gravei|salvei|processei)\b[^.!?]{0,40}?"
+    r"\b(li[çc][ãa]o|regra|isso|comando|mem[óo]ria|sistema|ordem)",
+    r"\bli[çc][ãa]o\s+(aprendida|registrada|memorizada|gravada|salva)",
+    r"\bcomando\s+(interno\s+)?(executado|processado|enviado|realizado)",
+    r"\b(liguei|desliguei|ativei|desativei)\b[^.!?]{0,40}?"
+    r"\b(motor|rob[ôo]|an[áa]lise)",
+    # resposta em forma de recibo: "Motor ligado, Josevan." logo no começo
+    r"^\s*(motor|rob[ôo])\s+(ligado|desligado|no ar|ativado|parado)\b",
+    r"\bprocedimento de reset\b",
+    # "fico sempre ativa monitorando em segundo plano" / "fico por aqui
+    # monitorando a liquidez em segundo plano" — quem monitora é o motor
+    r"\b(estou|fico|sigo|continuo|permane[çc]o)\s+(\w+\s+){0,3}"
+    r"(ativa|monitorando|varrendo|acompanhando|processando|vigiando)\b"
+    r"[^.!?]{0,60}?\b(fundo|segundo plano|tempo real|por voc[êe])",
+]
+_RE_ALEGACOES = re.compile("|".join(_ALEGACOES_FALSAS),
+                           re.IGNORECASE | re.MULTILINE)
+
+_AVISO_ALEGACAO = (
+    "Só um ajuste importante: eu não faço nada só de escrever que fiz. "
+    "Para valer de verdade, use o comando — 'zera o ciclo', 'manda no "
+    "whatsapp', 'liga o motor', 'desliga o motor', 'tira um print', ou termine "
+    "a frase com 'aprenda isso'. Aí é o app que executa e eu confirmo com o "
+    "resultado real.")
+
+def censurar_alegacao_falsa(texto):
+    """Tira da resposta do MODELO qualquer alegação de ação já executada.
+    Devolve (texto_limpo, censurou). Frases boas são preservadas: só cai o
+    trecho que afirma um feito que não aconteceu."""
+    if not texto or not _RE_ALEGACOES.search(texto):
+        return texto, False
+    frases = re.split(r"(?<=[.!?])\s+", texto)
+    limpas = [f for f in frases if not _RE_ALEGACOES.search(f)]
+    corpo = " ".join(limpas).strip()
+    if not corpo:
+        corpo = ("Pera — eu ia dizer que tinha feito isso, mas não fiz: "
+                 "escrever não executa nada aqui.")
+    return f"{corpo}\n\n{_AVISO_ALEGACAO}", True
+
 def interpretar_intencao(texto):
     """Detecta comandos em LINGUAGEM NATURAL, sem depender da IA (dinheiro e
     controle do motor não passam por modelo — o modelo ALUCINA "motor ligado"
@@ -2011,6 +2080,23 @@ def interpretar_intencao(texto):
                  "aprende que ", "lição que ", "licao que "):
         if t.startswith(pref):
             return ("APRENDER", texto.strip()[len(pref):].strip())
+    # LIÇÃO NO FIM DA FRASE — é assim que o trader fala de verdade:
+    # "é só você se comunicar com o motor que ele envia, APRENDA ISSO".
+    # Antes só o PREFIXO contava, então essas lições NUNCA eram salvas: o
+    # modelo respondia "lição aprendida e registrada" e nada ficava gravado.
+    _FECHO = (r"[\s,.!]*(por favor|voc[êe] pode|voc[êe] consegue|ok|t[áa]|"
+              r"beleza|certo)?[\s,.!]*$")
+    _APRENDER = r"\b(aprend[ae]|memoriz[ae]|guard[ae]|anot[ae])\b\s+(isso|isto|"
+    _APRENDER += r"essa regra|esse ponto|isso a[íi]|bem isso)\b"
+    m = re.search(r"[,.;:\s]+" + _APRENDER + _FECHO, t)
+    if m:
+        licao = texto.strip()[:m.start()].strip(" ,.;:—-")
+        if licao:
+            return ("APRENDER", licao)
+    # "aprenda isso" sozinho = aprender o que ele acabou de dizer no turno
+    # anterior. Conteúdo vazio sinaliza isso para quem trata o turno.
+    if re.fullmatch(_APRENDER + _FECHO, t):
+        return ("APRENDER", "")
     palavras = set(re.findall(r"[a-zà-ú]+", t))
     curto = len(palavras) <= 6
 
@@ -2033,6 +2119,44 @@ def interpretar_intencao(texto):
             return "DESLIGAR_MOTOR"
         if re.search(rf"\b{_MOTOR_LIGAR}\b", t):
             return "LIGAR_MOTOR"
+    # VER O QUE ELA APRENDEU: sem isso o trader não tem como CONFERIR se a
+    # lição entrou mesmo — e era exatamente essa a desconfiança dele.
+    if re.search(r"\b(li[çc][õo]es|aprendeu|aprendido|aprendizado|mem[óo]ria|"
+                 r"regras)\b", t) and \
+            re.search(r"\b(o que|quais|mostr(a|ar|e)|list(a|ar|e)|lembr(a|ar|e)|"
+                      r"me diga|tem|guardou|sabe)\b", t):
+        return "LISTAR_LICOES"
+    # ZERAR O CICLO: é o botão "Reiniciar Ciclo" do Plano de Trading. Ela
+    # dizia "acabei de zerar" sem zerar nada — agora é o código que zera, e
+    # com confirmação, porque limpa o dashboard da conta.
+    if re.search(r"\b(zer(a|ar|e)|reinici(a|ar|e)|recome[çc](a|ar|e)|limp(a|ar|e)|"
+                 r"resetar?|reset)\b", t) and \
+            re.search(r"\b(ciclo|dashboard|painel|plano|conta|meta|contagem|"
+                      r"n[úu]meros|resultados?|tudo|hist[óo]rico)\b", t):
+        return "ZERAR_CICLO"
+    if re.search(r"\b(whats?app?|whats|zap|wpp)\b", t):
+        # CONECTAR: quem tem a ponte com o WhatsApp é o motor. Ela dizia "não
+        # tenho acesso para conectar o seu WhatsApp" — tem: é ligar o motor e
+        # ler o QR code.
+        if re.search(r"\b(conect(a|ar|e)|vincul(a|ar|e)|par(eia|ear|eie)|"
+                     r"lig(a|ar|ue)|ativ(a|ar|e)|sincroniz(a|ar|e))\b", t):
+            return "CONECTAR_WHATSAPP"
+        # MANDAR: ela dizia "acabei de enviar" sem enviar — agora ou envia de
+        # verdade, ou explica por que não deu.
+        if re.search(r"\b(envi(a|ar|e)|mand(a|ar|e)|manda[- ]?me|dispar(a|ar|e)|"
+                     r"encaminh(a|ar|e)|repass(a|ar|e)|reenvi(a|ar|e))\b", t):
+            return "ENVIAR_WHATSAPP"
+    # "envie novamente" logo depois de um envio: aqui o único disparo que
+    # existe é o do WhatsApp, então não há a que outra coisa se referir.
+    if re.search(r"\b(reenvi(a|ar|e)|envi(a|ar|e)|mand(a|ar|e)|dispar(a|ar|e))\b"
+                 r"\s*(isso|isto|o cen[áa]rio|a sugest[ãa]o)?\s*"
+                 r"\b(de novo|novamente|outra vez|mais uma vez)\b", t):
+        return "ENVIAR_WHATSAPP"
+    # PRINT AGORA: capturar a tela NA HORA, sem esperar o ciclo do motor.
+    if re.search(r"\b(tir(a|ar|e)|captur(a|ar|e)|faz|fazer|fa[çc](a|o)|bat(e|er)|"
+                 r"pega|pegar)\b.{0,20}\b(print|screenshot|captura|foto|tela)\b", t) or \
+            re.search(r"\bprint\s*window\b", t):
+        return "PRINT_AGORA"
     # OLHAR O GRÁFICO: ela busca o último print capturado pelo motor e analisa
     # a imagem de verdade, em vez de responder de memória sobre o texto velho.
     if re.search(r"\b(gr[áa]fico|print|tela|captura|imagem|screenshot)\b", t) and \
@@ -2077,10 +2201,15 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
         return ("APRENDER", intencao[1])
     if intencao == "ACATAR":
         return ("PEDIR_CONFIRMACAO", "ACATAR")
-    if intencao == "VER_GRAFICO":
-        return ("VER_GRAFICO", None)
+    # Zerar o ciclo limpa o dashboard da conta: passa por confirmação, igual
+    # ao ACATAR. Nada que apaga números do trader roda sem ele dizer "sim".
+    if intencao == "ZERAR_CICLO":
+        return ("PEDIR_CONFIRMACAO", "ZERAR_CICLO")
+    if intencao in ("VER_GRAFICO", "PRINT_AGORA"):
+        return (intencao, None)
     if intencao in ("DISPENSAR", "CANCELAR", "STATUS", "AJUDA",
-                    "LIGAR_MOTOR", "DESLIGAR_MOTOR"):
+                    "LIGAR_MOTOR", "DESLIGAR_MOTOR", "ENVIAR_WHATSAPP",
+                    "CONECTAR_WHATSAPP", "LISTAR_LICOES"):
         return ("EXECUTAR", intencao)
     return ("IA", None)
 
@@ -2102,14 +2231,35 @@ def montar_persona_ia():
         "do que uma longa cortada no meio — nunca deixe uma conta ou uma frase "
         "pela metade.\n"
         "\n"
-        "O QUE VOCÊ CONSEGUE FAZER DE VERDADE (não são metáforas — são ações "
-        "reais que a ferramenta executa quando o trader pede):\n"
-        "• LIGAR e DESLIGAR o motor de análise: ele diz 'liga o motor' / "
-        "'desliga o robô' e o app liga/desliga na hora. Você não precisa fazer "
-        "nada além de confirmar o que aconteceu.\n"
-        "• VER O GRÁFICO: o motor captura a tela da corretora a cada ciclo e "
-        "essa imagem fica disponível para você. Quando ele pedir 'olha o "
-        "gráfico', a imagem vem anexada e você analisa de verdade.\n"
+        "REGRA NÚMERO UM — ESCREVER NÃO É FAZER:\n"
+        "Você é a voz da ferramenta, não a mão dela. Quem executa ação é o "
+        "CÓDIGO do app, disparado por comandos que o trader diz. Você NUNCA "
+        "zera ciclo, NUNCA envia WhatsApp, NUNCA liga motor e NUNCA grava lição "
+        "só por escrever que fez. É PROIBIDO escrever qualquer frase do tipo "
+        "'acabei de zerar', 'já enviei no seu WhatsApp', 'lição registrada', "
+        "'comando executado', 'estou monitorando em segundo plano'. Se ele "
+        "pedir uma dessas coisas e a ação não tiver acontecido nesta conversa, "
+        "a resposta certa é ENSINAR O COMANDO: 'diga zera o ciclo', 'diga manda "
+        "no whatsapp', 'diga liga o motor', 'termine a frase com aprenda isso'. "
+        "Quando o app executa de verdade, é o próprio app que escreve a "
+        "confirmação — não você.\n"
+        "\n"
+        "COMANDOS REAIS DA FERRAMENTA (o app executa; você só orienta e "
+        "comenta o resultado):\n"
+        "• 'liga o motor' / 'desliga o motor' — liga e desliga a análise.\n"
+        "• 'zera o ciclo' — zera o dashboard do Plano de Trading da conta ativa "
+        "(pede confirmação; o histórico não é apagado).\n"
+        "• 'manda no whatsapp' — o MOTOR dispara o cenário e o status. Só "
+        "funciona com o motor ligado e o WhatsApp conectado.\n"
+        "• 'tira um print' — captura a tela da corretora na hora.\n"
+        "• 'olha o gráfico' — você analisa a última captura do motor.\n"
+        "• 'acatar' / 'dispensar' / 'cancelar ordem' — decisão sobre o cenário.\n"
+        "• 'status' — o placar da conta.\n"
+        "• '<a regra>, aprenda isso' — grava a regra na sua memória permanente.\n"
+        "\n"
+        "O QUE VOCÊ FAZ SOZINHA (isto sim é seu):\n"
+        "• VER O GRÁFICO: quando a imagem vier anexada, analise-a de verdade. "
+        "Descreva só o que está visível; nunca invente preço que não aparece.\n"
         "• PESQUISAR NA INTERNET: você tem busca ao vivo. Use para notícia, "
         "calendário econômico, dado macro, horário de evento — e diga de onde "
         "veio a informação. Se a busca não trouxer nada, diga isso; não invente.\n"
@@ -2140,16 +2290,19 @@ def montar_persona_ia():
         "números, preços ou resultados — se não estiver nos dados do contexto, "
         "diga que não tem o dado. Nada de promessa de ganho. Se ele estiver "
         "emocionado (raiva/medo/revanche), traga-o de volta ao plano de trading.\n"
-        "• AÇÕES: você NÃO executa ordens (isso é decisão dele, sempre com "
-        "confirmação). Quando ele quiser agir, ensine o comando: 'acatar' (com "
-        "confirmação), 'dispensar', 'cancelar ordem', 'status', 'liga o motor', "
-        "'desliga o motor', 'olha o gráfico' e 'aprenda: <lição>' para você "
-        "memorizar uma regra dele.\n"
-        "• NUNCA DIGA QUE FEZ ALGO QUE VOCÊ NÃO FEZ. Você não liga o motor "
-        "sozinha, não envia ordem, não fica 'monitorando em segundo plano' por "
-        "conta própria — quem monitora é o motor, e só quando está ligado. Se "
-        "ele pedir algo que depende do motor e o motor estiver desligado, diga "
-        "isso e ofereça ligar.\n"
+        "• ORDEM É DECISÃO DELE: você NÃO executa ordens e não manda nada para "
+        "a corretora. O que existe é o 'acatar', que ele diz e o app confirma "
+        "antes de registrar. Nunca sugira que você comprou, vendeu ou zerou "
+        "uma posição.\n"
+        "• NUNCA DIGA QUE FEZ ALGO QUE VOCÊ NÃO FEZ (ver REGRA NÚMERO UM). Você "
+        "não fica 'monitorando em segundo plano' por conta própria — quem "
+        "monitora é o motor, e só quando está ligado. Se ele pedir algo que "
+        "depende do motor e o motor estiver desligado, diga isso e ofereça "
+        "ligar. Se ele te der 'permissão' para fazer algo que a ferramenta não "
+        "faz, o problema não é permissão: explique o caminho real.\n"
+        "• SE ELE RECLAMAR QUE VOCÊ NÃO FEZ: ele tem razão. Não insista, não "
+        "diga que 'tentou processar internamente'. Reconheça em uma frase e "
+        "aponte o comando exato que resolve.\n"
         "• AUTOAPRENDIZAGEM: use as lições dele e o histórico de padrões (nos "
         "dados do contexto) para calibrar suas opiniões — e diga quando uma "
         "opinião vem do histórico dele ('esse padrão vem acertando nas suas "
@@ -2761,8 +2914,9 @@ class SmcQuantApp(ctk.CTk):
                       fg_color="#21262d", hover_color="#30363d",
                       command=self._chat_limpar).pack(side="right")
         ctk.CTkLabel(barra, text="Enter envia · acatar · dispensar · cancelar ordem · "
-                                 "status · liga/desliga o motor · olha o gráfico · "
-                                 "aprenda: <lição>",
+                                 "status · liga/desliga o motor · zera o ciclo · "
+                                 "manda no whatsapp · tira um print · olha o gráfico · "
+                                 "<regra>, aprenda isso",
                      text_color="#4a5163", font=ctk.CTkFont(size=9)
                      ).pack(side="right", padx=10)
 
@@ -2972,6 +3126,14 @@ class SmcQuantApp(ctk.CTk):
 
         if tipo == "PEDIR_CONFIRMACAO":
             self._chat_conf = dado
+            if dado == "ZERAR_CICLO":
+                self._chat_responder(
+                    f"Confirmando: ZERAR o ciclo da conta '{nome_conta_ativa()}'? "
+                    "Isso limpa resultado, gráficos e contagem de dias no "
+                    "dashboard e começa um ciclo novo agora. Seu histórico NÃO "
+                    "é apagado — fica arquivado. Responda 'sim' para eu zerar "
+                    "ou 'não' para deixar como está.")
+                return
             sinal = self._ultimo_sinal_pendente()
             if not sinal:
                 self._chat_conf = None
@@ -2985,16 +3147,46 @@ class SmcQuantApp(ctk.CTk):
                 "automação estiver ligada) ou 'não' para deixar quieto.")
             return
         if tipo == "CONF_CANCELADA":
-            self._chat_responder("Certo, deixei como estava — nada foi acatado.")
+            self._chat_responder("Certo, deixei como estava — nada foi feito.")
             return
         if tipo == "APRENDER":
+            # "aprenda isso" sozinho: a lição é o que ELE disse no turno
+            # anterior, que é exatamente o que "isso" quer dizer.
+            if not dado:
+                anteriores = [m["texto"] for m in carregar_chat()
+                              if m.get("papel") == "voce" and m.get("texto")]
+                # o último é o próprio "aprenda isso"; a lição é o de antes
+                dado = anteriores[-2].strip() if len(anteriores) >= 2 else ""
+                if not dado:
+                    self._chat_responder(
+                        "Aprender o quê? Me diga a regra na mesma frase — por "
+                        "exemplo: 'nunca opere contra o H4 depois das 15h, "
+                        "aprenda isso'.")
+                    return
             if adicionar_licao(dado):
                 self._chat_responder(
-                    f"Anotado e aprendido: “{dado}”. Isso agora vale para TODAS as "
-                    "minhas análises e conversas daqui pra frente.")
+                    f"Anotado e aprendido: “{dado}”. Está gravado na minha "
+                    "memória e passa a valer em TODAS as análises e conversas "
+                    "daqui pra frente — inclusive depois de fechar o programa.")
             else:
-                self._chat_responder("Essa lição já estava na minha memória (ou veio vazia).")
+                self._chat_responder(f"Essa lição já estava gravada: “{dado}”. "
+                                      "Segue valendo, não precisa repetir.")
             return
+        if tipo == "PRINT_AGORA":
+            # "tira um print e vê minha posição": captura NA HORA, sem esperar
+            # o ciclo do motor. Antes ela mandava esperar 5 minutos (ou pior,
+            # dizia que já tinha visto). Se a captura falhar, ela diz por quê.
+            info = self._capturar_print_agora()
+            if info:
+                self._ultimo_print = info
+                tipo = "VER_GRAFICO"
+            else:
+                self._chat_responder(
+                    "Não consegui capturar a tela agora. Confira na aba Motor "
+                    "qual janela está selecionada e deixe ela visível (pode "
+                    "estar atrás de outras, mas não totalmente coberta nem "
+                    "minimizada). Se preferir, me mande o print pelo 📎.")
+                return
         if tipo == "VER_GRAFICO":
             # Ela olha a imagem que o MOTOR capturou — a mesma que gerou a
             # sugestão. Sem print disponível, vira conversa normal (o contexto
@@ -3102,6 +3294,129 @@ class SmcQuantApp(ctk.CTk):
         threading.Thread(target=self._confirmar_motor, args=(False,),
                          daemon=True).start()
 
+    def _chat_zerar_ciclo(self):
+        """Zera o ciclo da conta ativa — o MESMO efeito do botão 'Reiniciar
+        Ciclo' do Plano de Trading, só que pelo chat.
+
+        Ela dizia "acabei de resetar os dados da Conta 1" e o dashboard
+        continuava igual, porque nada era executado. Agora quem zera é este
+        código, e a confirmação só é escrita DEPOIS de reler o plano do disco.
+        """
+        try:
+            antes = dict(plano_da_conta_ativa() or {})
+            agora = datetime.datetime.now()
+            self.plano["data_inicio"] = agora.date().isoformat()
+            self.plano["ciclo_inicio"] = agora.isoformat(timespec="seconds")
+            salvar_plano_da_conta(self.plano)
+            # PROVA: relê do disco. Se o arquivo não mudou, ela NÃO diz que zerou.
+            depois = plano_da_conta_ativa() or {}
+            if depois.get("ciclo_inicio") != self.plano["ciclo_inicio"]:
+                raise RuntimeError("o plano não gravou o novo ciclo")
+            self.after(0, lambda: self._atualizar_dashboard(forcar=True))
+            self.log(f"🔄 Ciclo zerado pela TIGER em "
+                     f"{agora.strftime('%d/%m/%Y %H:%M:%S')} para a conta "
+                     f"'{nome_conta_ativa()}' (histórico preservado).")
+            anterior = antes.get("data_inicio") or "—"
+            self._chat_responder(
+                f"Pronto, zerei o ciclo da conta '{nome_conta_ativa()}' agora "
+                f"({agora.strftime('%d/%m %H:%M')}). O dashboard começa do zero: "
+                f"resultado, gráficos e a contagem de "
+                f"{dias_meta_do_plano(self.plano)} dia(s) recomeçam hoje — o "
+                f"ciclo anterior tinha começado em {anterior} e continua "
+                "arquivado no histórico. Confere no Plano de Trading que já "
+                "mudou.")
+        except Exception as e:
+            self._chat_responder(
+                f"NÃO consegui zerar o ciclo — o dashboard continua como está. "
+                f"Motivo: {str(e)[:150]}. Dá para zerar na mão pelo botão "
+                "'Reiniciar Ciclo', na aba Plano de Trading.")
+
+    def _chat_enviar_whatsapp(self):
+        """Manda para o WhatsApp pelo MOTOR — que é quem tem a ponte.
+
+        Ela respondeu "acabei de reenviar os detalhes para o seu WhatsApp" sem
+        enviar nada. Agora ou o disparo acontece, ou ela diz exatamente por que
+        não aconteceu (motor desligado é o caso mais comum)."""
+        if not (getattr(self, "motor_rodando", False) or
+                getattr(self, "robo_ativo", False)):
+            self._chat_responder(
+                "Não dá para enviar: quem fala com o WhatsApp é o motor, e ele "
+                "está DESLIGADO. Diga 'liga o motor', espere ele subir e me "
+                "peça de novo que eu disparo.")
+            return
+        texto = self._resumo_para_whatsapp()
+        if not texto:
+            self._chat_responder(
+                "Não tenho nada para enviar ainda: não há sugestão nem leitura "
+                "do gráfico nesta sessão. Assim que o motor fizer a primeira "
+                "análise, é só pedir que eu mando.")
+            return
+        self._chat_status("📲 enviando no WhatsApp…", "#ff9f43")
+        recibo = []
+        try:
+            enviar_relatorio_whatsapp(texto, None, lambda m: (self.log(m),
+                                                              recibo.append(m)))
+        except Exception as e:
+            recibo.append(f"⚠️ Falha no disparo: {e}")
+        # Só diz que enviou se o próprio disparo confirmou o sucesso.
+        if any("✅" in m for m in recibo):
+            self._chat_responder(
+                "Enviado no seu WhatsApp agora, pelo motor. Mandei o cenário "
+                "com entrada, stop, alvo e o status da conta.")
+        else:
+            motivo = next((m for m in recibo if "⚠️" in m), "sem resposta do motor")
+            self._chat_responder(
+                f"NÃO consegui enviar — nada saiu para o seu WhatsApp. "
+                f"{motivo.lstrip('⚠️ ').strip()}. Confira na aba Motor se o "
+                "WhatsApp está conectado (o QR code precisa ter sido lido).")
+
+    def _resumo_para_whatsapp(self):
+        """O que vai na mensagem: a sugestão em aberto (ou a última leitura) +
+        o status da conta. Só dados REAIS da mesa — nada gerado por modelo."""
+        partes = []
+        pend = self._ultimo_sinal_pendente()
+        if pend:
+            partes.append(
+                f"📘 *Cenário aguardando decisão*\n{pend.get('direcao')} "
+                f"{pend.get('ativo', '')} — entrada {pend.get('entry')} · "
+                f"stop {pend.get('stop')} · alvo {pend.get('tp1')}")
+        else:
+            ua = getattr(self, "_ultima_analise", None) or {}
+            if ua.get("ativo"):
+                partes.append(
+                    f"📊 *Última leitura ({ua.get('hora', '—')})*\n"
+                    f"{ua.get('acao')} {ua.get('ativo')} @ {ua.get('preco')} · "
+                    f"probabilidade {ua.get('probabilidade', 0):.0f}%")
+        if not partes:
+            return ""
+        partes.append(self._chat_status_texto())
+        return "\n\n".join(partes)
+
+    def _capturar_print_agora(self):
+        """Captura a tela NA HORA, a pedido do trader, sem esperar o ciclo.
+        Devolve o mesmo dicionário de _ultimo_print, ou None se não deu."""
+        try:
+            nome_janela = carregar_config().get("nome_janela_corretora", "").strip()
+            imagem = None
+            if nome_janela:
+                hwnd = self._resolver_hwnd_corretora(nome_janela)
+                if hwnd:
+                    permite = carregar_config().get("restaurar_janela_minimizada", True)
+                    garantir_janela_renderizando(hwnd, permite)
+                    imagem = capturar_janela_em_segundo_plano(hwnd)
+                    if imagem is None or imagem_esta_em_branco(imagem):
+                        recorte, sobreposto = capturar_via_recorte_de_tela(hwnd)
+                        imagem = None if sobreposto else recorte
+            if imagem is None or imagem_esta_em_branco(imagem):
+                imagem = ImageGrab.grab()
+                nome_janela = nome_janela or "tela inteira"
+            if imagem is None or imagem_esta_em_branco(imagem):
+                return None
+            return salvar_ultimo_print(imagem, nome_janela or "tela inteira")
+        except Exception as e:
+            self.log(f"⚠️ Falha ao capturar print a pedido da TIGER: {e}")
+            return None
+
     def _confirmar_motor(self, esperado_ligado):
         """Confere o que REALMENTE aconteceu e avisa no chat. Subir o motor pode
         levar minutos na primeira vez (npm install), por isso a espera é longa e
@@ -3147,15 +3462,62 @@ class SmcQuantApp(ctk.CTk):
         if acao == "DESLIGAR_MOTOR":
             self._chat_motor(False)
             return
+        if acao == "ZERAR_CICLO":
+            self._chat_zerar_ciclo()
+            return
+        if acao == "LISTAR_LICOES":
+            # Ele precisa CONFERIR o que entrou de verdade na memória — a
+            # desconfiança dele era justa, porque antes nada entrava.
+            licoes = carregar_licoes()
+            if not licoes:
+                self._chat_responder(
+                    "Ainda não gravei nenhuma lição sua. Para gravar, termine a "
+                    "frase com 'aprenda isso' — por exemplo: 'não opere contra "
+                    "o H4 depois das 15h, aprenda isso'. Aí ela passa a valer "
+                    "em todas as análises, inclusive depois de fechar o app.")
+                return
+            corpo = "\n".join(f"{i}. {l}" for i, l in enumerate(licoes, 1))
+            self._chat_responder(
+                f"Tenho {len(licoes)} lição(ões) sua(s) gravadas, e todas "
+                f"entram em cada análise e cada conversa:\n{corpo}",
+                falar_tb=False,
+                texto_voz=f"Tenho {len(licoes)} lições suas gravadas. "
+                          f"A mais recente é: {licoes[-1]}")
+            return
+        if acao == "ENVIAR_WHATSAPP":
+            self._chat_enviar_whatsapp()
+            return
+        if acao == "CONECTAR_WHATSAPP":
+            # Quem conecta o WhatsApp é o motor (é ele que gera o QR code).
+            if getattr(self, "motor_rodando", False) or getattr(self, "robo_ativo", False):
+                self._chat_responder(
+                    "O motor já está ligado — é ele que conecta o WhatsApp. "
+                    "Se ainda não pareou, abra a aba Motor: o QR code aparece "
+                    "lá e você lê com o celular em Aparelhos conectados. "
+                    "Depois é só me pedir 'manda no whatsapp'.")
+                return
+            self._chat_responder(
+                "Quem conversa com o WhatsApp é o motor, e ele está desligado. "
+                "Vou ligar agora — quando subir, o QR code aparece na aba Motor "
+                "para você ler com o celular em Aparelhos conectados.")
+            self.after(0, self.iniciar)
+            threading.Thread(target=self._confirmar_motor, args=(True,),
+                             daemon=True).start()
+            return
         if acao == "AJUDA":
             self._chat_responder(
-                "Comandos que executo na hora: 'acatar' (com confirmação), "
-                "'dispensar', 'cancelar ordem', 'status', 'liga o motor', "
-                "'desliga o motor', 'olha o gráfico' (eu analiso o último print "
-                "que o motor capturou) e 'aprenda: <regra>'. Fora isso, conversa "
-                "comigo normalmente: pergunte por que sugeri um cenário, peça "
-                "notícia do mercado que eu pesquiso na internet, discuta o "
-                "plano — por texto, pelo 🎤 ou dizendo 'Olá Tiger'.")
+                "O que eu EXECUTO de verdade (é o app que faz, não é conversa): "
+                "'liga o motor' e 'desliga o motor'; 'zera o ciclo' (limpa o "
+                "dashboard da conta, com confirmação); 'manda no whatsapp' e "
+                "'conecta o whatsapp'; 'tira um print' (captura a tela na hora) "
+                "e 'olha o gráfico' (analiso a última captura); 'acatar' (com "
+                "confirmação), 'dispensar', 'cancelar ordem'; 'status'; e para "
+                "eu gravar uma regra sua, termine a frase com 'aprenda isso' — "
+                "por exemplo: 'nunca opere contra o H4 depois das 15h, aprenda "
+                "isso'. Fora esses comandos, é conversa: pergunte por que "
+                "sugeri um cenário, peça notícia do mercado que eu pesquiso na "
+                "internet, discuta o plano — por texto, pelo 🎤 ou dizendo "
+                "'Olá Tiger'.")
             return
         if acao == "ACATAR":
             sinal = self._ultimo_sinal_pendente()
@@ -3549,7 +3911,16 @@ class SmcQuantApp(ctk.CTk):
 
     def _chat_entregar_resposta(self, resposta):
         """Fim de um turno com o modelo: registra em texto, fala se for o caso
-        e digita no terminal (sempre pela fila única)."""
+        e digita no terminal (sempre pela fila única).
+
+        Aqui passa SÓ o que veio do modelo — e o modelo não executa nada. Por
+        isso a guarda anti-mentira roda incondicionalmente neste ponto: as
+        respostas de ação real (zerar, WhatsApp, motor, lição) são escritas por
+        _chat_responder e nunca chegam aqui."""
+        resposta, censurou = censurar_alegacao_falsa(resposta)
+        if censurou:
+            self.log("🛡️ TIGER: removida uma alegação de ação não executada "
+                     "da resposta do modelo.")
         registrar_msg_chat("ia", resposta)
         self._ia_falar(resposta, forcar=bool(getattr(self, "_chat_por_voz", False)))
         self.after(0, lambda: self._chat_digitar(resposta))
