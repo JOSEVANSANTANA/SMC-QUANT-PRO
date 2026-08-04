@@ -111,7 +111,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.4.0"
+VERSAO_ATUAL = "2.5.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1985,14 +1985,434 @@ def bloco_licoes_prompt():
     return ("\nLIÇÕES QUE O TRADER TE ENSINOU (obedeça — são ordens dele, "
             f"aprendidas em sessões anteriores):\n{corpo}\n")
 
+# ====================================================================
+# BASE DE CONHECIMENTO SMC NATIVA — a TIGER pensa sem gastar cota
+# ====================================================================
+# POR QUE ISSO EXISTE: toda pergunta ia para a API do Gemini, inclusive as que
+# não precisavam — "o que é um CHoCH?" não depende de modelo nenhum, é
+# metodologia fixa. Resultado: a cota gratuita estourava no meio do pregão e a
+# ferramenta ficava MUDA justamente na hora em que ele mais precisava dela.
+#
+# Aqui mora o conhecimento SMC/ICT em texto, dentro do programa. É a MESMA
+# metodologia que o motor usa para analisar o gráfico, então a resposta do chat
+# e a leitura do robô nunca se contradizem. Custa zero, responde na hora e
+# funciona sem internet.
+#
+# Os textos são escritos para serem LIDOS EM VOZ ALTA: nada de asterisco, sigla
+# solta ou lista picotada.
+BASE_SMC = [
+    {"t": "CHoCH (mudança de caráter)",
+     "k": ["choch", "change of character", "mudanca de carater", "mudança de caráter",
+           "virada de estrutura", "troca de carater",
+           # como a transcrição de voz costuma escrever quando ele fala CHoCH
+           "choque", "chock", "tchoch", "chorch"],
+     "r": "CHoCH é a primeira virada de chave do gráfico: o sinal de que a mão "
+          "mudou de lado. Numa estrutura de alta, ele acontece quando o preço "
+          "quebra o último fundo que tinha gerado o topo mais alto. Numa "
+          "estrutura de baixa, quando quebra o último topo que gerou o fundo "
+          "mais baixo. Três coisas fazem um CHoCH valer: veio depois de uma "
+          "varredura de liquidez num extremo, o CORPO da vela fechou além do "
+          "nível (pavio que cruza e volta é manipulação, não CHoCH), e ele "
+          "deixou para trás uma ineficiência ou um order block novo. O CHoCH "
+          "não é ordem de entrada: é o alerta. A entrada vem quando o preço "
+          "volta para testar a zona que ele deixou."},
+    {"t": "BOS (rompimento de estrutura)",
+     "k": ["bos", "break of structure", "rompimento de estrutura", "quebra de estrutura"],
+     "r": "BOS é o rompimento de estrutura A FAVOR da tendência que já estava "
+          "valendo: em alta, o preço fecha acima do topo anterior; em baixa, "
+          "fecha abaixo do fundo anterior. Ele confirma que a tendência segue "
+          "viva. A diferença para o CHoCH é essa: BOS continua a história, "
+          "CHoCH muda a história. Depois de um BOS, o lugar de entrar é o "
+          "recuo para o order block ou para o gap que causou o rompimento — "
+          "não é correr atrás do preço no topo."},
+    {"t": "MSS (deslocamento de estrutura)",
+     "k": ["mss", "market structure shift", "deslocamento de estrutura",
+           "displacement", "deslocamento"],
+     "r": "MSS é o deslocamento de estrutura: um movimento rápido e agressivo "
+          "que rompe o nível e deixa um rastro de ineficiência atrás. É a "
+          "assinatura de ordem institucional grande entrando de uma vez. Um "
+          "rompimento devagar, arrastado, vale muito menos que um deslocamento "
+          "com vela larga e gap. Quando você vir MSS, marque a ineficiência que "
+          "ele deixou: é para lá que o preço tende a voltar antes de seguir."},
+    {"t": "Order Block",
+     "k": ["order block", "ob", "bloco de ordem", "bloco de ordens",
+           "order bloc", "orderblock", "order bloquio"],
+     "r": "Order block é a última vela contrária antes do movimento que rompeu a "
+          "estrutura. É onde a instituição montou posição, e por isso o preço "
+          "costuma respeitar quando volta ali. Prefira o order block de ORIGEM, "
+          "aquele que causou o deslocamento, e prefira o que ainda NÃO foi "
+          "mitigado, ou seja, que o preço ainda não voltou para testar. Order "
+          "block bom tem três marcas: causou rompimento de estrutura, deixou "
+          "ineficiência logo depois, e está em zona de desconto para compra ou "
+          "de prêmio para venda. Order block no meio do range vale pouco."},
+    {"t": "Breaker block",
+     "k": ["breaker", "breaker block", "bloco quebrado"],
+     "r": "Breaker é um order block que FALHOU e virou do avesso. O preço "
+          "atravessou aquela zona de defesa, os que estavam posicionados ali "
+          "ficaram presos, e agora aquela mesma zona passa a funcionar do lado "
+          "contrário: o que era suporte vira resistência e vice-versa. É uma "
+          "das entradas mais fortes do SMC porque você opera junto de quem "
+          "quebrou o nível e contra quem está preso lá dentro."},
+    {"t": "Mitigation block",
+     "k": ["mitigation", "mitigation block", "mitigacao", "mitigação", "mitigado"],
+     "r": "Mitigar é o preço voltar a uma zona para a instituição fechar ou "
+          "equilibrar ordens que ficaram penduradas. Mitigation block é o bloco "
+          "onde isso acontece. Na prática: uma zona não mitigada é uma zona "
+          "com ordem esperando, e por isso ela atrai o preço. Depois de "
+          "mitigada, ela perde força — testar duas ou três vezes o mesmo order "
+          "block enfraquece a zona."},
+    {"t": "FVG (gap de valor justo)",
+     "k": ["fvg", "fair value gap", "gap de valor", "ineficiencia", "ineficiência",
+           "desequilibrio", "desequilíbrio", "imbalance"],
+     "r": "FVG é o buraco que um movimento rápido deixa no gráfico: um espaço "
+          "de preço em que quase não houve negociação dos dois lados. Em três "
+          "velas, é a distância entre o pavio da primeira e o pavio da terceira, "
+          "quando a do meio passa correndo. O mercado tende a voltar para "
+          "preencher esse vazio antes de continuar, porque é ali que ficou "
+          "ordem por executar. Serve para duas coisas: como alvo de correção e "
+          "como zona de entrada quando o preço volta nele a favor da estrutura. "
+          "O ponto mais usado para entrar é o meio do gap."},
+    {"t": "iFVG (FVG invertido)",
+     "k": ["ifvg", "inversion fvg", "fvg invertido", "gap invertido"],
+     "r": "iFVG é um FVG que o preço atravessou por inteiro em vez de respeitar. "
+          "Quando isso acontece, ele inverte o papel: um gap de alta que foi "
+          "perdido passa a funcionar como resistência na volta. É o mesmo "
+          "raciocínio do breaker, só que aplicado à ineficiência. Sinaliza que "
+          "a força mudou de lado com convicção."},
+    {"t": "BPR (faixa de preço equilibrada)",
+     "k": ["bpr", "balanced price range", "faixa equilibrada"],
+     "r": "BPR é a sobreposição de dois FVG opostos, um de alta e um de baixa, "
+          "na mesma faixa de preço. Como os dois lados deixaram ineficiência "
+          "ali, essa região vira uma zona de decisão muito sensível: costuma "
+          "produzir reação forte quando o preço volta nela. Trate como um POI "
+          "de qualidade alta."},
+    {"t": "Liquidez (BSL e SSL)",
+     "k": ["liquidez", "bsl", "ssl", "buy side", "sell side", "liquidity",
+           "onde esta a liquidez", "stops"],
+     "r": "Liquidez é onde estão os stops parados, e é para lá que o preço "
+          "PRECISA ir para as instituições preencherem ordem grande. Acima dos "
+          "topos fica a liquidez de compra, os stops de quem está vendido. "
+          "Abaixo dos fundos fica a liquidez de venda, os stops de quem está "
+          "comprado. A pergunta-mestra de toda leitura SMC é essa: onde está a "
+          "liquidez parada, quem está preso, e para onde o preço tem de ir para "
+          "tomá-la. Liquidez externa fica nos extremos do range; interna fica "
+          "nos gaps e order blocks dentro dele."},
+    {"t": "Topos e fundos iguais (EQH e EQL)",
+     "k": ["topos iguais", "fundos iguais", "eqh", "eql", "equal highs", "equal lows",
+           "duplo topo", "duplo fundo"],
+     "r": "Topos iguais ou fundos iguais são um ímã de liquidez. Quando o preço "
+          "faz dois topos no mesmo nível, todo mundo põe stop logo acima — e "
+          "aquele bolo de stops vira alvo. No SMC, topo duplo não é sinal de "
+          "reversão como no varejo: é sinal de que o preço vai buscar aquele "
+          "nível para varrer. A reversão só entra na conta DEPOIS da varredura, "
+          "quando o preço volta para dentro e dá CHoCH."},
+    {"t": "Inducement (a isca)",
+     "k": ["inducement", "isca", "idm", "armadilha"],
+     "r": "Inducement é a isca: um topo ou fundo menor, colocado ANTES do ponto "
+          "de interesse de verdade, cuja função é atrair entradas cedo e criar "
+          "os stops que a instituição vai usar como combustível. Na prática, se "
+          "você vê um order block bonito e, no caminho até ele, existe um fundo "
+          "óbvio que ainda não foi pego, o preço quase sempre pega aquele fundo "
+          "primeiro. Esperar o inducement ser varrido é o que separa entrar no "
+          "lugar de entrar cedo demais."},
+    {"t": "PDH, PDL, PWH e PWL",
+     "k": ["pdh", "pdl", "pwh", "pwl", "maxima do dia anterior", "minima do dia anterior",
+           "máxima do dia anterior", "mínima do dia anterior", "topo da semana"],
+     "r": "São os níveis de referência que o mercado inteiro enxerga: máxima e "
+          "mínima do dia anterior, e máxima e mínima da semana anterior. Como "
+          "todo mundo vê, todo mundo põe ordem e stop perto deles — e por isso "
+          "eles concentram liquidez. Servem tanto como alvo de um movimento "
+          "quanto como o lugar onde uma varredura acontece antes da virada."},
+    {"t": "Turtle soup e SFP (falha de rompimento)",
+     "k": ["turtle soup", "sfp", "swing failure", "falso rompimento", "varredura",
+           "sweep", "pavio"],
+     "r": "É a varredura clássica: o preço fura um topo ou fundo importante, pega "
+          "os stops, e FECHA de volta para dentro do range. O pavio passa, o "
+          "corpo não. Isso é manipulação, não rompimento. Quando aparece num "
+          "extremo do range e vem seguido de CHoCH, é um dos gatilhos de "
+          "reversão mais confiáveis que existem — e é justamente o que o motor "
+          "procura antes de sugerir contra a tendência de curto prazo."},
+    {"t": "Judas swing",
+     "k": ["judas", "judas swing", "abertura falsa"],
+     "r": "Judas swing é o movimento falso do começo da sessão: o preço sai da "
+          "abertura para um lado, engana quem entrou na direção óbvia, e depois "
+          "vira e vai para o outro. O nome vem da traição. Acontece muito nas "
+          "primeiras horas de Londres e de Nova York. Regra prática: não "
+          "confie no primeiro impulso da abertura sem ver estrutura confirmando."},
+    {"t": "Premium e discount",
+     "k": ["premium", "discount", "premio", "prêmio", "desconto", "caro", "barato",
+           "equilibrio", "equilíbrio", "50%", "fibonacci"],
+     "r": "Pegue o range que interessa, do fundo ao topo, e marque o meio. Acima "
+          "do meio é prêmio, ou seja, caro: é ali que se VENDE. Abaixo do meio é "
+          "desconto, barato: é ali que se COMPRA. Instituição não compra caro "
+          "nem vende barato, e essa é a peneira mais simples e mais poderosa do "
+          "SMC. Se o setup parece bonito mas está do lado errado do meio do "
+          "range, ele não é bom — é ansiedade."},
+    {"t": "OTE (entrada ótima)",
+     "k": ["ote", "optimal trade entry", "entrada otima", "entrada ótima",
+           "61.8", "70.5", "79"],
+     "r": "OTE é a faixa mais eficiente do recuo, entre 61,8 e 79 por cento da "
+          "correção, com o coração em 70,5. Entrar nessa faixa dá o melhor "
+          "risco-retorno porque o stop fica curto, logo além do extremo, e o "
+          "alvo continua lá na liquidez oposta. É o que transforma um trade "
+          "mediano de 1 para 1 num trade de 1 para 3."},
+    {"t": "Power of 3 (acumulação, manipulação, distribuição)",
+     "k": ["power of 3", "po3", "acumulacao", "acumulação", "manipulacao",
+           "manipulação", "distribuicao", "distribuição", "amd"],
+     "r": "Todo movimento institucional tem três fases. Primeiro a acumulação: o "
+          "preço anda de lado num range apertado enquanto a posição é montada. "
+          "Depois a manipulação: um empurrão falso para o lado errado, que varre "
+          "os stops e dá o preço bom para quem está montando. Por último a "
+          "distribuição: o movimento real, na direção contrária à manipulação. "
+          "Se você identificar em qual fase o gráfico está, sabe se espera, se "
+          "toma cuidado ou se entra."},
+    {"t": "Killzones (janelas de horário)",
+     "k": ["killzone", "kill zone", "horario", "horário", "sessao", "sessão",
+           "londres", "nova york", "asia", "ásia", "melhor hora",
+           "quilzone", "quill zone", "kiuzone"],
+     "r": "São as janelas em que o dinheiro grande de fato opera. Londres pela "
+          "manhã costuma criar o movimento do dia. Nova York na abertura traz o "
+          "maior volume e é onde a manipulação da madrugada normalmente se "
+          "desfaz. A sessão da tarde em Nova York dá a continuação ou a "
+          "realização. Fora dessas janelas, o mercado anda sem convicção e "
+          "setup bonito falha mais. Um setup dentro de killzone merece MAIS "
+          "confiança, não menos."},
+    {"t": "Divergência SMT",
+     "k": ["smt", "divergencia smt", "divergência smt", "correlacao", "correlação",
+           "es nq", "indices correlacionados"],
+     "r": "SMT é a divergência entre ativos que normalmente andam juntos, como "
+          "S&P e Nasdaq. Se um faz topo mais alto e o outro não acompanha, a "
+          "força do movimento é mentira: alguém está segurando. É um sinal "
+          "antecipado e muito bom de exaustão, especialmente quando aparece "
+          "junto de uma varredura de liquidez num extremo."},
+    {"t": "Dealing range",
+     "k": ["dealing range", "range de negociacao", "range de negociação", "faixa"],
+     "r": "Dealing range é a faixa entre o último fundo relevante e o último topo "
+          "relevante — o campo onde o jogo está sendo jogado agora. É a partir "
+          "dele que você mede prêmio e desconto, e é dentro dele que ficam os "
+          "gaps e order blocks que interessam. Trocar de dealing range no meio "
+          "da análise é o erro que faz a leitura inteira sair errada."},
+    {"t": "Risco e retorno (R:R)",
+     "k": ["rr", "r:r", "risco retorno", "risco e retorno", "risco/retorno",
+           "relacao risco", "quantos por um"],
+     "r": "R:R é quanto você ganha para cada unidade que arrisca. O plano desta "
+          "mesa exige no mínimo 1 para 2: se o stop custa cem dólares, o alvo "
+          "tem que valer pelo menos duzentos. Isso não é preciosismo, é "
+          "matemática de sobrevivência: com 1 para 2, você fica no lucro "
+          "acertando só 40 por cento das vezes. Com 1 para 1, precisa acertar "
+          "mais de 50 por cento só para empatar, e ninguém sustenta isso. Se o "
+          "setup não entrega 1 para 2, ele não é setup — é vontade de operar."},
+    {"t": "Onde colocar o stop",
+     "k": ["stop", "onde colocar o stop", "invalidacao", "invalidação",
+           "stop loss", "proteger"],
+     "r": "O stop vai onde a IDEIA morre, não onde a dor aperta. Se você comprou "
+          "num order block porque acredita que aquela zona segura, o stop fica "
+          "logo abaixo do extremo que originou a zona — se o preço passar dali, "
+          "a leitura estava errada e não há motivo para continuar. Stop apertado "
+          "no meio do nada só serve para você ser varrido antes do movimento "
+          "que você mesmo previu."},
+    {"t": "Onde colocar o alvo",
+     "k": ["alvo", "take profit", "onde realizar", "tp", "objetivo", "saida", "saída"],
+     "r": "O alvo é a próxima liquidez do lado oposto: o topo ou fundo que ainda "
+          "não foi pego, a máxima do dia anterior, um FVG que ficou aberto. Você "
+          "entra onde a instituição entra e sai onde a instituição realiza. "
+          "Alvo em número redondo escolhido por gosto é chute. Se entre a "
+          "entrada e a próxima liquidez não cabe 1 para 2, o trade não vale."},
+    {"t": "Gestão de risco e tamanho da posição",
+     "k": ["gestao de risco", "gestão de risco", "tamanho da posicao", "sizing",
+           "quantos contratos", "risco por operacao", "quanto arriscar"],
+     "r": "O tamanho vem da conta, nunca da confiança no setup. Você define "
+          "quanto por cento da margem topa perder por operação, mede a "
+          "distância até o stop, e o número de contratos sai dessa divisão. Se "
+          "o stop é largo, entram menos contratos; se é curto, entram mais — o "
+          "prejuízo máximo continua o mesmo. Aumentar tamanho porque o setup "
+          "parece óbvio é o que quebra conta. Nesta ferramenta esse cálculo é "
+          "feito pelo plano da mesa, fora da IA, justamente para não depender "
+          "de opinião."},
+    {"t": "Drawdown e recuperação",
+     "k": ["drawdown", "rebaixamento", "recuperar", "recuperacao", "recuperação",
+           "perdi muito", "prejuizo", "prejuízo"],
+     "r": "Drawdown é a distância entre o topo do seu resultado e o vale depois "
+          "dele. O detalhe cruel: perder 20 por cento exige ganhar 25 para "
+          "voltar; perder 50 exige ganhar 100. Por isso proteger capital vale "
+          "mais que caçar lucro. Depois de uma sequência ruim, o certo é "
+          "DIMINUIR o tamanho e voltar ao setup mais óbvio do seu plano, não "
+          "aumentar para recuperar rápido. Aumentar depois de perder é o "
+          "caminho mais curto para quebrar a conta."},
+    {"t": "Win rate e expectativa",
+     "k": ["win rate", "taxa de acerto", "expectativa", "acerto", "estatistica",
+           "estatística"],
+     "r": "Taxa de acerto sozinha não diz nada. O que paga a conta é a "
+          "expectativa: acerto vezes ganho médio, menos erro vezes perda média. "
+          "Um sistema que acerta 40 por cento com 1 para 3 ganha muito mais que "
+          "um que acerta 70 por cento com 1 para 0,5. Por isso o plano desta "
+          "mesa cobra R:R mínimo em vez de cobrar acerto: é o R:R que sustenta "
+          "o resultado quando a sequência ruim chega — e ela sempre chega."},
+    {"t": "Checklist de entrada",
+     "k": ["checklist", "como entrar", "roteiro", "passo a passo", "quando entrar",
+           "criterios", "critérios", "como opero"],
+     "r": "O roteiro é este, em ordem. Um: qual a estrutura do tempo gráfico "
+          "maior, alta ou baixa. Dois: onde está a liquidez que o preço ainda "
+          "não pegou. Três: o preço já varreu essa liquidez. Quatro: houve CHoCH "
+          "ou deslocamento depois da varredura. Cinco: existe order block ou FVG "
+          "para o preço voltar. Seis: essa zona está em desconto para comprar ou "
+          "em prêmio para vender. Sete: o alvo até a liquidez oposta paga pelo "
+          "menos 1 para 2. Se qualquer um desses falhar, não é entrada."},
+    {"t": "Quando NÃO operar",
+     "k": ["quando nao operar", "quando não operar", "ficar de fora", "nao trade",
+           "não operar", "melhor trade", "esperar"],
+     "r": "Fique de fora quando o preço está no meio do range, sem prêmio nem "
+          "desconto claro. Quando não houve varredura de liquidez nenhuma. "
+          "Quando o setup só existe se você forçar a vista. Quando está fora de "
+          "killzone e o volume sumiu. E principalmente quando você está "
+          "operando por raiva, medo de ficar de fora, ou pressa de recuperar "
+          "prejuízo — nesse estado o gráfico mostra o que você quer ver. O "
+          "melhor trade do dia muitas vezes é o que não foi feito."},
+    {"t": "Confluência",
+     "k": ["confluencia", "confluência", "confirmacao", "confirmação",
+           "quantos fatores", "juntar sinais"],
+     "r": "Confluência é o empilhamento de motivos independentes apontando para "
+          "o mesmo lugar: estrutura a favor, liquidez varrida, order block não "
+          "mitigado, FVG aberto, zona em desconto, dentro da killzone. Um motivo "
+          "sozinho é opinião; quatro juntos é cenário. Mas cuidado com a "
+          "confluência inventada: repetir o mesmo argumento com três nomes "
+          "diferentes não conta como três motivos."},
+    {"t": "Volume, VWAP e indicadores como apoio",
+     "k": ["volume", "vwap", "vpoc", "perfil de volume", "rsi", "media movel",
+           "média móvel", "indicador", "indicadores", "momentum", "divergencia"],
+     "r": "No SMC os indicadores não mandam, eles confirmam. Volume alto no "
+          "rompimento apoia a leitura de deslocamento real; volume fraco sugere "
+          "armadilha. VWAP e o pico de volume funcionam como ímã de preço e "
+          "combinam bem com zona de desconto. Divergência de momentum ajuda a "
+          "antecipar exaustão perto de um extremo. Use como confluência "
+          "adicional, nunca como o motivo principal da entrada."},
+    {"t": "Estrutura interna e externa",
+     "k": ["estrutura interna", "estrutura externa", "swing interno", "swing externo",
+           "fractal", "tempo grafico", "tempo gráfico", "timeframe"],
+     "r": "O preço é fractal: dentro de uma perna de alta do gráfico de quatro "
+          "horas existem altas e baixas inteiras no de cinco minutos. Estrutura "
+          "externa é a do tempo maior, e é ela que dá a direção. Interna é a do "
+          "tempo menor, e é ela que dá o momento de entrar. O erro clássico é "
+          "operar contra a externa porque a interna virou — isso é pegar faca "
+          "caindo. Direção vem de cima, gatilho vem de baixo."},
+]
+
+def _norm_busca(texto):
+    """Minúsculas e sem acento — para casar 'ineficiencia' com 'ineficiência'."""
+    return _sem_acento(str(texto or "")).lower()
+
+def _parecido(palavra, chave, corte=0.78):
+    """Semelhança tolerante para a transcrição de voz. O Google devolveu 'bola
+    do CHOQUE' quando ele falou CHoCH — sem isso, a pergunta mais comum da mesa
+    não achava resposta nenhuma."""
+    import difflib
+    return difflib.SequenceMatcher(None, palavra, chave).ratio() >= corte
+
+def buscar_base_smc(pergunta, minimo=1):
+    """Acha o tópico da base que responde a pergunta. Devolve o item ou None.
+    Pontua por palavra-chave encontrada; chave com mais de uma palavra vale
+    mais, porque 'fair value gap' é muito mais específico que 'gap'."""
+    p = _norm_busca(pergunta)
+    if not p:
+        return None
+    palavras = [w for w in re.findall(r"[a-z0-9:.]+", p) if len(w) >= 4]
+    melhor, nota_melhor = None, 0
+    for item in BASE_SMC:
+        nota = 0
+        for chave in item["k"]:
+            c = _norm_busca(chave)
+            if not c:
+                continue
+            # palavra curta precisa casar como palavra inteira (senão 'ob' casa
+            # dentro de 'objetivo' e a resposta sai completamente errada)
+            achou = (re.search(rf"\b{re.escape(c)}\b", p) if len(c) <= 4
+                     else c in p)
+            if achou:
+                nota += 2 if " " in c else 1
+            elif " " not in c and len(c) >= 4 and any(
+                    # chave longa é distintiva: pode ser mais tolerante sem
+                    # risco de casar errado ('choque' -> 'choch' dá 0,73)
+                    _parecido(w, c, 0.72 if len(c) >= 5 else 0.80)
+                    for w in palavras):
+                nota += 1                  # casou por semelhança (voz)
+        if _norm_busca(item["t"]).split(" (")[0] in p:
+            nota += 2
+        if nota > nota_melhor:
+            melhor, nota_melhor = item, nota
+    return melhor if nota_melhor >= minimo else None
+
+# Perguntas que a base responde sozinha: são de CONCEITO, não dependem do
+# gráfico de agora nem da conta. "O que é um CHoCH" tem a mesma resposta hoje e
+# daqui a um mês — não faz sentido gastar cota da API com isso.
+_RE_CONCEITUAL = re.compile(
+    r"(^|\b)(o que (é|e|sao|são|significa|caracteriza|define)|que (é|e) (um|uma)|"
+    r"como (identific|reconhec|sab|us|funciona|defin|calcul)|"
+    r"me (explica|explique|ensina|ensine|fala sobre|diga o que)|"
+    r"explica(r|-me)?|qual (a|é a|e a) (diferen[çc]a|defini[çc][ãa]o|regra)|"
+    r"para que serve|quando (usar|entrar|n[ãa]o operar)|"
+    r"pra que serve|o que caracteriza)", re.IGNORECASE)
+
+def pergunta_conceitual(texto):
+    """É pergunta de metodologia (responde offline) e não sobre o gráfico
+    de AGORA? Se ele cita 'agora', 'nesse gráfico' ou 'minha posição', o
+    assunto é o mercado ao vivo e tem de ir para o modelo."""
+    t = _norm_busca(texto)
+    if not t or not _RE_CONCEITUAL.search(t):
+        return False
+    if re.search(r"\b(agora|nesse grafico|neste grafico|no grafico|minha posicao|"
+                 r"minha operacao|hoje|meu status|desse print|na tela)\b", t):
+        return False
+    return True
+
+def responder_do_conhecimento(pergunta, com_licoes=True):
+    """Resposta LOCAL: base SMC + lições que ele ensinou. Zero cota, zero
+    internet, resposta instantânea. Devolve o texto ou None."""
+    item = buscar_base_smc(pergunta)
+    if not item:
+        return None
+    partes = [item["r"]]
+    if com_licoes:
+        # Lição dele sobre o mesmo assunto vem junto e tem a última palavra.
+        p = _norm_busca(pergunta)
+        relacionadas = [l for l in carregar_licoes()
+                        if any(_norm_busca(k) in _norm_busca(l) for k in item["k"])
+                        or any(w in _norm_busca(l) for w in p.split() if len(w) > 4)]
+        if relacionadas:
+            partes.append("E você já me ensinou o seguinte sobre isso: " +
+                          "; ".join(relacionadas[:3]) + ".")
+    return " ".join(partes)
+
+def indice_da_base_smc():
+    """Os assuntos que ela domina offline — para ele saber o que pode perguntar
+    sem gastar cota."""
+    return [item["t"] for item in BASE_SMC]
+
 # Como o trader chama o motor de análise ao falar: "liga o motor", "desliga o
-# robô", "para a análise". Precisa do SUBSTANTIVO junto do verbo — sem isso,
-# "ok, pode parar" (parar de explicar) desligaria o robô no meio do pregão.
-_MOTOR_SUBSTANTIVOS = (r"\b(motor|rob[ôo]|an[áa]lises?|monitoramento|sistema|"
-                       r"m[áa]quina|opera[çc][ãa]o autom[áa]tica|autom[áa]tico)\b")
-_MOTOR_LIGAR = r"(lig(a|ar|ue|a[- ]?o)|ativ(a|ar|e)|inici(a|ar|e)|sobe|subir|comec(a|ar|e)|começ(a|ar|e)|start)"
-_MOTOR_DESLIGAR = (r"(deslig(a|ar|ue)|par(a|ar|e)|paus(a|ar|e)|encerr(a|ar|e)|"
-                   r"desativ(a|ar|e)|interromp(e|er|a)|stop)")
+# robô", "para a análise".
+#
+# REGRA DURA: o verbo e o substantivo precisam estar GRUDADOS (no máximo um
+# artigo no meio). Aprendemos isso do jeito caro: com verbo e substantivo
+# soltos na mesma frase, a fala
+#     "não precisa acionar a cota da API para algumas ANÁLISES"
+# desligou o motor no meio do pregão — o "para" era preposição, não o verbo
+# "parar". Qualquer folga aqui volta a derrubar o motor sem ele pedir.
+_MOTOR_SUBSTANTIVOS = (r"(motor|rob[ôo]|an[áa]lises?|monitoramento|sistema|"
+                       r"m[áa]quina|opera[çc][ãa]o autom[áa]tica|autom[áa]tico)")
+_MOTOR_ARTIGO = r"\s+(o|a|os|as|esse|essa|meu|minha|toda|todas)?\s*"
+_MOTOR_LIGAR = (r"\b(lig(a|ar|ue)|ativ(a|ar|e)|inici(a|ar|e)|sob(e|ir)|"
+                r"comec(a|ar|e)|começ(a|ar|e)|start)" + _MOTOR_ARTIGO +
+                _MOTOR_SUBSTANTIVOS + r"\b")
+# "para" é o caso venenoso: em português é VERBO ("para o motor") e PREPOSIÇÃO
+# ("espera PARA a análise ficar pronta"). Como verbo de comando ele aparece no
+# começo da fala ou logo depois de uma vírgula/vocativo — como preposição, vem
+# depois de outro verbo. Os demais verbos não têm essa ambiguidade.
+_MOTOR_DESLIGAR = (r"\b(deslig(a|ar|ue)|par(ar|e)|paus(a|ar|e)|encerr(a|ar|e)|"
+                   r"desativ(a|ar|e)|interromp(e|er|a)|stop)" + _MOTOR_ARTIGO +
+                   _MOTOR_SUBSTANTIVOS + r"\b")
+_MOTOR_PARA = (r"(^|[,.;!?]\s*|\b(tiger|pode|favor|agora|j[áa])\s+)para" +
+               _MOTOR_ARTIGO + _MOTOR_SUBSTANTIVOS + r"\b")
+# "NÃO desliga o motor" / "sem parar as análises" é o oposto do comando.
+_MOTOR_NEGADO = r"\b(n[ãa]o|nunca|sem|jamais)\s+(precisa\w*\s+)?$"
 
 # --------------------------------------------------------------------
 # GUARDA ANTI-MENTIRA
@@ -2063,6 +2483,61 @@ def censurar_alegacao_falsa(texto):
                  "escrever não executa nada aqui.")
     return f"{corpo}\n\n{_AVISO_ALEGACAO}", True
 
+# --------------------------------------------------------------------
+# APRENDIZADO — as três formas como ele realmente ensina uma regra
+# --------------------------------------------------------------------
+# Por muito tempo só a primeira funcionava, e as outras duas — que são as que
+# ele mais usa — caíam no modelo, que respondia "lição aprendida e registrada"
+# sem gravar nada. Daí a queixa de que a IA "não estava aprendendo".
+_LICAO_VERBO = (r"(aprend(a|e|er)|memoriz(a|e|ar)|guard(a|e|ar)|anot(a|e|ar)|"
+                r"li[çc][ãa]o)")
+_LICAO_OBJETO = r"(isso|isto|essa regra|esse ponto|isso a[íi]|bem isso)"
+# Cortesias que sobram grudadas na ponta da lição e não fazem parte dela.
+_LICAO_SOBRA = (r"[\s,;:]*\b(considere|considera|considerar|leve em conta|"
+                r"quero que voc[êe]|gostaria que voc[êe]|por favor|e|ent[ãa]o|"
+                r"da[íi]|ent[ãa]o)\s*$")
+
+def extrair_licao(texto):
+    """Devolve a lição que ele quer gravar, "" quando é o turno anterior, ou
+    None se a frase não é uma lição.
+
+    Três formas aceitas:
+      1. PREFIXO   — "aprenda: nunca opere contra o H4"
+      2. SUFIXO    — "nunca opere contra o H4, aprenda isso" (o jeito dele)
+      3. SOZINHA   — "aprenda isso" (a lição é o que ele disse antes)
+    """
+    bruto = (texto or "").strip()
+    t = bruto.lower()
+    if not t:
+        return None
+
+    # 1. PREFIXO, com ou sem "considere" na frente, com dois-pontos ou "que".
+    m = re.match(r"\s*(considere\s+|quero que voc[êe]\s+|leve em conta\s+)?"
+                 + _LICAO_VERBO + r"\s*(" + _LICAO_OBJETO + r"\s*)?"
+                 r"(:|\bque\b)\s*(?P<corpo>.+)", t, re.IGNORECASE | re.DOTALL)
+    if m and m.group("corpo").strip():
+        return bruto[m.start("corpo"):].strip(" ,.;:—-")
+
+    # 2. SUFIXO: "<a regra>, aprenda isso". Depois do gatilho pode vir uma
+    #    justificativa ("…, aprenda isso, tendo em base que você já conhece
+    #    SMC") — a lição é o que vem ANTES dele.
+    m = re.search(r"[,.;:\s]+" + _LICAO_VERBO + r"\s+" + _LICAO_OBJETO + r"\b",
+                  t, re.IGNORECASE)
+    if m:
+        antes = bruto[:m.start()].strip(" ,.;:—-")
+        antes = re.sub(_LICAO_SOBRA, "", antes, flags=re.IGNORECASE).strip(" ,.;:—-")
+        # Exige uma frase de verdade antes do gatilho: sem isso, "eu quero
+        # aprender isso melhor" viraria a lição "eu quero".
+        if len(antes.split()) >= 4:
+            return antes
+
+    # 3. SOZINHA — "" avisa quem trata o turno para usar a fala anterior dele.
+    if re.fullmatch(r"\s*(considere\s+)?" + _LICAO_VERBO + r"\s+" + _LICAO_OBJETO +
+                    r"[\s,.!]*(por favor|voc[êe] pode|voc[êe] consegue|ok|t[áa]|"
+                    r"beleza|certo)?[\s,.!]*", t, re.IGNORECASE):
+        return ""
+    return None
+
 def interpretar_intencao(texto):
     """Detecta comandos em LINGUAGEM NATURAL, sem depender da IA (dinheiro e
     controle do motor não passam por modelo — o modelo ALUCINA "motor ligado"
@@ -2075,28 +2550,9 @@ def interpretar_intencao(texto):
     t = (texto or "").strip().lower()
     if not t:
         return None
-    # lição: "aprenda: ..." / "aprende que ..." / "lição: ..."
-    for pref in ("aprenda:", "aprende:", "lição:", "licao:", "aprenda que ",
-                 "aprende que ", "lição que ", "licao que "):
-        if t.startswith(pref):
-            return ("APRENDER", texto.strip()[len(pref):].strip())
-    # LIÇÃO NO FIM DA FRASE — é assim que o trader fala de verdade:
-    # "é só você se comunicar com o motor que ele envia, APRENDA ISSO".
-    # Antes só o PREFIXO contava, então essas lições NUNCA eram salvas: o
-    # modelo respondia "lição aprendida e registrada" e nada ficava gravado.
-    _FECHO = (r"[\s,.!]*(por favor|voc[êe] pode|voc[êe] consegue|ok|t[áa]|"
-              r"beleza|certo)?[\s,.!]*$")
-    _APRENDER = r"\b(aprend[ae]|memoriz[ae]|guard[ae]|anot[ae])\b\s+(isso|isto|"
-    _APRENDER += r"essa regra|esse ponto|isso a[íi]|bem isso)\b"
-    m = re.search(r"[,.;:\s]+" + _APRENDER + _FECHO, t)
-    if m:
-        licao = texto.strip()[:m.start()].strip(" ,.;:—-")
-        if licao:
-            return ("APRENDER", licao)
-    # "aprenda isso" sozinho = aprender o que ele acabou de dizer no turno
-    # anterior. Conteúdo vazio sinaliza isso para quem trata o turno.
-    if re.fullmatch(_APRENDER + _FECHO, t):
-        return ("APRENDER", "")
+    licao = extrair_licao(texto)
+    if licao is not None:
+        return ("APRENDER", licao)
     palavras = set(re.findall(r"[a-zà-ú]+", t))
     curto = len(palavras) <= 6
 
@@ -2113,12 +2569,20 @@ def interpretar_intencao(texto):
     if re.search(r"\b(acat\w*|aceito|bora|entra(r)? nessa)\b", t) \
             and not re.search(r"\b(não|nao|nunca|sem)\b", t):
         return "ACATAR"
-    # MOTOR: só vale com verbo E substantivo do motor na mesma frase.
-    if re.search(_MOTOR_SUBSTANTIVOS, t):
-        if re.search(rf"\b{_MOTOR_DESLIGAR}\b", t):
-            return "DESLIGAR_MOTOR"
-        if re.search(rf"\b{_MOTOR_LIGAR}\b", t):
-            return "LIGAR_MOTOR"
+    # MOTOR: verbo GRUDADO no substantivo, e não pode estar negado.
+    def _motor(padrao):
+        m = re.search(padrao, t)
+        return bool(m) and not re.search(_MOTOR_NEGADO, t[:m.start()])
+    if _motor(_MOTOR_DESLIGAR) or _motor(_MOTOR_PARA):
+        return "DESLIGAR_MOTOR"
+    if _motor(_MOTOR_LIGAR):
+        return "LIGAR_MOTOR"
+    # O QUE ELA SABE SEM GASTAR COTA: os assuntos da base nativa.
+    if re.search(r"\b(sabe|conhece|domina|treinada|treinado|treinamento|"
+                 r"conhecimento|base)\b", t) and \
+            re.search(r"\b(o que|quais|sobre o que|assuntos|t[óo]picos|"
+                      r"me diga|mostra)\b", t):
+        return "LISTAR_CONHECIMENTO"
     # VER O QUE ELA APRENDEU: sem isso o trader não tem como CONFERIR se a
     # lição entrou mesmo — e era exatamente essa a desconfiança dele.
     if re.search(r"\b(li[çc][õo]es|aprendeu|aprendido|aprendizado|mem[óo]ria|"
@@ -2209,7 +2673,7 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
         return (intencao, None)
     if intencao in ("DISPENSAR", "CANCELAR", "STATUS", "AJUDA",
                     "LIGAR_MOTOR", "DESLIGAR_MOTOR", "ENVIAR_WHATSAPP",
-                    "CONECTAR_WHATSAPP", "LISTAR_LICOES"):
+                    "CONECTAR_WHATSAPP", "LISTAR_LICOES", "LISTAR_CONHECIMENTO"):
         return ("EXECUTAR", intencao)
     return ("IA", None)
 
@@ -2258,6 +2722,11 @@ def montar_persona_ia():
         "• '<a regra>, aprenda isso' — grava a regra na sua memória permanente.\n"
         "\n"
         "O QUE VOCÊ FAZ SOZINHA (isto sim é seu):\n"
+        "• BASE PRÓPRIA DE SMC: a ferramenta carrega uma base de metodologia "
+        "SMC/ICT dentro dela — a MESMA que o motor usa para ler o gráfico. "
+        "Pergunta de conceito é respondida por ela, na hora, sem gastar cota "
+        "de API. Se você já sabe a resposta pela metodologia, responda direto "
+        "em vez de enrolar.\n"
         "• VER O GRÁFICO: quando a imagem vier anexada, analise-a de verdade. "
         "Descreva só o que está visível; nunca invente preço que não aparece.\n"
         "• PESQUISAR NA INTERNET: você tem busca ao vivo. Use para notícia, "
@@ -3215,6 +3684,15 @@ class SmcQuantApp(ctk.CTk):
         if tipo == "EXECUTAR":
             self._chat_executar_acao(dado)
             return
+        # CONHECIMENTO LOCAL ANTES DA API: pergunta de metodologia ("o que é um
+        # CHoCH?") tem resposta fixa — não faz sentido queimar cota com ela. Sai
+        # na hora, funciona sem internet, e sobra cota para o que é do momento
+        # (leitura de gráfico, notícia, análise da posição de agora).
+        if pergunta_conceitual(texto):
+            local = responder_do_conhecimento(texto)
+            if local:
+                self._chat_responder(local)
+                return
         # Conversa livre -> modelo
         if self._chat_ocupada:
             self._chat_escrever("sistema", "(aguarde — ainda estou respondendo a anterior)",
@@ -3464,6 +3942,23 @@ class SmcQuantApp(ctk.CTk):
             return
         if acao == "ZERAR_CICLO":
             self._chat_zerar_ciclo()
+            return
+        if acao == "LISTAR_CONHECIMENTO":
+            temas = indice_da_base_smc()
+            licoes = carregar_licoes()
+            corpo = "\n".join(f"• {t}" for t in temas)
+            self._chat_responder(
+                f"Tenho {len(temas)} assuntos de SMC gravados aqui dentro, que "
+                "eu respondo NA HORA e sem gastar nada da cota da API (funciona "
+                f"até sem internet):\n{corpo}\n\nAlém desses, tenho "
+                f"{len(licoes)} lição(ões) que VOCÊ me ensinou. Pergunte "
+                "qualquer um desses temas que eu explico direto. Para o que é do "
+                "momento — leitura do gráfico de agora, notícia, análise da sua "
+                "posição — aí sim eu uso a API.",
+                falar_tb=False,
+                texto_voz=f"Tenho {len(temas)} assuntos de SMC gravados aqui "
+                          f"dentro e {len(licoes)} lições suas. Respondo todos "
+                          "eles sem gastar cota da API.")
             return
         if acao == "LISTAR_LICOES":
             # Ele precisa CONFERIR o que entrou de verdade na memória — a
@@ -3882,11 +4377,23 @@ class SmcQuantApp(ctk.CTk):
         except Exception as e:
             ultimo_erro = e
         if not resposta:
-            resposta = (f"{self._diagnostico_erro(ultimo_erro)} "
-                        "Enquanto isso, os comandos locais seguem funcionando "
-                        "normalmente: 'status', 'acatar', 'dispensar', "
-                        "'cancelar ordem', 'liga o motor', 'desliga o motor' e "
-                        "'aprenda: ...'.")
+            # A API caiu (cota, chave ou rede). Antes disso virar uma resposta
+            # vazia, tenta o CONHECIMENTO LOCAL: se a pergunta for de
+            # metodologia, ela responde do mesmo jeito — sem cota nenhuma.
+            local = responder_do_conhecimento(pergunta) if not anexo else None
+            if local:
+                resposta = (f"{local}\n\n(Respondi da minha base própria de SMC, "
+                            "sem usar a API — ela está indisponível agora: "
+                            f"{self._diagnostico_erro(ultimo_erro)})")
+            else:
+                resposta = (
+                    f"{self._diagnostico_erro(ultimo_erro)} "
+                    "Mas eu continuo útil sem a API: pergunte metodologia que eu "
+                    "respondo da minha base própria (estrutura, liquidez, order "
+                    "block, FVG, premium e desconto, gestão de risco…), e os "
+                    "comandos seguem funcionando: 'status', 'acatar', "
+                    "'dispensar', 'cancelar ordem', 'liga o motor', 'zera o "
+                    "ciclo', 'manda no whatsapp' e '<regra>, aprenda isso'.")
         self._chat_entregar_resposta(resposta)
 
     def _completar_resposta(self, client, modelo, config, conteudo, comeco):

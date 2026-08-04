@@ -1,4 +1,4 @@
-# Como compilar o SMC Quant Pro v2.4.0 (TIGER)
+# Como compilar o SMC Quant Pro v2.5.0 (TIGER)
 
 > **Resumo:** o processo de build **não mudou**. É o mesmo fluxo do `.spec`
 > que você já usa. Nesta versão só o `main_app.py` mudou — substitua-o e compile.
@@ -12,28 +12,34 @@
 O **motor NÃO mudou** — reaproveite a pasta `motor\` com o `node_modules` que
 você já tem. O `tradovate_auto.py` também não mudou.
 
-Novidades da v2.4.0 (aba 🐯 TIGER) — **ela parou de mentir e começou a
-aprender de verdade**:
+Novidades da v2.5.0 (aba 🐯 TIGER) — **cérebro próprio, sem depender da cota**:
 
-- **"aprenda isso" no FIM da frase agora grava.** Antes só valia `aprenda:` no
-  começo, então lições ditas do jeito natural (*"sempre confira o R:R antes de
-  sugerir, aprenda isso"*) **nunca eram salvas** — o modelo só dizia que tinha
-  aprendido. Pergunte *"o que você aprendeu?"* e ela lista o que está gravado.
-- **Guarda anti-mentira.** Toda resposta do modelo passa por um filtro que
-  **remove** alegações de ação já feita ("acabei de zerar", "já enviei no seu
-  WhatsApp", "lição registrada") e coloca no lugar o comando que resolve.
-- **Mão na ferramenta**, com prova:
-  - *"zera o ciclo"* — zera mesmo o dashboard (pede confirmação; só confirma
-    depois de reler o arquivo do disco; o histórico fica arquivado).
-  - *"manda no whatsapp"* — dispara pelo motor; só diz "enviado" se o disparo
-    confirmar, senão diz o motivo.
-  - *"conecta o whatsapp"* — liga o motor e aponta onde está o QR code.
-  - *"tira um print"* — captura a tela **na hora**, sem esperar o ciclo.
-- **Persona reescrita** com a regra número um: **escrever não é fazer**.
+- 🔴 **CORREÇÃO CRÍTICA — o motor desligava sozinho.** A frase *"não precisa
+  acionar a cota da API **para** algumas **análises**"* foi entendida como
+  "**parar** as análises" e **desligou o motor no meio do pregão**. O "para"
+  era preposição. Agora o verbo precisa estar **grudado** no substantivo
+  (*"desliga o motor"*), negação não vira comando (*"não desliga o motor"*), e o
+  "para" ambíguo só conta como verbo no começo da fala ou depois de vírgula.
+- **Base de conhecimento SMC nativa: 32 assuntos gravados dentro do programa.**
+  Estrutura (BOS, CHoCH, MSS), order blocks (com breaker e mitigation),
+  ineficiências (FVG, iFVG, BPR), liquidez (BSL/SSL, topos iguais, inducement,
+  PDH/PDL, turtle soup, judas swing), precificação (premium/discount, OTE),
+  Power of 3, killzones, SMT, dealing range, e a parte de gestão (R:R, stop,
+  alvo, tamanho de posição, drawdown, win rate, checklist, quando não operar).
+  Pergunta de metodologia é respondida **na hora, sem tocar na API** e até
+  **sem internet**. A cota fica reservada para o que é do momento.
+- **Cota estourada deixa de ser resposta vazia** — ela responde do próprio
+  conhecimento e avisa que a API está fora.
+- **Entende a transcrição torta da voz**: *"bola do Choque"* acha CHoCH.
+- **É treinável**: a lição que você grava com *"aprenda isso"* entra junto na
+  resposta da base. Pergunte *"o que você sabe?"* para ver a lista inteira.
+- **Aprendizado mais esperto**: aceita `aprenda:`, *"…, aprenda isso"* no fim, e
+  *"considere aprender isso"* com justificativa depois.
 
-Da v2.3.0, que veio junto: liga/desliga o motor, enxerga o último print,
-pesquisa na internet, respostas não saem mais cortadas no meio da conta, e
-falha com motivo (cota da chave, chave recusada ou internet).
+Das v2.3/v2.4, que vieram junto: liga/desliga o motor de verdade, enxerga o
+último print, pesquisa na internet, guarda anti-mentira nas respostas do
+modelo, *"zera o ciclo"*, *"manda no whatsapp"*, *"tira um print"*, e respostas
+que não saem mais cortadas no meio da conta.
 
 ---
 
@@ -62,9 +68,17 @@ cd C:\Users\jovan\Documents\SMC_QUANT_PRO
 python main_app.py
 ```
 
-Checklist da v2.4.0 (aba **🐯 TIGER**) — os 4 primeiros são os que estavam
-quebrados no pregão de 04/08:
+Checklist da v2.5.0 (aba **🐯 TIGER**) — comece pelos dois primeiros, que são
+os erros do pregão de 04/08:
 
+0. **O motor NÃO pode desligar sozinho.** Com o motor ligado, digite a frase
+   inteira: *"não precisa acionar a cota da api para algumas analises,
+   considere aprender isso"*. O motor tem que **continuar ligado**, e ela tem
+   que responder *"Anotado e aprendido…"*.
+0b. **Sem cota:** pergunte *"o que é um order block?"* e *"o que caracteriza um
+   CHoCH?"*. A resposta sai **na hora**, da base própria — dá para conferir
+   desligando a internet. Depois pergunte *"o que você sabe?"* para ver os 32
+   assuntos.
 1. **Aprender:** diga *"sempre confira o R:R antes de sugerir, aprenda isso"*.
    Ela responde **"Anotado e aprendido: …"**. Agora pergunte *"o que você
    aprendeu?"* — a lição tem que aparecer na lista. Feche e reabra o app e
@@ -139,17 +153,17 @@ Repita o checklist do passo 2 dentro do `.exe`.
 ## 6. Gerar o instalador (Inno Setup)
 
 1. Abra `instalador\SMC_Quant_Pro.iss` no Inno Setup Compiler.
-2. Confira que `MyAppVersion` está **"2.4.0"** (já está).
+2. Confira que `MyAppVersion` está **"2.5.0"** (já está).
 3. Pressione **F9** (Compile).
 
-Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.4.0.exe`.
+Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.5.0.exe`.
 
 ---
 
 ## 7. Publicar a atualização
 
-1. Suba o `SMC_Quant_Pro_Setup_2.4.0.exe` na pasta do Google Drive.
-2. O `versao.json` **já está publicado como 2.4.0** — assim que o arquivo
+1. Suba o `SMC_Quant_Pro_Setup_2.5.0.exe` na pasta do Google Drive.
+2. O `versao.json` **já está publicado como 2.5.0** — assim que o arquivo
    estiver no Drive, os clientes veem o aviso de nova versão.
 
 ---
@@ -158,7 +172,9 @@ Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.4.0.exe`.
 
 | Sintoma | Causa provável | O que fazer |
 |---|---|---|
-| "A cota da sua chave Gemini estourou" | limite do plano gratuito | espere alguns minutos ou cole uma chave paga na aba Motor |
+| "A cota da sua chave Gemini estourou" | limite do plano gratuito | espere alguns minutos ou cole uma chave paga — mas metodologia ela responde igual, da base própria |
+| Ela responde teoria quando eu quero o gráfico | pergunta sem referência ao agora | diga "agora", "nesse gráfico" ou "minha posição" — aí ela usa a API e olha o print |
+| O motor desligou sozinho | era o bug do "para" (v2.4 e antes) | corrigido na v2.5.0; se voltar a acontecer, me mande a frase exata que você digitou |
 | "A chave da Gemini foi recusada" | chave errada/expirada | cole a chave de novo na aba Motor e ligue o motor uma vez para salvar |
 | "Não consegui alcançar o servidor" | internet | verifique a conexão — o chat e a transcrição de voz usam a rede |
 | Ela diz que não tem print do gráfico | motor nunca rodou um ciclo | ligue o motor e espere uma análise, ou mande um print pelo 📎 |
