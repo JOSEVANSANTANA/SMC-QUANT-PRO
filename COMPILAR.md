@@ -1,4 +1,4 @@
-# Como compilar o SMC Quant Pro v2.7.0 (TIGER)
+# Como compilar o SMC Quant Pro v2.7.1 (TIGER)
 
 > **Resumo:** o processo de build **não mudou**. É o mesmo fluxo do `.spec`
 > que você já usa. Nesta versão só o `main_app.py` mudou — substitua-o e compile.
@@ -12,7 +12,7 @@
 O **motor NÃO mudou** — reaproveite a pasta `motor\` com o `node_modules` que
 você já tem. O `tradovate_auto.py` também não mudou.
 
-Novidades da v2.7.0 (aba 🐯 TIGER) — **ela responde, em vez de despejar
+Novidades da v2.7.1 (aba 🐯 TIGER) — **ela responde, em vez de despejar
 manchete**:
 
 - 🔴 **CORREÇÃO — o despejo de manchetes.** Tudo que não estava na base virava
@@ -110,7 +110,7 @@ cd C:\Users\jovan\Documents\SMC_QUANT_PRO
 python main_app.py
 ```
 
-Checklist da v2.7.0 (aba **🐯 TIGER**) — comece pelos dois primeiros, que são
+Checklist da v2.7.1 (aba **🐯 TIGER**) — comece pelos dois primeiros, que são
 os erros do pregão de 04/08:
 
 00. **Fim do despejo de manchetes.** Pergunte, uma de cada vez: *"o que você
@@ -205,17 +205,17 @@ Repita o checklist do passo 2 dentro do `.exe`.
 ## 6. Gerar o instalador (Inno Setup)
 
 1. Abra `instalador\SMC_Quant_Pro.iss` no Inno Setup Compiler.
-2. Confira que `MyAppVersion` está **"2.7.0"** (já está).
+2. Confira que `MyAppVersion` está **"2.7.1"** (já está).
 3. Pressione **F9** (Compile).
 
-Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.7.0.exe`.
+Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.7.1.exe`.
 
 ---
 
 ## 7. Publicar a atualização
 
-1. Suba o `SMC_Quant_Pro_Setup_2.7.0.exe` na pasta do Google Drive.
-2. O `versao.json` **já está publicado como 2.7.0** — assim que o arquivo
+1. Suba o `SMC_Quant_Pro_Setup_2.7.1.exe` na pasta do Google Drive.
+2. O `versao.json` **já está publicado como 2.7.1** — assim que o arquivo
    estiver no Drive, os clientes veem o aviso de nova versão.
 
 ---
@@ -229,7 +229,7 @@ Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.7.0.exe`.
 | "Não vou chutar um número" | ativo fora da lista dela | ela cobre S&P, Nasdaq, Dow, Russell, VIX, ouro, prata, petróleo, dólar, euro, bitcoin, Ibovespa e juros 10a |
 | Ela respondeu outro assunto | pergunta ambígua para a base | diga "não foi isso que perguntei" — isso bloqueia a base e força resposta nova |
 | Ela responde teoria quando eu quero o gráfico | pergunta sem referência ao agora | diga "agora", "nesse gráfico" ou "minha posição" — aí ela usa a API e olha o print |
-| O motor desligou sozinho | era o bug do "para" (v2.4 e antes) | corrigido na v2.7.0; se voltar a acontecer, me mande a frase exata que você digitou |
+| O motor desligou sozinho | era o bug do "para" (v2.4 e antes) | corrigido na v2.7.1; se voltar a acontecer, me mande a frase exata que você digitou |
 | "A chave da Gemini foi recusada" | chave errada/expirada | cole a chave de novo na aba Motor e ligue o motor uma vez para salvar |
 | "Não consegui alcançar o servidor" | internet | verifique a conexão — o chat e a transcrição de voz usam a rede |
 | Ela diz que não tem print do gráfico | motor nunca rodou um ciclo | ligue o motor e espere uma análise, ou mande um print pelo 📎 |

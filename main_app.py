@@ -111,7 +111,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.7.0"
+VERSAO_ATUAL = "2.7.1"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -2342,6 +2342,20 @@ def resumo_de_noticias(pergunta="", maximo=5):
         if _norm_busca(nome.split()[0]) in _norm_busca(pergunta):
             casa = nome
             break
+    # Casa que ele citou mas que eu NÃO leio (Bloomberg, Reuters, Valor...).
+    # Dizer isso é melhor que devolver as minhas fontes como se fossem a dele.
+    aviso_casa = ""
+    if not casa:
+        for outra in ("bloomberg", "reuters", "valor", "financial times",
+                      "wall street journal", "wsj", "exame", "estadao",
+                      "globo", "cnn", "forbes", "barron"):
+            if outra in _norm_busca(pergunta):
+                aviso_casa = (
+                    f"Eu não leio a {outra.title()} diretamente — as fontes que "
+                    "eu acompanho são " +
+                    ", ".join(n for n, _ in FONTES_NOTICIAS) +
+                    ". Do que ELAS estão publicando agora:")
+                break
     if casa:
         brutas = [n for n in noticias_do_mercado(maximo=60) if n["fonte"] == casa]
         if not brutas:                     # a casa não publicou nada agora
@@ -2357,9 +2371,10 @@ def resumo_de_noticias(pergunta="", maximo=5):
                                      por_relevancia=quer_ranking)
     if not escolhidas:
         return None
-    cabeca = ("O que está pesando mais no mercado agora, na ordem de impacto:"
-              if quer_ranking else
-              "O que as casas de mercado estão publicando agora:")
+    cabeca = aviso_casa or (
+        "O que está pesando mais no mercado agora, na ordem de impacto:"
+        if quer_ranking else
+        "O que as casas de mercado estão publicando agora:")
     linhas = [cabeca]
     for n in escolhidas:
         linhas.append(f"• [{n['fonte']} · {_idade_texto(n['quando'])}] "
@@ -2696,6 +2711,24 @@ BASE_SMC = [
           "combinam bem com zona de desconto. Divergência de momentum ajuda a "
           "antecipar exaustão perto de um extremo. Use como confluência "
           "adicional, nunca como o motivo principal da entrada."},
+    {"t": "Como te dar acesso à web e como te treinar",
+     "k": ["acesso a web", "acesso a internet", "te dar acesso", "como te treinar",
+           "treinar melhor", "como te ensino", "como voce aprende",
+           "voce tem internet", "voce acessa a internet", "precisa de api",
+           "precisa de chave", "como te dou acesso"],
+     "r": "Eu já tenho acesso à web, e ele não depende de chave nenhuma: a "
+          "própria ferramenta busca cotação no Yahoo Finance e manchete em seis "
+          "casas de mercado, direto, sem passar por API paga. Isso funciona "
+          "mesmo com a cota da Gemini estourada. A chave da Gemini só é "
+          "necessária para duas coisas: ler a imagem do gráfico e conversar "
+          "livremente sobre assunto que não está na minha base. Se ela estourar, "
+          "eu continuo respondendo metodologia, macro, preço e notícia. Para me "
+          "TREINAR é ainda mais simples: termine qualquer frase com aprenda "
+          "isso, por exemplo, nunca opere contra o H4 depois das quinze horas, "
+          "aprenda isso. A regra fica gravada para sempre, vale em toda análise "
+          "e sobrevive a fechar o programa. Pergunte o que você aprendeu para "
+          "conferir a lista, e o que você sabe para ver todos os assuntos que "
+          "eu domino sem gastar nada."},
     {"t": "Confirmação de reversão",
      "k": ["confirmacao de reversao", "confirmação de reversão", "confirmar reversao",
            "confirmar reversão", "sinal de reversao", "sinal de reversão",
@@ -4046,7 +4079,10 @@ class SmcQuantApp(ctk.CTk):
         topo.pack(fill="x")
         ctk.CTkLabel(topo, text="🐯", text_color="#ff9f43",
                      font=ctk.CTkFont(size=16, weight="bold")).pack(side="left", padx=(12, 4), pady=8)
-        ctk.CTkLabel(topo, text="TIGER — IA da mesa",
+        # A VERSÃO FICA À VISTA: sem isso não dá para saber, olhando o chat, se
+        # o .exe rodando é o novo ou o antigo — e um teste feito no build velho
+        # parece um defeito que já foi corrigido.
+        ctk.CTkLabel(topo, text=f"TIGER — IA da mesa · v{VERSAO_ATUAL}",
                      text_color="#e6edf3",
                      font=ctk.CTkFont(size=13, weight="bold")).pack(side="left", pady=8)
         # Vínculo EXPLÍCITO com a conta selecionada: a TIGER conversa sempre
