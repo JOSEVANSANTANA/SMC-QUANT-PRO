@@ -111,7 +111,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.6.0"
+VERSAO_ATUAL = "2.7.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1880,6 +1880,26 @@ def extrair_comando_tiger(texto):
 # OLÁ TIGER pausa nesse período — senão o microfone transcreveria a própria voz.
 TTS_FALANDO = False
 
+VOZ_RATE_PADRAO = 165
+VOZ_RATE_MIN = 110
+VOZ_RATE_MAX = 260
+
+def velocidade_da_voz():
+    """Palavras por minuto do TTS, como o trader ajustou. Fica salvo na config,
+    então vale também depois de fechar o programa."""
+    try:
+        v = int(carregar_config().get("voz_rate", VOZ_RATE_PADRAO))
+    except (TypeError, ValueError):
+        v = VOZ_RATE_PADRAO
+    return max(VOZ_RATE_MIN, min(VOZ_RATE_MAX, v))
+
+def ajustar_velocidade_da_voz(passo):
+    """Acelera (passo positivo) ou desacelera a fala. Devolve (novo, no_limite)."""
+    atual = velocidade_da_voz()
+    novo = max(VOZ_RATE_MIN, min(VOZ_RATE_MAX, atual + passo))
+    salvar_config({"voz_rate": novo})
+    return novo, novo == atual
+
 def falar(texto: str):
     global TTS_FALANDO
     try:
@@ -1888,7 +1908,9 @@ def falar(texto: str):
             return
         TTS_FALANDO = True
         engine = pyttsx3.init()
-        engine.setProperty('rate', 165)
+        # Velocidade ajustável pelo trader ("acelere a fala" / "fala mais
+        # devagar"). 165 é o padrão; a faixa evita ficar ininteligível.
+        engine.setProperty('rate', velocidade_da_voz())
         for v in engine.getProperty('voices'):
             if 'brazil' in v.name.lower() or 'portugu' in v.name.lower():
                 engine.setProperty('voice', v.id)
@@ -2198,6 +2220,68 @@ def _idade_texto(quando):
         return f"há {minutos / 60:.0f} h"
     return f"há {minutos / 1440:.0f} dia(s)"
 
+_PESO_MANCHETE = [
+    # o que de fato move índice, do mais forte para o mais fraco
+    (6, ("fed", "fomc", "powell", "rate cut", "rate hike", "juros", "interest rate")),
+    (6, ("cpi", "inflation", "inflacao", "pce", "payroll", "jobs report",
+         "nonfarm", "unemployment")),
+    (5, ("s&p", "sp 500", "nasdaq", "dow", "stocks", "wall street", "acoes",
+         "bolsa", "market", "mercado", "rally", "selloff", "record")),
+    (4, ("recession", "recessao", "gdp", "pib", "tariff", "tarifa", "war",
+         "guerra", "oil", "petroleo", "opec")),
+    (3, ("earnings", "balanco", "guidance", "resultados", "lucro")),
+    (2, ("treasury", "yield", "dollar", "dolar", "bond")),
+]
+
+def relevancia_manchete(noticia):
+    """Quanto essa manchete importa para QUEM OPERA ÍNDICE. Serve para
+    responder 'qual a notícia mais impactante' — antes ela devolvia as seis
+    primeiras da lista, que é ordem de horário, não de importância."""
+    texto = _norm_busca(f"{noticia.get('titulo','')} {noticia.get('resumo','')}")
+    nota = 0
+    for peso, termos in _PESO_MANCHETE:
+        if any(t in texto for t in termos):
+            nota += peso
+    # notícia velha vale menos: o pregão anda
+    idade = noticia.get("quando")
+    if idade:
+        horas = max(0.0, (time.time() - idade) / 3600)
+        nota -= min(4, int(horas / 3))
+    return nota
+
+def _mesma_noticia(a, b):
+    """Duas casas publicando a mesma coisa não são duas notícias."""
+    ta, tb = _norm_busca(a["titulo"]), _norm_busca(b["titulo"])
+    if ta == tb:
+        return True
+    import difflib
+    return difflib.SequenceMatcher(None, ta[:90], tb[:90]).ratio() >= 0.80
+
+def selecionar_noticias(noticias, maximo=6, por_relevancia=False):
+    """Escolhe o que mostrar: sem repetição e sem uma casa só dominando.
+
+    No log de uso, as seis manchetes vinham TODAS do Investing.com — porque a
+    ordenação é por horário e aquele feed publica em lote. Aqui as fontes se
+    revezam, e títulos parecidos são colapsados."""
+    unicas = []
+    for n in noticias:
+        if not any(_mesma_noticia(n, u) for u in unicas):
+            unicas.append(n)
+    if por_relevancia:
+        unicas.sort(key=relevancia_manchete, reverse=True)
+        return unicas[:maximo]
+    # revezamento entre casas, preservando a ordem de novidade dentro de cada
+    por_fonte = {}
+    for n in unicas:
+        por_fonte.setdefault(n["fonte"], []).append(n)
+    escolhidas, rodada = [], 0
+    while len(escolhidas) < maximo and any(v[rodada:] for v in por_fonte.values()):
+        for fila in por_fonte.values():
+            if rodada < len(fila) and len(escolhidas) < maximo:
+                escolhidas.append(fila[rodada])
+        rodada += 1
+    return escolhidas
+
 def formatar_cotacao(cot, apelido=""):
     """Cotação em frase natural — é lida em voz alta, então nada de tabela."""
     if not cot:
@@ -2212,6 +2296,78 @@ def formatar_cotacao(cot, apelido=""):
         partes.append(f"máxima do dia {cot['maxima']:,.2f} e mínima "
                       f"{cot['minima']:,.2f}")
     return ", ".join(partes) + f" (dado do {cot['fonte']}, às {cot['hora']})."
+
+def responder_offline(pergunta):
+    """A MELHOR resposta que dá para montar sem a API, nesta ordem:
+    capacidades da ferramenta → base (SMC + macro) → cotação real → notícia
+    relevante. Devolve texto pronto para o trader, ou None se não há nada.
+
+    POR QUE ISSO EXISTE: antes, tudo que não estava na base virava um DESPEJO
+    das mesmas seis manchetes — inclusive para "o que você pode fazer?",
+    "acelere a fala" e "como te dou acesso à web?". Aquilo não respondia nada e
+    ainda mostrava na tela o texto interno do prompt ("cite a fonte ao usar…"),
+    que nunca deveria sair do bastidor."""
+    if not (pergunta or "").strip():
+        return None
+    if pergunta_sobre_capacidades(pergunta):
+        return texto_das_capacidades()
+    # Base própria (metodologia + macro) responde de verdade a pergunta.
+    do_conhecimento = responder_do_conhecimento(pergunta)
+    if do_conhecimento:
+        return do_conhecimento
+    # Cotação: só quando ele realmente pediu preço de um ativo.
+    alvo = simbolo_do_texto(pergunta)
+    quer_preco = re.search(r"\b(cota[çc][ãa]o|pre[çc]o|quanto|quanto est|"
+                           r"em quanto|valor)\b", _norm_busca(pergunta))
+    if alvo and quer_preco:
+        cot = cotacao_mercado(alvo[0])
+        if cot:
+            return formatar_cotacao(cot, alvo[1].upper())
+    # Notícia: também só quando o assunto é notícia/mercado agora. E vem
+    # RESPONDENDO, com as mais relevantes, não com a lista bruta.
+    if re.search(r"\b(not[íi]cia|manchete|aconteceu|acontecendo|movend|"
+                 r"impact|relevante|mercado hoje|por que|porqu[êe])\b",
+                 _norm_busca(pergunta)):
+        return resumo_de_noticias(pergunta)
+    return None
+
+def resumo_de_noticias(pergunta="", maximo=5):
+    """Notícia em forma de RESPOSTA: as mais relevantes para quem opera índice,
+    sem repetição, sem uma casa só dominando, com fonte e hora."""
+    # Se ele citou uma casa ("tem notícia na Nasdaq?"), a CASA manda. Nomes
+    # como Nasdaq e Investing são casa e ativo ao mesmo tempo; filtrar pelos
+    # dois ao mesmo tempo não sobrava nada.
+    casa = None
+    for nome, _ in FONTES_NOTICIAS:
+        if _norm_busca(nome.split()[0]) in _norm_busca(pergunta):
+            casa = nome
+            break
+    if casa:
+        brutas = [n for n in noticias_do_mercado(maximo=60) if n["fonte"] == casa]
+        if not brutas:                     # a casa não publicou nada agora
+            brutas = noticias_do_mercado(maximo=40)
+    else:
+        alvo = simbolo_do_texto(pergunta)
+        brutas = noticias_do_mercado(maximo=40, termo=alvo[1] if alvo else None)
+    if not brutas:
+        return None
+    quer_ranking = bool(re.search(r"\b(mais impact|principal|mais important|"
+                                  r"destaque|resum)", _norm_busca(pergunta)))
+    escolhidas = selecionar_noticias(brutas, maximo=maximo,
+                                     por_relevancia=quer_ranking)
+    if not escolhidas:
+        return None
+    cabeca = ("O que está pesando mais no mercado agora, na ordem de impacto:"
+              if quer_ranking else
+              "O que as casas de mercado estão publicando agora:")
+    linhas = [cabeca]
+    for n in escolhidas:
+        linhas.append(f"• [{n['fonte']} · {_idade_texto(n['quando'])}] "
+                      f"{n['titulo']}")
+    linhas.append("São as manchetes das fontes, com a hora de publicação — não "
+                  "interpretação minha. Se quiser, eu ligo alguma delas ao seu "
+                  "cenário no gráfico.")
+    return "\n".join(linhas)
 
 def bloco_web_para_prompt(texto):
     """Dados REAIS da web para injetar no prompt do modelo quando a pergunta é
@@ -2576,6 +2732,179 @@ BASE_SMC = [
           "caindo. Direção vem de cima, gatilho vem de baixo."},
 ]
 
+# --------------------------------------------------------------------
+# BASE MACRO — o "e se" que todo trader pergunta, respondido offline
+# --------------------------------------------------------------------
+# "Se o Fed cortar juros amanhã a bolsa cai ou sobe?" e "se o payroll vier
+# acima do esperado, o S&P sobe ou cai?" são perguntas de mesa, e as relações
+# são estáveis: não mudam com a cota da API. Antes ela respondia essas com um
+# DESPEJO DE MANCHETES, que não responde nada.
+#
+# Regra de honestidade que vale para todo texto daqui: a relação vem com o
+# PORQUÊ e com a exceção. Mercado não é fórmula, e prometer direção é o jeito
+# mais rápido de fazer o trader perder dinheiro confiando na ferramenta.
+BASE_MACRO = [
+    {"t": "Corte de juros do Fed e a bolsa",
+     "k": ["fed cortar juros", "corte de juros", "cortar juros", "corte de taxa",
+           "fed cortar", "juros caindo", "afrouxamento monetario",
+           "fed baixar juros", "reducao de juros"],
+     "r": "A reação de manual é bolsa SUBINDO: juro menor barateia o crédito, "
+          "reduz o retorno da renda fixa e aumenta o valor presente do lucro "
+          "futuro das empresas. Mas cuidado com a armadilha, porque ela é "
+          "frequente: o que move o preço não é o corte, é o corte COMPARADO ao "
+          "que já estava embutido. Se o mercado já esperava o corte, a notícia "
+          "sai e o preço não anda, ou até cai na realização, o clássico compra "
+          "no boato e vende no fato. E existe o corte que derruba a bolsa: "
+          "quando ele vem por medo, um corte de emergência ou fora do "
+          "calendário, o recado é que a economia está quebrando, e aí a queda "
+          "vem junto. Olhe também o tom do comunicado e as projeções, porque "
+          "muitas vezes elas mexem mais que a decisão em si. Na prática, para a "
+          "nossa mesa: em dia de Fed o certo é esperar a primeira reação passar. "
+          "O movimento inicial costuma ser manipulação, varre os stops dos dois "
+          "lados, e o movimento real aparece depois. Sem estrutura e sem "
+          "varredura confirmadas, é notícia, não é setup."},
+    {"t": "Payroll acima ou abaixo do esperado",
+     "k": ["payroll", "nfp", "non farm", "nonfarm", "folha de pagamento",
+           "criacao de vagas", "emprego nos eua", "dados de emprego"],
+     "r": "O payroll forte é uma faca de dois gumes, e é por isso que ele "
+          "engana tanta gente. Economia forte é bom para o lucro das empresas, "
+          "o que empurra a bolsa para cima; mas emprego forte demais significa "
+          "salário pressionando a inflação, o que atrasa o corte de juros e "
+          "derruba a bolsa. Qual dos dois manda depende do REGIME em que o "
+          "mercado está: quando a preocupação é inflação, dado forte costuma "
+          "derrubar a bolsa e subir o juro de dez anos; quando a preocupação é "
+          "recessão, dado forte costuma subir a bolsa. Repare também no salário "
+          "médio por hora e na revisão dos meses anteriores, que muitas vezes "
+          "mexem mais que o número principal. Para a mesa: o payroll sai às "
+          "nove e meia da manhã em Brasília, e os primeiros minutos são de "
+          "pura varredura, com pavios enormes para os dois lados. Não é hora de "
+          "operar rompimento. Espere o mercado escolher um lado, deixar "
+          "estrutura e ineficiência, e opere o retorno."},
+    {"t": "Inflação, CPI e o mercado",
+     "k": ["inflacao", "inflação", "cpi", "pce", "indice de precos",
+           "core cpi", "nucleo da inflacao", "quanto esta a inflacao"],
+     "r": "A regra é simples: inflação acima do esperado empurra o juro para "
+          "cima, e juro para cima pesa na bolsa, principalmente nas empresas de "
+          "tecnologia e de crescimento, que valem pelo lucro lá na frente. "
+          "Inflação abaixo do esperado faz o contrário e costuma dar alívio nos "
+          "índices. O número que o mercado olha de verdade é o núcleo, que tira "
+          "alimentos e energia por serem voláteis, e a comparação mês a mês, "
+          "não só a de doze meses. O Fed persegue uma meta de dois por cento e "
+          "acompanha mais o PCE que o CPI. Se você quer o número mais recente, "
+          "eu não invento: peça que eu busco a manchete das casas de mercado, "
+          "porque dado macro muda e chutar valor é o pior serviço que eu podia "
+          "te prestar. Para a mesa: dia de CPI tem o mesmo comportamento do "
+          "payroll, varredura primeiro, movimento real depois."},
+    {"t": "Juro de 10 anos, dólar e a bolsa",
+     "k": ["treasury", "juro de 10 anos", "10 anos", "dxy", "dolar forte",
+           "yield", "renda fixa", "curva de juros", "tnx"],
+     "r": "O juro de dez anos americano é o preço do dinheiro no mundo. Quando "
+          "ele sobe rápido, a bolsa sofre, porque a renda fixa fica competitiva "
+          "e o lucro futuro das empresas vale menos hoje. Quando ele cede, a "
+          "bolsa costuma respirar. O dólar forte, medido pelo DXY, tende a "
+          "pesar em commodities, em mercados emergentes e no lucro das "
+          "multinacionais americanas. E tem um sinal clássico de alerta: quando "
+          "o juro de dois anos fica ACIMA do de dez, a chamada curva "
+          "invertida, historicamente é aviso de recessão à frente, embora o "
+          "atraso entre o sinal e o evento seja longo e irregular. Para a mesa, "
+          "vale como contexto de viés, não como gatilho de entrada."},
+    {"t": "FOMC, comunicado e dot plot",
+     "k": ["fomc", "reuniao do fed", "reunião do fed", "comunicado do fed",
+           "dot plot", "powell", "coletiva do fed", "ata do fed"],
+     "r": "A decisão em si costuma estar precificada; quem move o mercado é o "
+          "COMUNICADO, o dot plot com a projeção de juros de cada membro, e a "
+          "coletiva do presidente do Fed meia hora depois. O padrão de "
+          "comportamento do preço é quase sempre o mesmo: reação forte na "
+          "decisão, reversão durante a coletiva, e só então o movimento que "
+          "vale para o resto da semana. É o dia mais perigoso do calendário "
+          "para quem opera rompimento e um dos melhores para quem sabe esperar "
+          "a varredura e entrar no retorno ao ponto de interesse."},
+    {"t": "VIX e volatilidade",
+     "k": ["vix", "indice do medo", "índice do medo", "volatilidade implicita",
+           "volatilidade implícita", "mercado nervoso"],
+     "r": "O VIX mede o medo embutido nas opções do S&P. Ele anda quase sempre "
+          "ao contrário da bolsa: índice caindo forte, VIX disparando. Abaixo "
+          "de quinze o mercado está calmo e as tendências são mais suaves; "
+          "acima de vinte e cinco o ambiente é de estresse, com pavios enormes "
+          "e stop sendo pego com muito mais facilidade. Para a mesa isso é "
+          "dimensionamento: com VIX alto, o mesmo stop em pontos vale muito "
+          "mais dinheiro, então o tamanho da posição precisa cair. VIX "
+          "explodindo com o índice em queda livre e depois cedendo costuma "
+          "marcar exaustão de pânico."},
+    {"t": "Temporada de balanços",
+     "k": ["balanco", "balanços", "earnings", "resultado das empresas",
+           "temporada de resultados", "lucro das empresas", "guidance"],
+     "r": "Nos balanços o que move não é o lucro reportado, é o lucro contra o "
+          "esperado e, principalmente, a projeção que a empresa dá para os "
+          "próximos trimestres. Empresa que bate o número e corta a projeção "
+          "costuma cair. Como as gigantes de tecnologia têm peso enorme nos "
+          "índices, o resultado de uma delas move o S&P e o Nasdaq inteiros. "
+          "Para a mesa: balanço sai fora do pregão, então o risco é o gap de "
+          "abertura, e gap não respeita stop. Carregar posição de um dia para "
+          "o outro em semana de balanço das grandes é assumir um risco que o "
+          "seu plano não calculou."},
+    {"t": "Petróleo, commodities e inflação",
+     "k": ["petroleo", "petróleo", "commodities", "opep", "brent", "wti",
+           "energia", "preco do barril"],
+     "r": "Petróleo em alta é inflação em alta, porque energia entra no custo "
+          "de tudo. Inflação em alta atrasa o corte de juros e pesa na bolsa. "
+          "Por isso choque de oferta, tensão geopolítica em rota de "
+          "escoamento, corte de produção da OPEP, costuma aparecer no índice "
+          "algumas horas depois, e não no mesmo minuto. Para a mesa, isso é "
+          "contexto de viés do dia: se o barril disparou de madrugada, o índice "
+          "abre com esse peso, e o cenário de compra precisa de mais "
+          "confirmação que o normal."},
+    {"t": "Recessão e ciclo econômico",
+     "k": ["recessao", "recessão", "ciclo economico", "ciclo econômico",
+           "pib", "gdp", "desaceleracao", "pouso suave", "soft landing"],
+     "r": "A bolsa antecipa o ciclo, não o acompanha. Ela costuma cair ANTES da "
+          "recessão aparecer nos dados e subir ANTES da recuperação aparecer, "
+          "o que faz manchete de economia ruim conviver com mercado subindo. "
+          "Os sinais que o mercado observa são a curva de juros invertida, o "
+          "desemprego começando a subir de um fundo muito baixo, o PMI abaixo "
+          "de cinquenta e o crédito encarecendo. Para a mesa isso é pano de "
+          "fundo: define se o mercado está no regime em que dado forte é bom ou "
+          "ruim, e ajuda a entender por que a mesma notícia move o preço em "
+          "direções diferentes em épocas diferentes."},
+    {"t": "PMI, ISM e indicadores de atividade",
+     "k": ["pmi", "ism", "atividade economica", "atividade econômica",
+           "industria", "indicador antecedente", "confianca do consumidor"],
+     "r": "O PMI e o ISM são pesquisas com gerentes de compras e funcionam como "
+          "termômetro antecipado da economia. Acima de cinquenta indica "
+          "expansão, abaixo indica contração. Valem porque saem antes dos dados "
+          "oficiais e porque a reação da bolsa depende do regime: em ambiente "
+          "de medo de inflação, dado forte pode derrubar o índice; em ambiente "
+          "de medo de recessão, dado forte anima. Para a mesa, esses números "
+          "saem geralmente às onze da manhã em Brasília e produzem o mesmo "
+          "padrão de varredura dos demais dados macro."},
+    {"t": "Como operar em dia de notícia",
+     "k": ["dia de noticia", "dia de notícia", "operar noticia",
+           "agenda economica", "agenda econômica", "calendario economico",
+           "calendário econômico", "evento importante", "sair dado"],
+     "r": "A regra da mesa em dia de dado forte é uma só: não opere o "
+          "rompimento do primeiro movimento. O que acontece na prática é que o "
+          "preço dispara para um lado, pega os stops de quem entrou correndo, "
+          "volta e só então escolhe a direção real. Isso é manipulação de "
+          "livro. O jeito certo é deixar o primeiro impulso acontecer, marcar a "
+          "liquidez que foi varrida e a ineficiência que o deslocamento "
+          "deixou, esperar o CHoCH, e entrar no retorno ao ponto de interesse. "
+          "Se você não consegue esperar, o melhor trade do dia é não operar. E "
+          "com o tamanho reduzido, porque o stop em dia de notícia precisa ser "
+          "mais largo que o normal."},
+    {"t": "Correlação entre índices e ativos",
+     "k": ["correlacao", "correlação", "es nq", "s&p e nasdaq", "ouro e dolar",
+           "bitcoin e bolsa", "ativos correlacionados"],
+     "r": "S&P e Nasdaq andam juntos, com o Nasdaq mais volátil por causa do "
+          "peso da tecnologia; quando um faz topo novo e o outro não acompanha, "
+          "isso é divergência SMT e costuma antecipar exaustão. Ouro sobe com "
+          "medo e com juro real caindo, e sofre com dólar forte. Bitcoin tem se "
+          "comportado como ativo de risco, andando com o Nasdaq nos movimentos "
+          "grandes. Dólar forte pesa em commodities e emergentes. Para a mesa, "
+          "correlação serve para confirmar ou desconfiar de um movimento: "
+          "rompimento em um índice que o correlato não acompanha merece "
+          "desconfiança."},
+]
+
 def _norm_busca(texto):
     """Minúsculas e sem acento — para casar 'ineficiencia' com 'ineficiência'."""
     return _sem_acento(str(texto or "")).lower()
@@ -2618,6 +2947,10 @@ def _nota_base_smc(item, p, palavras):
         nota += 3
     return nota
 
+def _todos_os_topicos():
+    """As duas bases juntas: metodologia SMC e macro de mercado."""
+    return list(BASE_SMC) + list(BASE_MACRO)
+
 def buscar_base_smc(pergunta, minimo=2):
     """Acha o tópico da base que responde a pergunta. Devolve o item ou None.
 
@@ -2633,7 +2966,7 @@ def buscar_base_smc(pergunta, minimo=2):
     if not p:
         return None
     palavras = [w for w in re.findall(r"[a-z0-9:.]+", p) if len(w) >= 4]
-    notas = sorted(((_nota_base_smc(i, p, palavras), i) for i in BASE_SMC),
+    notas = sorted(((_nota_base_smc(i, p, palavras), i) for i in _todos_os_topicos()),
                    key=lambda x: x[0], reverse=True)
     if not notas or notas[0][0] < minimo:
         return None
@@ -2699,7 +3032,55 @@ def responder_do_conhecimento(pergunta, com_licoes=True):
 def indice_da_base_smc():
     """Os assuntos que ela domina offline — para ele saber o que pode perguntar
     sem gastar cota."""
-    return [item["t"] for item in BASE_SMC]
+    return [item["t"] for item in _todos_os_topicos()]
+
+# --------------------------------------------------------------------
+# O QUE ELA MESMA FAZ — precisa ser resposta local e exata
+# --------------------------------------------------------------------
+# "O QUE VOCÊ PODE FAZER?" recebia um despejo de manchetes. A ferramenta tem de
+# saber descrever a si mesma sem depender de modelo nenhum.
+def texto_das_capacidades():
+    return (
+        "Eu sou a TIGER, a IA desta mesa. Isto é o que eu faço de verdade.\n"
+        "\n"
+        "EXECUTO na ferramenta, é o app que faz: 'liga o motor' e 'desliga o "
+        "motor'; 'zera o ciclo', que limpa o dashboard do Plano de Trading com "
+        "confirmação; 'tira um print', que captura a tela da corretora na hora; "
+        "'olha o gráfico', que analisa a última captura do motor; 'manda no "
+        "whatsapp' e 'conecta o whatsapp'; 'acatar', 'dispensar' e 'cancelar "
+        "ordem'; e 'status', com o placar da conta e o ritmo por dia.\n"
+        "\n"
+        "BUSCO na internet sozinha, sem gastar cota de API: cotação real com "
+        "preço, variação e faixa do dia (S&P, Nasdaq, Dow, Russell, VIX, ouro, "
+        "prata, petróleo, dólar, euro, bitcoin, Ibovespa e juros de dez anos), e "
+        "notícia fresca de seis casas de mercado, sempre com a fonte e a hora.\n"
+        "\n"
+        "RESPONDO de cabeça, também sem cota: metodologia SMC inteira "
+        "(estrutura, liquidez, order blocks, ineficiências, premium e desconto, "
+        "confirmação de reversão, gestão de risco) e as relações de macro "
+        "(Fed e juros, payroll, inflação, VIX, balanços, dia de notícia).\n"
+        "\n"
+        "ANALISO o que você me manda pelo anexo: print, foto, vídeo da tela, "
+        "PDF e planilha.\n"
+        "\n"
+        "APRENDO com você: termine qualquer frase com 'aprenda isso' e a regra "
+        "fica gravada para sempre. Pergunte 'o que você aprendeu?' para "
+        "conferir, e 'o que você sabe?' para ver todos os assuntos.\n"
+        "\n"
+        "O QUE EU NÃO FAÇO: não envio ordem para a corretora sozinha, não "
+        "prometo direção do mercado, e não invento número. Se eu não tiver o "
+        "dado e não conseguir buscar, eu digo isso.")
+
+_RE_CAPACIDADES = re.compile(
+    r"(o que voce (pode|consegue|sabe) fazer|o que voce faz|"
+    r"quais (sao )?(as )?suas (funcoes|capacidades|habilidades)|"
+    r"para (o )?que voce (foi|serve)|qual (e )?(a )?sua funcao|"
+    r"pra que voce serve|voce faz o que|no que voce ajuda|"
+    r"sua funcao|como voce funciona|quem e voce|voce e o que)",
+    re.IGNORECASE)
+
+def pergunta_sobre_capacidades(texto):
+    return bool(_RE_CAPACIDADES.search(_norm_busca(texto) or ""))
 
 # Como o trader chama o motor de análise ao falar: "liga o motor", "desliga o
 # robô", "para a análise".
@@ -2891,6 +3272,14 @@ def interpretar_intencao(texto):
         return "DESLIGAR_MOTOR"
     if _motor(_MOTOR_LIGAR):
         return "LIGAR_MOTOR"
+    # VELOCIDADE DA FALA: "acelere a fala" é comando da ferramenta, não assunto
+    # de mercado — antes caía no despejo de manchetes.
+    if re.search(r"\b(fala|voz|leitura|narra[çc][ãa]o)\b", t) and \
+            re.search(r"\b(aceler(a|ar|e)|r[áa]pid[ao]|devagar|lent[ao]|"
+                      r"diminu(a|ir|i)|desacelera|aument(a|ar|e)|velocidade)\b", t):
+        return "VOZ_RAPIDA" if re.search(
+            r"\b(aceler\w*|r[áa]pid\w*|aument\w*|mais r[áa]pido)\b", t) \
+            else "VOZ_LENTA"
     # NOTÍCIA E COTAÇÃO: buscadas na web pela PRÓPRIA ferramenta, sem chave de
     # API. É o que impede ela de responder "o S&P sobe por causa da inflação"
     # de cabeça, sem ter visto manchete nenhuma.
@@ -3003,7 +3392,8 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
     if intencao in ("DISPENSAR", "CANCELAR", "STATUS", "AJUDA",
                     "LIGAR_MOTOR", "DESLIGAR_MOTOR", "ENVIAR_WHATSAPP",
                     "CONECTAR_WHATSAPP", "LISTAR_LICOES", "LISTAR_CONHECIMENTO",
-                    "NOTICIAS", "COTACAO", "PESQUISAR"):
+                    "NOTICIAS", "COTACAO", "PESQUISAR",
+                    "VOZ_RAPIDA", "VOZ_LENTA"):
         return ("EXECUTAR", intencao)
     return ("IA", None)
 
@@ -4044,6 +4434,15 @@ class SmcQuantApp(ctk.CTk):
         # (leitura de gráfico, notícia, análise da posição de agora).
         # ...MENOS quando ele acabou de dizer que a resposta anterior não
         # serviu. Aí a base já falhou uma vez: insistir devolve o mesmo texto.
+        if pergunta_sobre_capacidades(texto):
+            self._chat_responder(texto_das_capacidades(), falar_tb=False,
+                                  texto_voz="Eu executo os comandos da mesa, "
+                                            "busco cotação e notícia na "
+                                            "internet, respondo metodologia e "
+                                            "macro de cabeça, analiso os prints "
+                                            "do gráfico e aprendo as regras que "
+                                            "você me ensina.")
+            return
         if pergunta_conceitual(texto) and not e_correcao_do_trader(texto):
             local = responder_do_conhecimento(texto)
             if local and local != getattr(self, "_ultima_resposta_local", None):
@@ -4122,9 +4521,8 @@ class SmcQuantApp(ctk.CTk):
     def _chat_web_noticias(self, texto):
         alvo = simbolo_do_texto(texto)
         cot = cotacao_mercado(alvo[0]) if alvo else None
-        noticias = noticias_do_mercado(maximo=6,
-                                       termo=alvo[1] if alvo else None)
-        if not noticias and not cot:
+        resumo = resumo_de_noticias(texto)
+        if not resumo and not cot:
             self._chat_entregar_resposta(
                 "Não consegui alcançar as fontes de notícia agora — parece "
                 "internet. Prefiro dizer isso a inventar um motivo para o "
@@ -4133,14 +4531,8 @@ class SmcQuantApp(ctk.CTk):
         partes = []
         if cot:
             partes.append(formatar_cotacao(cot, alvo[1].upper()))
-        if noticias:
-            partes.append("O que as casas de mercado estão publicando agora:")
-            for n in noticias:
-                partes.append(f"• [{n['fonte']} · {_idade_texto(n['quando'])}] "
-                              f"{n['titulo']}")
-            partes.append("Essas são as manchetes reais das fontes, não leitura "
-                          "minha. Se quiser que eu ligue alguma delas ao "
-                          "gráfico, me diga qual.")
+        if resumo:
+            partes.append(resumo)
         self._chat_entregar_resposta("\n".join(partes))
 
     def _chat_web_pesquisa(self, texto):
@@ -4394,6 +4786,20 @@ class SmcQuantApp(ctk.CTk):
             return
         if acao == "ZERAR_CICLO":
             self._chat_zerar_ciclo()
+            return
+        if acao in ("VOZ_RAPIDA", "VOZ_LENTA"):
+            passo = 25 if acao == "VOZ_RAPIDA" else -25
+            novo, no_limite = ajustar_velocidade_da_voz(passo)
+            if no_limite:
+                self._chat_responder(
+                    f"Já estou no {'mais rápido' if passo > 0 else 'mais devagar'} "
+                    f"que consigo falar ({novo} palavras por minuto) — além "
+                    "disso vira ininteligível.")
+            else:
+                self._chat_responder(
+                    f"Pronto, {'acelerei' if passo > 0 else 'desacelerei'} a "
+                    f"fala para {novo} palavras por minuto. Assim está bom, ou "
+                    f"quer que eu {'acelere' if passo > 0 else 'reduza'} mais?")
             return
         if acao in ("NOTICIAS", "COTACAO", "PESQUISAR"):
             # Estes rodam na WEB, pela própria ferramenta — sem chave, sem cota.
@@ -4849,38 +5255,33 @@ class SmcQuantApp(ctk.CTk):
             # A API caiu (cota, chave ou rede). Antes disso virar uma resposta
             # vazia, tenta o CONHECIMENTO LOCAL: se a pergunta for de
             # metodologia, ela responde do mesmo jeito — sem cota nenhuma.
-            local = responder_do_conhecimento(pergunta) if not anexo else None
+            # ROTEADOR OFFLINE: a melhor resposta que dá para montar sem a API
+            # — capacidades, base própria (SMC + macro), cotação real ou
+            # notícia relevante. Nunca o bloco interno do prompt: aquilo é
+            # bastidor do modelo e virava um despejo de manchetes na tela.
+            local = None
+            try:
+                if not anexo:
+                    local = responder_offline(pergunta)
+            except Exception:
+                local = None
             if local:
-                resposta = (f"{local}\n\n(Respondi da minha base própria de SMC, "
-                            "sem usar a API — ela está indisponível agora: "
-                            f"{self._diagnostico_erro(ultimo_erro)})")
+                resposta = (f"{local}\n\n(Respondi sem a API, com o que eu tenho "
+                            "aqui e o que busquei na internet — a API está "
+                            f"indisponível: {self._diagnostico_erro(ultimo_erro)})")
             else:
-                # Sem a API e sem base: ainda dá para ir à WEB sozinha. É melhor
-                # trazer manchete real do que só reclamar da cota.
-                web = ""
-                try:
-                    if not anexo:
-                        web = bloco_web_para_prompt(pergunta)
-                except Exception:
-                    web = ""
-                if web:
-                    resposta = (
-                        "Isso não está na minha base de metodologia e a API está "
-                        f"fora ({self._diagnostico_erro(ultimo_erro)}) — então "
-                        "fui buscar na internet por conta própria. O que as "
-                        f"fontes dizem agora:\n\n{web}\n\nSão dados das fontes, "
-                        "não interpretação minha.")
-                else:
-                    resposta = (
-                        "Isso não está na minha base de metodologia SMC, e agora "
-                        "eu também não consigo pesquisar: "
-                        f"{self._diagnostico_erro(ultimo_erro)} Prefiro dizer "
-                        "isso a inventar uma resposta. O que continua "
-                        "funcionando: metodologia (estrutura, liquidez, order "
-                        "block, FVG, premium e desconto, confirmação de "
-                        "reversão, gestão de risco), os comandos ('status', "
-                        "'acatar', 'liga o motor', 'zera o ciclo', 'manda no "
-                        "whatsapp'), e '<regra>, aprenda isso'.")
+                resposta = (
+                    "Não tenho como responder isso com segurança agora: não "
+                    "está na minha base, não consegui confirmar na internet, e "
+                    f"a API está fora ({self._diagnostico_erro(ultimo_erro)}). "
+                    "Prefiro te dizer isso a inventar. Enquanto isso eu "
+                    "respondo, sem depender de nada: metodologia SMC "
+                    "(estrutura, liquidez, order block, FVG, premium e "
+                    "desconto, confirmação de reversão, gestão de risco), "
+                    "macro (Fed e juros, payroll, inflação, VIX, balanços, dia "
+                    "de notícia), cotação real e notícia das casas de mercado. "
+                    "E os comandos seguem: 'status', 'liga o motor', 'zera o "
+                    "ciclo', 'manda no whatsapp', 'olha o gráfico'.")
         self._chat_entregar_resposta(resposta)
 
     def _completar_resposta(self, client, modelo, config, conteudo, comeco):
