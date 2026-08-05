@@ -1,4 +1,4 @@
-# Como compilar o SMC Quant Pro v2.9.0 (TIGER)
+# Como compilar o SMC Quant Pro v2.9.1 (TIGER)
 
 > **Resumo:** o processo de build **não mudou**. É o mesmo fluxo do `.spec`
 > que você já usa. Nesta versão só o `main_app.py` mudou — substitua-o e compile.
@@ -12,8 +12,35 @@
 O **motor NÃO mudou** — reaproveite a pasta `motor\` com o `node_modules` que
 você já tem. O `tradovate_auto.py` também não mudou.
 
-Novidades da v2.9.0 (aba 🐯 TIGER) — **ela configura a própria ferramenta,
-falando**:
+Correções da v2.9.1 — **os quatro buracos do pregão de 04/08 às 22:12**:
+
+- 🖼️ **"CAPTURE AGORA"** caía no genérico porque a frase não tinha
+  substantivo. Agora *"capture agora"*, *"captura a tela"*, *"printa isso"* e
+  *"capture o gráfico"* disparam a captura na hora.
+- 📚 **"APRENDA, USE O MOTOR PARA TIRAR PRINT"** virava comando de print em vez
+  de lição — a **vírgula** no lugar dos dois-pontos não era aceita. Agora
+  *"APRENDA, &lt;a regra&gt;"* grava a regra.
+- 🔴 **COTA ESTOURADA COM O PRINT NA MÃO (o pior deles).** *"tire um print novo
+  e analise o gráfico"* capturava a tela e devolvia *"não está na minha
+  base"* — falso e confuso. Agora ela diz o que **realmente** aconteceu: o
+  print foi capturado, mas **ler a imagem é a única coisa que depende da API**
+  da Gemini, e a cota está fora. E não chuta nada sobre o gráfico.
+- 🔎 **"COMO ESTÁ A GESTÃO DE RISCO DA MINHA CONTA 1"** ia para o modelo em vez
+  de ler o arquivo. Agora é resposta determinística, com os números gravados.
+- 🎯 **A SUA LIÇÃO APLICADA:** quando você pede para analisar o gráfico, ela
+  **tira um print novo antes de olhar** (se a última captura tiver mais de 1
+  minuto), em vez de comentar um preço que já mudou. Se a captura nova falhar,
+  usa a anterior.
+- ⏱️ **Cenário expirado explica o motivo.** *"ACATAR"* fora do prazo dizia só
+  *"não há cenário aguardando decisão"*. Agora diz há quantos minutos a
+  sugestão saiu, qual é o prazo configurado, e oferece **aumentar o prazo na
+  hora** (*"configura o prazo para acatar em 30 minutos"*).
+- 🌙 **Pregão que vira o dia:** configurar **19:00 às 17:59** agora vem
+  explicado na confirmação, e o de-para ficou em português claro
+  (*"era 09:00, agora é 19:00"*).
+
+Continua valendo tudo da v2.9.0 (aba 🐯 TIGER) — **ela configura a própria
+ferramenta, falando**:
 
 - ⚙️ **VOCÊ MANDA, ELA CONFIGURA.** *"deixa registrado que o dia para a conta 1
   começa as 19hs"* caía no genérico *"não tenho como responder isso com
@@ -176,8 +203,18 @@ cd C:\Users\jovan\Documents\SMC_QUANT_PRO
 python main_app.py
 ```
 
-Checklist da v2.9.0 (aba **🐯 TIGER**) — comece pelos três primeiros, que são
-os erros do pregão de 04/08:
+Checklist da v2.9.1 (aba **🐯 TIGER**) — comece pelos quatro primeiros, que
+são os erros do pregão de 04/08:
+
+00000. **OS QUATRO BURACOS DAS 22:12.** Um de cada vez:
+   *"CAPTURE AGORA"* → tem que capturar, não dar o genérico.
+   *"APRENDA, USE O MOTOR PARA TIRAR PRINT"* → tem que responder **"Anotado e
+   aprendido"**, não tirar print.
+   *"COMO ESTÁ A GESTÃO DE RISCO DA MINHA CONTA 1"* → tem que vir o número
+   gravado, não a resposta do modelo.
+   Com a **cota estourada**, *"tire um print novo e analise o gráfico"* → tem
+   que dizer que **o print foi capturado mas ler a imagem depende da API** —
+   nunca *"não está na minha base"*.
 
 0000. **CONFIGURAR FALANDO.** Digite exatamente: *"deixa registrado que o dia
    para a conta 1 começa as 19hs"*. Ela tem que responder **"Pronto, configurei
@@ -298,17 +335,17 @@ Repita o checklist do passo 2 dentro do `.exe`.
 ## 6. Gerar o instalador (Inno Setup)
 
 1. Abra `instalador\SMC_Quant_Pro.iss` no Inno Setup Compiler.
-2. Confira que `MyAppVersion` está **"2.9.0"** (já está).
+2. Confira que `MyAppVersion` está **"2.9.1"** (já está).
 3. Pressione **F9** (Compile).
 
-Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.9.0.exe`.
+Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.9.1.exe`.
 
 ---
 
 ## 7. Publicar a atualização
 
-1. Suba o `SMC_Quant_Pro_Setup_2.9.0.exe` na pasta do Google Drive.
-2. O `versao.json` **já está publicado como 2.9.0** — assim que o arquivo
+1. Suba o `SMC_Quant_Pro_Setup_2.9.1.exe` na pasta do Google Drive.
+2. O `versao.json` **já está publicado como 2.9.1** — assim que o arquivo
    estiver no Drive, os clientes veem o aviso de nova versão.
 
 ---

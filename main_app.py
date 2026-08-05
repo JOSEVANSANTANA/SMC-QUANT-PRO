@@ -111,7 +111,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.9.0"
+VERSAO_ATUAL = "2.9.1"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -3395,6 +3395,15 @@ def censurar_alegacao_falsa(texto):
                  "escrever não executa nada aqui.")
     return f"{corpo}\n\n{_AVISO_ALEGACAO}", True
 
+# "CAPTURE AGORA" não tinha substantivo nenhum e caía no genérico. O verbo de
+# capturar já é inequívoco sozinho — ninguém diz "captura" numa mesa falando de
+# outra coisa. "Tira/faz" continuam exigindo o substantivo (são ambíguos).
+_PRINT_SOZINHO = (r"^\s*(captur(a|e|ar)|printa|printe|print|screenshot|"
+                  r"tir(a|e|ar)\s+(um|uma)?\s*print)\b")
+_PRINT_COM_AGORA = (r"\b(captur(a|e|ar)|printa|printe|screenshot)\s+"
+                    r"(a\s+)?(tela|janela|gr[áa]fico|isso|agora|j[áa]|"
+                    r"de novo|novamente|outra vez)\b")
+
 # --------------------------------------------------------------------
 # APRENDIZADO — as três formas como ele realmente ensina uma regra
 # --------------------------------------------------------------------
@@ -3423,12 +3432,20 @@ def extrair_licao(texto):
     if not t:
         return None
 
-    # 1. PREFIXO, com ou sem "considere" na frente, com dois-pontos ou "que".
+    # 1. PREFIXO, com ou sem "considere" na frente. O separador pode ser
+    #    dois-pontos, "que" — ou VÍRGULA/travessão, que é como ele escreve de
+    #    verdade: "APRENDA, USE O MOTOR PARA TIRAR PRINT" virava comando de
+    #    print em vez de lição. Com vírgula exigimos uma frase de verdade
+    #    depois, senão "aprenda, por favor" viraria a lição "por favor".
     m = re.match(r"\s*(considere\s+|quero que voc[êe]\s+|leve em conta\s+)?"
                  + _LICAO_VERBO + r"\s*(" + _LICAO_OBJETO + r"\s*)?"
-                 r"(:|\bque\b)\s*(?P<corpo>.+)", t, re.IGNORECASE | re.DOTALL)
+                 r"(?P<sep>:|,|—|-|\bque\b)\s*(?P<corpo>.+)",
+                 t, re.IGNORECASE | re.DOTALL)
     if m and m.group("corpo").strip():
-        return bruto[m.start("corpo"):].strip(" ,.;:—-")
+        corpo = bruto[m.start("corpo"):].strip(" ,.;:—-")
+        if m.group("sep") in (":",) or "que" in m.group("sep") or \
+                len(corpo.split()) >= 3:
+            return corpo
 
     # 2. SUFIXO: "<a regra>, aprenda isso". Depois do gatilho pode vir uma
     #    justificativa ("…, aprenda isso, tendo em base que você já conhece
@@ -3781,8 +3798,10 @@ _PALAVRAS_CAMPO = {
 }
 
 _RE_VER_CONFIG = re.compile(
-    r"(como\s+(esta|estao|ficou|anda|ta)\w*\s+(configurad|o\s+plano|a\s+configura|"
-    r"o\s+risco|a\s+meta|a\s+margem|o\s+drawdown|o\s+prazo|o\s+horario|o\s+intervalo)|"
+    r"(como\s+(esta|estao|ficou|ficaram|anda|ta|funciona)\w*\s+"
+    r"((o|a|os|as|meu|minha|meus|minhas)\s+)*(configurad|configura|plano|"
+    r"gestao de risco|gestao|gerenciamento|risco|meta|margem|drawdown|prazo|"
+    r"horario|intervalo|parametros|numeros)|"
     # "qual o MEU risco" é sobre a configuração; "qual o risco DISSO" é sobre o
     # trade que está na mesa. Sem essa diferença ela sequestrava a conversa.
     r"qual\s+(e\s+)?(o|a|os|as)?\s*(meu|minha|meus|minhas)\s*(configura|plano|meta|"
@@ -3977,7 +3996,8 @@ def interpretar_intencao(texto):
     # PRINT AGORA: capturar a tela NA HORA, sem esperar o ciclo do motor.
     if re.search(r"\b(tir(a|ar|e)|captur(a|ar|e)|faz|fazer|fa[çc](a|o)|bat(e|er)|"
                  r"pega|pegar)\b.{0,20}\b(print|screenshot|captura|foto|tela)\b", t) or \
-            re.search(r"\bprint\s*window\b", t):
+            re.search(r"\bprint\s*window\b", t) or \
+            re.search(_PRINT_SOZINHO, t) or re.search(_PRINT_COM_AGORA, t):
         return "PRINT_AGORA"
     # OLHAR O GRÁFICO: ela busca o último print capturado pelo motor e analisa
     # a imagem de verdade, em vez de responder de memória sobre o texto velho.
@@ -5014,8 +5034,7 @@ class SmcQuantApp(ctk.CTk):
             sinal = self._ultimo_sinal_pendente()
             if not sinal:
                 self._chat_conf = None
-                self._chat_responder("Não há cenário aguardando decisão agora. "
-                                      "Assim que sair uma sugestão nova, é só dizer 'acatar'.")
+                self._chat_responder(self._motivo_sem_pendente())
                 return
             self._chat_responder(
                 f"Confirmando: ACATAR o {sinal.get('direcao')} {sinal.get('ativo','')} "
@@ -5068,10 +5087,18 @@ class SmcQuantApp(ctk.CTk):
                     "minimizada). Se preferir, me mande o print pelo 📎.")
                 return
         if tipo == "VER_GRAFICO":
-            # Ela olha a imagem que o MOTOR capturou — a mesma que gerou a
-            # sugestão. Sem print disponível, vira conversa normal (o contexto
-            # já explica que não há captura, então ela não inventa).
+            # LIÇÃO DELE, 04/08 22:13: "quando pedir para analisar o gráfico,
+            # use o motor, tire um print NOVO e analise imediatamente". Antes
+            # ela lia a captura velha do ciclo anterior e comentava um preço
+            # que já tinha mudado. Agora, se a captura tem mais de 1 minuto,
+            # tira uma nova ANTES de olhar — e se a nova falhar, usa a antiga
+            # (melhor a de 5 minutos atrás do que nenhuma).
             info = getattr(self, "_ultimo_print", None)
+            if idade_do_ultimo_print(info) is None or \
+                    (idade_do_ultimo_print(info) or 0) >= 1:
+                info = self._capturar_print_agora() or info
+                if info:
+                    self._ultimo_print = info
             caminho = (info or {}).get("caminho")
             if caminho and os.path.exists(caminho):
                 if self._chat_ocupada:
@@ -5472,11 +5499,21 @@ class SmcQuantApp(ctk.CTk):
                 "dizer que fiz. Ajuste na mão — horário e intervalo na aba "
                 "Motor, os números na aba Plano de Trading.")
             return
-        linhas = [f"• {m['rotulo']}: "
-                  f"{formatar_valor_config(m['campo'], m.get('antes'))} → "
-                  f"{formatar_valor_config(m['campo'], m['valor'])}"
+        linhas = [f"• {m['rotulo']}: era "
+                  f"{formatar_valor_config(m['campo'], m.get('antes'))}, "
+                  f"agora é {formatar_valor_config(m['campo'], m['valor'])}"
                   for m in aplicadas]
         corpo = ["Pronto, configurei a ferramenta:", "\n".join(linhas)]
+        # Pregão que VIRA O DIA (19:00 → 17:59) é o caso dele. Sem explicar,
+        # a confirmação parecia erro — ele respondeu "NÃO ENTENDI".
+        novos = {m["campo"]: m["valor"] for m in aplicadas}
+        h_ini = novos.get("hora_inicio", cfg_lido.get("hora_inicio"))
+        h_fim = novos.get("hora_fim", cfg_lido.get("hora_fim"))
+        if h_ini and h_fim and str(h_ini) > str(h_fim):
+            corpo.append(f"Reparei que o seu pregão VIRA O DIA: começa às "
+                         f"{h_ini} e só termina às {h_fim} do dia seguinte. "
+                         "Está tratado assim — o motor analisa a noite inteira "
+                         "e a madrugada, sem pular ciclo na virada.")
         if any(m["destino"] == "plano" for m in aplicadas):
             corpo.append(f"O que é do plano ficou gravado na conta '{nome_alvo}'.")
         if any(m["destino"] == "config" for m in aplicadas):
@@ -5778,7 +5815,7 @@ class SmcQuantApp(ctk.CTk):
         if acao == "ACATAR":
             sinal = self._ultimo_sinal_pendente()
             if not sinal:
-                self._chat_responder("Não há cenário aguardando decisão para acatar.")
+                self._chat_responder(self._motivo_sem_pendente())
                 return
             direcao = "ACATOU_VENDA" if str(sinal.get("direcao")).upper() == "SELL" \
                 else "ACATOU_COMPRA"
@@ -5790,7 +5827,7 @@ class SmcQuantApp(ctk.CTk):
         if acao == "DISPENSAR":
             sinal = self._ultimo_sinal_pendente()
             if not sinal:
-                self._chat_responder("Não há cenário pendente para dispensar.")
+                self._chat_responder(self._motivo_sem_pendente())
                 return
             self.after(0, lambda s=sinal["id"]: self._registrar_decisao(s, "NAO_OPEROU"))
             self._chat_responder(f"Dispensado o {sinal.get('direcao')} "
@@ -6184,6 +6221,28 @@ class SmcQuantApp(ctk.CTk):
                 resposta = (f"{local}\n\n(Respondi sem a API, com o que eu tenho "
                             "aqui e o que busquei na internet — a API está "
                             f"indisponível: {self._diagnostico_erro(ultimo_erro)})")
+            elif anexo:
+                # LER IMAGEM É A ÚNICA COISA QUE EU NÃO FAÇO SEM A API. Antes
+                # isso caía no texto genérico "não está na minha base" — o que
+                # é falso e confunde: o print FOI capturado, o que faltou foi
+                # a visão. Aqui a resposta diz exatamente o que aconteceu.
+                e_imagem = str(anexo).lower().endswith(
+                    (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"))
+                onde = "o print" if e_imagem else "o arquivo"
+                resposta = (
+                    f"{onde.capitalize()} está aqui comigo — capturei/recebi "
+                    "certinho. O que eu NÃO consigo agora é LER a imagem: essa "
+                    "é a única parte que depende da API da Gemini, e ela está "
+                    f"fora ({self._diagnostico_erro(ultimo_erro)}).\n\n"
+                    "Nada do que eu dissesse sobre esse gráfico agora seria "
+                    "leitura de verdade — seria chute, e chute na mesa vira "
+                    "prejuízo. Assim que a cota voltar (ou com uma chave paga "
+                    "colada na aba Motor), me peça de novo 'analisa o gráfico' "
+                    "que eu leio na hora.\n\n"
+                    "Enquanto isso, sem depender de nada: peça 'status' para o "
+                    "placar da conta, a cotação real de qualquer ativo, notícia "
+                    "das casas de mercado, metodologia SMC, ou a configuração "
+                    "da ferramenta.")
             else:
                 resposta = (
                     "Não tenho como responder isso com segurança agora: não "
@@ -8829,6 +8888,29 @@ class SmcQuantApp(ctk.CTk):
         pendentes = [s for s in sinais_da_conta_ativa()
                      if not s.get("decisao") and s.get("id", 0) >= limite_ms]
         return pendentes[-1] if pendentes else None
+
+    def _motivo_sem_pendente(self):
+        """Por que não há cenário para acatar. Ele disse 'ACATAR' 9 minutos
+        depois da sugestão e recebeu só 'não há cenário aguardando decisão' —
+        sem saber que o prazo tinha estourado. Agora a resposta diz o motivo."""
+        try:
+            minutos = max(1, int(self._janela_acatar_seg() / 60))
+            sem_decisao = [s for s in sinais_da_conta_ativa() if not s.get("decisao")]
+            if not sem_decisao:
+                return ("Não há cenário aguardando decisão agora. Assim que o "
+                        "motor sugerir um, é só dizer 'acatar'.")
+            ultimo = sem_decisao[-1]
+            idade = max(0, (time.time() * 1000 - ultimo.get("id", 0)) / 60000)
+            return (f"Esse cenário EXPIROU: o {ultimo.get('direcao', '')} "
+                    f"{ultimo.get('ativo', '')} saiu há cerca de {idade:.0f} "
+                    f"minuto(s), e o prazo para acatar é de {minutos} minuto(s) "
+                    "— depois disso o preço já não é o mesmo e acatar viraria "
+                    "entrada às cegas. Espere a próxima sugestão, ou aumente o "
+                    "prazo me dizendo 'configura o prazo para acatar em 30 "
+                    "minutos'.")
+        except Exception:
+            return ("Não há cenário aguardando decisão agora. Assim que sair "
+                    "uma sugestão nova, é só dizer 'acatar'.")
 
     def _poller_comandos_whatsapp(self):
         """Lê a fila de comandos do motor (GET /comandos) e aplica ACATAR/
