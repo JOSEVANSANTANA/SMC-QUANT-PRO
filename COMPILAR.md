@@ -1,4 +1,4 @@
-# Como compilar o SMC Quant Pro v2.10.1 (TIGER)
+# Como compilar o SMC Quant Pro v2.11.0 (TIGER)
 
 > **Resumo:** o processo de build **não mudou**. É o mesmo fluxo do `.spec`
 > que você já usa. Nesta versão mudaram **dois** arquivos — substitua os dois
@@ -13,6 +13,39 @@
 
 O **motor NÃO mudou** — reaproveite a pasta `motor\` com o `node_modules` que
 você já tem.
+
+### Novidade da 2.11.0 — posição aberta agora AVISA, não emudece
+
+Você notou que ela parava de sugerir quando já havia uma operação em andamento,
+inclusive aberta **na mão**. Não era trava de código: era uma frase que ia no
+prompt (*"não sugira sinais em conflito direto com elas"*) e **quem decidia era
+o modelo** — que generalizava para "não sugira nada". O efeito colateral era o
+pior possível: quando o mercado virava **contra** a sua posição, a leitura mais
+útil de todas era exatamente a que ficava calada.
+
+Agora a decisão é de **código**, com três comportamentos:
+
+| Situação | O que ela faz |
+|---|---|
+| Cenário **contra** a sua posição | **⚠️ ALERTA DE RISCO** — não vira sugestão de entrada |
+| Cenário **a favor** | Sugere, marcado como **aumento de posição** |
+| **Outro ativo** | Livre, sem nenhuma restrição |
+
+O alerta traz o seu lado, o resultado atual, **o seu stop** e a leitura nova. Se
+a posição estiver **sem stop registrado**, isso vem primeiro. Tem trava
+anti-spam de 15 minutos, para o aviso não virar ruído.
+
+Por que o cenário contrário **não** vira sugestão de entrada: entrar do outro
+lado do que você já carrega é **hedge, não operação** — trava o prejuízo, paga
+custo duas vezes e, em conta de avaliação, costuma esbarrar em regra de contratos
+máximos. Quem decide proteger, reduzir, encerrar ou segurar é você; a ferramenta
+garante que você **saiba**.
+
+Configurável por conta no Plano de Trading, campo **"Já posicionado no ativo"**,
+ou pela fala: *"quando eu já estiver posicionado, me avise"* · *"...sugira
+normalmente"* · *"...não sugira nada"*.
+
+---
 
 ### ⛔ LEIA ANTES: por que a 2.10.0 foi substituída
 
@@ -131,7 +164,7 @@ cd C:\Users\jovan\Documents\SMC_QUANT_PRO
 python main_app.py
 ```
 
-Checklist da v2.10.1 — **comece pelos cinco primeiros**, que são os problemas
+Checklist da v2.11.0 — **comece pelos cinco primeiros**, que são os problemas
 do pregão de 05–06/08. Os quatro primeiros exigem a Tradovate aberta com o
 *"Chamado do pedido"* visível.
 
@@ -293,17 +326,17 @@ Repita o checklist do passo 2 dentro do `.exe`.
 ## 6. Gerar o instalador (Inno Setup)
 
 1. Abra `instalador\SMC_Quant_Pro.iss` no Inno Setup Compiler.
-2. Confira que `MyAppVersion` está **"2.10.1"** (já está).
+2. Confira que `MyAppVersion` está **"2.11.0"** (já está).
 3. Pressione **F9** (Compile).
 
-Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.10.1.exe`.
+Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.11.0.exe`.
 
 ---
 
 ## 7. Publicar a atualização
 
-1. Suba o `SMC_Quant_Pro_Setup_2.10.1.exe` na pasta do Google Drive.
-2. O `versao.json` **já está publicado como 2.10.1** — assim que o arquivo
+1. Suba o `SMC_Quant_Pro_Setup_2.11.0.exe` na pasta do Google Drive.
+2. O `versao.json` **já está publicado como 2.11.0** — assim que o arquivo
    estiver no Drive, os clientes veem o aviso de nova versão.
 
 ---

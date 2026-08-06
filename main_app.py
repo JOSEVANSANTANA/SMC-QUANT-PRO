@@ -111,7 +111,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.10.1"
+VERSAO_ATUAL = "2.11.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -414,6 +414,12 @@ PLANO_PADRAO = {
     "max_stops_seguidos": 2,
     "cooldown_stop_min": 30,
     "max_operacoes_dia": 6,
+    # O QUE FAZER QUANDO VOCÊ JÁ ESTÁ POSICIONADO NO ATIVO:
+    #   "alerta"   (padrão) -> cenário CONTRA a posição vira ALERTA DE RISCO, e
+    #                          cenário A FAVOR vira sugestão de AUMENTO
+    #   "livre"             -> sugere normalmente, como se não houvesse posição
+    #   "bloquear"          -> não sugere nada enquanto houver posição no ativo
+    "com_posicao_aberta": "alerta",
 }
 
 def dias_meta_do_plano(plano=None):
@@ -1468,6 +1474,68 @@ def freio_de_sugestoes(plano=None, agora=None):
                     "'pausa após stop' no Plano de Trading.")
     return True, None
 
+def posicao_aberta_no_ativo(ativo):
+    """A posição que você tem AGORA nesse ativo, na conta ativa — venha ela de
+    uma sugestão acatada ou de uma entrada que você fez na mão na plataforma.
+    Devolve o registro, ou None."""
+    alvo = str(ativo or "").upper()
+    if not alvo or alvo == "DESCONHECIDO":
+        return None
+    for p in carregar_posicoes():
+        if not _e_da_conta_ativa(p) or p.get("status") != "ABERTA":
+            continue
+        nome = str(p.get("ativo") or "").upper()
+        # MESU6 e MES casam: o que importa é ser o mesmo instrumento.
+        if nome and (nome.startswith(alvo[:3]) or alvo.startswith(nome[:3])):
+            return p
+    return None
+
+def politica_com_posicao_aberta(acao, ativo, plano=None):
+    """O QUE FAZER QUANDO ELE JÁ ESTÁ POSICIONADO.
+
+    Antes isto era uma frase no prompt ("não sugira sinais em conflito direto
+    com elas") e QUEM DECIDIA ERA O MODELO. Duas consequências ruins: o
+    comportamento variava de ciclo para ciclo, e o modelo generalizava a
+    instrução para "não sugerir nada" — inclusive quando o cenário novo era
+    justamente o aviso de que o mercado virou CONTRA a posição dele. Ou seja: a
+    informação mais valiosa para quem está posicionado era a que ficava calada.
+
+    Agora é regra de código, com três decisões possíveis:
+      • 'LIVRE'         -> não há posição no ativo (ou você escolheu 'livre')
+      • 'ALERTA_CONTRA' -> o cenário aponta contra a sua posição aberta. NÃO
+                           vira sugestão de entrada nova (entrar na direção
+                           oposta é hedge, não é trade): vira um ALERTA para
+                           você decidir se protege, reduz ou encerra.
+      • 'AUMENTO'       -> o cenário aponta a favor. Vira sugestão, marcada como
+                           aumento de posição — é você quem decide se acata.
+      • 'BLOQUEIA'      -> você pediu silêncio total enquanto estiver posicionado.
+
+    Devolve (decisao, posicao, motivo).
+    """
+    if acao not in ("BUY", "SELL"):
+        return "LIVRE", None, ""
+    plano = plano if plano is not None else plano_da_conta_ativa()
+    modo = str(plano.get("com_posicao_aberta", "alerta")).strip().lower()
+    if modo == "livre":
+        return "LIVRE", None, ""
+    pos = posicao_aberta_no_ativo(ativo)
+    if not pos:
+        return "LIVRE", None, ""
+    if modo == "bloquear":
+        return ("BLOQUEIA", pos,
+                f"você está com {pos.get('direcao')} {pos.get('ativo')} aberto e "
+                "pediu para eu não sugerir nada enquanto houver posição.")
+    if pos.get("direcao") == acao:
+        return ("AUMENTO", pos,
+                f"você já está {pos.get('direcao')} em {pos.get('ativo')} — este "
+                "cenário vai na MESMA direção, então é aumento de posição, não "
+                "uma operação nova.")
+    return ("ALERTA_CONTRA", pos,
+            f"o cenário virou {acao} e você está {pos.get('direcao')} em "
+            f"{pos.get('ativo')}. Não vou sugerir entrada contra a sua própria "
+            "posição — isso é hedge, não trade. Mas você precisa saber que a "
+            "leitura mudou de lado.")
+
 def _normalizar_padrao(texto):
     """Reduz uma confluência a um RÓTULO CANÔNICO, para que 'Sweep de BSL no topo'
     e 'Liquidity Sweep (BSL)' contem como o MESMO padrão. Sem isso, cada frase
@@ -1620,7 +1688,22 @@ def compilar_memoria_prompt():
             contexto += (f"- [{p['origem']}] {p['direcao']} {p['ativo']} entrada {p['entry']} -> "
                           f"US${p['pnl_final']:.2f}\n")
     if abertas:
-        contexto += f"POSIÇÕES ABERTAS AGORA: {len(abertas)} — não sugira sinais em conflito direto com elas.\n"
+        # ANTES dizia "não sugira sinais em conflito direto com elas" — e o
+        # modelo generalizava para "não sugira NADA", ficando mudo justamente
+        # quando o mercado virava contra a posição dele. O que fazer com a
+        # posição aberta é decisão de CÓDIGO (politica_com_posicao_aberta), não
+        # do modelo. Aqui a posição entra só como CONTEXTO, para a leitura levar
+        # em conta onde ele está — e a leitura tem de sair sempre, inclusive
+        # (principalmente) quando aponta contra o que ele carrega.
+        detalhe = ", ".join(
+            f"{p.get('direcao')} {p.get('ativo')} {p.get('contratos') or ''}x @ {p.get('entry')}"
+            for p in abertas[:3])
+        contexto += (
+            f"POSIÇÕES ABERTAS AGORA: {len(abertas)} ({detalhe}). Analise o "
+            "gráfico normalmente e diga o que você VÊ. Se a leitura apontar "
+            "contra essa posição, DIGA — é a informação mais útil para quem "
+            "está posicionado. Não omita e não amenize o cenário por causa "
+            "dela.\n")
 
     # 3) Performance hipotética do robô (sinais acompanhados internamente).
     db = carregar_performance()
@@ -3691,6 +3774,7 @@ ROTULO_CONFIG = {
     "max_stops_seguidos": "stops seguidos até a pausa",
     "cooldown_stop_min": "pausa após stops seguidos",
     "max_operacoes_dia": "teto de operações por dia",
+    "com_posicao_aberta": "quando você já está posicionado",
 }
 
 # Onde cada campo mora: "config" é da FERRAMENTA (o motor é um só, vale para
@@ -3711,6 +3795,13 @@ DESTINO_CONFIG = {
     "max_stops_seguidos": "plano",
     "cooldown_stop_min": "plano",
     "max_operacoes_dia": "plano",
+    "com_posicao_aberta": "plano",
+}
+
+_ROTULO_POSICAO_ABERTA = {
+    "alerta": "avisar quando o cenário virar contra (e sugerir aumento a favor)",
+    "livre": "sugerir normalmente, como se não houvesse posição",
+    "bloquear": "não sugerir nada enquanto houver posição no ativo",
 }
 
 def formatar_valor_config(campo, valor):
@@ -3719,6 +3810,8 @@ def formatar_valor_config(campo, valor):
         return "não definido"
     if campo in ("hora_inicio", "hora_fim"):
         return str(valor)
+    if campo == "com_posicao_aberta":
+        return _ROTULO_POSICAO_ABERTA.get(str(valor).strip().lower(), str(valor))
     if campo == "data_inicio":
         try:
             return datetime.date.fromisoformat(str(valor)).strftime("%d/%m/%Y")
@@ -3742,6 +3835,7 @@ def formatar_valor_config(campo, valor):
     if campo == "max_operacoes_dia":
         return "sem teto" if int(n) <= 0 else f"{int(n)} operação(ões) por dia"
     return f"{n:g}"
+
 
 _RE_NUMERO_PT = re.compile(r"(\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+(?:[.,]\d+)?)")
 
@@ -3963,6 +4057,25 @@ def interpretar_configuracao(texto):
             if valor is not None:
                 guardar(campo, valor, alvo[0], alvo[1])
 
+    # ---------------- CAMPO DE ESCOLHA (não é número) ----------------
+    # "quando eu já estiver posicionado, me avise / não sugira nada / sugira
+    # normal". Precisa de tratamento próprio porque o valor é uma palavra.
+    if tem_gatilho and "com_posicao_aberta" not in achados:
+        m_pos = re.search(r"(posi[cç][ãa]o aberta|posicionad\w*|com posi[cç][ãa]o)", t)
+        if m_pos:
+            trecho = t[max(0, m_pos.start() - 60):m_pos.end() + 80]
+            escolha = None
+            if re.search(r"\b(n[ãa]o suger\w*|nada|silenci\w*|calad\w*|n[ãa]o mand\w*|"
+                         r"bloque\w*|par(e|ar) de suger\w*)\b", trecho):
+                escolha = "bloquear"
+            elif re.search(r"\b(normal\w*|livre|como se n[ãa]o|continue suger\w*|"
+                           r"pode suger\w*|suger\w* do mesmo jeito)\b", trecho):
+                escolha = "livre"
+            elif re.search(r"\b(avis\w*|alert\w*|me diga|me avise|aviso)\b", trecho):
+                escolha = "alerta"
+            if escolha:
+                guardar("com_posicao_aberta", escolha, m_pos.start(), m_pos.end())
+
     # ---------------- DATA DE INÍCIO DO CICLO ----------------
     if tem_gatilho and "data_inicio" not in achados and \
             re.search(r"\b(data|in[íi]cio|come[çc]\w+|desde|a partir|ciclo)\b", t):
@@ -4000,6 +4113,13 @@ def _valor_config_valido(campo, valor):
         return max(1.0, float(valor)) if valor > 0 else None
     if campo in ("margem", "meta_alvo", "drawdown_maximo"):
         return float(valor) if valor >= 0 else None
+    if campo in ("max_stops_seguidos", "cooldown_stop_min", "max_operacoes_dia"):
+        # Zero é escolha legítima nos três: significa "não quero essa trava".
+        n = int(round(valor))
+        return n if n >= 0 else None
+    if campo == "com_posicao_aberta":
+        v = str(valor).strip().lower()
+        return v if v in ("alerta", "livre", "bloquear") else None
     return valor
 
 # Sobre qual campo ele está perguntando quando pede "como está configurado".
@@ -4019,6 +4139,8 @@ _PALAVRAS_CAMPO = {
     "cooldown_stop_min": r"\bpausa\b|\bcooldown\b|\bdescanso\b",
     "max_operacoes_dia": r"\bteto de opera\w*\b|\bmaximo de opera\w*\b|"
                          r"\bopera\w+ por dia\b|\btrades? por dia\b",
+    "com_posicao_aberta": r"\bposicao aberta\b|\bposicionad\w*\b|"
+                          r"\bja (estou|esteja) (posicionad|com posicao)\w*\b",
 }
 
 _RE_VER_CONFIG = re.compile(
@@ -4076,7 +4198,7 @@ def resumo_da_configuracao(cfg, plano, nome_conta="", campos=None):
              "meta_alvo", "dias_meta", "drawdown_maximo", "risco_pct",
              "rr_minimo", "probabilidade_minima", "timeout_acatar_min",
              "max_stops_seguidos", "cooldown_stop_min", "max_operacoes_dia",
-             "data_inicio"]
+             "com_posicao_aberta", "data_inicio"]
     escolhidos = [c for c in ordem if not campos or c in campos]
     if not escolhidos:
         escolhidos = ordem
@@ -5813,6 +5935,67 @@ class SmcQuantApp(ctk.CTk):
             f"{formatar_valor_config(c, (carregar_config() if DESTINO_CONFIG.get(c) == 'config' else plano).get(c, PADRAO_CONFIG_APP.get(c, PLANO_PADRAO.get(c))))}"
             for c in curtos if c in ROTULO_CONFIG)
         self._chat_responder(resumo, falar_tb=False, texto_voz=voz)
+
+    # Intervalo mínimo entre dois alertas do MESMO tipo para a MESMA posição.
+    # O motor roda a cada poucos minutos; sem isto o aviso viraria ruído e ele
+    # pararia de ler justamente o alerta que importa.
+    INTERVALO_ALERTA_CONTRA_SEG = 15 * 60
+
+    def _alertar_cenario_contra_posicao(self, pos, acao, ativo, preco,
+                                        probabilidade, confluencias, stop_cenario):
+        """O mercado virou contra a posição que ele já tem. Isto NÃO é sugestão
+        de entrada — é aviso de gestão, e é a coisa mais útil que a ferramenta
+        pode dizer para quem está dentro de uma operação.
+
+        Antes esse cenário simplesmente sumia: a instrução no prompt fazia o
+        modelo devolver HOLD, e ele ficava sem saber que a leitura mudou de lado.
+        """
+        chave = (pos.get("id"), acao)
+        agora = time.time()
+        ultimo = getattr(self, "_ultimo_alerta_contra", (None, 0))
+        if ultimo[0] == chave and (agora - ultimo[1]) < self.INTERVALO_ALERTA_CONTRA_SEG:
+            return
+        self._ultimo_alerta_contra = (chave, agora)
+
+        direcao_pos = pos.get("direcao")
+        contratos = pos.get("contratos") or 0
+        entrada = pos.get("entry")
+        pnl = pos.get("pnl_atual")
+        linha_pnl = (f"Resultado agora: US${pnl:+,.2f}." if isinstance(pnl, (int, float))
+                     else "Resultado atual: a plataforma não informou.")
+        stop_pos = pos.get("stop")
+        linha_stop = (f"Seu stop está em {stop_pos}."
+                      if stop_pos else
+                      "⚠️ Não há stop registrado para essa posição — se ainda não "
+                      "colocou na plataforma, é a primeira coisa a fazer.")
+        conf = " · ".join(list(confluencias)[:4]) if confluencias else "—"
+
+        texto = (
+            f"⚠️ *A LEITURA VIROU CONTRA A SUA POSIÇÃO*\n"
+            f"Você está {direcao_pos} {ativo}"
+            + (f" ({contratos} contrato(s) @ {entrada})" if contratos else "")
+            + f".\nO gráfico agora aponta {acao} em {preco} "
+            f"(probabilidade {probabilidade:.0f}%).\n"
+            f"{linha_pnl}\n{linha_stop}\n"
+            f"Leitura: {conf}\n"
+            "NÃO vou sugerir entrada na direção oposta — isso seria hedge, não "
+            "operação. A decisão é sua: proteger, reduzir, encerrar, ou segurar "
+            "porque o seu plano previa esse repique."
+        )
+        self.log(f"⚠️ CENÁRIO CONTRA A POSIÇÃO ABERTA: você está {direcao_pos} "
+                 f"{ativo} e a leitura virou {acao} @ {preco} "
+                 f"(prob. {probabilidade:.0f}%). {linha_stop}")
+        self._notificar_desktop(
+            f"⚠️ Leitura virou contra sua posição — {ativo}",
+            [f"Você está {direcao_pos}" + (f" ({contratos} ctr)" if contratos else ""),
+             f"O gráfico agora aponta {acao} em {preco}",
+             linha_stop],
+            cor="#d97706")
+        try:
+            enviar_relatorio_whatsapp(texto, None, self.log)
+        except Exception:
+            pass
+        self._chat_feed(texto.replace("*", ""))
 
     def _chat_estado_do_freio(self):
         """'Por que você não está sugerindo nada?' — responde com os números
@@ -7758,8 +7941,32 @@ class SmcQuantApp(ctk.CTk):
                      text_color=COR["dim"], font=ctk.CTkFont(size=9), justify="left"
                      ).grid(row=10, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 2))
 
+        # QUANDO VOCÊ JÁ ESTÁ POSICIONADO — inclusive numa entrada que você fez
+        # na mão, fora da sugestão dele.
+        ctk.CTkLabel(frame_config, text="Já posicionado no ativo:", text_color=COR["dim"],
+                     font=ctk.CTkFont(size=11)).grid(row=11, column=0, sticky="e",
+                                                      padx=(12, 4), pady=4)
+        self.opt_com_posicao = ctk.CTkOptionMenu(
+            frame_config, width=250,
+            values=["Avisar quando virar contra (recomendado)",
+                    "Sugerir normalmente",
+                    "Não sugerir nada"],
+            fg_color=COR["input"], button_color=COR["borda"], text_color=COR["texto"])
+        self.opt_com_posicao.grid(row=11, column=1, columnspan=3, sticky="w",
+                                  padx=(0, 12), pady=4)
+        self.opt_com_posicao.set(self._rotulo_com_posicao(
+            self.plano.get("com_posicao_aberta", "alerta")))
+
+        ctk.CTkLabel(frame_config,
+                     text="Com posição aberta (mesmo aberta na mão), o cenário CONTRA ela não "
+                          "vira sugestão de entrada — entrar do outro lado é hedge, não trade. "
+                          "No modo recomendado ele te AVISA que a leitura virou, e segue "
+                          "sugerindo a favor e nos outros ativos.",
+                     text_color=COR["dim"], font=ctk.CTkFont(size=9), justify="left"
+                     ).grid(row=12, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 2))
+
         frame_botoes_plano = ctk.CTkFrame(frame_config, fg_color="transparent")
-        frame_botoes_plano.grid(row=11, column=0, columnspan=4, pady=(6, 10))
+        frame_botoes_plano.grid(row=13, column=0, columnspan=4, pady=(6, 10))
         ctk.CTkButton(frame_botoes_plano, text="💾 Salvar Plano", width=140,
                       fg_color=COR["verde_esc"], hover_color=COR["verde"],
                       command=self.salvar_plano_trading).pack(side="left", padx=6)
@@ -8300,6 +8507,8 @@ class SmcQuantApp(ctk.CTk):
         for widget, chave, padrao in campos:
             widget.delete(0, tk.END)
             widget.insert(0, str(self.plano.get(chave, padrao)))
+        self.opt_com_posicao.set(self._rotulo_com_posicao(
+            self.plano.get("com_posicao_aberta", "alerta")))
         # Invalida os caches de render: a conta mudou, as listas TÊM de ser
         # redesenhadas mesmo que a assinatura anterior fosse igual.
         self._assin_posicoes = None
@@ -8373,6 +8582,23 @@ class SmcQuantApp(ctk.CTk):
     # ------------------------------------------------------------------
     # PLANO DE TRADING — salvar / reiniciar
     # ------------------------------------------------------------------
+    # De/para entre o texto do menu e o valor gravado no plano.
+    _COM_POSICAO_ROTULOS = {
+        "alerta": "Avisar quando virar contra (recomendado)",
+        "livre": "Sugerir normalmente",
+        "bloquear": "Não sugerir nada",
+    }
+
+    def _rotulo_com_posicao(self, valor):
+        return self._COM_POSICAO_ROTULOS.get(
+            str(valor).strip().lower(), self._COM_POSICAO_ROTULOS["alerta"])
+
+    def _valor_com_posicao(self, rotulo):
+        for chave, texto in self._COM_POSICAO_ROTULOS.items():
+            if texto == rotulo:
+                return chave
+        return "alerta"
+
     def salvar_plano_trading(self):
         try:
             self.plano["margem"] = float(self.entry_margem.get().replace(",", "."))
@@ -8399,6 +8625,8 @@ class SmcQuantApp(ctk.CTk):
             self.plano["cooldown_stop_min"] = max(0, _cd)
             _mo = int(float(self.entry_max_ops.get().replace(",", ".")))
             self.plano["max_operacoes_dia"] = max(0, _mo)
+            self.plano["com_posicao_aberta"] = self._valor_com_posicao(
+                self.opt_com_posicao.get())
         except ValueError:
             self.log("⚠️ Valores do plano de trading inválidos — use apenas números.")
             return
@@ -10469,6 +10697,24 @@ class SmcQuantApp(ctk.CTk):
                         f"{PROBABILIDADE_MINIMA + MARGEM_ANTI_CHICOTE:.0f}% que eu exijo "
                         "para virar a mão. Mercado indeciso não é oportunidade — "
                         "é a armadilha que faz tomar stop nas duas pontas.")
+
+                # JÁ ESTÁ POSICIONADO NESSE ATIVO? A decisão é de CÓDIGO, não do
+                # modelo — e o cenário contra a posição NÃO é engolido: vira
+                # alerta, que é a informação mais útil para quem está dentro.
+                if not repetido and acao in ("BUY", "SELL") and qualidade_ok:
+                    _dec, _pos_ab, _motivo_pa = politica_com_posicao_aberta(acao, ativo)
+                    if _dec == "ALERTA_CONTRA":
+                        repetido = True      # não vira sugestão de entrada
+                        self._alertar_cenario_contra_posicao(
+                            _pos_ab, acao, ativo, preco, probabilidade,
+                            confluencias, sinal.get("stop_loss"))
+                    elif _dec == "BLOQUEIA":
+                        repetido = True
+                        self.log(f"⏸️ {acao} {ativo}: {_motivo_pa}")
+                    elif _dec == "AUMENTO":
+                        self.log(f"➕ {acao} {ativo}: {_motivo_pa} Vai como "
+                                 "sugestão de AUMENTO — confira o risco somado "
+                                 "antes de acatar.")
 
                 # FREIO DE SUGESTÕES: perda diária, stops seguidos e teto de
                 # operações. É a trava que impede o dia de virar sequência de
