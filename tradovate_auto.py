@@ -376,6 +376,14 @@ class TradovateAuto:
         self.cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Delete",
                                             "code": "Delete", "windowsVirtualKeyCode": 46})
 
+    def teclar_escape(self):
+        """Manda ESC para a página. É uma das saídas do comprovante da ordem
+        quando a setinha ← não é encontrada no DOM."""
+        for tipo in ("keyDown", "keyUp"):
+            self.cdp("Input.dispatchKeyEvent", {"type": tipo, "key": "Escape",
+                                                "code": "Escape",
+                                                "windowsVirtualKeyCode": 27})
+
     # ============================================================
     #  OPÇÃO B — Ordem pelo "Chamado do pedido" (preço EXATO digitado)
     # ============================================================
@@ -612,18 +620,77 @@ class TradovateAuto:
             d = json.loads(v or "{}")
         except Exception:
             d = {}
-        if not d.get("achou"):
-            onde = ("dentro do comprovante" if d.get("tinha_painel")
-                    else "na tela (comprovante não localizado)")
-            self.log(f"   ⚠️ não achei o botão de voltar (←) {onde}.")
-            return False
-        if dry_run:
-            self.log(f"   [dry] voltaria (←) em ({d['x']},{d['y']})")
+        if d.get("achou"):
+            if dry_run:
+                self.log(f"   [dry] voltaria (←) em ({d['x']},{d['y']})")
+                return True
+            self.log(f"   ↩️ voltar (←) clicado em ({d['x']},{d['y']}) "
+                     f"[svg={d.get('svg')} texto={d.get('texto')}].")
+            time.sleep(0.5)
             return True
-        self.log(f"   ↩️ voltar (←) clicado em ({d['x']},{d['y']}) "
-                 f"[svg={d.get('svg')} texto={d.get('texto')}].")
-        time.sleep(0.5)
-        return True
+
+        onde = ("dentro do comprovante" if d.get("tinha_painel")
+                else "na tela (comprovante não localizado)")
+        self.log(f"   ⚠️ não achei o botão de voltar (←) {onde} — tentando as "
+                 "outras saídas do comprovante.")
+        if dry_run:
+            return False
+        # ROTAS ALTERNATIVAS. Depender de UMA única forma de voltar foi o que
+        # deixou posição sem stop no pregão: a setinha não era encontrada e o
+        # robô simplesmente desistia, com a entrada já no mercado. Agora há três
+        # saídas independentes, e cada uma é verificada de verdade — só declaro
+        # que voltei quando o formulário reaparece.
+        for rotulo, acao in (
+            ("atributo (aria-label/title de voltar)", self._voltar_por_atributo),
+            ("tecla ESC", self._voltar_por_escape),
+            ("cabeçalho do 'Chamado do pedido'", self._voltar_por_cabecalho),
+        ):
+            try:
+                acao()
+            except ConexaoPerdida:
+                raise
+            except Exception:
+                continue
+            time.sleep(0.6)
+            if self._formulario_visivel():
+                self.log(f"   ↩️ voltei ao formulário pela {rotulo}.")
+                return True
+        return False
+
+    def _voltar_por_atributo(self):
+        """Clica em quem se declara botão de voltar/fechar por aria-label/title.
+        Independe de geometria — funciona mesmo se a Tradovate mover o painel."""
+        self.avaliar_js(r"""
+        (function(){
+          var sel='[aria-label],[title],[data-testid]';
+          var els=document.querySelectorAll(sel);
+          var re=/(voltar|back|fechar|close|retornar|previous|anterior)/i;
+          for(var i=0;i<els.length;i++){
+            var e=els[i];
+            var r=e.getBoundingClientRect();
+            if(r.width<=0||r.height<=0) continue;
+            if(r.width>80||r.height>80) continue;
+            var a=(e.getAttribute('aria-label')||'')+' '+
+                  (e.getAttribute('title')||'')+' '+
+                  (e.getAttribute('data-testid')||'');
+            if(!re.test(a)) continue;
+            try{ e.click(); return 'ok'; }catch(err){}
+          }
+          return 'nada';
+        })()
+        """)
+
+    def _voltar_por_escape(self):
+        self.teclar_escape()
+
+    def _voltar_por_cabecalho(self):
+        """Clica no título do painel 'Chamado do pedido'. Na Tradovate isso
+        recolhe/reabre o ticket, que volta no estado de formulário."""
+        for palavra in ("Chamado do pedido", "Order Ticket", "Chamado do Pedido"):
+            alvo = self.localizar(palavra)
+            if alvo:
+                self.clicar_pagina(alvo["x"], alvo["y"])
+                return
 
     # ------------------- LEITURA DAS POSIÇÕES ABERTAS -------------------
     #  Descobre se VOCÊ está posicionado, lendo a própria tela da corretora —
@@ -881,6 +948,74 @@ class TradovateAuto:
         }
         return false;
       }
+
+      // ---- LEITURA DO BLOCO INTEIRO DA POSIÇÃO ----------------------------
+      // A Tradovate não desenha "POSIÇÃO" e o número em caixinhas separadas e
+      // previsíveis: ela escreve tudo junto, no formato
+      //     POSICAO 50@7730.00 62.50 USD          (comprado 50, médio 7730, +62.50)
+      //     POSICAO 8@7756.00 (140.00) USD        (parênteses = PREJUÍZO)
+      //     POSICAO 0 -.-- USD                    (zerado, sem P&L)
+      // Procurar "o número ao lado do rótulo" quebrava nisso de duas formas:
+      //   1) "50@7730.00" virava o número 507730 (o @ era descartado), que a
+      //      trava de sanidade rejeitava — daí o "achei o rotulo POSICAO mas nao
+      //      consegui ler o numero ao lado" que aparecia o pregão inteiro;
+      //   2) o preço médio nunca era lido (ficava null fixo) e o P&L só era
+      //      procurado no pai imediato da quantidade, que quase nunca o contém.
+      // Sem preço médio E sem P&L, a posição era descartada como "leitura
+      // duvidosa" — e o app concluía que você estava zerado, devolvendo para
+      // PENDENTE uma ordem que já tinha executado.
+      // Ler o bloco inteiro com regex resolve os três formatos de uma vez.
+      function blocoDoRotulo(el){
+        var c=el, melhor=null;
+        for(var i=0;i<6 && c;i++){
+          var t=txt(c);
+          if(t && t.length<=90 && /[0-9]/.test(t) && /posi|position|net ?pos/i.test(t)){
+            melhor=t;   // o MENOR ancestral que já tem rótulo + número
+            break;
+          }
+          c=c.parentElement;
+        }
+        return melhor;
+      }
+      // Devolve {qtd, preco, pnl} — cada campo só vem preenchido quando foi
+      // realmente lido. Nada é deduzido: o que não der para ler volta null.
+      // Um número "de dinheiro": no máximo 2 casas decimais, com separador de
+      // milhar opcional. O limite de 2 casas é o que impede o parser de engolir
+      // dois números colados — a tela às vezes vem sem espaço entre eles
+      // ("7756.0070.00" é preço 7756.00 seguido de P&L 70.00, não 77.560.070).
+      var NUMP='(?:[0-9]{1,3}(?:,[0-9]{3})+(?:\\.[0-9]{1,2})?|[0-9]+(?:[.,][0-9]{1,2})?)';
+      function parseBlocoPos(t){
+        if(!t) return null;
+        var r={qtd:null, preco:null, pnl:null};
+        var limpo=t.replace(/\s+/g,' ');
+        // a) "50@7730.00" -> quantidade E preço médio de uma vez.
+        var mq=limpo.match(new RegExp('(-?[0-9]{1,4})\\s*@\\s*('+NUMP+')'));
+        if(mq){
+          r.qtd=parseFloat(mq[1]);
+          var p=num(mq[2]);
+          if(p!==null && p>0) r.preco=p;
+          // Tira do texto o trecho já consumido, para o P&L não reaproveitar
+          // esses mesmos dígitos quando vierem grudados.
+          limpo=limpo.replace(mq[0],' ');
+        } else {
+          // b) sem @: o primeiro número depois do rótulo é a quantidade.
+          var ms=limpo.match(/(?:posi[cç][aã]o|position|net ?pos)\s*:?\s*(-?[0-9]{1,4})(?![0-9.,])/i);
+          if(ms) r.qtd=parseFloat(ms[1]);
+        }
+        // c) P&L: número colado em USD/$ — parênteses significam PREJUÍZO.
+        //    "-.--" é a plataforma dizendo "não há", e não o número zero.
+        var mp=limpo.match(new RegExp('(\\(?\\s*-?'+NUMP+'\\s*\\)?)\\s*(?:USD|\\$|R\\$)','i'));
+        if(mp){
+          var bruto2=mp[1].trim();
+          var negativo=/^\(/.test(bruto2);
+          var v=num(bruto2.replace(/[()]/g,''));
+          if(v!==null) r.pnl=negativo?-Math.abs(v):v;
+        }
+        if(r.qtd!==null && (Math.abs(r.qtd)>1000 ||
+            Math.abs(r.qtd-Math.round(r.qtd))>1e-9)) r.qtd=null;
+        return r;
+      }
+
       var achados=[], vistos=0;
       for(var m=0;m<lista.length;m++){
         var e2=lista[m];
@@ -900,13 +1035,19 @@ class TradovateAuto:
           res.diag.amostras.push({rotulo:bruto.slice(0,40),
             pai:(pai?txt(pai):'').replace(/\s+/g,' ').slice(0,120)});
         }
+        // Lê o bloco inteiro ANTES de tentar o vizinho: é ele que traz o preço
+        // médio e o P&L, que a busca por vizinho nunca alcançava.
+        var pb=parseBlocoPos(blocoDoRotulo(e2));
         var ach=valorPerto(e2, bruto, ehRotuloPos);
-        if(!ach) continue;
         // SANIDADE: posição é contagem de CONTRATOS — inteiro e pequeno.
         // Sem isto o robô lia o PREÇO vizinho (ex.: 7614.75) como se fosse a
         // quantidade da posição. Preço nunca é posição.
-        var q=ach.valor;
-        if(Math.abs(q) > 1000 || Math.abs(q - Math.round(q)) > 1e-9) continue;
+        var q=ach?ach.valor:null;
+        if(q!==null && (Math.abs(q)>1000 || Math.abs(q-Math.round(q))>1e-9)) q=null;
+        // O bloco manda quando o vizinho não deu um número aproveitável — é o
+        // caso de "50@7730.00", em que o vizinho vira 507730 e é descartado.
+        if(q===null && pb && pb.qtd!==null) q=pb.qtd;
+        if(q===null) continue;
         var simbolo=null, c2=e2.parentElement;
         for(var u2=0; u2<8 && c2 && !simbolo; u2++){
           var cand=[];
@@ -926,7 +1067,7 @@ class TradovateAuto:
         // completamente errado. Fica restrito ao container imediato.
         var ROT_CONTA=['capital','conta','saldo','balance','equity','margem',
                        'margem diaria','margem inicial'];
-        var pnl=null, c3=ach.el?ach.el.parentElement:e2.parentElement;
+        var pnl=null, c3=(ach&&ach.el)?ach.el.parentElement:e2.parentElement;
         if(c3){
           var fl3=[];
           try{ fl3=c3.querySelectorAll('div,span,label,p,strong,b,td'); }catch(e){}
@@ -938,14 +1079,25 @@ class TradovateAuto:
           if(!blocoDeConta){
             for(var y=0; y<fl3.length; y++){
               var ye=fl3[y];
-              if(!folha(ye)||ye===ach.el||ye===e2) continue;
+              if(!folha(ye)||(ach&&ye===ach.el)||ye===e2) continue;
               var yt=txt(ye);
               if(!yt||yt.length>24) continue;
-              if(/usd|\$|r\$/i.test(yt)){ var pv=num(yt); if(pv!==null){ pnl=pv; break; } }
+              if(/usd|\$|r\$/i.test(yt)){
+                // "-.--" é ausência de valor, não zero.
+                if(!/[0-9]/.test(yt)) continue;
+                var negY=/^\(/.test(yt.trim());
+                var pv=num(yt.replace(/[()]/g,''));
+                if(pv!==null){ pnl=negY?-Math.abs(pv):pv; break; }
+              }
             }
           }
         }
-        achados.push({ativo:simbolo, qtd_liquida:ach.valor, preco_medio:null,
+        // O bloco completa o que faltou. Preço médio SÓ vem daqui (a busca por
+        // vizinho nunca o enxergava) e o P&L do bloco entra quando o vizinho não
+        // achou nada. Nenhum dos dois é estimado: ou foi lido, ou fica null.
+        var precoMed=(pb && pb.preco!==null)?pb.preco:null;
+        if(pnl===null && pb && pb.pnl!==null) pnl=pb.pnl;
+        achados.push({ativo:simbolo, qtd_liquida:q, preco_medio:precoMed,
                       pnl:pnl, fonte:'rotulo'});
       }
       res.diag.rotulos_posicao=vistos;
@@ -957,8 +1109,14 @@ class TradovateAuto:
           var it=achados[a];
           if(!it.ativo){ semSimbolo.push(it); continue; }
           var ant=mapa[it.ativo];
-          if(!ant || (ant.qtd_liquida===0 && it.qtd_liquida!==0) ||
-             (ant.pnl===null && it.pnl!==null)) mapa[it.ativo]=it;
+          if(!ant){ mapa[it.ativo]=it; continue; }
+          // Mesmo ativo aparecendo em dois cantos da tela (o painel desenha o
+          // rótulo duas vezes): junta o melhor de cada leitura em vez de
+          // descartar a que veio incompleta. Antes, a segunda leitura sem P&L
+          // apagava o P&L que a primeira tinha lido.
+          if(ant.qtd_liquida===0 && it.qtd_liquida!==0) ant.qtd_liquida=it.qtd_liquida;
+          if(ant.pnl===null && it.pnl!==null) ant.pnl=it.pnl;
+          if(ant.preco_medio===null && it.preco_medio!==null) ant.preco_medio=it.preco_medio;
         }
         res.linhas=Object.keys(mapa).map(function(k){return mapa[k];});
         if(!res.linhas.length && semSimbolo.length){
@@ -1177,16 +1335,33 @@ class TradovateAuto:
             if preco is None:
                 continue
             self.log(f" • {nome}")
-            try:
-                perna_ok = self.enviar_ordem_ticket(preco, dirr, tipo, qtd, enviar)
-            except ConexaoPerdida as e:
-                perna_ok = False
-                resultado["erro"] = str(e)
-                self.log(f"   ❌ {nome}: a conexão com o Chrome caiu ({e}).")
-            except Exception as e:
-                perna_ok = False
-                resultado["erro"] = str(e)
-                self.log(f"   ❌ {nome}: falhou ({e}).")
+            # A PROTEÇÃO NÃO PODE DESISTIR NA PRIMEIRA TENTATIVA. No pregão, a
+            # ENTRADA saiu e o STOP não, três vezes seguidas, porque o robô
+            # tentava voltar ao formulário uma única vez e desistia — com a
+            # ordem já no mercado. Stop e alvo agora têm três rodadas completas
+            # (cada uma com todas as rotas de volta ao formulário), com pausa
+            # crescente para dar tempo de a Tradovate redesenhar o painel.
+            tentativas = 3 if (enviar and nome in ("STOP", "ALVO")) else 1
+            perna_ok = False
+            for t in range(tentativas):
+                if t:
+                    espera = 1.5 * t
+                    self.log(f"   🔁 {nome}: nova tentativa ({t + 1}/{tentativas}) "
+                             f"em {espera:.1f}s — a proteção não pode ficar de fora.")
+                    time.sleep(espera)
+                try:
+                    perna_ok = self.enviar_ordem_ticket(preco, dirr, tipo, qtd, enviar)
+                except ConexaoPerdida as e:
+                    perna_ok = False
+                    resultado["erro"] = str(e)
+                    self.log(f"   ❌ {nome}: a conexão com o Chrome caiu ({e}).")
+                    break        # sem Chrome, repetir não adianta
+                except Exception as e:
+                    perna_ok = False
+                    resultado["erro"] = str(e)
+                    self.log(f"   ❌ {nome}: falhou ({e}).")
+                if perna_ok:
+                    break
 
             if perna_ok:
                 resultado["enviadas"].append(nome)
@@ -1207,10 +1382,21 @@ class TradovateAuto:
         # posição a descoberto — precisa gritar, não passar em silêncio.
         if enviar and "ENTRADA" in resultado["enviadas"] and resultado["faltando"]:
             resultado["exposto"] = True
+            resultado["sem_stop"] = "STOP" in resultado["faltando"]
             self.log("🚨 ATENÇÃO: a ENTRADA foi enviada, mas "
                      f"{' e '.join(resultado['faltando'])} NÃO. Se essa ordem for "
                      "executada, a posição fica SEM PROTEÇÃO. Coloque "
                      "stop/alvo na mão na plataforma AGORA.")
+            if resultado["sem_stop"]:
+                # Sem stop é o cenário que quebra conta. A ordem de entrada é
+                # LIMITADA e ainda não foi preenchida: cancelá-la na plataforma
+                # elimina o risco por completo. Não faço isso por conta própria
+                # porque cancelar mexe nas ordens da corretora — inclusive as que
+                # você lançou na mão. Fica no seu comando.
+                self.log("   ⛑️ SAÍDA SEGURA: enquanto a entrada não for "
+                         "preenchida, o risco é zero. Cancele a ordem de entrada "
+                         f"em {plano[0][1]} na Tradovate, ou coloque o stop em "
+                         f"{stop} na mão — o que for mais rápido.")
         else:
             self.log("📦 Bracket concluído." if resultado["ok"]
                      else "📦 Bracket NÃO foi enviado por completo.")

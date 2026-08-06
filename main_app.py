@@ -111,7 +111,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.9.1"
+VERSAO_ATUAL = "2.10.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -403,6 +403,17 @@ PLANO_PADRAO = {
     # o ritmo exigido por dia E entra no contexto que a IA recebe.
     "dias_meta": 5,
     "data_inicio": None,
+    # ---- FREIO DE SUGESTÕES (proteção contra sequência de stops) ----
+    # O robô analisa a cada poucos minutos e o mercado não muda de opinião nesse
+    # ritmo: sem freio, ele reapresenta o mesmo cenário sem parar e o trader
+    # acaba tomando stop atrás de stop. Estes números são o limite de quanto ele
+    # pode insistir num dia. Todos configuráveis por conta.
+    #   max_stops_seguidos -> depois de N stops seguidos, ele para e espera
+    #   cooldown_stop_min  -> quanto tempo ele fica calado depois disso
+    #   max_operacoes_dia  -> teto de operações executadas no dia (0 = sem teto)
+    "max_stops_seguidos": 2,
+    "cooldown_stop_min": 30,
+    "max_operacoes_dia": 6,
 }
 
 def dias_meta_do_plano(plano=None):
@@ -1151,6 +1162,7 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
             continue                      # zerado: sem posição líquida a registrar
         if abs(qtd) > MAX_CONTRATOS_PLAUSIVEL:
             resumo["ignoradas"] += 1
+            observados.discard(ativo)     # leitura suspeita não vale como "vi"
             log(f"⚠️ Ignorei '{ativo}': quantidade implausível ({qtd}).")
             continue
         try:
@@ -1170,8 +1182,18 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
         # Sem nenhum dos dois, não há o que registrar sem inventar.
         if preco is None and pnl is None:
             resumo["ignoradas"] += 1
+            # CRÍTICO: sair daqui deixando o ativo em `observados` fazia o app
+            # concluir "vi o ativo e não há posição" — ou seja, tratava uma
+            # leitura ILEGÍVEL como prova de que você está zerado. Era isso que
+            # devolvia para PENDENTE uma ordem já executada e zerava o P&L real
+            # ("↩️ Correção: ... NÃO está executada na plataforma"), fazendo o
+            # dashboard do Plano de Trading parar de acompanhar a operação.
+            # Não conseguir ler é AUSÊNCIA de informação, nunca uma conclusão.
+            observados.discard(ativo)
             log(f"⚠️ Ignorei '{ativo}': a plataforma mostrou a quantidade, mas nem "
-                "preço médio nem P&L vieram legíveis (não vou inventar número).")
+                "preço médio nem P&L vieram legíveis (não vou inventar número). "
+                "Não concluí nada sobre a posição — o que já estava registrado "
+                "continua de pé.")
             continue
         validas[ativo] = {"ativo": ativo, "qtd": qtd, "preco": preco, "pnl": pnl}
 
@@ -1231,6 +1253,10 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
         if pos["status"] == "ABERTA" and not mesma_direcao \
                 and pos.get("execucao") != "CONFIRMADA":
             # Estava "aberta" só por estimativa e a corretora não confirma.
+            # Corrige NA HORA, de propósito: manter uma posição "aberta" que a
+            # corretora não tem seria inventar P&L. Isto só é seguro porque uma
+            # leitura ILEGÍVEL não chega até aqui — ela sai de `observados` lá
+            # em cima, e ausência de leitura nunca vira conclusão.
             pos["status"] = "PENDENTE"
             pos["execucao"] = None
             pos["confirmacoes_entrada"] = 0
@@ -1348,6 +1374,100 @@ def resultados_por_dia():
             return datetime.datetime.min
     return sorted(por_dia.items(), key=lambda kv: chave(kv[0]))
 
+def _hora_do_registro(txt_data):
+    """'05/08/2026 14:08' -> datetime. Devolve None se o formato não bater."""
+    try:
+        return datetime.datetime.strptime((txt_data or "").strip(), '%d/%m/%Y %H:%M')
+    except (ValueError, TypeError):
+        return None
+
+def operacoes_fechadas_hoje():
+    """Operações da conta ativa fechadas HOJE, em ordem cronológica."""
+    hoje = time.strftime('%d/%m/%Y')
+    fechadas = [p for p in posicoes_do_ciclo()
+                if p.get("status") == "FECHADA"
+                and p.get("pnl_final") is not None
+                and (p.get("data_fechamento") or "").startswith(hoje)]
+    fechadas.sort(key=lambda p: _hora_do_registro(p.get("data_fechamento"))
+                  or datetime.datetime.min)
+    return fechadas
+
+def freio_de_sugestoes(plano=None, agora=None):
+    """PROTEÇÃO CONTRA SEQUÊNCIA DE STOPS.
+
+    Responde a uma pergunta só: o robô pode emitir uma sugestão nova AGORA?
+
+    Por que isto existe: o motor analisa o gráfico a cada poucos minutos e, num
+    mercado lateral, ele reencontra o mesmo cenário indefinidamente. O trader
+    recebe sugestão atrás de sugestão, acata, toma stop, recebe outra — e o dia
+    vira uma sequência de perdas que nenhum setup individual explica. Um trader
+    de mesa tem limite de perda diária e para depois de dois stops seguidos.
+    A ferramenta passa a ter o mesmo.
+
+    É tudo DETERMINÍSTICO e lido do diário real da conta: nenhuma decisão aqui
+    passa pelo modelo, e nenhum número é estimado.
+
+    Devolve (pode_sugerir: bool, motivo: str|None).
+    """
+    plano = plano if plano is not None else plano_da_conta_ativa()
+    agora = agora or datetime.datetime.now()
+
+    def _int(campo, padrao):
+        try:
+            return int(float(plano.get(campo, padrao)))
+        except (TypeError, ValueError):
+            return padrao
+
+    max_stops = _int("max_stops_seguidos", 2)
+    cooldown_min = _int("cooldown_stop_min", 30)
+    max_ops = _int("max_operacoes_dia", 6)
+
+    fechadas = operacoes_fechadas_hoje()
+
+    # 1) TETO DE PERDA DIÁRIA — o limite que o próprio trader configurou.
+    #    Batido o drawdown do plano, o dia acabou. Continuar sugerindo depois
+    #    disso é o caminho para o trader tentar recuperar no impulso.
+    try:
+        drawdown = float(plano.get("drawdown_maximo", 0) or 0)
+    except (TypeError, ValueError):
+        drawdown = 0.0
+    if drawdown > 0:
+        realizado = sum(p["pnl_final"] for p in fechadas)
+        aberto = sum(p.get("pnl_atual", 0) or 0 for p in posicoes_do_ciclo()
+                     if p.get("status") == "ABERTA")
+        if (realizado + aberto) <= -abs(drawdown):
+            return False, (
+                f"o prejuízo de hoje (US${realizado + aberto:,.2f}) bateu o "
+                f"drawdown máximo do plano (US${abs(drawdown):,.2f}). Não vou "
+                "sugerir mais nada hoje — esse limite existe para proteger a "
+                "conta, e ele já foi usado.")
+
+    # 2) TETO DE OPERAÇÕES NO DIA — excesso de trade é o que corrói o resultado.
+    if max_ops > 0 and len(fechadas) >= max_ops:
+        return False, (
+            f"você já fechou {len(fechadas)} operações hoje, que é o teto do seu "
+            f"plano ({max_ops}). Parar aqui é decisão de gestão, não de mercado.")
+
+    # 3) STOPS SEGUIDOS — depois de N stops em sequência, silêncio por um tempo.
+    if max_stops > 0 and cooldown_min > 0:
+        seguidos, ultimo_stop = 0, None
+        for p in reversed(fechadas):
+            if p["pnl_final"] < 0:
+                seguidos += 1
+                ultimo_stop = ultimo_stop or _hora_do_registro(p.get("data_fechamento"))
+            else:
+                break
+        if seguidos >= max_stops and ultimo_stop:
+            faltam = cooldown_min - (agora - ultimo_stop).total_seconds() / 60.0
+            if faltam > 0:
+                return False, (
+                    f"foram {seguidos} stops seguidos. Estou em pausa por mais "
+                    f"{faltam:.0f} min antes de sugerir de novo — depois de dois "
+                    "stops, o problema deixa de ser o setup e passa a ser o "
+                    "ritmo. Se quiser voltar antes, mude 'stops seguidos' ou "
+                    "'pausa após stop' no Plano de Trading.")
+    return True, None
+
 def _normalizar_padrao(texto):
     """Reduz uma confluência a um RÓTULO CANÔNICO, para que 'Sweep de BSL no topo'
     e 'Liquidity Sweep (BSL)' contem como o MESMO padrão. Sem isso, cada frase
@@ -1417,6 +1537,65 @@ def aprendizado_por_padrao(minimo=3):
     por_hora = [(h, v, n, v / n * 100.0) for h, (v, n) in horas.items() if n >= minimo]
     por_hora.sort(key=lambda x: x[3], reverse=True)
     return bons, ruins, por_hora
+
+#  Limites do ajuste por aprendizado. Existem para o histórico CORRIGIR a
+#  leitura da IA sem SUBSTITUIR a leitura: mesmo um padrão com péssimo
+#  histórico não derruba sozinho um cenário excelente, e nem um padrão bom
+#  aprova um cenário ruim.
+AJUSTE_APRENDIZADO_MAX = 12.0     # teto do bônus/penalidade, em pontos de %
+AMOSTRA_MINIMA_APRENDIZADO = 4    # abaixo disso, não é histórico: é acaso
+
+def ajuste_por_aprendizado(confluencias, hora=None, minimo=AMOSTRA_MINIMA_APRENDIZADO):
+    """AUTOAPRENDIZAGEM COM EFEITO REAL NA DECISÃO.
+
+    `aprendizado_por_padrao()` já descobria quais padrões acertam e quais falham
+    NAS OPERAÇÕES DELE — mas esse conhecimento só era escrito no prompt, e o
+    modelo podia simplesmente ignorá-lo. Um padrão que perdeu 8 das 10 últimas
+    vezes continuava gerando sugestão com 75% de probabilidade.
+
+    Aqui o aprendizado vira NÚMERO: a probabilidade do cenário é corrigida para
+    cima ou para baixo conforme o que a conta já viveu, antes de o piso de
+    qualidade decidir. Determinístico, auditável e limitado — o histórico ajusta
+    a leitura, nunca a substitui.
+
+    Devolve (delta, explicacoes) — delta em pontos percentuais.
+    """
+    bons, ruins, por_hora = aprendizado_por_padrao(minimo=minimo)
+    if not (bons or ruins or por_hora):
+        return 0.0, []
+
+    peso = {rot: pct for rot, _v, _n, pct in bons}
+    peso.update({rot: pct for rot, _v, _n, pct in ruins})
+    amostras = {rot: n for rot, _v, n, _pct in bons}
+    amostras.update({rot: n for rot, _v, n, _pct in ruins})
+
+    delta, explicacoes, vistos = 0.0, [], set()
+    for c in (confluencias or []):
+        rot = _normalizar_padrao(c)
+        if not rot or rot in vistos or rot not in peso:
+            continue
+        vistos.add(rot)
+        # Distância de 50% (moeda ao ar) convertida em pontos de probabilidade.
+        # 80% de acerto -> +6 · 30% de acerto -> -8.
+        d = (peso[rot] - 50.0) * 0.4
+        delta += d
+        explicacoes.append(
+            f"'{rot}' acertou {peso[rot]:.0f}% em {amostras[rot]} cenários seus "
+            f"({d:+.1f} pts)")
+
+    # A HORA também é padrão: quase todo trader tem um horário em que perde.
+    if hora and por_hora:
+        for h, _v, n, pct in por_hora:
+            if str(h) == str(hora) and n >= minimo:
+                d = (pct - 50.0) * 0.3
+                delta += d
+                explicacoes.append(
+                    f"no horário {h} você acertou {pct:.0f}% em {n} cenários "
+                    f"({d:+.1f} pts)")
+                break
+
+    delta = max(-AJUSTE_APRENDIZADO_MAX, min(AJUSTE_APRENDIZADO_MAX, delta))
+    return round(delta, 1), explicacoes
 
 def compilar_memoria_prompt():
     contexto = "\n--- FEEDBACK LOOP DE APRENDIZADO ---\n"
@@ -3284,6 +3463,17 @@ def texto_das_capacidades():
         "fica gravada para sempre. Pergunte 'o que você aprendeu?' para "
         "conferir, e 'o que você sabe?' para ver todos os assuntos.\n"
         "\n"
+        "APRENDO TAMBÉM COM O SEU RESULTADO, sem você pedir: os padrões que vêm "
+        "falhando NAS SUAS operações perdem pontos de probabilidade e passam a "
+        "ser barrados; os que vêm acertando ganham. Isso entra na conta do "
+        "cenário, não é só conversa.\n"
+        "\n"
+        "SEGURO A SUA MÃO quando o dia vira: depois de dois stops seguidos eu "
+        "fico em silêncio por um tempo, paro de vez ao bater o teto de "
+        "operações do dia ou o seu drawdown, e não viro de compra para venda no "
+        "mesmo ativo sem convicção acima do piso. Pergunte 'por que você não "
+        "está sugerindo nada?' que eu digo qual limite está segurando.\n"
+        "\n"
         "O QUE EU NÃO FAÇO: não envio ordem para a corretora sozinha, não "
         "prometo direção do mercado, e não invento número. Se eu não tiver o "
         "dado e não conseguir buscar, eu digo isso.")
@@ -3498,6 +3688,9 @@ ROTULO_CONFIG = {
     "dias_meta": "prazo da meta",
     "timeout_acatar_min": "prazo para acatar",
     "data_inicio": "início do ciclo",
+    "max_stops_seguidos": "stops seguidos até a pausa",
+    "cooldown_stop_min": "pausa após stops seguidos",
+    "max_operacoes_dia": "teto de operações por dia",
 }
 
 # Onde cada campo mora: "config" é da FERRAMENTA (o motor é um só, vale para
@@ -3515,6 +3708,9 @@ DESTINO_CONFIG = {
     "dias_meta": "plano",
     "timeout_acatar_min": "plano",
     "data_inicio": "plano",
+    "max_stops_seguidos": "plano",
+    "cooldown_stop_min": "plano",
+    "max_operacoes_dia": "plano",
 }
 
 def formatar_valor_config(campo, valor):
@@ -3539,8 +3735,12 @@ def formatar_valor_config(campo, valor):
         return f"1:{n:g}"
     if campo == "dias_meta":
         return f"{int(n)} dia(s)"
-    if campo in ("intervalo_minutos", "timeout_acatar_min"):
+    if campo in ("intervalo_minutos", "timeout_acatar_min", "cooldown_stop_min"):
         return f"{int(n)} minuto(s)"
+    if campo == "max_stops_seguidos":
+        return f"{int(n)} stop(s) seguidos"
+    if campo == "max_operacoes_dia":
+        return "sem teto" if int(n) <= 0 else f"{int(n)} operação(ões) por dia"
     return f"{n:g}"
 
 _RE_NUMERO_PT = re.compile(r"(\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+(?:[.,]\d+)?)")
@@ -3691,6 +3891,26 @@ def interpretar_configuracao(texto):
     especs = [
         ("timeout_acatar_min", r"\bacatar\b",
          r"(\d{1,3})\s*(?:min\b|minutos?\b)"),
+        # Freio de sugestões. Vem cedo na lista porque fala em "minutos" e em
+        # "stops" — se ficasse depois, "pausa de 30 minutos" seria capturado
+        # pelo intervalo entre análises.
+        # Os dois usam LOOKAHEAD de propósito: assim o trecho "consumido" é só a
+        # palavra-âncora, e o número continua visível para a busca do valor.
+        # Com o casamento largo, "pausa de 45 minutos depois do stop" engolia o
+        # "45 minutos" dentro da própria chave e nada era configurado.
+        ("cooldown_stop_min",
+         r"\b(pausa|cooldown|descanso)\b(?=[^.;]{0,30}\bstop)",
+         r"(\d{1,3})\s*(?:min\b|minutos?\b)"),
+        ("cooldown_stop_min",
+         r"\bstop\b(?=[^.;]{0,30}\b(pausa|cooldown|descanso|esperar|aguardar)\b)",
+         r"(\d{1,3})\s*(?:min\b|minutos?\b)"),
+        ("max_stops_seguidos",
+         r"\b(stops?\s+seguidos?|stops?\s+consecutivos?|sequ[êe]ncia de stops?)\b",
+         r"(\d{1,2})"),
+        ("max_operacoes_dia",
+         r"\b(m[áa]ximo de opera|teto de opera|limite de opera|opera[çc][õo]es por dia|"
+         r"trades? por dia)\b",
+         r"(\d{1,3})"),
         ("intervalo_minutos",
          r"\b(intervalo|a cada|de quanto em quanto|frequ[êe]ncia|periodicidade)\b",
          r"(\d{1,3})\s*(?:min\b|minutos?\b)"),
@@ -3795,13 +4015,17 @@ _PALAVRAS_CAMPO = {
     "hora_inicio": r"\bcomec\w*\b|\binicio\b|\babre\b|\babertura\b",
     "hora_fim": r"\btermin\w*\b|\bfim\b|\bfecha\b|\bencerr\w*\b",
     "intervalo_minutos": r"\bintervalo\b|\ba cada\b|\bfrequencia\b",
+    "max_stops_seguidos": r"\bstops? seguidos?\b|\bstops? consecutivos?\b",
+    "cooldown_stop_min": r"\bpausa\b|\bcooldown\b|\bdescanso\b",
+    "max_operacoes_dia": r"\bteto de opera\w*\b|\bmaximo de opera\w*\b|"
+                         r"\bopera\w+ por dia\b|\btrades? por dia\b",
 }
 
 _RE_VER_CONFIG = re.compile(
     r"(como\s+(esta|estao|ficou|ficaram|anda|ta|funciona)\w*\s+"
     r"((o|a|os|as|meu|minha|meus|minhas)\s+)*(configurad|configura|plano|"
     r"gestao de risco|gestao|gerenciamento|risco|meta|margem|drawdown|prazo|"
-    r"horario|intervalo|parametros|numeros)|"
+    r"horario|intervalo|parametros|numeros|pausa|freio|teto|limite)|"
     # "qual o MEU risco" é sobre a configuração; "qual o risco DISSO" é sobre o
     # trade que está na mesa. Sem essa diferença ela sequestrava a conversa.
     r"qual\s+(e\s+)?(o|a|os|as)?\s*(meu|minha|meus|minhas)\s*(configura|plano|meta|"
@@ -3851,6 +4075,7 @@ def resumo_da_configuracao(cfg, plano, nome_conta="", campos=None):
     ordem = ["hora_inicio", "hora_fim", "intervalo_minutos", "margem",
              "meta_alvo", "dias_meta", "drawdown_maximo", "risco_pct",
              "rr_minimo", "probabilidade_minima", "timeout_acatar_min",
+             "max_stops_seguidos", "cooldown_stop_min", "max_operacoes_dia",
              "data_inicio"]
     escolhidos = [c for c in ordem if not campos or c in campos]
     if not escolhidos:
@@ -3937,6 +4162,20 @@ def interpretar_intencao(texto):
     mudancas = interpretar_configuracao(texto)
     if mudancas:
         return ("CONFIGURAR", mudancas)
+    # "por que você não está sugerindo nada?" — quando o FREIO age, ele precisa
+    # ouvir o motivo. Sem isto ela cairia no genérico e ele acharia que a
+    # ferramenta travou, quando na verdade ela está protegendo a conta.
+    # A marca de AUSÊNCIA é obrigatória. Sem ela, "por que sugeriu compra se
+    # estamos em premium?" — que é pergunta sobre o RACIOCÍNIO de um cenário
+    # que saiu — cairia aqui em vez de ir para a IA.
+    if re.search(r"\b(por que|porqu[êe]|pq|cad[êe]|o que houve|houve)\b", t) and \
+            re.search(r"\b(sugest\w*|sugeri\w*|sinal|sinais|cen[áa]rio\w*)\b", t) and \
+            re.search(r"\b(n[ãa]o|nenhum\w*|nada|parou|sumi\w*|cad[êe]|calad\w*|"
+                      r"silenci\w*|pausad\w*|travad\w*)\b", t):
+        return "POR_QUE_SEM_SUGESTAO"
+    if re.search(r"\b(freio|trava|pausa|cooldown|limite do dia|teto de opera)\b", t) and \
+            re.search(r"\b(est[áa]|ativ|ligad|como|qual|situa)\b", t):
+        return "POR_QUE_SEM_SUGESTAO"
     if pergunta_sobre_configuracao(texto):
         return "VER_CONFIG"
     # NOTÍCIA E COTAÇÃO: buscadas na web pela PRÓPRIA ferramenta, sem chave de
@@ -4058,6 +4297,7 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
                     "LIGAR_MOTOR", "DESLIGAR_MOTOR", "ENVIAR_WHATSAPP",
                     "CONECTAR_WHATSAPP", "LISTAR_LICOES", "LISTAR_CONHECIMENTO",
                     "NOTICIAS", "COTACAO", "PESQUISAR", "VER_CONFIG",
+                    "POR_QUE_SEM_SUGESTAO",
                     "VOZ_RAPIDA", "VOZ_LENTA", "CALAR"):
         return ("EXECUTAR", intencao)
     return ("IA", None)
@@ -5574,6 +5814,38 @@ class SmcQuantApp(ctk.CTk):
             for c in curtos if c in ROTULO_CONFIG)
         self._chat_responder(resumo, falar_tb=False, texto_voz=voz)
 
+    def _chat_estado_do_freio(self):
+        """'Por que você não está sugerindo nada?' — responde com os números
+        reais do dia, lidos do diário. Quando o FREIO está segurando as
+        sugestões, ele precisa saber que é proteção, e não travamento."""
+        plano = plano_da_conta_ativa()
+        pode, motivo = freio_de_sugestoes(plano)
+        fechadas = operacoes_fechadas_hoje()
+        realizado = sum(p["pnl_final"] for p in fechadas)
+        perdas = sum(1 for p in fechadas if p["pnl_final"] < 0)
+
+        linhas = [
+            f"Hoje na conta '{nome_conta_ativa()}': {len(fechadas)} operação(ões) "
+            f"fechada(s), {perdas} no prejuízo, resultado US${realizado:+,.2f}."
+        ]
+        if pode:
+            linhas.append(
+                "O freio NÃO está segurando nada — estou livre para sugerir. Se "
+                "não saiu cenário, é porque nenhum passou no piso de qualidade "
+                f"(R:R mínimo 1:{plano.get('rr_minimo', 2.0):g} e probabilidade "
+                f"mínima {plano.get('probabilidade_minima', 55):g}%), ou o motor "
+                "está desligado.")
+        else:
+            linhas.append(f"🛑 O FREIO ESTÁ ATIVO: {motivo}")
+        linhas.append(
+            f"Seus limites de hoje: pausa após {plano.get('max_stops_seguidos', 2)} "
+            f"stops seguidos por {plano.get('cooldown_stop_min', 30)} min · teto de "
+            f"{plano.get('max_operacoes_dia', 6)} operações no dia · drawdown "
+            f"US${float(plano.get('drawdown_maximo', 0) or 0):,.2f}. "
+            "Qualquer um deles eu mudo na hora, é só pedir.")
+        self._chat_responder("\n".join(linhas), falar_tb=True,
+                             texto_voz=linhas[1])
+
     def _chat_enviar_whatsapp(self):
         """Manda para o WhatsApp pelo MOTOR — que é quem tem a ponte.
 
@@ -5710,6 +5982,9 @@ class SmcQuantApp(ctk.CTk):
             return
         if acao == "VER_CONFIG":
             self._chat_ver_configuracao(getattr(self, "_ultimo_pedido", ""))
+            return
+        if acao == "POR_QUE_SEM_SUGESTAO":
+            self._chat_estado_do_freio()
             return
         if acao == "CALAR":
             estava = parar_fala()
@@ -7444,6 +7719,11 @@ class SmcQuantApp(ctk.CTk):
             ("Prazo p/ acatar (min):", "entry_timeout", "timeout_acatar_min", 3, 0, 10),
             ("R:R mínimo (1:X):", "entry_rr", "rr_minimo", 4, 0, 2.0),
             ("Probabilidade mín. (%):", "entry_prob", "probabilidade_minima", 4, 2, 55),
+            # FREIO DE SUGESTÕES — a trava que impede o dia de virar sequência
+            # de stops. Fica no plano de cada conta.
+            ("Stops seguidos p/ pausar:", "entry_max_stops", "max_stops_seguidos", 8, 0, 2),
+            ("Pausa após stops (min):", "entry_cooldown", "cooldown_stop_min", 8, 2, 30),
+            ("Máx. operações no dia:", "entry_max_ops", "max_operacoes_dia", 9, 0, 6),
         ]
         for rotulo, attr, chave, linha, col, padrao in campos:
             ctk.CTkLabel(frame_config, text=rotulo, text_color=COR["dim"],
@@ -7471,8 +7751,15 @@ class SmcQuantApp(ctk.CTk):
                      text_color=COR["dim"], font=ctk.CTkFont(size=9), justify="left"
                      ).grid(row=6, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 2))
 
+        ctk.CTkLabel(frame_config,
+                     text="🛑 FREIO: depois dessa quantidade de stops seguidos o robô fica em "
+                          "silêncio pelo tempo da pausa, e para de vez ao bater o teto de "
+                          "operações ou o Drawdown Máx. do dia. Use 0 para desligar cada um.",
+                     text_color=COR["dim"], font=ctk.CTkFont(size=9), justify="left"
+                     ).grid(row=10, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 2))
+
         frame_botoes_plano = ctk.CTkFrame(frame_config, fg_color="transparent")
-        frame_botoes_plano.grid(row=7, column=0, columnspan=4, pady=(6, 10))
+        frame_botoes_plano.grid(row=11, column=0, columnspan=4, pady=(6, 10))
         ctk.CTkButton(frame_botoes_plano, text="💾 Salvar Plano", width=140,
                       fg_color=COR["verde_esc"], hover_color=COR["verde"],
                       command=self.salvar_plano_trading).pack(side="left", padx=6)
@@ -8006,6 +8293,9 @@ class SmcQuantApp(ctk.CTk):
             (self.entry_rr, "rr_minimo", 2.0),
             (self.entry_prob, "probabilidade_minima", 55),
             (self.entry_dias_meta, "dias_meta", 5),
+            (self.entry_max_stops, "max_stops_seguidos", 2),
+            (self.entry_cooldown, "cooldown_stop_min", 30),
+            (self.entry_max_ops, "max_operacoes_dia", 6),
         ]
         for widget, chave, padrao in campos:
             widget.delete(0, tk.END)
@@ -8101,6 +8391,14 @@ class SmcQuantApp(ctk.CTk):
             # Prazo da meta: pelo menos 1 dia (1 = "quero bater hoje").
             _dm = int(float(self.entry_dias_meta.get().replace(",", ".")))
             self.plano["dias_meta"] = max(1, _dm)
+            # FREIO DE SUGESTÕES. Zero é opção legítima em todos: significa
+            # "não quero essa trava". Por isso o piso aqui é 0, e não 1.
+            _ms = int(float(self.entry_max_stops.get().replace(",", ".")))
+            self.plano["max_stops_seguidos"] = max(0, _ms)
+            _cd = int(float(self.entry_cooldown.get().replace(",", ".")))
+            self.plano["cooldown_stop_min"] = max(0, _cd)
+            _mo = int(float(self.entry_max_ops.get().replace(",", ".")))
+            self.plano["max_operacoes_dia"] = max(0, _mo)
         except ValueError:
             self.log("⚠️ Valores do plano de trading inválidos — use apenas números.")
             return
@@ -9427,6 +9725,11 @@ class SmcQuantApp(ctk.CTk):
         # sugerido de novo. Encurtada para 20 min: se o preço volta ao POI e o
         # setup se reapresenta, queremos a oportunidade de novo.
         JANELA_ANTI_REPETICAO_SEG = 20 * 60
+        # ANTI-CHICOTE: janela em que uma INVERSÃO de direção no mesmo ativo é
+        # tratada como indecisão do mercado, não como cenário novo. Nela, virar
+        # a mão exige probabilidade acima do piso normal.
+        JANELA_ANTI_CHICOTE_SEG = 30 * 60
+        MARGEM_ANTI_CHICOTE = 10.0
         HORA_INICIO = config_horario.get("hora_inicio", "09:00")
         HORA_FIM = config_horario.get("hora_fim", "17:00")
         sinal_ativo = {"estado": "ENCERRADA"}
@@ -10072,6 +10375,25 @@ class SmcQuantApp(ctk.CTk):
                 _alvo_rr = sinal.get("take_profit_1") or sinal.get("take_profit_2") or 0
                 _risco = abs(_ep - _sl)
                 rr_sinal = (abs(_alvo_rr - _ep) / _risco) if (_risco and _alvo_rr) else 0
+
+                # APRENDIZADO ENTRA NA CONTA. A probabilidade que a IA leu do
+                # gráfico é corrigida pelo que ESTA conta já viveu com estes
+                # mesmos padrões e neste mesmo horário. Um padrão que vem
+                # falhando perde pontos e passa a ser barrado pelo piso; um que
+                # vem acertando ganha. O número original fica guardado, para o
+                # log mostrar de onde veio a diferença.
+                probabilidade_ia = probabilidade
+                _delta, _porques = ajuste_por_aprendizado(
+                    confluencias, time.strftime('%H'))
+                if _delta:
+                    probabilidade = round(
+                        max(0.0, min(100.0, probabilidade + _delta)), 1)
+                    if acao in ("BUY", "SELL"):
+                        self.log(
+                            f"🧠 APRENDIZADO: probabilidade {probabilidade_ia:.0f}% → "
+                            f"{probabilidade:.0f}% ({_delta:+.1f} pts pelo seu "
+                            f"histórico). " + " · ".join(_porques))
+
                 qualidade_ok = (rr_sinal >= RR_MINIMO and probabilidade >= PROBABILIDADE_MINIMA)
 
                 # ---- INVALIDAÇÃO POR MUDANÇA DE CENÁRIO ----
@@ -10121,6 +10443,47 @@ class SmcQuantApp(ctk.CTk):
                 if repetido:
                     self.log(f"🔁 {acao} {ativo} @ {_ep} é o MESMO setup já sugerido há pouco "
                               "— não vou repetir a sugestão. Aguardando cenário novo.")
+
+                # ANTI-CHICOTE: o motor virou de BUY para SELL (ou o contrário)
+                # no mesmo ativo em poucos minutos. Num mercado lateral isso
+                # acontece o tempo todo, e é exatamente o padrão que faz o trader
+                # tomar stop nas duas pontas. Trocar de lado exige convicção
+                # acima do piso — não basta passar raspando.
+                chicote = False
+                if acao in ("BUY", "SELL") and _ep > 0:
+                    limite_chic = (time.time() - JANELA_ANTI_CHICOTE_SEG) * 1000
+                    for s_ant in sinais_da_conta_ativa():
+                        if s_ant.get("id", 0) < limite_chic:
+                            continue
+                        if (str(s_ant.get("ativo", "")).upper() == str(ativo).upper()
+                                and s_ant.get("direcao") in ("BUY", "SELL")
+                                and s_ant.get("direcao") != acao):
+                            chicote = True
+                            break
+                if chicote and probabilidade < PROBABILIDADE_MINIMA + MARGEM_ANTI_CHICOTE:
+                    repetido = True     # trata como "não emitir"
+                    self.log(
+                        f"↔️ {acao} {ativo}: o cenário inverteu de lado nos últimos "
+                        f"{JANELA_ANTI_CHICOTE_SEG // 60} min e a probabilidade "
+                        f"({probabilidade:.0f}%) não chega aos "
+                        f"{PROBABILIDADE_MINIMA + MARGEM_ANTI_CHICOTE:.0f}% que eu exijo "
+                        "para virar a mão. Mercado indeciso não é oportunidade — "
+                        "é a armadilha que faz tomar stop nas duas pontas.")
+
+                # FREIO DE SUGESTÕES: perda diária, stops seguidos e teto de
+                # operações. É a trava que impede o dia de virar sequência de
+                # stops. Roda depois dos outros filtros para o log mostrar o
+                # motivo real de o cenário não ter virado sugestão.
+                if not repetido and acao in ("BUY", "SELL") and qualidade_ok:
+                    pode, motivo_freio = freio_de_sugestoes()
+                    if not pode:
+                        repetido = True
+                        if motivo_freio != getattr(self, "_ultimo_motivo_freio", None):
+                            self._ultimo_motivo_freio = motivo_freio
+                            self.log(f"🛑 FREIO: {motivo_freio}")
+                            self._chat_feed(f"🛑 Segurei a sugestão: {motivo_freio}")
+                    else:
+                        self._ultimo_motivo_freio = None
 
                 # Loga a rejeição só quando havia um candidato REAL (BUY/SELL válido)
                 # com estado livre — pra você ver o filtro trabalhando.

@@ -1,182 +1,70 @@
-# Como compilar o SMC Quant Pro v2.9.1 (TIGER)
+# Como compilar o SMC Quant Pro v2.10.0 (TIGER)
 
 > **Resumo:** o processo de build **não mudou**. É o mesmo fluxo do `.spec`
-> que você já usa. Nesta versão só o `main_app.py` mudou — substitua-o e compile.
+> que você já usa. Nesta versão mudaram **dois** arquivos — substitua os dois
+> e compile.
 
 ---
 
 ## 0. O que mudou nesta versão
 
-- `main_app.py` ← **único arquivo alterado**
+- `main_app.py` ← alterado
+- `tradovate_auto.py` ← **alterado** (leitura de posição e envio do bracket)
 
 O **motor NÃO mudou** — reaproveite a pasta `motor\` com o `node_modules` que
-você já tem. O `tradovate_auto.py` também não mudou.
+você já tem.
 
-Correções da v2.9.1 — **os quatro buracos do pregão de 04/08 às 22:12**:
+### Os quatro problemas do pregão de 05–06/08
 
-- 🖼️ **"CAPTURE AGORA"** caía no genérico porque a frase não tinha
-  substantivo. Agora *"capture agora"*, *"captura a tela"*, *"printa isso"* e
-  *"capture o gráfico"* disparam a captura na hora.
-- 📚 **"APRENDA, USE O MOTOR PARA TIRAR PRINT"** virava comando de print em vez
-  de lição — a **vírgula** no lugar dos dois-pontos não era aceita. Agora
-  *"APRENDA, &lt;a regra&gt;"* grava a regra.
-- 🔴 **COTA ESTOURADA COM O PRINT NA MÃO (o pior deles).** *"tire um print novo
-  e analise o gráfico"* capturava a tela e devolvia *"não está na minha
-  base"* — falso e confuso. Agora ela diz o que **realmente** aconteceu: o
-  print foi capturado, mas **ler a imagem é a única coisa que depende da API**
-  da Gemini, e a cota está fora. E não chuta nada sobre o gráfico.
-- 🔎 **"COMO ESTÁ A GESTÃO DE RISCO DA MINHA CONTA 1"** ia para o modelo em vez
-  de ler o arquivo. Agora é resposta determinística, com os números gravados.
-- 🎯 **A SUA LIÇÃO APLICADA:** quando você pede para analisar o gráfico, ela
-  **tira um print novo antes de olhar** (se a última captura tiver mais de 1
-  minuto), em vez de comentar um preço que já mudou. Se a captura nova falhar,
-  usa a anterior.
-- ⏱️ **Cenário expirado explica o motivo.** *"ACATAR"* fora do prazo dizia só
-  *"não há cenário aguardando decisão"*. Agora diz há quantos minutos a
-  sugestão saiu, qual é o prazo configurado, e oferece **aumentar o prazo na
-  hora** (*"configura o prazo para acatar em 30 minutos"*).
-- 🌙 **Pregão que vira o dia:** configurar **19:00 às 17:59** agora vem
-  explicado na confirmação, e o de-para ficou em português claro
-  (*"era 09:00, agora é 19:00"*).
+- 🚨 **POSIÇÃO SEM STOP — o mais grave.** No log, três vezes: *"a ENTRADA foi
+  enviada, mas STOP e ALVO NÃO"*. A causa era única e boba: depois de mandar a
+  entrada, o painel vira **comprovante**, e o robô procurava a setinha `←` de
+  volta ao formulário de **um jeito só**; não achando, desistia — com a ordem
+  já no mercado. Agora existem **três caminhos independentes** de volta
+  (setinha, `aria-label`/`title` de voltar, tecla **ESC** e o cabeçalho do
+  *"Chamado do pedido"*), cada um **verificado de verdade** (só conta como
+  volta quando o formulário reaparece), e o stop e o alvo têm **três rodadas
+  completas** antes de desistir. Se mesmo assim faltar o stop, ela aponta a
+  saída segura: *enquanto a entrada limitada não for preenchida, o risco é
+  zero* — cancele a entrada ou ponha o stop na mão.
 
-Continua valendo tudo da v2.9.0 (aba 🐯 TIGER) — **ela configura a própria
-ferramenta, falando**:
+- 🔎 **A LEITURA DA POSIÇÃO, CORRIGIDA NA RAIZ.** A Tradovate escreve
+  `POSIÇÃO 50@7730.00 62.50 USD`. O robô jogava fora o `@`, lia **507730**,
+  reprovava por absurdo e repetia o pregão inteiro *"achei o rótulo POSIÇÃO mas
+  não consegui ler o número ao lado"*. Agora ele lê o **bloco inteiro**:
+  quantidade, **preço médio** (que antes ficava sempre nulo) e P&L — com
+  parênteses valendo **prejuízo** e `-.--` valendo **ausência de valor**, não
+  zero.
 
-- ⚙️ **VOCÊ MANDA, ELA CONFIGURA.** *"deixa registrado que o dia para a conta 1
-  começa as 19hs"* caía no genérico *"não tenho como responder isso com
-  segurança"*. Agora ela configura de verdade, em português:
-  - **horário do seu dia** — *"o dia da conta 1 começa às 19h"*, *"o pregão vai
-    das 19h às 23h"*, *"muda o fim do dia para 17:30"*;
-  - **ritmo das análises** — *"analisa a cada 5 minutos"*;
-  - **os números do Plano de Trading da conta** — margem, meta, prazo da meta,
-    drawdown máximo, risco por operação, R:R mínimo, probabilidade mínima,
-    prazo para acatar e início do ciclo: *"risco de 1% por operação"*, *"meta de
-    6 mil em 10 dias"*, *"drawdown máximo de 2000"*, *"R:R mínimo 1:3"*.
-  Se você citar a conta (*"na conta 2"*), é **naquela conta** que grava.
-- 🔎 **E CONSULTA.** *"COMO ESTÁ CONFIGURADO O RISCO DO PLANO DA CONTA 1"* dava
-  a mesma resposta genérica. Agora ela **lê o arquivo** e mostra o que está
-  gravado — da conta que você citar.
-- ✅ **A REGRA DA CASA VALE AQUI TAMBÉM:** ela **grava, relê o arquivo do disco
-  e só então confirma**, mostrando **o valor de antes e o de depois**. Se a
-  releitura não bater, ela diz que **NÃO** conseguiu, em vez de dizer que fez.
-  Cada mudança também entra no **log do motor**.
-- 🖥️ **A tela acompanha o arquivo:** o campo de horário, o intervalo e os
-  campos do Plano de Trading são atualizados junto — assim o botão **Ligar**
-  não regrava o valor antigo por cima.
-- ⏱️ **O motor relê o horário a cada ciclo:** dá para mudar o pregão com o motor
-  **ligado**, sem reiniciar. E **pregão que vira o dia** (19h às 02h) passou a
-  ser aceito.
-- 🛡️ **A trava de segurança continua:** **pergunta NUNCA configura nada**.
-  *"qual a meta do S&P hoje, 7800?"*, *"o pregão americano abre às 9:30"* e
-  *"qual o risco disso?"* continuam sendo conversa — só muda a configuração
-  quem manda mudar.
+- 📊 **O DASHBOARD DO PLANO DE TRADING VOLTA A ACOMPANHAR.** Como a leitura
+  falhava, o app concluía *"vi o ativo e não há posição"* e devolvia para
+  **PENDENTE** uma ordem **já executada**, zerando o resultado real — era o
+  *"↩️ Correção: NÃO está executada na plataforma"* do log. Não conseguir ler
+  passou a ser tratado como **ausência de informação, nunca como conclusão**:
+  o que já estava registrado continua de pé. A correção legítima (quando a
+  corretora realmente mostra você zerado) **continua funcionando**.
 
-Continua valendo tudo da v2.8.1 — **ela lê o seu cenário e você pode
-cortá-la no meio da fala**:
+- 🛑 **FREIO DE SUGESTÕES — o fim dos stops reiterados.** O motor reencontrava
+  o mesmo cenário a cada ciclo e o dia virava sequência de perdas. Agora ela se
+  comporta como mesa: **2 stops seguidos → 30 min de silêncio**; para de vez ao
+  bater o **teto de operações do dia** ou o **Drawdown Máximo** do plano; e não
+  vira de compra para venda no mesmo ativo sem probabilidade **acima do piso**
+  (guarda **anti-chicote**, que é o padrão que faz tomar stop nas duas pontas).
+  Tudo configurável por conta, na tela ou pela fala.
 
-- 🎯 **Fim da resposta de manual.** A teoria da base agora vem **amarrada ao que
-  está na sua mesa**. Com uma venda aberta contra o movimento, *"o que seria uma
-  confirmação de reversão?"* responde as 4 etapas **e** completa: *"no SEU caso,
-  você está vendido em 7700.25 e o preço está em 7745.65 — essa posição está
-  CONTRA o movimento, então confira uma a uma as etapas acima"*. Pergunta sobre
-  tamanho de posição vem com **o seu stop, o seu alvo, o seu P&L** e o ritmo por
-  dia que o plano exige. Macro vem ancorada no **preço real**, com a fonte.
-  Sem posição, usa a última leitura do gráfico. Sem cenário, volta ao texto
-  puro — **nunca inventa ligação**.
-- ⏹ **BOTÃO "PARAR FALA"** na barra do chat — o que faltava. Um clique e ela
-  cala na hora, sem esperar o fim do parágrafo. Fica sempre à vista.
-- 🔇 **Fala interrompível por 4 caminhos.** A escuta **pausava** enquanto ela
-  falava — por isso era impossível cortá-la. Agora ela **continua ouvindo
-  durante a própria fala** (filtrando o eco) e para quando você:
-  - clica em **⏹ Parar fala**;
-  - diz **"Olá Tiger"** por cima;
-  - clica no botão **🎤**;
-  - manda **"para de falar"** / *"silêncio"* / *"chega"*.
-  Uma fala nova também cancela a anterior.
-- 🎙️ **O ativo sobrevive à transcrição torta.** *"smp500"*, *"sp-500"*,
-  *"s&p 500"* e *"nasdac"* recebiam *"não tenho como responder"* — para uma
-  cotação que a ferramenta tinha na mão. A busca do ativo agora tem 3 passadas
-  (exata, sem pontuação e por semelhança com corte alto — **euro e ouro não se
-  confundem**).
-- 🖼️ **"Analise meu gráfico agora" captura na hora.** Sem print guardado ela
-  caía no genérico; agora tira o print na hora e, se nem isso der, diz
-  exatamente o que fazer (ligar o motor, conferir a janela, ou mandar pelo 📎).
-- 🔴 **CORREÇÃO:** *"como confirmar uma reversão"* caía no tópico de
-  **recessão** — as duas palavras são quase idênticas para o casamento por som.
-  Agora quem casa **exato** sempre ganha de quem só se parece.
+### E mais duas que mudam o comportamento dela
 
-Da v2.7 (junto nesta entrega) — **ela responde, em vez de despejar
-manchete**:
+- 🧠 **AUTOAPRENDIZAGEM COM EFEITO REAL.** O que o histórico já ensinava era só
+  um texto no prompt — e o modelo podia ignorar. Agora vira **número**: um
+  padrão que vem falhando **nas suas operações** derruba a probabilidade do
+  cenário e passa a ser barrado pelo piso; o que vem acertando ganha pontos. O
+  log mostra a conta: `🧠 APRENDIZADO: probabilidade 75% → 66% (-9.0 pts pelo
+  seu histórico)`. O ajuste é limitado a ±12 pontos e exige pelo menos 4
+  amostras — histórico corrige a leitura, **não a substitui**.
 
-- 🔴 **CORREÇÃO — o despejo de manchetes.** Tudo que não estava na base virava
-  a **mesma lista de seis manchetes**: *"o que você pode fazer?"*, *"acelere a
-  fala"*, *"se o Fed cortar juros a bolsa sobe?"* — todas recebiam o mesmo
-  despejo. E ele ainda mostrava na tela o **texto interno do prompt** do modelo
-  (*"cite a fonte ao usar…"*), que é bastidor. Agora existe um **roteador de
-  resposta** que tenta, nesta ordem: o que ela mesma faz → base própria →
-  cotação real → notícia relevante — e **só responde quando tem o que dizer**.
-- 🧠 **Base MACRO nova: 12 assuntos, offline e sem cota.** Corte de juros do Fed
-  e a bolsa; payroll acima/abaixo do esperado; inflação e CPI; juro de 10 anos e
-  dólar; FOMC e dot plot; VIX; temporada de balanços; petróleo; recessão e
-  ciclo; PMI/ISM; como operar em dia de notícia; correlação entre ativos. Cada
-  um com **o porquê e a exceção** — nunca promessa de direção.
-- 📰 **Notícia virou resposta:** as casas se revezam (antes vinham 6 seguidas da
-  mesma), manchete repetida é colapsada, *"qual a mais impactante?"* ordena por
-  **peso de mercado** em vez de horário, e citar uma casa filtra por ela.
-- 🗣️ **"Acelere a fala"** agora muda a velocidade da voz de verdade, e o ajuste
-  fica salvo entre sessões.
-- 💬 **"O que você pode fazer?"** tem resposta completa e exata, sem modelo.
-
-- 🌐 **Janela para a web SEM chave de API.** A ferramenta vai à internet por
-  conta própria — não passa pela Gemini, não gasta cota, não precisa de plano:
-  - **Cotação real** (Yahoo Finance): preço, variação do dia, máxima e mínima.
-  - **Notícia fresca** de 6 casas: Yahoo, CNBC, Investing, MarketWatch, Nasdaq
-    e InfoMoney — sempre com **a fonte e a hora**.
-  - **Busca aberta** para o resto.
-  Antes ela explicava a alta do S&P com *"dados de inflação e resultados de
-  tecnologia"* **sem ter lido manchete nenhuma**. Agora ou tem a manchete real e
-  cita de onde veio, ou diz que não conseguiu buscar.
-- **Esses dados também vão para o modelo**, então até a resposta que usa a API
-  fica amarrada ao número verdadeiro.
-- **Comandos novos, todos sem cota:** *"por que o S&P sobe hoje?"*, *"quanto
-  está o ouro"*, *"cotação do dólar"*, *"pesquisa na internet sobre X"*.
-- 🔴 **CORREÇÃO — resposta de outro assunto, repetida.** *"O que seria uma
-  confirmação de reversão?"* recebia a resposta de **Confluência**, e repetia o
-  mesmo texto quando você corrigia. A base ganhou nota mínima e desempate
-  (palavra genérica nunca mais decide sozinha), entrou o tópico **Confirmação de
-  reversão** com as 4 etapas, e a sua correção agora **bloqueia a base** e força
-  resposta nova.
-- **Ordem explícita das fontes:** base própria de SMC → web → raciocínio.
-  Nunca invenção.
-
-- 🔴 **CORREÇÃO CRÍTICA — o motor desligava sozinho.** A frase *"não precisa
-  acionar a cota da API **para** algumas **análises**"* foi entendida como
-  "**parar** as análises" e **desligou o motor no meio do pregão**. O "para"
-  era preposição. Agora o verbo precisa estar **grudado** no substantivo
-  (*"desliga o motor"*), negação não vira comando (*"não desliga o motor"*), e o
-  "para" ambíguo só conta como verbo no começo da fala ou depois de vírgula.
-- **Base de conhecimento SMC nativa: 32 assuntos gravados dentro do programa.**
-  Estrutura (BOS, CHoCH, MSS), order blocks (com breaker e mitigation),
-  ineficiências (FVG, iFVG, BPR), liquidez (BSL/SSL, topos iguais, inducement,
-  PDH/PDL, turtle soup, judas swing), precificação (premium/discount, OTE),
-  Power of 3, killzones, SMT, dealing range, e a parte de gestão (R:R, stop,
-  alvo, tamanho de posição, drawdown, win rate, checklist, quando não operar).
-  Pergunta de metodologia é respondida **na hora, sem tocar na API** e até
-  **sem internet**. A cota fica reservada para o que é do momento.
-- **Cota estourada deixa de ser resposta vazia** — ela responde do próprio
-  conhecimento e avisa que a API está fora.
-- **Entende a transcrição torta da voz**: *"bola do Choque"* acha CHoCH.
-- **É treinável**: a lição que você grava com *"aprenda isso"* entra junto na
-  resposta da base. Pergunte *"o que você sabe?"* para ver a lista inteira.
-- **Aprendizado mais esperto**: aceita `aprenda:`, *"…, aprenda isso"* no fim, e
-  *"considere aprender isso"* com justificativa depois.
-
-Das v2.3/v2.4, que vieram junto: liga/desliga o motor de verdade, enxerga o
-último print, pesquisa na internet, guarda anti-mentira nas respostas do
-modelo, *"zera o ciclo"*, *"manda no whatsapp"*, *"tira um print"*, e respostas
-que não saem mais cortadas no meio da conta.
-
----
+- 💬 **ELA EXPLICA O SILÊNCIO.** Pergunte *"por que você não está sugerindo
+  nada?"*, *"cadê as sugestões?"* ou *"o freio está ativo?"* e ela responde com
+  os números do dia e **qual limite** está segurando.
 
 ## 1. Dependências (uma vez só)
 
@@ -203,8 +91,38 @@ cd C:\Users\jovan\Documents\SMC_QUANT_PRO
 python main_app.py
 ```
 
-Checklist da v2.9.1 (aba **🐯 TIGER**) — comece pelos quatro primeiros, que
-são os erros do pregão de 04/08:
+Checklist da v2.10.0 — **comece pelos cinco primeiros**, que são os problemas
+do pregão de 05–06/08. Os quatro primeiros exigem a Tradovate aberta com o
+*"Chamado do pedido"* visível.
+
+A. **BRACKET COMPLETO (o mais importante).** Com a automação em modo real,
+   acate um cenário e acompanhe o log. Tem que sair **ENTRADA, STOP e ALVO**.
+   Se aparecer *"não achei o botão de voltar (←)"*, a linha seguinte tem que
+   ser **"tentando as outras saídas do comprovante"** e, logo depois,
+   **"voltei ao formulário pela …"**. O que **não pode mais acontecer** é
+   parar em *"formulário não está visível"* com a entrada já enviada.
+
+B. **LEITURA DA POSIÇÃO.** Com posição aberta, clique em **🩺 Diagnosticar
+   leitura**. Na linha final, `preço_médio` **não pode mais vir `None`** quando
+   a tela mostra `50@7730.00`. Confira também que um prejuízo entre parênteses
+   — `(62.50) USD` — aparece **negativo**.
+
+C. **DASHBOARD ACOMPANHA A ENTRADA.** Acate um cenário e espere o preço tocar a
+   entrada. O card tem que sair de *"aguardando o preço tocar"* para
+   **executada**, e **não pode mais** aparecer *"↩️ Correção: NÃO está
+   executada"* logo em seguida enquanto a posição existe de verdade na tela.
+
+D. **FREIO.** No Plano de Trading, deixe *"Stops seguidos p/ pausar"* em **2** e
+   *"Pausa após stops"* em **30**. Depois de dois stops no dia, o log tem que
+   mostrar **🛑 FREIO** e parar de sugerir. Pergunte no chat *"por que você não
+   está sugerindo nada?"* — ela tem que responder com os números do dia e o
+   limite que está segurando.
+
+E. **APRENDIZADO NA CONTA.** Com histórico suficiente (4+ cenários do mesmo
+   padrão), o log de uma sugestão tem que trazer a linha
+   **🧠 APRENDIZADO: probabilidade X% → Y%**, com o motivo.
+
+Depois siga com o checklist da v2.9.1 abaixo, que continua valendo:
 
 00000. **OS QUATRO BURACOS DAS 22:12.** Um de cada vez:
    *"CAPTURE AGORA"* → tem que capturar, não dar o genérico.
@@ -335,17 +253,17 @@ Repita o checklist do passo 2 dentro do `.exe`.
 ## 6. Gerar o instalador (Inno Setup)
 
 1. Abra `instalador\SMC_Quant_Pro.iss` no Inno Setup Compiler.
-2. Confira que `MyAppVersion` está **"2.9.1"** (já está).
+2. Confira que `MyAppVersion` está **"2.10.0"** (já está).
 3. Pressione **F9** (Compile).
 
-Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.9.1.exe`.
+Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.10.0.exe`.
 
 ---
 
 ## 7. Publicar a atualização
 
-1. Suba o `SMC_Quant_Pro_Setup_2.9.1.exe` na pasta do Google Drive.
-2. O `versao.json` **já está publicado como 2.9.1** — assim que o arquivo
+1. Suba o `SMC_Quant_Pro_Setup_2.10.0.exe` na pasta do Google Drive.
+2. O `versao.json` **já está publicado como 2.10.0** — assim que o arquivo
    estiver no Drive, os clientes veem o aviso de nova versão.
 
 ---
