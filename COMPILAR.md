@@ -1,4 +1,4 @@
-# Como compilar o SMC Quant Pro v2.10.0 (TIGER)
+# Como compilar o SMC Quant Pro v2.10.1 (TIGER)
 
 > **Resumo:** o processo de build **não mudou**. É o mesmo fluxo do `.spec`
 > que você já usa. Nesta versão mudaram **dois** arquivos — substitua os dois
@@ -13,6 +13,46 @@
 
 O **motor NÃO mudou** — reaproveite a pasta `motor\` com o `node_modules` que
 você já tem.
+
+### ⛔ LEIA ANTES: por que a 2.10.0 foi substituída
+
+Na 2.10.0 eu criei três rotas para o robô voltar do comprovante ao formulário do
+ticket. Uma delas clicava no **título do painel "Chamado do pedido"** — e na
+Tradovate esse gesto **fecha o módulo**. No pregão de 06/08 às 15:45 subiu o
+diálogo *"Fechar este módulo o removerá do seu espaço de trabalho"*, que é
+**modal**: travou a plataforma inteira, com a ordem de entrada já enviada, e
+desmontou a área de trabalho. **Foi erro meu, e essa rota já não existe.**
+
+Regra que ficou gravada no código, para não se repetir:
+
+> Uma rota de recuperação só pode tocar em **ícone de navegação dentro do
+> painel**. Nunca em título, aba, `×`, nem em nada com atributo de
+> fechar/remover/minimizar. Não conseguir voltar é ruim; **desmontar a mesa do
+> trader no meio do pregão é pior**.
+
+O que a 2.10.1 traz junto:
+
+- A busca por "voltar" via `aria-label`/`title` **não aceita mais** `fechar`
+  nem `close` — voltar e fechar não são sinônimos aqui.
+- Toda escolha de clique passa por uma barreira que rejeita o título do painel,
+  o `×` e atributos de fechar/remover/minimizar — **inclusive o botão em volta
+  do ícone**, de nada adianta a setinha ser inofensiva se o botão que a contém
+  fecha o módulo.
+- Se o diálogo aparecer por **qualquer** motivo, a ferramenta o reconhece e sai
+  por **CANCELAR** — nunca por OK. A resposta certa para uma confirmação que o
+  robô não pediu é sempre "não".
+- **A setinha volta a ser encontrada.** Ela existe (`← MESU6`), mas a busca era
+  feita dentro do *menor bloco* que contém o texto do comprovante — que é a
+  **tabela de eventos** da ordem. A seta fica uma linha acima, no cabeçalho,
+  logo **fora** desse bloco. Agora a busca sobe até o painel do ticket.
+- **Fim do martelamento.** Eram até 45 tentativas de clique por bracket
+  (5 × 3 pernas × 3 rodadas). Agora são no máximo 6, e ao falhar ele **para e
+  avisa** em vez de continuar batendo na plataforma.
+
+Isto é coberto por teste automatizado com DOM simulado a partir do seu print
+(`test_voltar.js`): ele confirma que a setinha é clicada, que o título e o `×`
+**nunca** são tocados — mesmo quando a setinha não existe — e que o diálogo é
+dispensado pelo Cancelar.
 
 ### Os quatro problemas do pregão de 05–06/08
 
@@ -91,7 +131,7 @@ cd C:\Users\jovan\Documents\SMC_QUANT_PRO
 python main_app.py
 ```
 
-Checklist da v2.10.0 — **comece pelos cinco primeiros**, que são os problemas
+Checklist da v2.10.1 — **comece pelos cinco primeiros**, que são os problemas
 do pregão de 05–06/08. Os quatro primeiros exigem a Tradovate aberta com o
 *"Chamado do pedido"* visível.
 
@@ -253,17 +293,17 @@ Repita o checklist do passo 2 dentro do `.exe`.
 ## 6. Gerar o instalador (Inno Setup)
 
 1. Abra `instalador\SMC_Quant_Pro.iss` no Inno Setup Compiler.
-2. Confira que `MyAppVersion` está **"2.10.0"** (já está).
+2. Confira que `MyAppVersion` está **"2.10.1"** (já está).
 3. Pressione **F9** (Compile).
 
-Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.10.0.exe`.
+Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.10.1.exe`.
 
 ---
 
 ## 7. Publicar a atualização
 
-1. Suba o `SMC_Quant_Pro_Setup_2.10.0.exe` na pasta do Google Drive.
-2. O `versao.json` **já está publicado como 2.10.0** — assim que o arquivo
+1. Suba o `SMC_Quant_Pro_Setup_2.10.1.exe` na pasta do Google Drive.
+2. O `versao.json` **já está publicado como 2.10.1** — assim que o arquivo
    estiver no Drive, os clientes veem o aviso de nova versão.
 
 ---

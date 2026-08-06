@@ -560,7 +560,7 @@ class TradovateAuto:
 
           // 1) Acha o MENOR container que contém o texto do comprovante.
           var marcador=/PLACEHOLDER_COMPROVANTE/;
-          var painel=null, menorArea=Infinity;
+          var nucleo=null, menorArea=Infinity;
           var conts=document.querySelectorAll('div,section,form,aside,main');
           for(var i=0;i<conts.length;i++){
             var el=conts[i];
@@ -570,10 +570,30 @@ class TradovateAuto:
             var r=el.getBoundingClientRect();
             if(r.width<150||r.height<80) continue;   // pequeno demais p/ ser painel
             var a=r.width*r.height;
-            if(a<menorArea){ menorArea=a; painel=el; }
+            if(a<menorArea){ menorArea=a; nucleo=el; }
           }
 
-          // 2) Escopo da busca: o painel do comprovante (ou a página toda).
+          // 2) SOBE do núcleo até o painel do ticket.
+          //    Por que isto é necessário: o menor bloco que contém "Funcionando"
+          //    é a TABELA DE EVENTOS da ordem — e a setinha ← NÃO está dentro
+          //    dela, está na linha do título, um nível acima ("← MESU6"). Com o
+          //    escopo preso à tabela, a seta ficava fora da busca e o robô
+          //    concluía que ela não existia, mesmo estando visível na tela.
+          //    Subimos enquanto o bloco continuar sendo um PAINEL (estreito):
+          //    o ticket tem ~330px; passar disso é sair para o layout inteiro.
+          var painel=nucleo;
+          if(nucleo){
+            var c=nucleo.parentElement;
+            for(var s=0; s<5 && c; s++){
+              var rc=c.getBoundingClientRect();
+              if(rc.width > Math.min(560, window.innerWidth*0.45)) break;
+              if(rc.height <= 0) break;
+              painel=c;
+              c=c.parentElement;
+            }
+          }
+
+          // 3) Escopo da busca: o painel do ticket (ou a página toda).
           var escopo = painel || document;
           var cx0=0, cy0=0, larg=window.innerWidth, altura=window.innerHeight;
           if(painel){
@@ -581,12 +601,32 @@ class TradovateAuto:
             cx0=rp.x; cy0=rp.y; larg=rp.width; altura=rp.height;
           }
 
-          // 3) Dentro dele, o menor ícone clicável no ALTO À ESQUERDA.
+          // 3b) NADA QUE FECHE MÓDULO PODE SER CLICADO. Foi um clique no título
+          //     do painel que abriu "Fechar este módulo o removerá do seu espaço
+          //     de trabalho" e travou a plataforma no meio do pregão.
+          var PROIBIDO=/(close|fechar|remove|remover|excluir|delete|minimi|maximi|popout|pop-out|settings|config)/i;
+          function seguro(el){
+            try{
+              var a=(el.getAttribute('aria-label')||'')+' '+
+                    (el.getAttribute('title')||'')+' '+
+                    (el.getAttribute('data-testid')||'')+' '+
+                    (el.className&&el.className.baseVal!==undefined
+                       ? el.className.baseVal : (el.className||''));
+              if(PROIBIDO.test(String(a))) return false;
+              var tt=txt(el).trim();
+              if(/^(×|✕|✖|x|X)$/.test(tt)) return false;          // botão de fechar
+              if(/chamado do pedido|order ticket/i.test(tt)) return false; // título/aba
+              return true;
+            }catch(e){ return false; }
+          }
+
+          // 4) Dentro dele, o menor ícone clicável no ALTO À ESQUERDA.
           var cands=escopo.querySelectorAll('button,[role=button],a,svg,i,span,div');
           var best=null;
           for(var k=0;k<cands.length;k++){
             var e2=cands[k];
             if(!vis(e2)) continue;
+            if(!seguro(e2)) continue;
             var r2=e2.getBoundingClientRect();
             if(r2.width>60||r2.height>60) continue;      // ícone, não bloco
             if(r2.width<8||r2.height<8) continue;
@@ -597,6 +637,11 @@ class TradovateAuto:
             var setaTexto = /^(←|<|‹|⟵|Voltar|Back)$/i.test(t2);
             var svg = temSvg(e2);
             if(!svg && !setaTexto) continue;
+            // O ancestral clicável também precisa ser seguro: de nada adianta o
+            // ícone ser inofensivo se o botão em volta dele fecha o módulo.
+            var alvo2=null;
+            try{ alvo2=e2.closest && e2.closest('button,[role=button],a'); }catch(e){}
+            if(alvo2 && !seguro(alvo2)) continue;
             var score = (r2.width*r2.height) - (svg?1e6:0) - (setaTexto?2e6:0);
             if(!best || score<best.score)
               best={score:score, x:Math.round(r2.x+r2.width/2),
@@ -606,7 +651,8 @@ class TradovateAuto:
           if(!best) return JSON.stringify({achou:false, tinha_painel:!!painel});
           try{
             var alvo=(best.el.closest &&
-                      best.el.closest('button,[role=button],a,div')) || best.el;
+                      best.el.closest('button,[role=button],a')) || best.el;
+            if(!seguro(alvo)) alvo=best.el;
             alvo.click();
           }catch(e){}
           return JSON.stringify({achou:true, x:best.x, y:best.y,
@@ -635,15 +681,22 @@ class TradovateAuto:
                  "outras saídas do comprovante.")
         if dry_run:
             return False
-        # ROTAS ALTERNATIVAS. Depender de UMA única forma de voltar foi o que
-        # deixou posição sem stop no pregão: a setinha não era encontrada e o
-        # robô simplesmente desistia, com a entrada já no mercado. Agora há três
-        # saídas independentes, e cada uma é verificada de verdade — só declaro
-        # que voltei quando o formulário reaparece.
+        # ROTAS ALTERNATIVAS — todas NÃO DESTRUTIVAS.
+        #
+        # LIÇÃO CARA (pregão de 06/08, 15:45): houve aqui uma terceira rota que
+        # clicava no TÍTULO do painel "Chamado do pedido". Na Tradovate, clicar
+        # no título/aba de um módulo é o gesto de FECHAR o módulo: subiu o
+        # diálogo "Fechar este módulo o removerá do seu espaço de trabalho", que
+        # é modal, travou a plataforma inteira e desmontou a área de trabalho
+        # dele — com a ordem de entrada já enviada. A rota foi removida.
+        #
+        # REGRA QUE FICA: uma rota de recuperação só pode tocar em ícone de
+        # NAVEGAÇÃO dentro do painel. Nunca em título, aba, "×" ou qualquer
+        # coisa capaz de fechar um módulo. Prejuízo por não conseguir voltar é
+        # ruim; destruir a mesa do trader no meio do pregão é pior.
         for rotulo, acao in (
             ("atributo (aria-label/title de voltar)", self._voltar_por_atributo),
             ("tecla ESC", self._voltar_por_escape),
-            ("cabeçalho do 'Chamado do pedido'", self._voltar_por_cabecalho),
         ):
             try:
                 acao()
@@ -658,13 +711,21 @@ class TradovateAuto:
         return False
 
     def _voltar_por_atributo(self):
-        """Clica em quem se declara botão de voltar/fechar por aria-label/title.
-        Independe de geometria — funciona mesmo se a Tradovate mover o painel."""
+        """Clica em quem se declara botão de VOLTAR por aria-label/title.
+
+        'fechar' e 'close' foram DELIBERADAMENTE tirados da busca: na Tradovate
+        o botão de fechar remove o MÓDULO do espaço de trabalho. Voltar e fechar
+        não são sinônimos aqui — confundir os dois desmontou a mesa dele no meio
+        do pregão."""
         self.avaliar_js(r"""
         (function(){
-          var sel='[aria-label],[title],[data-testid]';
-          var els=document.querySelectorAll(sel);
-          var re=/(voltar|back|fechar|close|retornar|previous|anterior)/i;
+          var els=document.querySelectorAll('[aria-label],[title],[data-testid]');
+          var quero=/(voltar|back|retornar|previous|anterior|arrow.?left|chevron.?left)/i;
+          // Barreira de segurança: nada que cheire a fechar/remover é clicado,
+          // mesmo que também diga "voltar" em algum outro atributo.
+          var proibidoRe=new RegExp('close|fechar|remove|remover|excluir|delete|'+
+                                    'minimi|maximi|expand|popout|pop-out|'+
+                                    'settings|config', 'i');
           for(var i=0;i<els.length;i++){
             var e=els[i];
             var r=e.getBoundingClientRect();
@@ -673,7 +734,8 @@ class TradovateAuto:
             var a=(e.getAttribute('aria-label')||'')+' '+
                   (e.getAttribute('title')||'')+' '+
                   (e.getAttribute('data-testid')||'');
-            if(!re.test(a)) continue;
+            if(!quero.test(a)) continue;
+            if(proibidoRe.test(a)) continue;
             try{ e.click(); return 'ok'; }catch(err){}
           }
           return 'nada';
@@ -683,14 +745,77 @@ class TradovateAuto:
     def _voltar_por_escape(self):
         self.teclar_escape()
 
-    def _voltar_por_cabecalho(self):
-        """Clica no título do painel 'Chamado do pedido'. Na Tradovate isso
-        recolhe/reabre o ticket, que volta no estado de formulário."""
-        for palavra in ("Chamado do pedido", "Order Ticket", "Chamado do Pedido"):
-            alvo = self.localizar(palavra)
-            if alvo:
-                self.clicar_pagina(alvo["x"], alvo["y"])
-                return
+    def dispensar_dialogo_perigoso(self):
+        """Se a Tradovate subir um diálogo de CONFIRMAÇÃO DESTRUTIVA (fechar
+        módulo, remover painel, sair de posições), clica em CANCELAR.
+
+        Existe por causa do pregão de 06/08: um clique errado do robô abriu
+        "Fechar este módulo o removerá do seu espaço de trabalho". O diálogo é
+        MODAL — enquanto ele está na tela, nada mais funciona, e o robô ficou
+        martelando a plataforma com a ordem de entrada já enviada. Agora ele
+        reconhece a situação e sai dela pelo lado seguro.
+
+        NUNCA clica em OK/Confirmar: a resposta certa para uma confirmação que o
+        robô não pediu é sempre "não".
+        Devolve True se dispensou algum diálogo."""
+        js = r"""
+        (function(){
+          function vis(el){
+            try{ var r=el.getBoundingClientRect(); return r.width>0&&r.height>0; }
+            catch(e){ return false; }
+          }
+          function txt(el){
+            try{ return (el.innerText||el.textContent||'').trim(); }catch(e){ return ''; }
+          }
+          var perigoRe=new RegExp('remover[áa]? do seu espa[çc]o|'+
+                                  'remove it from your workspace|'+
+                                  'fechar este m[óo]dulo|close this module', 'i');
+          // Procura o aviso em um elemento VISÍVEL de texto — não no
+          // textContent do body inteiro, que arrasta junto o conteúdo de
+          // <script>/<style> e daria alarme falso.
+          var achouAviso=false;
+          var avisos=document.querySelectorAll('div,p,span,h1,h2,h3,label,td');
+          for(var a=0;a<avisos.length;a++){
+            var ea=avisos[a];
+            if(!vis(ea)) continue;
+            var ta=txt(ea);
+            if(!ta||ta.length>300) continue;
+            if(perigoRe.test(ta)){ achouAviso=true; break; }
+          }
+          if(!achouAviso) return JSON.stringify({achou:false});
+          // Acha o botão CANCELAR (nunca o OK) e clica nele.
+          var els=document.querySelectorAll('button,[role=button],a,div,span');
+          for(var i=0;i<els.length;i++){
+            var e=els[i];
+            if(!vis(e)) continue;
+            var t=txt(e);
+            if(!/^(cancelar|cancel|n[ãa]o|no)$/i.test(t)) continue;
+            var r=e.getBoundingClientRect();
+            if(r.width>200||r.height>80) continue;
+            try{ e.click(); return JSON.stringify({achou:true, via:'cancelar'}); }catch(err){}
+          }
+          return JSON.stringify({achou:true, via:'nenhum botao'});
+        })()
+        """
+        try:
+            d = json.loads(self.avaliar_js(js) or "{}")
+        except ConexaoPerdida:
+            raise
+        except Exception:
+            return False
+        if not d.get("achou"):
+            return False
+        if d.get("via") == "cancelar":
+            self.log("   🛡️ a Tradovate pediu confirmação para FECHAR UM MÓDULO. "
+                     "Cliquei em CANCELAR — o robô nunca confirma isso.")
+            time.sleep(0.4)
+            return True
+        # Diálogo na tela e sem botão de cancelar reconhecido: ESC e alerta.
+        self.teclar_escape()
+        self.log("   🛡️ há um diálogo de confirmação aberto na Tradovate "
+                 "bloqueando a tela. Tentei fechá-lo com ESC. Se continuar, "
+                 "clique em CANCELAR (nunca em OK) para não perder o painel.")
+        return True
 
     # ------------------- LEITURA DAS POSIÇÕES ABERTAS -------------------
     #  Descobre se VOCÊ está posicionado, lendo a própria tela da corretora —
@@ -1211,7 +1336,7 @@ class TradovateAuto:
         texto 'Vender' na tela e dava falso-positivo.)"""
         return bool(self.localizar("Enviar"))
 
-    def _garantir_formulario(self, tentativas=5):
+    def _garantir_formulario(self, tentativas=3):
         """Garante que o FORMULÁRIO do 'Chamado do pedido' está à vista.
 
         Há DOIS motivos possíveis para ele não estar, e eles pedem ações
@@ -1220,6 +1345,15 @@ class TradovateAuto:
           a) está no COMPROVANTE da última ordem  -> basta clicar na setinha ←;
           b) o ticket NÃO ESTÁ ABERTO na tela     -> só VOCÊ pode abrir.
         """
+        # ANTES DE QUALQUER COISA: se houver um diálogo modal de confirmação na
+        # tela, a plataforma está bloqueada e insistir só piora. Sai dele pelo
+        # CANCELAR e segue.
+        try:
+            self.dispensar_dialogo_perigoso()
+        except ConexaoPerdida:
+            raise
+        except Exception:
+            pass
         for i in range(tentativas):
             estado = self.estado_ticket()
             if estado == "formulario":
@@ -1245,7 +1379,9 @@ class TradovateAuto:
         ok = self.estado_ticket() == "formulario"
         if not ok:
             self.log("   ❌ não consegui voltar ao formulário do ticket. Clique na "
-                     "setinha ← do 'Chamado do pedido' e tente de novo.")
+                     "setinha ← do 'Chamado do pedido' e tente de novo. "
+                     "(Não vou insistir clicando na plataforma: martelar a tela "
+                     "no meio do pregão é pior do que parar e te avisar.)")
         return ok
 
     def enviar_ordem_ticket(self, preco, direcao, tipo="LIMITE", qtd=None,
@@ -1341,7 +1477,7 @@ class TradovateAuto:
             # ordem já no mercado. Stop e alvo agora têm três rodadas completas
             # (cada uma com todas as rotas de volta ao formulário), com pausa
             # crescente para dar tempo de a Tradovate redesenhar o painel.
-            tentativas = 3 if (enviar and nome in ("STOP", "ALVO")) else 1
+            tentativas = 2 if (enviar and nome in ("STOP", "ALVO")) else 1
             perna_ok = False
             for t in range(tentativas):
                 if t:
