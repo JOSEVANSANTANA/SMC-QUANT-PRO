@@ -1,5 +1,6 @@
 import time, json, threading, customtkinter as ctk, tkinter as tk, os, subprocess, sys, webbrowser
 import base64
+import concurrent.futures
 import copy
 import datetime
 import ctypes
@@ -111,7 +112,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.11.0"
+VERSAO_ATUAL = "2.12.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1474,6 +1475,50 @@ def freio_de_sugestoes(plano=None, agora=None):
                     "'pausa após stop' no Plano de Trading.")
     return True, None
 
+def janelas_monitoradas():
+    """As janelas de gráfico que o motor analisa a cada ciclo.
+
+    Até a v2.11 só existia UMA ("nome_janela_corretora"), então quem operava
+    dois ativos precisava abrir o programa duas vezes — e a segunda cópia batia
+    na porta 3939 já ocupada pelo motor da primeira. Agora é uma LISTA, e um
+    motor só percorre todas.
+
+    A janela antiga é migrada para dentro da lista automaticamente, então nada
+    se perde ao atualizar.
+    """
+    cfg = carregar_config()
+    lista = cfg.get("janelas_monitoradas")
+    if not isinstance(lista, list):
+        lista = []
+    limpa, vistos = [], set()
+    for t in lista:
+        t = str(t or "").strip()
+        if t and t not in vistos:
+            vistos.add(t)
+            limpa.append(t)
+    if not limpa:
+        antiga = str(cfg.get("nome_janela_corretora") or "").strip()
+        if antiga:
+            limpa = [antiga]
+    return limpa
+
+def salvar_janelas_monitoradas(lista):
+    """Grava a lista e mantém 'nome_janela_corretora' apontando para a primeira.
+
+    Esse espelho existe porque o envio de ordem e a leitura de posições da
+    Tradovate continuam ligados a UMA janela — a principal. Assim a automação
+    não fica ambígua quando há vários gráficos sendo analisados.
+    """
+    limpa, vistos = [], set()
+    for t in (lista or []):
+        t = str(t or "").strip()
+        if t and t not in vistos:
+            vistos.add(t)
+            limpa.append(t)
+    salvar_config({"janelas_monitoradas": limpa,
+                   "nome_janela_corretora": limpa[0] if limpa else ""})
+    return limpa
+
 def posicao_aberta_no_ativo(ativo):
     """A posição que você tem AGORA nesse ativo, na conta ativa — venha ela de
     uma sugestão acatada ou de uma entrada que você fez na mão na plataforma.
@@ -2273,6 +2318,41 @@ def carregar_licoes():
         return [str(x)[:300] for x in dados if str(x).strip()]
     return []
 
+# LIÇÕES QUE NÃO PODEM SER ACEITAS.
+#
+# Caso real (06/08 15:33): com a cota da API fora, ele ensinou
+#   "tira um print e leia off line se não tiver acesso a api kay gemini"
+# e a ferramenta respondeu "Anotado e aprendido". O problema é que LER a imagem
+# é a única coisa que depende da visão da API — offline não existe leitura, só
+# invenção. Uma lição assim não é conhecimento: é uma ordem permanente para
+# fabricar número de gráfico, gravada na memória, valendo em toda análise
+# futura. Numa ferramenta que move dinheiro, isso é o pior defeito possível.
+#
+# A regra da casa ("nunca invente número") não pode ser revogada por lição.
+_LICAO_IMPOSSIVEL = re.compile(
+    r"(l[êe]r?|leia|analis\w*|interpret\w*|enxerg\w*|v[êe]r?)\b[^.;]{0,60}"
+    r"\b(off ?line|sem (a )?(api|chave|internet|cota|conex[ãa]o)|"
+    r"quando (a )?(api|cota|chave)\b[^.;]{0,20}(fora|acabar|estourar|cair))"
+    r"|"
+    r"\b(sem (a )?(api|chave|cota|internet)|off ?line)\b[^.;]{0,60}"
+    r"\b(l[êe]r?|leia|analis\w*|interpret\w*|gr[áa]fico|imagem|print|tela)\b"
+    r"|"
+    r"\b(chut\w*|adivinh\w*|estim\w*|invent\w*|supon\w*|imagin\w*)\b[^.;]{0,40}"
+    r"\b(pre[çc]o|n[úu]mero|valor|gr[áa]fico|cota[çc][ãa]o|entrada|stop|alvo)\b",
+    re.IGNORECASE)
+
+def licao_pede_invencao(texto):
+    """True quando a 'lição' manda a ferramenta produzir dado que ela não tem.
+    Devolve também o motivo, para ela explicar em vez de só recusar."""
+    t = _sem_acento(str(texto or "")).lower()
+    if not t:
+        return False, ""
+    if _LICAO_IMPOSSIVEL.search(t):
+        return True, (
+            "ler gráfico é a única coisa que depende da visão da API — sem ela "
+            "não existe leitura offline, existe chute")
+    return False, ""
+
 def adicionar_licao(texto):
     """Uma LIÇÃO é conhecimento que VOCÊ dá ao robô ('aprenda: não opere contra
     a tendência do H4 depois das 15h'). Fica salva e entra em TODA análise e em
@@ -2479,20 +2559,23 @@ def noticias_do_mercado(maximo=8, termo=None, fontes=None):
     def buscar():
         import xml.etree.ElementTree as ET
         import html as _html
-        colhidas = []
-        for nome, url in (fontes or FONTES_NOTICIAS):
+
+        def um_feed(par):
+            """Baixa e converte UM feed. Erro aqui não derruba os outros."""
+            nome, url = par
+            saida = []
             try:
-                r = _web_get(url, timeout=8)
+                r = _web_get(url, timeout=6)
                 raiz = ET.fromstring(r.content)
             except Exception:
-                continue                     # feed fora do ar: segue para o próximo
+                return saida                 # feed fora do ar: ignora este
             for item in raiz.findall(".//item")[:20]:
                 titulo = (item.findtext("title") or "").strip()
                 if not titulo:
                     continue
                 resumo = re.sub(r"<[^>]+>", " ",
                                 item.findtext("description") or "")
-                colhidas.append({
+                saida.append({
                     "titulo": _html.unescape(titulo),
                     "fonte": nome,
                     "url": (item.findtext("link") or "").strip(),
@@ -2500,6 +2583,22 @@ def noticias_do_mercado(maximo=8, termo=None, fontes=None):
                                             item.findtext("published")),
                     "resumo": _html.unescape(re.sub(r"\s+", " ", resumo)).strip()[:300],
                 })
+            return saida
+
+        # EM PARALELO, de propósito. Buscar os seis feeds um atrás do outro
+        # custava até 48 segundos (6 × 8s de timeout) ANTES de a IA começar a
+        # pensar — era a maior parte da demora que ele sentia no chat. Agora o
+        # tempo total é o do feed mais lento, não a soma de todos.
+        alvos = list(fontes or FONTES_NOTICIAS)
+        colhidas = []
+        try:
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=min(8, len(alvos) or 1)) as pool:
+                for parcial in pool.map(um_feed, alvos):
+                    colhidas.extend(parcial)
+        except Exception:
+            for par in alvos:                # sem threads: modo antigo
+                colhidas.extend(um_feed(par))
         colhidas.sort(key=lambda n: n["quando"] or 0, reverse=True)
         return colhidas
     todas = _web_cacheado("noticias", 180, buscar) or []
@@ -2812,18 +2911,52 @@ def resumo_de_noticias(pergunta="", maximo=5):
                   "cenário no gráfico.")
     return "\n".join(linhas)
 
+# A pergunta pede DADO DE AGORA (cotação/notícia), ou é conversa que a própria
+# ferramenta responde de cabeça? Só a primeira justifica ir à internet.
+_RE_PRECISA_WEB = re.compile(
+    r"\b(hoje|agora|neste momento|no momento|nesse momento|ultimas?|últimas?|"
+    r"cota[çc][ãa]o|pre[çc]o|quanto (est[áa]|vale|custa|subiu|caiu)|"
+    r"not[íi]cias?|manchetes?|aconteceu|acontecendo|fato relevante|"
+    r"calend[áa]rio|agenda|payroll|cpi|fed|copom|juros|infla[çc][ãa]o|"
+    r"por que .{0,30}(subiu|caiu|sobe|cai|despenc|dispar)|"
+    r"abriu|fechou|abertura|fechamento|pr[ée]-mercado|premarket)\b",
+    re.IGNORECASE)
+
+def pergunta_precisa_da_web(texto):
+    """Evita ir à internet à toa. 'O que é um order block' não precisa de RSS
+    nenhum — e a busca custava segundos de espera em TODA pergunta, inclusive
+    nas que a base local responde sozinha. Continua indo à web sempre que houver
+    qualquer sinal de dado do momento; na dúvida, vai."""
+    t = _norm_busca(texto) or ""
+    if not t:
+        return False
+    if pergunta_conceitual(texto):
+        return False                     # metodologia SMC/macro: base local
+    return bool(_RE_PRECISA_WEB.search(t)) or bool(simbolo_do_texto(texto))
+
 def bloco_web_para_prompt(texto):
     """Dados REAIS da web para injetar no prompt do modelo quando a pergunta é
     sobre o mercado de hoje. Serve de coleira: com o número e a manchete na
     mão, ele não tem por que inventar."""
+    if not pergunta_precisa_da_web(texto):
+        return ""
     partes = []
     alvo = simbolo_do_texto(texto)
-    if alvo:
-        cot = cotacao_mercado(alvo[0])
-        if cot:
-            partes.append("COTAÇÃO REAL AGORA (use estes números, não invente "
-                          f"outros): {formatar_cotacao(cot, alvo[1].upper())}")
-    noticias = noticias_do_mercado(maximo=6, termo=alvo[1] if alvo else None)
+    # Cotação e notícias EM PARALELO: são duas viagens à rede independentes, e
+    # esperar uma para começar a outra só somava atraso.
+    def _cot():
+        return cotacao_mercado(alvo[0]) if alvo else None
+    def _news():
+        return noticias_do_mercado(maximo=6, termo=alvo[1] if alvo else None)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            f_cot, f_news = pool.submit(_cot), pool.submit(_news)
+            cot, noticias = f_cot.result(), f_news.result()
+    except Exception:
+        cot, noticias = _cot(), _news()
+    if alvo and cot:
+        partes.append("COTAÇÃO REAL AGORA (use estes números, não invente "
+                      f"outros): {formatar_cotacao(cot, alvo[1].upper())}")
     if noticias:
         linhas = "\n".join(
             f"• [{n['fonte']}, {_idade_texto(n['quando'])}] {n['titulo']}"
@@ -4683,6 +4816,33 @@ class SmcQuantApp(ctk.CTk):
         ctk.CTkButton(master, text="🔄 Atualizar lista de janelas abertas", fg_color="#555555",
                       command=self._atualizar_lista_janelas).pack(pady=(0, 4))
 
+        # ---------- MAIS DE UM ATIVO AO MESMO TEMPO ----------
+        # Um motor só percorre todas estas janelas a cada ciclo. Antes era uma
+        # janela por vez, e abrir o programa duas vezes esbarrava na porta 3939.
+        frame_multi = ctk.CTkFrame(master, fg_color=COR["card"])
+        frame_multi.pack(fill="x", padx=10, pady=(4, 6))
+        ctk.CTkLabel(frame_multi, text="🪟  Gráficos analisados a cada ciclo",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=COR["texto"]).pack(anchor="w", padx=10, pady=(8, 0))
+        ctk.CTkLabel(
+            frame_multi, justify="left", text_color=COR["dim"],
+            font=ctk.CTkFont(size=10),
+            text="Cada janela é um ativo, com cenário e histórico próprios — o motor "
+                 "não mistura um com o outro.\nA PRIMEIRA da lista é a principal: é nela "
+                 "que o envio de ordem e a leitura de posições trabalham.\n"
+                 "Atenção: mais gráficos = mais consumo da cota da API por ciclo."
+        ).pack(anchor="w", padx=10, pady=(2, 4))
+        self.frame_lista_janelas = ctk.CTkFrame(frame_multi, fg_color="transparent")
+        self.frame_lista_janelas.pack(fill="x", padx=6, pady=(0, 4))
+        frame_btn_janelas = ctk.CTkFrame(frame_multi, fg_color="transparent")
+        frame_btn_janelas.pack(anchor="w", padx=10, pady=(0, 10))
+        ctk.CTkButton(frame_btn_janelas, text="➕ Incluir a janela selecionada acima",
+                      fg_color=COR["verde"], width=250,
+                      command=self._incluir_janela_monitorada).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(frame_btn_janelas, text="🔄 Atualizar", fg_color="#555555", width=110,
+                      command=self._render_lista_janelas).pack(side="left")
+        self._render_lista_janelas()
+
         # ---------- PLATAFORMA (detectada automaticamente) ----------
         frame_plat = ctk.CTkFrame(master, fg_color="transparent")
         frame_plat.pack(pady=(2, 0))
@@ -5012,6 +5172,58 @@ class SmcQuantApp(ctk.CTk):
         else:
             txt, cor = "✔ análise por imagem (ordem/posições: manual)", COR["amarelo"]
         self.lbl_plataforma_info.configure(text=txt, text_color=cor)
+
+    # ------------------------------------------------------------------
+    # MULTI-JANELA — vários gráficos, um motor só
+    # ------------------------------------------------------------------
+    def _render_lista_janelas(self):
+        """Desenha a lista das janelas que entram em cada ciclo."""
+        for w in self.frame_lista_janelas.winfo_children():
+            w.destroy()
+        lista = janelas_monitoradas()
+        if not lista:
+            ctk.CTkLabel(self.frame_lista_janelas, text_color=COR["dim"],
+                         font=ctk.CTkFont(size=11),
+                         text="Nenhuma janela na lista — o motor captura a tela inteira."
+                         ).pack(anchor="w", padx=6, pady=4)
+            return
+        for i, titulo in enumerate(lista):
+            linha = ctk.CTkFrame(self.frame_lista_janelas, fg_color=COR["input"])
+            linha.pack(fill="x", padx=4, pady=2)
+            marca = "⭐ principal" if i == 0 else f"{i + 1}º"
+            ctk.CTkLabel(linha, text=f"{marca}", width=90, text_color=COR["dim"],
+                         font=ctk.CTkFont(size=10)).pack(side="left", padx=(8, 4))
+            ctk.CTkLabel(linha, text=titulo[:70], anchor="w",
+                         text_color=COR["texto"], font=ctk.CTkFont(size=11)
+                         ).pack(side="left", fill="x", expand=True, padx=4, pady=6)
+            ctk.CTkButton(linha, text="🗑 Remover", width=90, fg_color=COR["vermelho"],
+                          command=lambda t=titulo: self._remover_janela_monitorada(t)
+                          ).pack(side="right", padx=6, pady=4)
+
+    def _incluir_janela_monitorada(self):
+        titulo = (self.janela_var.get() or "").strip()
+        if not titulo or titulo.startswith("("):
+            self.log("⚠️ Escolha uma janela no seletor acima antes de incluir "
+                      "(use '🔄 Atualizar lista de janelas abertas').")
+            return
+        lista = janelas_monitoradas()
+        if titulo in lista:
+            self.log(f"ℹ️ '{titulo}' já está na lista de gráficos analisados.")
+            return
+        lista.append(titulo)
+        salvar_janelas_monitoradas(lista)
+        self._render_lista_janelas()
+        self.log(f"🪟 '{titulo}' entrou na análise. Agora são {len(lista)} gráfico(s) "
+                  "por ciclo — cada um com cenário e histórico próprios. "
+                  "Lembre: cada gráfico a mais consome cota da API por ciclo.")
+
+    def _remover_janela_monitorada(self, titulo):
+        lista = [t for t in janelas_monitoradas() if t != titulo]
+        salvar_janelas_monitoradas(lista)
+        self._render_lista_janelas()
+        self.log(f"🪟 '{titulo}' saiu da análise. "
+                  + (f"Restam {len(lista)} gráfico(s)." if lista
+                     else "A lista ficou vazia — o motor volta a capturar a tela inteira."))
 
     def _ao_trocar_janela(self, titulo_escolhido=None):
         """Ao escolher outra janela, tenta descobrir sozinho a plataforma."""
@@ -5424,6 +5636,26 @@ class SmcQuantApp(ctk.CTk):
                         "exemplo: 'nunca opere contra o H4 depois das 15h, "
                         "aprenda isso'.")
                     return
+            # UMA LIÇÃO NÃO REVOGA A REGRA DA CASA. Se o que ele está pedindo é
+            # que ela produza dado que NÃO TEM, gravar isso seria transformar
+            # "nunca invente número" em "invente quando faltar" — e para sempre,
+            # já que lição vale em toda análise futura.
+            impossivel, porque = licao_pede_invencao(dado)
+            if impossivel:
+                self._chat_responder(
+                    f"NÃO vou gravar essa: “{dado}”.\n\n"
+                    f"O motivo é que {porque}. Se eu aceitasse, estaria "
+                    "prometendo uma coisa que não sei fazer — e o resultado não "
+                    "seria uma leitura ruim, seria um número inventado com cara "
+                    "de análise. Na sua mesa isso vira prejuízo.\n\n"
+                    "O que eu faço de verdade quando a cota cai: digo que a cota "
+                    "caiu, e sigo respondendo o que não depende dela — cotação "
+                    "real do ativo, notícia das casas de mercado, metodologia "
+                    "SMC, o seu plano e os números da sua conta.\n\n"
+                    "Se você quiser mesmo tirar essa dependência, a saída é uma "
+                    "chave paga da Gemini colada na aba Motor — aí eu leio o "
+                    "gráfico sempre.")
+                return
             if adicionar_licao(dado):
                 self._chat_responder(
                     f"Anotado e aprendido: “{dado}”. Está gravado na minha "
@@ -9550,8 +9782,15 @@ class SmcQuantApp(ctk.CTk):
             intervalo_minutos = 15
 
         salvar_api_key(api_key)
+        # A janela do dropdown é a PRINCIPAL (é nela que a automação de ordem e
+        # a leitura de posições trabalham). Ela entra na frente da lista sem
+        # derrubar as outras que você adicionou para análise.
+        _principal = self.janela_var.get().strip()
+        _lista = janelas_monitoradas()
+        if _principal and not _principal.startswith("("):
+            _lista = [_principal] + [j for j in _lista if j != _principal]
+        salvar_janelas_monitoradas(_lista)
         salvar_config({
-            "nome_janela_corretora": self.janela_var.get(),
             "intervalo_minutos": intervalo_minutos,
             "hora_inicio": self.entry_hora_inicio.get().strip() or "09:00",
             "hora_fim": self.entry_hora_fim.get().strip() or "17:00",
@@ -9960,12 +10199,38 @@ class SmcQuantApp(ctk.CTk):
         MARGEM_ANTI_CHICOTE = 10.0
         HORA_INICIO = config_horario.get("hora_inicio", "09:00")
         HORA_FIM = config_horario.get("hora_fim", "17:00")
+        # ---------------- ESTADO POR JANELA (multi-ativo) ----------------
+        # Cada janela monitorada é um ATIVO DIFERENTE, e cada uma precisa da sua
+        # própria memória de ciclo. Se o cenário ativo, o hash da última captura
+        # e o preço anterior fossem compartilhados, o robô trataria o gráfico do
+        # MES e o do NQ como se fossem o mesmo: o hash de um marcaria o outro
+        # como "quadro congelado", e um cenário aberto num ativo seria fechado
+        # pelo preço do outro. É o erro que não pode acontecer aqui.
+        def novo_estado_janela():
+            return {
+                "sinal_ativo": {"estado": "ENCERRADA"},
+                "ledger_text_memory": ("Nenhuma operação aberta no momento. "
+                                        "Aguardando primeiro sinal institucional."),
+                "hash_captura_anterior": None,
+                "capturas_congeladas": 0,
+                "preco_anterior_lido": None,
+                "ciclos_preco_igual": 0,
+            }
+
+        estados_janela = {}
+
+        def janelas_para_analisar():
+            """As janelas que entram neste ciclo, lidas do disco a cada volta —
+            você pode incluir ou remover uma com o motor ligado.
+
+            Lista vazia devolve [""] de propósito: é o comportamento antigo de
+            capturar a tela inteira quando nenhuma janela foi escolhida."""
+            return janelas_monitoradas() or [""]
+
         sinal_ativo = {"estado": "ENCERRADA"}
         ledger_text_memory = "Nenhuma operação aberta no momento. Aguardando primeiro sinal institucional."
-        # Controle de captura congelada (ver hash_imagem)
         hash_captura_anterior = None
         capturas_congeladas = 0
-        # Controle de preço estagnado
         preco_anterior_lido = None
         ciclos_preco_igual = 0
         self.log(f"⚙️ Intervalo: {INTERVALO_MINUTOS} min | Pregão: {HORA_INICIO}–{HORA_FIM} "
@@ -10032,889 +10297,945 @@ class SmcQuantApp(ctk.CTk):
                 # programa. Se não achar a janela ou a captura vier em
                 # branco, pula o ciclo em vez de analisar lixo visual.
                 # --------------------------------------------------------
-                nome_janela = carregar_config().get("nome_janela_corretora", "").strip()
-                hora_atual = time.strftime('%H:%M:%S')
+                # MULTI-JANELA: o motor percorre TODAS as janelas configuradas em
+                # cada ciclo. O estado de análise (cenário ativo, hash da última
+                # captura, preço anterior) é POR JANELA — sem isso o robô
+                # confundiria o gráfico de um ativo com o do outro, que é
+                # exatamente o erro que não pode acontecer aqui.
+                _janelas_ciclo = janelas_para_analisar()
+                for _idx_janela, nome_janela in enumerate(_janelas_ciclo):
+                    # A PRINCIPAL é a primeira da lista. Só ela conversa com a
+                    # corretora (leitura de posições e envio de ordem): ler
+                    # posição da Tradovate enquanto se analisa o gráfico do
+                    # Profit misturaria dois mundos diferentes.
+                    janela_principal = (_idx_janela == 0)
+                    est = estados_janela.setdefault(nome_janela, novo_estado_janela())
+                    sinal_ativo = est["sinal_ativo"]
+                    hash_captura_anterior = est["hash_captura_anterior"]
+                    capturas_congeladas = est["capturas_congeladas"]
+                    preco_anterior_lido = est["preco_anterior_lido"]
+                    ciclos_preco_igual = est["ciclos_preco_igual"]
+                    ledger_text_memory = est["ledger_text_memory"]
+                    try:
+                        hora_atual = time.strftime('%H:%M:%S')
 
-                if nome_janela:
-                    hwnd = self._resolver_hwnd_corretora(nome_janela)
-                    if not hwnd:
-                        self.log(f"⚠️ ERRO DE VISUALIZAÇÃO: não encontrei a janela '{nome_janela}'. "
-                                  "Pulando este ciclo.")
-                        enviar_relatorio_whatsapp(
-                            f"⚠️ *Erro de Visualização*\nJanela '{nome_janela}' não encontrada. "
-                            "Verifique se a corretora está aberta. Ciclo pulado.",
-                            None, self.log
+                        if nome_janela:
+                            hwnd = self._resolver_hwnd_corretora(nome_janela)
+                            if not hwnd:
+                                self.log(f"⚠️ ERRO DE VISUALIZAÇÃO: não encontrei a janela '{nome_janela}'. "
+                                          "Pulando este ciclo.")
+                                enviar_relatorio_whatsapp(
+                                    f"⚠️ *Erro de Visualização*\nJanela '{nome_janela}' não encontrada. "
+                                    "Verifique se a corretora está aberta. Ciclo pulado.",
+                                    None, self.log
+                                )
+                                falar("Atenção. Janela da corretora não encontrada. Ciclo pulado.")
+                                continue
+
+                            self.log(f"📸 [{hora_atual}] Capturando '{nome_janela}' em segundo plano...")
+
+                            # ---------- CAPTURA EM CAMADAS (agnóstica de aplicativo) ----------
+                            # Camada 1: prepara a janela (restaura se minimizada — só se o
+                            # usuário permitir — e força repintura), depois PrintWindow.
+                            # Se a janela já está visível, NADA aqui altera foco ou z-order.
+                            permite_restaurar = carregar_config().get("restaurar_janela_minimizada", True)
+                            if not garantir_janela_renderizando(hwnd, permite_restaurar):
+                                self.log(f"⏸️ '{nome_janela}' está MINIMIZADA e a restauração automática está "
+                                          "desativada. Ciclo pulado (janela minimizada não pode ser capturada).")
+                                continue
+
+                            screenshot = capturar_janela_em_segundo_plano(hwnd)
+                            metodo = "PrintWindow"
+
+                            if screenshot is not None and not imagem_esta_em_branco(screenshot):
+                                h = hash_imagem(screenshot)
+                                # Camada 2: se veio congelada, tenta uma segunda repintura
+                                # mais agressiva e recaptura antes de desistir.
+                                if h and h == hash_captura_anterior:
+                                    self.log("🧊 Quadro idêntico ao anterior — forçando repintura e recapturando...")
+                                    garantir_janela_renderizando(hwnd, permite_restaurar)
+                                    time.sleep(0.6)
+                                    nova = capturar_janela_em_segundo_plano(hwnd)
+                                    if nova is not None and hash_imagem(nova) != h:
+                                        screenshot, metodo = nova, "PrintWindow (após repintura)"
+                                    else:
+                                        # Camada 3: PrintWindow insiste em quadro velho.
+                                        # Recorta a tela — sempre conteúdo atual.
+                                        recorte, sobreposto = capturar_via_recorte_de_tela(hwnd)
+                                        if recorte is not None and not sobreposto:
+                                            screenshot, metodo = recorte, "Recorte de tela"
+                                            self.log("✅ Recuperado via recorte de tela (conteúdo atual).")
+                                        elif sobreposto:
+                                            self.log("🧊 A janela está COBERTA por outra e não redesenha. "
+                                                      "Análise suspensa neste ciclo.")
+                                            screenshot = None
+                            if screenshot is None or imagem_esta_em_branco(screenshot):
+                                self.log(f"⚠️ ERRO DE VISUALIZAÇÃO: não consegui uma imagem atual de '{nome_janela}'. "
+                                          "Deixe a janela visível (pode estar atrás de outras, mas não 100% coberta). "
+                                          "Ciclo pulado.")
+                                capturas_congeladas += 1
+                                if capturas_congeladas == 2:
+                                    enviar_relatorio_whatsapp(
+                                        f"⚠️ *Análises suspensas — {time.strftime('%d/%m/%Y %H:%M:%S')}*\n"
+                                        f"Não estou conseguindo ler o gráfico de '{nome_janela}' com conteúdo atual. "
+                                        "Deixe a janela visível na tela. Nenhum relatório será enviado com dado defasado.",
+                                        None, self.log
+                                    )
+                                    falar("Atenção. Não consigo ler o gráfico atualizado. Análises suspensas.")
+                                continue
+                        else:
+                            self.log(f"📸 [{hora_atual}] Nenhuma janela específica configurada — capturando tela inteira...")
+                            screenshot = ImageGrab.grab()
+                            metodo = "Tela inteira"
+
+                        # ------------------------------------------------------------
+                        # REDE DE SEGURANÇA FINAL: se, apesar de todas as camadas, a
+                        # imagem ainda for idêntica à anterior, NÃO analisamos. Um
+                        # relatório com preço defasado é pior do que nenhum relatório.
+                        # ------------------------------------------------------------
+                        hash_atual = hash_imagem(screenshot)
+                        if hash_atual and hash_atual == hash_captura_anterior:
+                            capturas_congeladas += 1
+                            self.log(f"🧊 CAPTURA CONGELADA ({capturas_congeladas}x): imagem idêntica à do ciclo "
+                                      f"anterior mesmo após todas as tentativas de recuperação. Nenhuma análise feita.")
+                            if capturas_congeladas == 2:
+                                enviar_relatorio_whatsapp(
+                                    f"🧊 *Análises suspensas — {time.strftime('%d/%m/%Y %H:%M:%S')}*\n"
+                                    "O gráfico não está sendo redesenhado na tela. Deixe a janela da corretora "
+                                    "visível. Nenhum relatório será enviado com preço defasado.",
+                                    None, self.log
+                                )
+                                falar("Atenção. Captura congelada. Análises suspensas.")
+                            continue
+
+                        if capturas_congeladas > 0:
+                            self.log("✅ Captura voltou a atualizar — retomando as análises.")
+                            capturas_congeladas = 0
+                        hash_captura_anterior = hash_atual
+                        self.log(f"🖼️ Imagem atual obtida via: {metodo}")
+
+                        # OLHOS DA TIGER: guarda esta captura para o chat. A partir daqui
+                        # dá para perguntar "olha o gráfico agora" e ela analisa ESTA
+                        # imagem — a mesma que o motor está lendo neste ciclo.
+                        info_print = salvar_ultimo_print(
+                            screenshot, nome_janela or "tela inteira")
+                        if info_print:
+                            self._ultimo_print = info_print
+
+                        # DETECÇÃO DE POSIÇÃO NA PLATAFORMA: antes de analisar, confere na
+                        # corretora se você já está posicionado (inclusive numa operação
+                        # aberta por fora da sugestão) e reflete isso no diário/dashboard.
+                        # Só na janela PRINCIPAL: a leitura de posições vem da
+                        # aba da Tradovate via CDP e não tem relação com o
+                        # gráfico das outras janelas. Rodar isso a cada janela
+                        # repetiria a mesma leitura e, pior, associaria a
+                        # posição ao ativo da janela errada.
+                        if (janela_principal
+                                and getattr(self, "tv_sync_var", None)
+                                and self.tv_sync_var.get()):
+                            self._tv_sincronizar_posicoes(silencioso=True)
+
+                        self.log("🧠 Processando análise com Memória Episódica...")
+
+                        memoria_dinamica = compilar_memoria_prompt()
+                        contexto_meta = self._contexto_do_plano()
+                        PROMPT_BASE = (
+                            "Você é um trader institucional de Smart Money Concepts (SMC/ICT) "
+                            "operando índices futuros (ES/MES, NQ/MNQ). Você é criterioso, mas "
+                            "PROATIVO: sinaliza todo cenário SMC válido — tanto de CONTINUAÇÃO quanto "
+                            "de REVERSÃO — e busca se ANTECIPAR a reversões prováveis. Qualidade "
+                            "importa, mas não seja conservador a ponto de deixar passar setups "
+                            "legítimos. Se houver OUTROS indicadores visíveis no gráfico (volume, "
+                            "perfil de volume/VPOC, RSI, médias móveis, VWAP, etc.), use-os como "
+                            "confluência adicional junto do SMC.\n"
+                            "\n"
+                            "POSTURA — VOCÊ É UMA MESA INSTITUCIONAL, NÃO UM VAREJISTA MEDROSO:\n"
+                            "Pense como quem PRECISA preencher ordem grande: onde está a liquidez "
+                            "parada (stops do varejo), quem está preso, e para onde o preço TEM de "
+                            "ir para essa liquidez ser tomada. Seu trabalho é RASPAR O MÁXIMO que o "
+                            "movimento oferece — entrar onde a instituição entra (no desconto/prêmio "
+                            "extremo, depois da manipulação) e sair onde a instituição realiza (na "
+                            "liquidez oposta). Ser 'moderado' aqui é erro: um setup SMC válido, com "
+                            "estrutura, liquidez e POI claros, DEVE virar sinal. Só use HOLD quando "
+                            "realmente não houver vantagem — não por medo.\n"
+                            "\n"
+                            "ARSENAL SMC/ICT COMPLETO (use TUDO que estiver visível, não só o básico):\n"
+                            "• Estrutura: BOS, CHoCH, MSS (market structure shift), swings internos "
+                            "x externos, dealing range e a fase do Power of 3 (acumulação → "
+                            "manipulação → distribuição).\n"
+                            "• Order Blocks: bullish/bearish OB, BREAKER block, MITIGATION block, "
+                            "REJECTION block, propulsion block. Prefira OB de origem (o que causou "
+                            "o deslocamento) e OB não mitigado.\n"
+                            "• Ineficiências: FVG, INVERSION FVG (iFVG), BPR (balanced price range), "
+                            "liquidity void, gap de abertura.\n"
+                            "• Liquidez: BSL/SSL (buy/sell side), topos e fundos IGUAIS, liquidez de "
+                            "linha de tendência, INDUCEMENT (a isca antes do POI), PDH/PDL (máx/mín "
+                            "do dia anterior), PWH/PWL (semana), abertura diária/semanal, "
+                            "TURTLE SOUP e JUDAS SWING (falso rompimento da abertura).\n"
+                            "• Precificação: premium/discount, equilíbrio (50%), OTE (61,8–79%), "
+                            "níveis de padrão institucional.\n"
+                            "• Tempo: killzones (Londres, NY AM, NY PM) e horários de virada. "
+                            "Setup dentro de killzone merece MAIS confiança, não menos.\n"
+                            "• Correlação: divergência SMT entre índices correlacionados (ES/NQ/YM), "
+                            "quando ambos estiverem visíveis.\n"
+                            "Cite em confluence_factors os nomes REAIS dos conceitos que você "
+                            "de fato identificou no gráfico."
                         )
-                        falar("Atenção. Janela da corretora não encontrada. Ciclo pulado.")
-                        continue
+                        PROMPT_FINAL = (
+                            f"{PROMPT_BASE}\n{memoria_dinamica}\n"
+                            f"ÚLTIMO ESTADO DO LEDGER:\n{ledger_text_memory}\n"
+                            f"CONTEXTO DA TELA: {DICAS_PLATAFORMA.get(self.plataforma_atual, DICAS_PLATAFORMA['outra'])}\n"
+                            f"{contexto_meta}"
+                            f"{bloco_licoes_prompt()}"
+                            "Identifique o TICKER do ativo no gráfico (asset_symbol) e leia o PREÇO "
+                            "ATUAL com precisão pela última vela e pela escala de preço à direita.\n"
+                            "\n"
+                            "SIGA ESTE ROTEIRO DE ANÁLISE, NESTA ORDEM:\n"
+                            "1) VIÉS (HTF): determine a tendência dominante pela ESTRUTURA visível "
+                            "(sequência de BOS/CHoCH, topos/fundos). Continuação a favor da tendência é "
+                            "o cenário-base (BUY em estrutura de alta, SELL em estrutura de baixa).\n"
+                            "1b) REVERSÃO E ANTECIPAÇÃO (importante): procure ATIVAMENTE reversões e "
+                            "antecipe-as. Gatilhos SMC de reversão válidos: CHoCH (troca de caráter) "
+                            "contra a tendência logo após varredura de liquidez num EXTREMO do range; "
+                            "SFP / swing failure (pavio que varre um topo/fundo e FECHA de volta pra "
+                            "dentro); rejeição forte em Order Block/FVG de timeframe maior em PREMIUM "
+                            "(para venda) ou DISCOUNT (para compra); esgotamento de momentum / divergência "
+                            "em indicador visível. Uma reversão bem configurada (sweep do extremo + CHoCH "
+                            "+ POI) é um sinal TÃO válido quanto a continuação — sinalize-a, não espere "
+                            "confirmação tardia demais.\n"
+                            "2) PREMIUM/DISCOUNT: marque o range relevante (perna atual). Compras SÓ em "
+                            "DISCOUNT (abaixo de 50%); vendas SÓ em PREMIUM (acima de 50%). Preço em "
+                            "EQUILÍBRIO (perto de 50%) ou no meio do range = HOLD.\n"
+                            "3) LIQUIDEZ: exija uma varredura de liquidez (sweep de topo/fundo, ou "
+                            "inducement) ANTES da entrada. Nunca entre MIRANDO liquidez que ainda não "
+                            "foi tomada — o preço tende a buscá-la primeiro.\n"
+                            "4) PONTO DE ENTRADA (POI): a entrada deve estar num Order Block NÃO mitigado "
+                            "ou num Fair Value Gap (FVG) coerente com o viés. ENTRY_PRICE é sempre ordem "
+                            "PENDENTE nesse POI (não a mercado).\n"
+                            "4b) ONDE EXATAMENTE COLOCAR A ENTRADA (crítico — evita 'o preço encostou "
+                            "e voltou'): NÃO coloque a entrada na BORDA externa do POI, no ponto que o "
+                            "preço só alcança com a ponta do pavio. Use o MIOLO da zona: o equilíbrio "
+                            "(50%) do corpo do Order Block, ou a zona OTE (61,8%–79% de retração da "
+                            "perna de impulso), ou o meio do FVG. Se o preço já está MUITO perto do POI "
+                            "(a menos de ~20% da distância do stop), o setup perdeu a assimetria — "
+                            "retorne HOLD em vez de forçar uma entrada colada no preço atual.\n"
+                            "4c) ASSERTIVIDADE NOS EXTREMOS: priorize POIs que estejam em EXTREMOS "
+                            "REAIS de liquidez — máxima/mínima do dia anterior, extremos da sessão, "
+                            "topos/fundos iguais (equal highs/lows), abertura semanal, POIs de "
+                            "timeframe maior. É nesses extremos que existe liquidez de verdade para "
+                            "o preço reagir. POI no MEIO do range, sem liquidez atrás, é o que produz "
+                            "o 'encostou e voltou' — nesse caso, HOLD.\n"
+                            "5) STOP (crítico — evita ser varrido por um pavio): o stop_loss vai ALÉM "
+                            "do EXTREMO DO PAVIO que varreu a liquidez, mais uma folga de respiro — "
+                            "NUNCA rente ao nível, nem no meio do corpo do candle de sweep. Pergunte-se: "
+                            "'se o preço der mais uma lambida nesse extremo, meu stop sobrevive?' Se a "
+                            "resposta for não, o stop está apertado demais. O stop só é válido se, "
+                            "colocado assim (largo o suficiente), o R:R do 1º alvo AINDA fechar 1:2.\n"
+                            "5b) ALVOS — RASPAR O MÁXIMO (não seja tímido no alvo): take_profit_1 a "
+                            "PELO MENOS 2x a distância do stop (R:R >= 1:2, idealmente 1:3), na "
+                            "PRIMEIRA liquidez/estrutura REAL do caminho. take_profit_2 é o ALVO "
+                            "INSTITUCIONAL: o pool de liquidez COMPLETO para onde o preço está sendo "
+                            "levado (PDH/PDL, topos/fundos iguais, extremo do dealing range, FVG de "
+                            "timeframe maior por preencher). NÃO encurte o tp2 por cautela — ele é o "
+                            "que o movimento entrega quando o cenário funciona. Se o alvo lógico mais "
+                            "próximo não alcançar 1:2 a partir de um stop tecnicamente correto (item "
+                            "5), o trade NÃO vale — retorne action=HOLD. NUNCA encurte o alvo nem "
+                            "aperte o stop só para 'fechar' o R:R no papel.\n"
+                            "\n"
+                            "REGRAS DE HONESTIDADE:\n"
+                            "- NUNCA invente números, preços, níveis, teses ou confluências. "
+                            "entry_price, stop_loss, take_profit_1 e take_profit_2 são níveis REAIS "
+                            "lidos do gráfico (topos/fundos, OB, FVG, liquidez visíveis). Se você não "
+                            "consegue ler um nível com clareza no gráfico, NÃO o chute — retorne "
+                            "action=HOLD. Uma análise honesta com HOLD vale mais que um número inventado.\n"
+                            "- Liste em confluence_factors APENAS confluências REAIS e visíveis no "
+                            "gráfico (BOS/CHoCH, OB, FVG, sweep, premium/discount, equilíbrio). Não "
+                            "invente fatores para justificar um trade.\n"
+                            "- Se faltar confluência, se a estrutura estiver ambígua, ou se o preço já "
+                            "estiver longe do POI, retorne action=HOLD com probabilidade baixa. Porém "
+                            "NÃO use HOLD quando existir um setup real (continuação OU reversão) com "
+                            "confluência SMC — nesse caso, sinalize BUY/SELL.\n"
+                            "- 'confidence_score' E 'probabilidade' são SEMPRE inteiros na ESCALA 0 a 100 "
+                            "(ex.: 72, nunca 0.72). 'probabilidade' é a estimativa CALIBRADA e honesta de "
+                            "atingir o objetivo 1 antes de invalidar. Poucas confluências ou contra-tendência "
+                            "=> probabilidade baixa. Use o histórico do feedback loop acima para calibrar. "
+                            "Cenário abaixo de ~60% de probabilidade deve virar HOLD. NÃO infle.\n"
+                            "- Coerência obrigatória: para BUY, stop < entry < tp1 <= tp2; para SELL, "
+                            "stop > entry > tp1 >= tp2. Se não conseguir montar um cenário coerente, HOLD.\n"
+                            "\n"
+                            "FILTRO DE RUÍDO (evite stops bobos):\n"
+                            "- 90% das operações DEVEM ser fundamentadas em SMC/ICT (estrutura BOS/CHoCH, "
+                            "varredura de liquidez, Order Block/FVG não mitigado, premium/discount), em "
+                            "QUALQUER timeframe. Indicadores (RSI, VWAP, médias, volume) são apenas "
+                            "confluência SECUNDÁRIA — nunca o motivo principal de um trade.\n"
+                            "- NÃO opere dentro de range/consolidação sem direção (chop): mercado lateral, "
+                            "preço colado na média/VWAP em equilíbrio, velas pequenas e sobrepostas = HOLD. "
+                            "É melhor perder o trade do que tomar stop em ruído.\n"
+                            "- Exija SEMPRE o gatilho + o POI JÁ mitigável: só sinalize quando a varredura de "
+                            "liquidez JÁ ocorreu e o preço está reagindo no POI. Sem sweep + reação, é HOLD.\n"
+                            "- NÃO fique alternando BUY/SELL a cada leitura: se o cenário anterior ainda é "
+                            "válido estruturalmente, mantenha o viés; só inverta com CHoCH/sweep NOVO e claro.\n"
+                            "\n"
+                            # ---- Sizing é responsabilidade EXCLUSIVA do plano da mesa ----
+                            "COMO ESCREVER O 'market_analysis' (linguagem natural):\n"
+                            "Escreva em PORTUGUÊS CLARO E CORRIDO, como um mentor de mesa "
+                            "explicando ao vivo para o trader ao lado — não como um relatório "
+                            "técnico picotado. Conte a HISTÓRIA do gráfico nesta ordem: (1) o "
+                            "que o preço vinha fazendo; (2) o que mudou agora e por quê; "
+                            "(3) onde está a liquidez que o mercado ainda vai buscar; (4) por "
+                            "que a entrada é NESTE ponto e não noutro; (5) o que invalidaria a "
+                            "ideia. Use os nomes técnicos (BOS, order block, FVG, sweep) mas "
+                            "SEMPRE explicando o que significam naquele gráfico — 'varreu os "
+                            "fundos iguais em 7541, pegando os stops de quem estava comprado, "
+                            "e voltou' vale mais que 'SSL sweep'. Evite siglas soltas e "
+                            "listas secas. De 3 a 6 frases.\n"
+                            "\n"
+                            "NUNCA sugira quantidade de contratos, tamanho de posição, número de "
+                            "lotes, alavancagem ou valores de risco em dólar no texto da análise nem "
+                            "nas confluências. O dimensionamento (contratos e risco) é calculado APENAS "
+                            "pelo plano de trading da conta-mesa do trader, fora da IA. Limite-se a "
+                            "identificar o cenário (viés, entrada, stop, alvos e confluências)."
+                        )
+                        # Instrução de sistema: reforça o mesmo limite no nível do schema.
+                        INSTRUCAO_SISTEMA = (
+                            "Retorne estritamente o JSON validado pelo Schema. "
+                            "Não inclua quantidade de contratos, tamanho de posição nem valores de "
+                            "risco: o sizing é definido exclusivamente pelo plano da mesa do trader."
+                        )
 
-                    self.log(f"📸 [{hora_atual}] Capturando '{nome_janela}' em segundo plano...")
+                        resposta = None
+                        ultimo_erro = None
+                        modelo_vencedor = None
 
-                    # ---------- CAPTURA EM CAMADAS (agnóstica de aplicativo) ----------
-                    # Camada 1: prepara a janela (restaura se minimizada — só se o
-                    # usuário permitir — e força repintura), depois PrintWindow.
-                    # Se a janela já está visível, NADA aqui altera foco ou z-order.
-                    permite_restaurar = carregar_config().get("restaurar_janela_minimizada", True)
-                    if not garantir_janela_renderizando(hwnd, permite_restaurar):
-                        self.log(f"⏸️ '{nome_janela}' está MINIMIZADA e a restauração automática está "
-                                  "desativada. Ciclo pulado (janela minimizada não pode ser capturada).")
-                        continue
+                        # Só tenta modelos que NÃO estão em cooldown (cota/sobrecarga
+                        # recentes). Se todos estiverem estacionados, tenta a lista
+                        # inteira mesmo assim — melhor uma chance do que pular o ciclo.
+                        agora_ts = time.time()
+                        candidatos = [m for m in modelos_fallback
+                                       if cooldown_modelos.get(m, 0) <= agora_ts]
+                        if not candidatos:
+                            candidatos = list(modelos_fallback)
+                            self.log("⏳ Todos os modelos estão em cooldown de cota/sobrecarga — "
+                                      "tentando mesmo assim. (Considere aumentar o intervalo ou usar chave paga.)")
 
-                    screenshot = capturar_janela_em_segundo_plano(hwnd)
-                    metodo = "PrintWindow"
+                        for modelo_atual in candidatos:
+                            try:
+                                resposta = client.models.generate_content(
+                                    model=modelo_atual,
+                                    contents=[PROMPT_FINAL, screenshot],
+                                    config=types.GenerateContentConfig(
+                                        system_instruction=INSTRUCAO_SISTEMA,
+                                        response_mime_type="application/json",
+                                        response_schema=SIGNAL_SCHEMA,
+                                    )
+                                )
+                                modelo_vencedor = modelo_atual
+                                cooldown_modelos.pop(modelo_atual, None)  # respondeu: sai do cooldown
+                                if modelo_atual != candidatos[0]:
+                                    self.log(f"ℹ️ Análise concluída usando modelo de reserva: {modelo_atual}")
+                                break
+                            except Exception as e:
+                                ultimo_erro = e
+                                erro_str = str(e).upper()
 
-                    if screenshot is not None and not imagem_esta_em_branco(screenshot):
-                        h = hash_imagem(screenshot)
-                        # Camada 2: se veio congelada, tenta uma segunda repintura
-                        # mais agressiva e recaptura antes de desistir.
-                        if h and h == hash_captura_anterior:
-                            self.log("🧊 Quadro idêntico ao anterior — forçando repintura e recapturando...")
-                            garantir_janela_renderizando(hwnd, permite_restaurar)
-                            time.sleep(0.6)
-                            nova = capturar_janela_em_segundo_plano(hwnd)
-                            if nova is not None and hash_imagem(nova) != h:
-                                screenshot, metodo = nova, "PrintWindow (após repintura)"
+                                # 404 / NOT_FOUND = o modelo NÃO EXISTE mais para esta
+                                # conta (foi descontinuado). Não adianta tentar de novo
+                                # nos próximos ciclos: removemos da lista de vez.
+                                if ("404" in erro_str or "NOT_FOUND" in erro_str
+                                        or "NO LONGER AVAILABLE" in erro_str):
+                                    self.log(f"🚫 {modelo_atual} foi descontinuado — removendo da lista permanentemente.")
+                                    modelos_invalidos.add(modelo_atual)
+                                    continue
+
+                                # Erros TRANSITÓRIOS ou de cota: vale tentar o próximo
+                                # modelo em vez de derrubar o ciclo inteiro.
+                                #   429 / RESOURCE_EXHAUSTED -> cota esgotada
+                                #   503 / UNAVAILABLE        -> modelo sobrecarregado (alta demanda)
+                                #   500 / INTERNAL           -> falha temporária do servidor
+                                #   504 / DEADLINE / TIMED OUT -> timeout de rede
+                                # ATENÇÃO: a mensagem real do SDK é "The read operation
+                                # timed out" (com espaço). Procurar só por "TIMEOUT"
+                                # deixava esse erro passar como fatal e matava o ciclo.
+                                transitorios = ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE",
+                                                 "500", "INTERNAL", "504", "DEADLINE", "TIMEOUT",
+                                                 "TIMED OUT", "OVERLOADED", "CONNECTION", "SSL",
+                                                 "TEMPORARILY")
+                                if any(t in erro_str for t in transitorios):
+                                    eh_cota = ("429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str)
+                                    # Estaciona o modelo para não desperdiçar rede nos
+                                    # próximos ciclos: cota -> 15 min, sobrecarga -> 2 min.
+                                    cooldown_modelos[modelo_atual] = time.time() + (
+                                        COOLDOWN_COTA if eh_cota else COOLDOWN_SOBRECARGA)
+                                    motivo = "cota esgotada (pausado 15min)" if eh_cota \
+                                              else "sobrecarregado (pausado 2min)"
+                                    self.log(f"⚠️ {modelo_atual} {motivo} — próximo modelo...")
+                                    continue  # sem sleep: o próximo modelo já é uma nova requisição
+                                raise  # erro real (ex: chave inválida): sobe pro tratamento do ciclo
+
+                        # Expurga de vez os modelos descontinuados, para não perder
+                        # tempo tentando-os em todos os ciclos seguintes.
+                        if modelos_invalidos:
+                            modelos_fallback = [m for m in modelos_fallback if m not in modelos_invalidos]
+                            modelos_invalidos.clear()
+                            if not modelos_fallback:
+                                raise RuntimeError("Nenhum modelo Gemini válido para esta chave de API.")
+                            self.log(f"📋 Lista de modelos atualizada: {modelos_fallback[:4]}...")
+
+                        # APRENDIZADO DE VELOCIDADE: o modelo que respondeu AGORA passa a
+                        # ser o primeiro tentado no próximo ciclo. Assim paramos de perder
+                        # tempo re-tentando modelos que vivem dando "indisponível" antes
+                        # dele — o ciclo seguinte já começa pelo que funciona.
+                        if modelo_vencedor and modelos_fallback and modelos_fallback[0] != modelo_vencedor:
+                            modelos_fallback = ([modelo_vencedor] +
+                                                 [m for m in modelos_fallback if m != modelo_vencedor])
+
+                        if resposta is None:
+                            raise RuntimeError(
+                                f"Todos os modelos disponíveis falharam. Último erro: {ultimo_erro}"
+                            )
+
+                        sinal = json.loads(resposta.text)
+                        preco = sinal.get("current_price")
+                        acao = sinal.get("action", "HOLD")
+                        confianca = sinal.get("confidence_score", 0)
+                        probabilidade = sinal.get("probabilidade", 0)
+                        confluencias = sinal.get("confluence_factors", []) or []
+                        ativo = sinal.get("asset_symbol", "DESCONHECIDO")
+                        # Guardado para a detecção de posições associar a leitura do campo
+                        # POSIÇÃO quando o painel não mostra o ticker ao lado.
+                        # SÓ da janela PRINCIPAL: é a única ligada à corretora.
+                        # Deixar a última janela analisada sobrescrever isso faria
+                        # a posição do MES ser rotulada com o ticker do NQ — é o
+                        # tipo de mistura que não pode existir aqui.
+                        if janela_principal:
+                            self._ultimo_ativo_lido = ativo
+                        ledger_text_memory = sinal.get("ledger_update", ledger_text_memory)
+
+                        # NORMALIZA A ESCALA (0-100). A IA às vezes devolve 0.78 (escala
+                        # 0-1) e às vezes 75 (escala 0-100). Padroniza tudo para 0-100.
+                        def _pct(v):
+                            try:
+                                v = float(v)
+                            except (TypeError, ValueError):
+                                return 0.0
+                            if v <= 1.0:      # veio em 0-1 -> converte para 0-100
+                                v *= 100.0
+                            return round(max(0.0, min(100.0, v)), 1)
+                        confianca = _pct(confianca)
+                        probabilidade = _pct(probabilidade)
+
+                        # Alimenta o CHAT da IA com a leitura mais recente do gráfico —
+                        # é o que permite conversar "sobre a análise de agora".
+                        # Com vários gráficos, a leitura carrega DE QUAL JANELA
+                        # ela veio — senão, no chat, a resposta sobre "o gráfico"
+                        # seria a do último ativo analisado, sem ele saber.
+                        self._ultima_analise = {
+                            "hora": time.strftime('%H:%M'),
+                            "janela": nome_janela or "tela inteira",
+                            "ativo": ativo, "acao": acao, "preco": preco,
+                            "confianca": confianca, "probabilidade": probabilidade,
+                            "confluencias": list(confluencias),
+                            "analise": str(sinal.get("market_analysis", ""))[:1200],
+                            "entry": sinal.get("entry_price"), "stop": sinal.get("stop_loss"),
+                            "tp1": sinal.get("take_profit_1"), "tp2": sinal.get("take_profit_2"),
+                        }
+                        # Guarda também POR ATIVO: assim ele pode perguntar "e o
+                        # NQ?" sem perder a leitura do MES feita segundos antes.
+                        if not hasattr(self, "_analises_por_ativo"):
+                            self._analises_por_ativo = {}
+                        if ativo and ativo != "DESCONHECIDO":
+                            self._analises_por_ativo[str(ativo).upper()] = \
+                                dict(self._ultima_analise)
+
+                        _marca_janela = (f" | Janela: {nome_janela[:28]}"
+                                         if len(_janelas_ciclo) > 1 and nome_janela else "")
+                        self.log(f"📊 Ativo: {ativo} | Leitura IA: {acao} | Confiança: {confianca}% | "
+                                  f"Probabilidade: {probabilidade}% | Preço: {preco}{_marca_janela}")
+
+                        # Segunda camada de defesa: mesmo com a imagem mudando (relógio,
+                        # cursor), o PREÇO não deveria ficar idêntico por vários ciclos
+                        # com o mercado aberto. Se ficar, algo está errado na leitura.
+                        if preco is not None and preco == preco_anterior_lido:
+                            ciclos_preco_igual += 1
+                            if ciclos_preco_igual >= 2:
+                                self.log(f"⚠️ ATENÇÃO: o preço lido ({preco}) não muda há {ciclos_preco_igual + 1} ciclos. "
+                                          f"Verifique se o gráfico está realmente atualizando na tela e se o mercado "
+                                          f"está aberto. Os relatórios podem estar refletindo dados defasados.")
+                        else:
+                            ciclos_preco_igual = 0
+                        preco_anterior_lido = preco
+                        if confluencias:
+                            self.log("🔎 Confluências identificadas:")
+                            for c in confluencias:
+                                self.log(f"    • {c}")
+                        else:
+                            self.log("🔎 Nenhuma confluência relevante neste ciclo.")
+
+                        # ---------- DIÁRIO DE TRADER: máquina de estados das posições ----------
+                        # Se a leitura de posições da corretora está funcionando, é ELA
+                        # que confirma execução — o preço lido não abre posição sozinho.
+                        eventos_pos = atualizar_posicoes_com_preco(
+                            preco, ativo,
+                            exigir_confirmacao_plataforma=self._plataforma_confirma_fills())
+                        for tipo, pos in eventos_pos:
+                            self._tratar_evento_posicao(tipo, pos,
+                                                        origem_preco="da análise")
+
+                        if preco is not None:
+                            self.after(0, self._atualizar_dashboard)
+
+                        # DISPENSA PELO TRADER: se o cenário ativo corresponde a um sinal
+                        # que o trader marcou como "Não operei", encerramos o
+                        # acompanhamento — nada de seguir mandando "Cenário em PENDENTE".
+                        if (sinal_ativo.get("estado") != "ENCERRADA"
+                                and sinal_ativo.get("sinal_id") in self.sinais_dispensados):
+                            self.log("🚪 Cenário dispensado pelo trader (Não operei) — "
+                                      "acompanhamento encerrado, sem novos avisos de pendente.")
+                            self.sinais_dispensados.discard(sinal_ativo.get("sinal_id"))
+                            sinal_ativo = {"estado": "ENCERRADA"}
+
+                        # SINCRONIA COM O DIÁRIO (relatório fiel). O cenário e a ordem no
+                        # diário são duas visões da MESMA coisa. Se a ordem já saiu de
+                        # cena — você cancelou, bateu stop/alvo, ou a plataforma encerrou
+                        # — o acompanhamento do cenário TEM de morrer junto. Sem esta
+                        # trava, o robô seguia narrando um trade que não existia mais.
+                        if sinal_ativo.get("estado") != "ENCERRADA" and sinal_ativo.get("sinal_id"):
+                            _pos_lig = next((p for p in carregar_posicoes()
+                                             if p.get("sinal_id") == sinal_ativo["sinal_id"]), None)
+                            if _pos_lig and _pos_lig.get("status") not in ("PENDENTE", "ABERTA"):
+                                self.log(f"🔗 A ordem deste cenário está "
+                                          f"{_pos_lig.get('status')} — encerrando o "
+                                          "acompanhamento para o relatório não divergir.")
+                                self.sinais_acatados.discard(sinal_ativo["sinal_id"])
+                                sinal_ativo = {"estado": "ENCERRADA"}
+
+                        # ACOMPANHAMENTO SÓ SE ACATADO: o robô só manda follow-up no
+                        # WhatsApp (entrada acionada, alvo, stop, acompanhamento) de um
+                        # cenário que o trader ACATOU (no dashboard ou no WhatsApp). Um
+                        # cenário não acatado recebe só a sugestão inicial, sem follow-up.
+                        acatado_atual = sinal_ativo.get("sinal_id") in self.sinais_acatados
+
+                        # ---------------- TIMEOUT DE ACATAR (10 min) ----------------
+                        # Se você NÃO acatou a sugestão dentro do prazo, ela é cancelada
+                        # automaticamente e o robô fica livre para considerar novos
+                        # cenários — não fica preso numa sugestão velha que você não vai
+                        # operar. (Uma sugestão ACATADA vira sua operação e não expira.)
+                        if (sinal_ativo["estado"] != "ENCERRADA" and not acatado_atual
+                                and (time.time() - sinal_ativo.get("ts_criacao", 0)) > TIMEOUT_ACATAR_SEG):
+                            sid_exp = sinal_ativo.get("sinal_id")
+                            atualizar_decisao_sinal(sid_exp, "EXPIRADO")
+                            self.sinais_dispensados.discard(sid_exp)
+                            self.log(f"⌛ Sugestão não acatada em {TIMEOUT_ACATAR_SEG // 60} min — "
+                                      "cancelada automaticamente. Considerando novos cenários.")
+                            sinal_ativo = {"estado": "ENCERRADA"}
+                            self.after(0, self._atualizar_dashboard)
+
+                        # ---------------- MÁQUINA DE ESTADOS ----------------
+                        # Exige preço VÁLIDO (>0). Quando a captura falha, a IA devolve
+                        # preço 0 — processar isso disparava stop/alvo fantasma (ex.:
+                        # "TAKE PROFIT em 0") e poluía o diário/KPI.
+                        if sinal_ativo["estado"] != "ENCERRADA" and preco is not None and preco > 0:
+                            direcao = sinal_ativo["direcao"]
+
+                            if sinal_ativo["estado"] == "PENDENTE":
+                                sinal_ativo["candles"] += 1
+                                bateu_entrada = (direcao == "BUY" and preco <= sinal_ativo["entry"]) or \
+                                                 (direcao == "SELL" and preco >= sinal_ativo["entry"])
+                                rompeu_stop = (direcao == "BUY" and preco <= sinal_ativo["stop"]) or \
+                                              (direcao == "SELL" and preco >= sinal_ativo["stop"])
+
+                                if rompeu_stop:
+                                    sinal_ativo = {"estado": "ENCERRADA"}
+                                    self.log("🚫 SINAL CANCELADO: Stop rompido antes de mitigar a entrada.")
+                                elif bateu_entrada:
+                                    sinal_ativo["estado"] = "ATIVA"
+                                    msg = f"🎯 *ENTRADA ACIONADA — {direcao}*\nPreço mitigou a zona em {sinal_ativo['entry']}."
+                                    self.log(msg)
+                                    if acatado_atual:
+                                        enviar_relatorio_whatsapp(msg, screenshot, self.log)
+                                        falar(f"Ordem de {direcao} ativada no mercado.")
+                                elif sinal_ativo["candles"] >= MAX_CANDLES:
+                                    sinal_ativo = {"estado": "ENCERRADA"}
+                                    self.log("⌛ SINAL EXPIRADO: Nenhuma mitigação no tempo limite.")
+
+                            elif sinal_ativo["estado"] == "ATIVA":
+                                bateu_stop = (direcao == "BUY" and preco <= sinal_ativo["stop"]) or \
+                                             (direcao == "SELL" and preco >= sinal_ativo["stop"])
+                                bateu_tp2 = (direcao == "BUY" and preco >= sinal_ativo["tp2"]) or \
+                                            (direcao == "SELL" and preco <= sinal_ativo["tp2"])
+                                bateu_tp1 = (direcao == "BUY" and preco >= sinal_ativo["tp1"]) or \
+                                            (direcao == "SELL" and preco <= sinal_ativo["tp1"])
+
+                                if bateu_stop:
+                                    # Resultado realizado no NÍVEL do stop (não no preço lido,
+                                    # que pode ter overshoot) — mantém o comparativo honesto.
+                                    salvar_resultado_performance(direcao, sinal_ativo["entry"], sinal_ativo["stop"],
+                                                                  sinal_ativo["tp1"], sinal_ativo["stop"], "LOSS", ativo,
+                                                                  sinal_ativo.get("confluencias"))
+                                    sinal_ativo = {"estado": "ENCERRADA"}
+                                    msg = f"🔴 *STOP ATINGIDO (LOSS) — {direcao}*\nOperação invalidada em {preco}."
+                                    self.log(msg)
+                                    if acatado_atual:
+                                        enviar_relatorio_whatsapp(msg, screenshot, self.log)
+                                        falar("Stop atingido. Dados gravados no banco de aprendizado.")
+                                    self.after(0, self._atualizar_dashboard)
+
+                                elif bateu_tp2:
+                                    salvar_resultado_performance(direcao, sinal_ativo["entry"], sinal_ativo["stop"],
+                                                                  sinal_ativo["tp2"], sinal_ativo["tp2"], "WIN", ativo,
+                                                                  sinal_ativo.get("confluencias"))
+                                    sinal_ativo = {"estado": "ENCERRADA"}
+                                    msg = f"🟢🟢 *TAKE PROFIT 2 (WIN) — {direcao}*\nLucro máximo em {preco}."
+                                    self.log(msg)
+                                    if acatado_atual:
+                                        enviar_relatorio_whatsapp(msg, screenshot, self.log)
+                                        falar("Take profit final atingido. Excelente operação.")
+                                    self.after(0, self._atualizar_dashboard)
+
+                                elif bateu_tp1 and not sinal_ativo.get("tp1_notificado"):
+                                    sinal_ativo["tp1_notificado"] = True
+                                    salvar_resultado_performance(direcao, sinal_ativo["entry"], sinal_ativo["stop"],
+                                                                  sinal_ativo["tp1"], sinal_ativo["tp1"], "WIN", ativo,
+                                                                  sinal_ativo.get("confluencias"))
+                                    msg = f"🟢 *TAKE PROFIT 1 (WIN PARCIAL) — {direcao}*\nParcial realizada em {preco}."
+                                    self.log(msg)
+                                    if acatado_atual:
+                                        enviar_relatorio_whatsapp(msg, screenshot, self.log)
+                                    self.after(0, self._atualizar_dashboard)
+
+                        # ---------------- NOVO SINAL (se estado livre) ----------------
+                        # PISO DE QUALIDADE: calcula o R:R até o 1º alvo e exige R:R>=2
+                        # e probabilidade>=mínimo. Setups fracos (alvo curto, baixa
+                        # convicção) NÃO viram sugestão — cortam o ruído.
+                        _ep = sinal.get("entry_price") or 0
+                        _sl = sinal.get("stop_loss") or 0
+                        _alvo_rr = sinal.get("take_profit_1") or sinal.get("take_profit_2") or 0
+                        _risco = abs(_ep - _sl)
+                        rr_sinal = (abs(_alvo_rr - _ep) / _risco) if (_risco and _alvo_rr) else 0
+
+                        # APRENDIZADO ENTRA NA CONTA. A probabilidade que a IA leu do
+                        # gráfico é corrigida pelo que ESTA conta já viveu com estes
+                        # mesmos padrões e neste mesmo horário. Um padrão que vem
+                        # falhando perde pontos e passa a ser barrado pelo piso; um que
+                        # vem acertando ganha. O número original fica guardado, para o
+                        # log mostrar de onde veio a diferença.
+                        probabilidade_ia = probabilidade
+                        _delta, _porques = ajuste_por_aprendizado(
+                            confluencias, time.strftime('%H'))
+                        if _delta:
+                            probabilidade = round(
+                                max(0.0, min(100.0, probabilidade + _delta)), 1)
+                            if acao in ("BUY", "SELL"):
+                                self.log(
+                                    f"🧠 APRENDIZADO: probabilidade {probabilidade_ia:.0f}% → "
+                                    f"{probabilidade:.0f}% ({_delta:+.1f} pts pelo seu "
+                                    f"histórico). " + " · ".join(_porques))
+
+                        qualidade_ok = (rr_sinal >= RR_MINIMO and probabilidade >= PROBABILIDADE_MINIMA)
+
+                        # ---- INVALIDAÇÃO POR MUDANÇA DE CENÁRIO ----
+                        # Antes, uma sugestão pendente só saía por cancelamento manual ou
+                        # pelo timeout — ficava acompanhando um cenário que já morreu.
+                        # Agora, se a leitura nova traz um setup VÁLIDO na direção
+                        # CONTRÁRIA, a sugestão pendente é invalidada na hora e a ordem
+                        # pendente ligada a ela é cancelada, liberando o robô para o
+                        # cenário novo. Posição JÁ EXECUTADA não é tocada.
+                        if (sinal_ativo.get("estado") == "PENDENTE"
+                                and acao in ("BUY", "SELL")
+                                and acao != sinal_ativo.get("direcao")
+                                and qualidade_ok and _ep > 0 and _sl > 0):
+                            sid_inv = sinal_ativo.get("sinal_id")
+                            atualizar_decisao_sinal(sid_inv, "INVALIDADO")
+                            self.sinais_dispensados.discard(sid_inv)
+                            self.sinais_acatados.discard(sid_inv)
+                            n_canc = cancelar_pendentes_do_sinal(
+                                sid_inv, f"cenário mudou para {acao}")
+                            self.log(
+                                f"🔄 CENÁRIO MUDOU: a sugestão {sinal_ativo.get('direcao')} "
+                                f"{ativo} @ {sinal_ativo.get('entry')} foi INVALIDADA (surgiu "
+                                f"um setup de {acao} com qualidade)."
+                                + (f" {n_canc} ordem(ns) pendente(s) cancelada(s)." if n_canc else "")
+                            )
+                            if sid_inv in getattr(self, "_sinais_notificados", set()):
+                                self._sinais_notificados.discard(sid_inv)
+                            sinal_ativo = {"estado": "ENCERRADA"}
+                            self.after(0, self._atualizar_dashboard)
+
+                        # ANTI-REPETIÇÃO: se o MESMO setup (ativo + direção + entrada
+                        # praticamente igual) já foi sugerido há pouco, não vira sugestão
+                        # nova. Sem isso, o mesmo POI era reemitido a cada ciclo, enchendo
+                        # a lista de cenários idênticos que só expiravam.
+                        repetido = False
+                        if acao in ("BUY", "SELL") and _ep > 0 and _risco:
+                            limite_rep = (time.time() - JANELA_ANTI_REPETICAO_SEG) * 1000
+                            for s_ant in sinais_da_conta_ativa():
+                                if s_ant.get("id", 0) < limite_rep:
+                                    continue
+                                if (s_ant.get("direcao") == acao
+                                        and str(s_ant.get("ativo", "")).upper() == str(ativo).upper()
+                                        and s_ant.get("entry")
+                                        and abs(s_ant["entry"] - _ep) <= _risco * 0.25):
+                                    repetido = True
+                                    break
+                        if repetido:
+                            self.log(f"🔁 {acao} {ativo} @ {_ep} é o MESMO setup já sugerido há pouco "
+                                      "— não vou repetir a sugestão. Aguardando cenário novo.")
+
+                        # ANTI-CHICOTE: o motor virou de BUY para SELL (ou o contrário)
+                        # no mesmo ativo em poucos minutos. Num mercado lateral isso
+                        # acontece o tempo todo, e é exatamente o padrão que faz o trader
+                        # tomar stop nas duas pontas. Trocar de lado exige convicção
+                        # acima do piso — não basta passar raspando.
+                        chicote = False
+                        if acao in ("BUY", "SELL") and _ep > 0:
+                            limite_chic = (time.time() - JANELA_ANTI_CHICOTE_SEG) * 1000
+                            for s_ant in sinais_da_conta_ativa():
+                                if s_ant.get("id", 0) < limite_chic:
+                                    continue
+                                if (str(s_ant.get("ativo", "")).upper() == str(ativo).upper()
+                                        and s_ant.get("direcao") in ("BUY", "SELL")
+                                        and s_ant.get("direcao") != acao):
+                                    chicote = True
+                                    break
+                        if chicote and probabilidade < PROBABILIDADE_MINIMA + MARGEM_ANTI_CHICOTE:
+                            repetido = True     # trata como "não emitir"
+                            self.log(
+                                f"↔️ {acao} {ativo}: o cenário inverteu de lado nos últimos "
+                                f"{JANELA_ANTI_CHICOTE_SEG // 60} min e a probabilidade "
+                                f"({probabilidade:.0f}%) não chega aos "
+                                f"{PROBABILIDADE_MINIMA + MARGEM_ANTI_CHICOTE:.0f}% que eu exijo "
+                                "para virar a mão. Mercado indeciso não é oportunidade — "
+                                "é a armadilha que faz tomar stop nas duas pontas.")
+
+                        # JÁ ESTÁ POSICIONADO NESSE ATIVO? A decisão é de CÓDIGO, não do
+                        # modelo — e o cenário contra a posição NÃO é engolido: vira
+                        # alerta, que é a informação mais útil para quem está dentro.
+                        if not repetido and acao in ("BUY", "SELL") and qualidade_ok:
+                            _dec, _pos_ab, _motivo_pa = politica_com_posicao_aberta(acao, ativo)
+                            if _dec == "ALERTA_CONTRA":
+                                repetido = True      # não vira sugestão de entrada
+                                self._alertar_cenario_contra_posicao(
+                                    _pos_ab, acao, ativo, preco, probabilidade,
+                                    confluencias, sinal.get("stop_loss"))
+                            elif _dec == "BLOQUEIA":
+                                repetido = True
+                                self.log(f"⏸️ {acao} {ativo}: {_motivo_pa}")
+                            elif _dec == "AUMENTO":
+                                self.log(f"➕ {acao} {ativo}: {_motivo_pa} Vai como "
+                                         "sugestão de AUMENTO — confira o risco somado "
+                                         "antes de acatar.")
+
+                        # FREIO DE SUGESTÕES: perda diária, stops seguidos e teto de
+                        # operações. É a trava que impede o dia de virar sequência de
+                        # stops. Roda depois dos outros filtros para o log mostrar o
+                        # motivo real de o cenário não ter virado sugestão.
+                        if not repetido and acao in ("BUY", "SELL") and qualidade_ok:
+                            pode, motivo_freio = freio_de_sugestoes()
+                            if not pode:
+                                repetido = True
+                                if motivo_freio != getattr(self, "_ultimo_motivo_freio", None):
+                                    self._ultimo_motivo_freio = motivo_freio
+                                    self.log(f"🛑 FREIO: {motivo_freio}")
+                                    self._chat_feed(f"🛑 Segurei a sugestão: {motivo_freio}")
                             else:
-                                # Camada 3: PrintWindow insiste em quadro velho.
-                                # Recorta a tela — sempre conteúdo atual.
-                                recorte, sobreposto = capturar_via_recorte_de_tela(hwnd)
-                                if recorte is not None and not sobreposto:
-                                    screenshot, metodo = recorte, "Recorte de tela"
-                                    self.log("✅ Recuperado via recorte de tela (conteúdo atual).")
-                                elif sobreposto:
-                                    self.log("🧊 A janela está COBERTA por outra e não redesenha. "
-                                              "Análise suspensa neste ciclo.")
-                                    screenshot = None
-                    if screenshot is None or imagem_esta_em_branco(screenshot):
-                        self.log(f"⚠️ ERRO DE VISUALIZAÇÃO: não consegui uma imagem atual de '{nome_janela}'. "
-                                  "Deixe a janela visível (pode estar atrás de outras, mas não 100% coberta). "
-                                  "Ciclo pulado.")
-                        capturas_congeladas += 1
-                        if capturas_congeladas == 2:
-                            enviar_relatorio_whatsapp(
-                                f"⚠️ *Análises suspensas — {time.strftime('%d/%m/%Y %H:%M:%S')}*\n"
-                                f"Não estou conseguindo ler o gráfico de '{nome_janela}' com conteúdo atual. "
-                                "Deixe a janela visível na tela. Nenhum relatório será enviado com dado defasado.",
-                                None, self.log
+                                self._ultimo_motivo_freio = None
+
+                        # Loga a rejeição só quando havia um candidato REAL (BUY/SELL válido)
+                        # com estado livre — pra você ver o filtro trabalhando.
+                        if (sinal_ativo["estado"] == "ENCERRADA" and acao in ("BUY", "SELL")
+                                and preco and _ep > 0 and _sl > 0 and not qualidade_ok and not repetido):
+                            motivo = (f"R:R 1:{rr_sinal:.2f} (mínimo 1:{RR_MINIMO:.0f})"
+                                      if rr_sinal < RR_MINIMO
+                                      else f"probabilidade {probabilidade:.0f}% (mínimo {PROBABILIDADE_MINIMA:.0f}%)")
+                            self.log(f"🚧 {acao} {ativo} descartado pelo piso de qualidade: {motivo}. "
+                                      "Aguardando um setup melhor.")
+
+                        # Só cria sinal com preços VÁLIDOS (>0), preço de tela lido E que
+                        # passe no piso de qualidade.
+                        if sinal_ativo["estado"] == "ENCERRADA" and acao in ("BUY", "SELL") \
+                                and preco is not None and preco > 0 \
+                                and sinal.get("entry_price") and sinal.get("stop_loss") \
+                                and sinal.get("entry_price") > 0 and sinal.get("stop_loss") > 0 \
+                                and qualidade_ok and not repetido:
+                            novo_sinal_id = registrar_novo_sinal_log(
+                                acao, sinal.get("entry_price"), sinal.get("stop_loss"),
+                                sinal.get("take_profit_1"), sinal.get("take_profit_2"), ativo)
+                            sinal_ativo = {
+                                "estado": "PENDENTE",
+                                "direcao": acao,
+                                "entry": sinal.get("entry_price"),
+                                "stop": sinal.get("stop_loss"),
+                                "tp1": sinal.get("take_profit_1"),
+                                "tp2": sinal.get("take_profit_2"),
+                                "candles": 0,
+                                "tp1_notificado": False,
+                                "sinal_id": novo_sinal_id,   # elo com a decisão do trader
+                                "confluencias": list(confluencias),  # p/ o aprendizado
+                                "ts_criacao": time.time(),   # p/ o timeout de acatar (10 min)
+                            }
+
+                            # Dimensionamento de posição com base no Plano da Mesa
+                            # (Margem, Risco%, Drawdown) e no valor por ponto do
+                            # ativo identificado no gráfico, na CONTA SELECIONADA.
+                            plano = plano_da_conta_ativa()
+                            sizing = calcular_contratos(
+                                sinal_ativo["entry"], sinal_ativo["stop"], ativo,
+                                plano.get("margem", 0), plano.get("risco_pct", 1.0),
+                                plano.get("drawdown_maximo", 0)
                             )
-                            falar("Atenção. Não consigo ler o gráfico atualizado. Análises suspensas.")
-                        continue
-                else:
-                    self.log(f"📸 [{hora_atual}] Nenhuma janela específica configurada — capturando tela inteira...")
-                    screenshot = ImageGrab.grab()
-                    metodo = "Tela inteira"
 
-                # ------------------------------------------------------------
-                # REDE DE SEGURANÇA FINAL: se, apesar de todas as camadas, a
-                # imagem ainda for idêntica à anterior, NÃO analisamos. Um
-                # relatório com preço defasado é pior do que nenhum relatório.
-                # ------------------------------------------------------------
-                hash_atual = hash_imagem(screenshot)
-                if hash_atual and hash_atual == hash_captura_anterior:
-                    capturas_congeladas += 1
-                    self.log(f"🧊 CAPTURA CONGELADA ({capturas_congeladas}x): imagem idêntica à do ciclo "
-                              f"anterior mesmo após todas as tentativas de recuperação. Nenhuma análise feita.")
-                    if capturas_congeladas == 2:
-                        enviar_relatorio_whatsapp(
-                            f"🧊 *Análises suspensas — {time.strftime('%d/%m/%Y %H:%M:%S')}*\n"
-                            "O gráfico não está sendo redesenhado na tela. Deixe a janela da corretora "
-                            "visível. Nenhum relatório será enviado com preço defasado.",
-                            None, self.log
-                        )
-                        falar("Atenção. Captura congelada. Análises suspensas.")
-                    continue
+                            # R:R do relatório é SEMPRE calculado dos preços reais (nunca
+                            # vem do texto da IA). Usa o mesmo alvo do piso de qualidade
+                            # (tp1, ou tp2 se não houver tp1), então o número exibido nunca
+                            # fica abaixo do RR_MINIMO que aprovou o sinal.
+                            rr1 = None
+                            _alvo_rr_disp = sinal_ativo["tp1"] or sinal_ativo["tp2"]
+                            if _alvo_rr_disp and sinal_ativo["entry"] != sinal_ativo["stop"]:
+                                rr1 = round(abs((_alvo_rr_disp - sinal_ativo["entry"]) /
+                                                (sinal_ativo["entry"] - sinal_ativo["stop"])), 2)
 
-                if capturas_congeladas > 0:
-                    self.log("✅ Captura voltou a atualizar — retomando as análises.")
-                    capturas_congeladas = 0
-                hash_captura_anterior = hash_atual
-                self.log(f"🖼️ Imagem atual obtida via: {metodo}")
+                            linha_contratos = ""
+                            if sizing["contratos"] > 0:
+                                linha_contratos = (
+                                    f"\n📐 *Contratos (plano da mesa): {sizing['contratos']}* ({ativo})\n"
+                                    f"Risco: US${sizing['risco_real_usd']} "
+                                    f"(US${sizing['risco_por_contrato']}/contrato · teto US${sizing['risco_usd']})"
+                                )
+                            else:
+                                linha_contratos = (
+                                    f"\n⚠️ 0 contratos: risco do trade excede o permitido pelo plano, "
+                                    f"ou Margem/Risco% não configurados no Plano de Trading."
+                                )
 
-                # OLHOS DA TIGER: guarda esta captura para o chat. A partir daqui
-                # dá para perguntar "olha o gráfico agora" e ela analisa ESTA
-                # imagem — a mesma que o motor está lendo neste ciclo.
-                info_print = salvar_ultimo_print(
-                    screenshot, nome_janela or "tela inteira")
-                if info_print:
-                    self._ultimo_print = info_print
+                            bloco_confluencias = ""
+                            if confluencias:
+                                bloco_confluencias = "\n\n🔎 *Confluências:*\n" + "\n".join(
+                                    f"• {c}" for c in confluencias
+                                )
 
-                # DETECÇÃO DE POSIÇÃO NA PLATAFORMA: antes de analisar, confere na
-                # corretora se você já está posicionado (inclusive numa operação
-                # aberta por fora da sugestão) e reflete isso no diário/dashboard.
-                if getattr(self, "tv_sync_var", None) and self.tv_sync_var.get():
-                    self._tv_sincronizar_posicoes(silencioso=True)
+                            # PLANO DE GESTÃO — como raspar o máximo do movimento sem
+                            # devolver o lucro. Parcial no 1º alvo, risco zerado, e o
+                            # restante corre até o alvo institucional.
+                            n_ctr = sizing["contratos"]
+                            if n_ctr >= 2:
+                                parcial = max(1, n_ctr // 2)
+                                runner = n_ctr - parcial
+                                bloco_gestao = (
+                                    f"\n\n🎯 *Gestão (para extrair o máximo):*\n"
+                                    f"• No Objetivo 1 ({sinal_ativo['tp1']}): realize {parcial} de "
+                                    f"{n_ctr} contrato(s) e leve o stop para o preço de entrada "
+                                    f"({sinal_ativo['entry']}) — a partir daí o trade não perde mais.\n"
+                                    f"• Deixe {runner} contrato(s) correndo até o Objetivo 2 "
+                                    f"({sinal_ativo['tp2']}), que é o alvo de liquidez cheio.\n"
+                                    f"• Só saia antes se a estrutura virar contra (CHoCH oposto)."
+                                )
+                            else:
+                                bloco_gestao = (
+                                    f"\n\n🎯 *Gestão:* com 1 contrato não dá para fracionar. "
+                                    f"Leve até o Objetivo 1 ({sinal_ativo['tp1']}) OU, se quiser "
+                                    f"raspar o movimento cheio, segure até o Objetivo 2 "
+                                    f"({sinal_ativo['tp2']}) movendo o stop para a entrada assim "
+                                    f"que o preço passar do Objetivo 1."
+                                )
 
-                self.log("🧠 Processando análise com Memória Episódica...")
-
-                memoria_dinamica = compilar_memoria_prompt()
-                contexto_meta = self._contexto_do_plano()
-                PROMPT_BASE = (
-                    "Você é um trader institucional de Smart Money Concepts (SMC/ICT) "
-                    "operando índices futuros (ES/MES, NQ/MNQ). Você é criterioso, mas "
-                    "PROATIVO: sinaliza todo cenário SMC válido — tanto de CONTINUAÇÃO quanto "
-                    "de REVERSÃO — e busca se ANTECIPAR a reversões prováveis. Qualidade "
-                    "importa, mas não seja conservador a ponto de deixar passar setups "
-                    "legítimos. Se houver OUTROS indicadores visíveis no gráfico (volume, "
-                    "perfil de volume/VPOC, RSI, médias móveis, VWAP, etc.), use-os como "
-                    "confluência adicional junto do SMC.\n"
-                    "\n"
-                    "POSTURA — VOCÊ É UMA MESA INSTITUCIONAL, NÃO UM VAREJISTA MEDROSO:\n"
-                    "Pense como quem PRECISA preencher ordem grande: onde está a liquidez "
-                    "parada (stops do varejo), quem está preso, e para onde o preço TEM de "
-                    "ir para essa liquidez ser tomada. Seu trabalho é RASPAR O MÁXIMO que o "
-                    "movimento oferece — entrar onde a instituição entra (no desconto/prêmio "
-                    "extremo, depois da manipulação) e sair onde a instituição realiza (na "
-                    "liquidez oposta). Ser 'moderado' aqui é erro: um setup SMC válido, com "
-                    "estrutura, liquidez e POI claros, DEVE virar sinal. Só use HOLD quando "
-                    "realmente não houver vantagem — não por medo.\n"
-                    "\n"
-                    "ARSENAL SMC/ICT COMPLETO (use TUDO que estiver visível, não só o básico):\n"
-                    "• Estrutura: BOS, CHoCH, MSS (market structure shift), swings internos "
-                    "x externos, dealing range e a fase do Power of 3 (acumulação → "
-                    "manipulação → distribuição).\n"
-                    "• Order Blocks: bullish/bearish OB, BREAKER block, MITIGATION block, "
-                    "REJECTION block, propulsion block. Prefira OB de origem (o que causou "
-                    "o deslocamento) e OB não mitigado.\n"
-                    "• Ineficiências: FVG, INVERSION FVG (iFVG), BPR (balanced price range), "
-                    "liquidity void, gap de abertura.\n"
-                    "• Liquidez: BSL/SSL (buy/sell side), topos e fundos IGUAIS, liquidez de "
-                    "linha de tendência, INDUCEMENT (a isca antes do POI), PDH/PDL (máx/mín "
-                    "do dia anterior), PWH/PWL (semana), abertura diária/semanal, "
-                    "TURTLE SOUP e JUDAS SWING (falso rompimento da abertura).\n"
-                    "• Precificação: premium/discount, equilíbrio (50%), OTE (61,8–79%), "
-                    "níveis de padrão institucional.\n"
-                    "• Tempo: killzones (Londres, NY AM, NY PM) e horários de virada. "
-                    "Setup dentro de killzone merece MAIS confiança, não menos.\n"
-                    "• Correlação: divergência SMT entre índices correlacionados (ES/NQ/YM), "
-                    "quando ambos estiverem visíveis.\n"
-                    "Cite em confluence_factors os nomes REAIS dos conceitos que você "
-                    "de fato identificou no gráfico."
-                )
-                PROMPT_FINAL = (
-                    f"{PROMPT_BASE}\n{memoria_dinamica}\n"
-                    f"ÚLTIMO ESTADO DO LEDGER:\n{ledger_text_memory}\n"
-                    f"CONTEXTO DA TELA: {DICAS_PLATAFORMA.get(self.plataforma_atual, DICAS_PLATAFORMA['outra'])}\n"
-                    f"{contexto_meta}"
-                    f"{bloco_licoes_prompt()}"
-                    "Identifique o TICKER do ativo no gráfico (asset_symbol) e leia o PREÇO "
-                    "ATUAL com precisão pela última vela e pela escala de preço à direita.\n"
-                    "\n"
-                    "SIGA ESTE ROTEIRO DE ANÁLISE, NESTA ORDEM:\n"
-                    "1) VIÉS (HTF): determine a tendência dominante pela ESTRUTURA visível "
-                    "(sequência de BOS/CHoCH, topos/fundos). Continuação a favor da tendência é "
-                    "o cenário-base (BUY em estrutura de alta, SELL em estrutura de baixa).\n"
-                    "1b) REVERSÃO E ANTECIPAÇÃO (importante): procure ATIVAMENTE reversões e "
-                    "antecipe-as. Gatilhos SMC de reversão válidos: CHoCH (troca de caráter) "
-                    "contra a tendência logo após varredura de liquidez num EXTREMO do range; "
-                    "SFP / swing failure (pavio que varre um topo/fundo e FECHA de volta pra "
-                    "dentro); rejeição forte em Order Block/FVG de timeframe maior em PREMIUM "
-                    "(para venda) ou DISCOUNT (para compra); esgotamento de momentum / divergência "
-                    "em indicador visível. Uma reversão bem configurada (sweep do extremo + CHoCH "
-                    "+ POI) é um sinal TÃO válido quanto a continuação — sinalize-a, não espere "
-                    "confirmação tardia demais.\n"
-                    "2) PREMIUM/DISCOUNT: marque o range relevante (perna atual). Compras SÓ em "
-                    "DISCOUNT (abaixo de 50%); vendas SÓ em PREMIUM (acima de 50%). Preço em "
-                    "EQUILÍBRIO (perto de 50%) ou no meio do range = HOLD.\n"
-                    "3) LIQUIDEZ: exija uma varredura de liquidez (sweep de topo/fundo, ou "
-                    "inducement) ANTES da entrada. Nunca entre MIRANDO liquidez que ainda não "
-                    "foi tomada — o preço tende a buscá-la primeiro.\n"
-                    "4) PONTO DE ENTRADA (POI): a entrada deve estar num Order Block NÃO mitigado "
-                    "ou num Fair Value Gap (FVG) coerente com o viés. ENTRY_PRICE é sempre ordem "
-                    "PENDENTE nesse POI (não a mercado).\n"
-                    "4b) ONDE EXATAMENTE COLOCAR A ENTRADA (crítico — evita 'o preço encostou "
-                    "e voltou'): NÃO coloque a entrada na BORDA externa do POI, no ponto que o "
-                    "preço só alcança com a ponta do pavio. Use o MIOLO da zona: o equilíbrio "
-                    "(50%) do corpo do Order Block, ou a zona OTE (61,8%–79% de retração da "
-                    "perna de impulso), ou o meio do FVG. Se o preço já está MUITO perto do POI "
-                    "(a menos de ~20% da distância do stop), o setup perdeu a assimetria — "
-                    "retorne HOLD em vez de forçar uma entrada colada no preço atual.\n"
-                    "4c) ASSERTIVIDADE NOS EXTREMOS: priorize POIs que estejam em EXTREMOS "
-                    "REAIS de liquidez — máxima/mínima do dia anterior, extremos da sessão, "
-                    "topos/fundos iguais (equal highs/lows), abertura semanal, POIs de "
-                    "timeframe maior. É nesses extremos que existe liquidez de verdade para "
-                    "o preço reagir. POI no MEIO do range, sem liquidez atrás, é o que produz "
-                    "o 'encostou e voltou' — nesse caso, HOLD.\n"
-                    "5) STOP (crítico — evita ser varrido por um pavio): o stop_loss vai ALÉM "
-                    "do EXTREMO DO PAVIO que varreu a liquidez, mais uma folga de respiro — "
-                    "NUNCA rente ao nível, nem no meio do corpo do candle de sweep. Pergunte-se: "
-                    "'se o preço der mais uma lambida nesse extremo, meu stop sobrevive?' Se a "
-                    "resposta for não, o stop está apertado demais. O stop só é válido se, "
-                    "colocado assim (largo o suficiente), o R:R do 1º alvo AINDA fechar 1:2.\n"
-                    "5b) ALVOS — RASPAR O MÁXIMO (não seja tímido no alvo): take_profit_1 a "
-                    "PELO MENOS 2x a distância do stop (R:R >= 1:2, idealmente 1:3), na "
-                    "PRIMEIRA liquidez/estrutura REAL do caminho. take_profit_2 é o ALVO "
-                    "INSTITUCIONAL: o pool de liquidez COMPLETO para onde o preço está sendo "
-                    "levado (PDH/PDL, topos/fundos iguais, extremo do dealing range, FVG de "
-                    "timeframe maior por preencher). NÃO encurte o tp2 por cautela — ele é o "
-                    "que o movimento entrega quando o cenário funciona. Se o alvo lógico mais "
-                    "próximo não alcançar 1:2 a partir de um stop tecnicamente correto (item "
-                    "5), o trade NÃO vale — retorne action=HOLD. NUNCA encurte o alvo nem "
-                    "aperte o stop só para 'fechar' o R:R no papel.\n"
-                    "\n"
-                    "REGRAS DE HONESTIDADE:\n"
-                    "- NUNCA invente números, preços, níveis, teses ou confluências. "
-                    "entry_price, stop_loss, take_profit_1 e take_profit_2 são níveis REAIS "
-                    "lidos do gráfico (topos/fundos, OB, FVG, liquidez visíveis). Se você não "
-                    "consegue ler um nível com clareza no gráfico, NÃO o chute — retorne "
-                    "action=HOLD. Uma análise honesta com HOLD vale mais que um número inventado.\n"
-                    "- Liste em confluence_factors APENAS confluências REAIS e visíveis no "
-                    "gráfico (BOS/CHoCH, OB, FVG, sweep, premium/discount, equilíbrio). Não "
-                    "invente fatores para justificar um trade.\n"
-                    "- Se faltar confluência, se a estrutura estiver ambígua, ou se o preço já "
-                    "estiver longe do POI, retorne action=HOLD com probabilidade baixa. Porém "
-                    "NÃO use HOLD quando existir um setup real (continuação OU reversão) com "
-                    "confluência SMC — nesse caso, sinalize BUY/SELL.\n"
-                    "- 'confidence_score' E 'probabilidade' são SEMPRE inteiros na ESCALA 0 a 100 "
-                    "(ex.: 72, nunca 0.72). 'probabilidade' é a estimativa CALIBRADA e honesta de "
-                    "atingir o objetivo 1 antes de invalidar. Poucas confluências ou contra-tendência "
-                    "=> probabilidade baixa. Use o histórico do feedback loop acima para calibrar. "
-                    "Cenário abaixo de ~60% de probabilidade deve virar HOLD. NÃO infle.\n"
-                    "- Coerência obrigatória: para BUY, stop < entry < tp1 <= tp2; para SELL, "
-                    "stop > entry > tp1 >= tp2. Se não conseguir montar um cenário coerente, HOLD.\n"
-                    "\n"
-                    "FILTRO DE RUÍDO (evite stops bobos):\n"
-                    "- 90% das operações DEVEM ser fundamentadas em SMC/ICT (estrutura BOS/CHoCH, "
-                    "varredura de liquidez, Order Block/FVG não mitigado, premium/discount), em "
-                    "QUALQUER timeframe. Indicadores (RSI, VWAP, médias, volume) são apenas "
-                    "confluência SECUNDÁRIA — nunca o motivo principal de um trade.\n"
-                    "- NÃO opere dentro de range/consolidação sem direção (chop): mercado lateral, "
-                    "preço colado na média/VWAP em equilíbrio, velas pequenas e sobrepostas = HOLD. "
-                    "É melhor perder o trade do que tomar stop em ruído.\n"
-                    "- Exija SEMPRE o gatilho + o POI JÁ mitigável: só sinalize quando a varredura de "
-                    "liquidez JÁ ocorreu e o preço está reagindo no POI. Sem sweep + reação, é HOLD.\n"
-                    "- NÃO fique alternando BUY/SELL a cada leitura: se o cenário anterior ainda é "
-                    "válido estruturalmente, mantenha o viés; só inverta com CHoCH/sweep NOVO e claro.\n"
-                    "\n"
-                    # ---- Sizing é responsabilidade EXCLUSIVA do plano da mesa ----
-                    "COMO ESCREVER O 'market_analysis' (linguagem natural):\n"
-                    "Escreva em PORTUGUÊS CLARO E CORRIDO, como um mentor de mesa "
-                    "explicando ao vivo para o trader ao lado — não como um relatório "
-                    "técnico picotado. Conte a HISTÓRIA do gráfico nesta ordem: (1) o "
-                    "que o preço vinha fazendo; (2) o que mudou agora e por quê; "
-                    "(3) onde está a liquidez que o mercado ainda vai buscar; (4) por "
-                    "que a entrada é NESTE ponto e não noutro; (5) o que invalidaria a "
-                    "ideia. Use os nomes técnicos (BOS, order block, FVG, sweep) mas "
-                    "SEMPRE explicando o que significam naquele gráfico — 'varreu os "
-                    "fundos iguais em 7541, pegando os stops de quem estava comprado, "
-                    "e voltou' vale mais que 'SSL sweep'. Evite siglas soltas e "
-                    "listas secas. De 3 a 6 frases.\n"
-                    "\n"
-                    "NUNCA sugira quantidade de contratos, tamanho de posição, número de "
-                    "lotes, alavancagem ou valores de risco em dólar no texto da análise nem "
-                    "nas confluências. O dimensionamento (contratos e risco) é calculado APENAS "
-                    "pelo plano de trading da conta-mesa do trader, fora da IA. Limite-se a "
-                    "identificar o cenário (viés, entrada, stop, alvos e confluências)."
-                )
-                # Instrução de sistema: reforça o mesmo limite no nível do schema.
-                INSTRUCAO_SISTEMA = (
-                    "Retorne estritamente o JSON validado pelo Schema. "
-                    "Não inclua quantidade de contratos, tamanho de posição nem valores de "
-                    "risco: o sizing é definido exclusivamente pelo plano da mesa do trader."
-                )
-
-                resposta = None
-                ultimo_erro = None
-                modelo_vencedor = None
-
-                # Só tenta modelos que NÃO estão em cooldown (cota/sobrecarga
-                # recentes). Se todos estiverem estacionados, tenta a lista
-                # inteira mesmo assim — melhor uma chance do que pular o ciclo.
-                agora_ts = time.time()
-                candidatos = [m for m in modelos_fallback
-                               if cooldown_modelos.get(m, 0) <= agora_ts]
-                if not candidatos:
-                    candidatos = list(modelos_fallback)
-                    self.log("⏳ Todos os modelos estão em cooldown de cota/sobrecarga — "
-                              "tentando mesmo assim. (Considere aumentar o intervalo ou usar chave paga.)")
-
-                for modelo_atual in candidatos:
-                    try:
-                        resposta = client.models.generate_content(
-                            model=modelo_atual,
-                            contents=[PROMPT_FINAL, screenshot],
-                            config=types.GenerateContentConfig(
-                                system_instruction=INSTRUCAO_SISTEMA,
-                                response_mime_type="application/json",
-                                response_schema=SIGNAL_SCHEMA,
+                            mensagem_wpp = (
+                                f"📘 *Estudo de Cenário — {ativo}*\n"
+                                f"🕐 {time.strftime('%d/%m/%Y %H:%M:%S')}\n"
+                                f"Viés: *{'Alta (compradora)' if acao == 'BUY' else 'Baixa (vendedora)'}*\n"
+                                f"Confiança: *{confianca}%*  |  Probabilidade: *{probabilidade}%*\n\n"
+                                f"Região de interesse: {sinal_ativo['entry']}\n"
+                                f"Invalidação: {sinal_ativo['stop']}\n"
+                                f"Objetivo 1: {sinal_ativo['tp1']}  |  Objetivo 2: {sinal_ativo['tp2']}"
+                                f"{f'  |  R:R {rr1}' if rr1 else ''}"
+                                f"{linha_contratos}"
+                                f"{bloco_confluencias}"
+                                f"{bloco_gestao}\n\n"
+                                f"_{sinal.get('market_analysis', '')}_\n\n"
+                                f"❓ *Deseja acatar este cenário?*\n"
+                                f"Responda *ACATAR* para eu registrar e plotar as ordens (entrada, "
+                                f"stop e alvo) na plataforma, ou *NÃO ACATAR* para dispensar.\n\n"
+                                f"_Material educacional. A decisão de operar é sua._"
                             )
-                        )
-                        modelo_vencedor = modelo_atual
-                        cooldown_modelos.pop(modelo_atual, None)  # respondeu: sai do cooldown
-                        if modelo_atual != candidatos[0]:
-                            self.log(f"ℹ️ Análise concluída usando modelo de reserva: {modelo_atual}")
-                        break
+                            enviar_relatorio_whatsapp(mensagem_wpp, screenshot, self.log)
+                            falar(f"Novo cenário de {acao} em {ativo}, probabilidade {probabilidade:.0f} por cento.")
+
+                            # Alerta na tela do computador (além do WhatsApp).
+                            self._sinais_notificados.add(novo_sinal_id)
+                            # A sugestão também entra na CONVERSA da aba 🐯 TIGER — você
+                            # pode responder 'acatar' / 'dispensar' ali, por texto ou voz.
+                            self._chat_feed(
+                                f"📘 Nova sugestão: {acao} {ativo} — entrada "
+                                f"{sinal_ativo['entry']}, stop {sinal_ativo['stop']}, alvo "
+                                f"{sinal_ativo['tp1']}"
+                                + (f", R:R {rr1}" if rr1 else "") +
+                                f", probabilidade {probabilidade:.0f}%. Quer conversar sobre "
+                                "o cenário? Ou diga 'acatar' / 'dispensar'.")
+                            self._notificar_desktop(
+                                f"📘 Nova sugestão — {acao} {ativo}",
+                                [f"Entrada {sinal_ativo['entry']}  ·  Stop {sinal_ativo['stop']}",
+                                 f"Alvo {sinal_ativo['tp1']}" + (f"  ·  R:R {rr1}" if rr1 else ""),
+                                 f"Probabilidade {probabilidade:.0f}%  ·  {sizing['contratos']} ctr"
+                                 f"  ·  conta {nome_conta_ativa()}",
+                                 f"Decida aqui ou no app (prazo {TIMEOUT_ACATAR_SEG // 60} min)."],
+                                cor="#1f8b4c" if acao == "BUY" else "#c53030",
+                                # O aviso fica de pé durante todo o prazo de acatar,
+                                # com os botões de decisão.
+                                segundos=TIMEOUT_ACATAR_SEG,
+                                sinal_id=novo_sinal_id, direcao=acao)
+                            self.after(0, self._atualizar_dashboard)
+
+                        else:
+                            # ------------------------------------------------------------
+                            # RELATÓRIO INFORMATIVO — enviado em TODO ciclo sem sinal novo.
+                            # Antes, ciclos HOLD (ou com sinal já em acompanhamento) não
+                            # disparavam nada, o que dava a impressão de que os relatórios
+                            # "pararam" de chegar mesmo com o WhatsApp conectado.
+                            # ------------------------------------------------------------
+                            bloco_confluencias = ""
+                            if confluencias:
+                                bloco_confluencias = "\n\n🔎 *Confluências observadas:*\n" + "\n".join(
+                                    f"• {c}" for c in confluencias
+                                )
+
+                            if sinal_ativo["estado"] != "ENCERRADA" and acatado_atual:
+                                # Só faz ACOMPANHAMENTO de trade se o trader ACATOU o cenário.
+                                cabecalho = (f"⏳ *Acompanhamento — {ativo}*\n"
+                                              f"🕐 {time.strftime('%d/%m/%Y %H:%M:%S')}\n"
+                                              f"Cenário {sinal_ativo['direcao']} em {sinal_ativo['estado']} "
+                                              f"(entrada {sinal_ativo['entry']})")
+                            elif sinal_ativo["estado"] != "ENCERRADA":
+                                # Há um cenário aberto, mas o trader ainda NÃO acatou: nota
+                                # neutra, sem tratar como se fosse a operação dele.
+                                cabecalho = (f"👀 *Cenário aguardando sua decisão — {ativo}*\n"
+                                              f"🕐 {time.strftime('%d/%m/%Y %H:%M:%S')}\n"
+                                              f"Sugestão {sinal_ativo['direcao']} (entrada {sinal_ativo['entry']}). "
+                                              f"Acate no app/WhatsApp para receber o acompanhamento.")
+                            else:
+                                cabecalho = (f"⚪ *Sem cenário acionável — {ativo}*\n"
+                                              f"🕐 {time.strftime('%d/%m/%Y %H:%M:%S')}\n"
+                                              f"Confluência insuficiente neste momento.")
+
+                            mensagem_info = (
+                                f"{cabecalho}\n"
+                                f"Preço atual: {preco}  |  Confiança: {confianca}%  |  Probabilidade: {probabilidade}%"
+                                f"{bloco_confluencias}\n\n"
+                                f"_{sinal.get('market_analysis', '')[:400]}_\n\n"
+                                f"_Material educacional. A decisão de operar é sua._"
+                            )
+                            enviar_relatorio_whatsapp(mensagem_info, screenshot, self.log)
+
                     except Exception as e:
-                        ultimo_erro = e
-                        erro_str = str(e).upper()
-
-                        # 404 / NOT_FOUND = o modelo NÃO EXISTE mais para esta
-                        # conta (foi descontinuado). Não adianta tentar de novo
-                        # nos próximos ciclos: removemos da lista de vez.
-                        if ("404" in erro_str or "NOT_FOUND" in erro_str
-                                or "NO LONGER AVAILABLE" in erro_str):
-                            self.log(f"🚫 {modelo_atual} foi descontinuado — removendo da lista permanentemente.")
-                            modelos_invalidos.add(modelo_atual)
-                            continue
-
-                        # Erros TRANSITÓRIOS ou de cota: vale tentar o próximo
-                        # modelo em vez de derrubar o ciclo inteiro.
-                        #   429 / RESOURCE_EXHAUSTED -> cota esgotada
-                        #   503 / UNAVAILABLE        -> modelo sobrecarregado (alta demanda)
-                        #   500 / INTERNAL           -> falha temporária do servidor
-                        #   504 / DEADLINE / TIMED OUT -> timeout de rede
-                        # ATENÇÃO: a mensagem real do SDK é "The read operation
-                        # timed out" (com espaço). Procurar só por "TIMEOUT"
-                        # deixava esse erro passar como fatal e matava o ciclo.
-                        transitorios = ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE",
-                                         "500", "INTERNAL", "504", "DEADLINE", "TIMEOUT",
-                                         "TIMED OUT", "OVERLOADED", "CONNECTION", "SSL",
-                                         "TEMPORARILY")
-                        if any(t in erro_str for t in transitorios):
-                            eh_cota = ("429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str)
-                            # Estaciona o modelo para não desperdiçar rede nos
-                            # próximos ciclos: cota -> 15 min, sobrecarga -> 2 min.
-                            cooldown_modelos[modelo_atual] = time.time() + (
-                                COOLDOWN_COTA if eh_cota else COOLDOWN_SOBRECARGA)
-                            motivo = "cota esgotada (pausado 15min)" if eh_cota \
-                                      else "sobrecarregado (pausado 2min)"
-                            self.log(f"⚠️ {modelo_atual} {motivo} — próximo modelo...")
-                            continue  # sem sleep: o próximo modelo já é uma nova requisição
-                        raise  # erro real (ex: chave inválida): sobe pro tratamento do ciclo
-
-                # Expurga de vez os modelos descontinuados, para não perder
-                # tempo tentando-os em todos os ciclos seguintes.
-                if modelos_invalidos:
-                    modelos_fallback = [m for m in modelos_fallback if m not in modelos_invalidos]
-                    modelos_invalidos.clear()
-                    if not modelos_fallback:
-                        raise RuntimeError("Nenhum modelo Gemini válido para esta chave de API.")
-                    self.log(f"📋 Lista de modelos atualizada: {modelos_fallback[:4]}...")
-
-                # APRENDIZADO DE VELOCIDADE: o modelo que respondeu AGORA passa a
-                # ser o primeiro tentado no próximo ciclo. Assim paramos de perder
-                # tempo re-tentando modelos que vivem dando "indisponível" antes
-                # dele — o ciclo seguinte já começa pelo que funciona.
-                if modelo_vencedor and modelos_fallback and modelos_fallback[0] != modelo_vencedor:
-                    modelos_fallback = ([modelo_vencedor] +
-                                         [m for m in modelos_fallback if m != modelo_vencedor])
-
-                if resposta is None:
-                    raise RuntimeError(
-                        f"Todos os modelos disponíveis falharam. Último erro: {ultimo_erro}"
-                    )
-
-                sinal = json.loads(resposta.text)
-                preco = sinal.get("current_price")
-                acao = sinal.get("action", "HOLD")
-                confianca = sinal.get("confidence_score", 0)
-                probabilidade = sinal.get("probabilidade", 0)
-                confluencias = sinal.get("confluence_factors", []) or []
-                ativo = sinal.get("asset_symbol", "DESCONHECIDO")
-                # Guardado para a detecção de posições associar a leitura do campo
-                # POSIÇÃO quando o painel não mostra o ticker ao lado.
-                self._ultimo_ativo_lido = ativo
-                ledger_text_memory = sinal.get("ledger_update", ledger_text_memory)
-
-                # NORMALIZA A ESCALA (0-100). A IA às vezes devolve 0.78 (escala
-                # 0-1) e às vezes 75 (escala 0-100). Padroniza tudo para 0-100.
-                def _pct(v):
-                    try:
-                        v = float(v)
-                    except (TypeError, ValueError):
-                        return 0.0
-                    if v <= 1.0:      # veio em 0-1 -> converte para 0-100
-                        v *= 100.0
-                    return round(max(0.0, min(100.0, v)), 1)
-                confianca = _pct(confianca)
-                probabilidade = _pct(probabilidade)
-
-                # Alimenta o CHAT da IA com a leitura mais recente do gráfico —
-                # é o que permite conversar "sobre a análise de agora".
-                self._ultima_analise = {
-                    "hora": time.strftime('%H:%M'),
-                    "ativo": ativo, "acao": acao, "preco": preco,
-                    "confianca": confianca, "probabilidade": probabilidade,
-                    "confluencias": list(confluencias),
-                    "analise": str(sinal.get("market_analysis", ""))[:1200],
-                    "entry": sinal.get("entry_price"), "stop": sinal.get("stop_loss"),
-                    "tp1": sinal.get("take_profit_1"), "tp2": sinal.get("take_profit_2"),
-                }
-
-                self.log(f"📊 Ativo: {ativo} | Leitura IA: {acao} | Confiança: {confianca}% | "
-                          f"Probabilidade: {probabilidade}% | Preço: {preco}")
-
-                # Segunda camada de defesa: mesmo com a imagem mudando (relógio,
-                # cursor), o PREÇO não deveria ficar idêntico por vários ciclos
-                # com o mercado aberto. Se ficar, algo está errado na leitura.
-                if preco is not None and preco == preco_anterior_lido:
-                    ciclos_preco_igual += 1
-                    if ciclos_preco_igual >= 2:
-                        self.log(f"⚠️ ATENÇÃO: o preço lido ({preco}) não muda há {ciclos_preco_igual + 1} ciclos. "
-                                  f"Verifique se o gráfico está realmente atualizando na tela e se o mercado "
-                                  f"está aberto. Os relatórios podem estar refletindo dados defasados.")
-                else:
-                    ciclos_preco_igual = 0
-                preco_anterior_lido = preco
-                if confluencias:
-                    self.log("🔎 Confluências identificadas:")
-                    for c in confluencias:
-                        self.log(f"    • {c}")
-                else:
-                    self.log("🔎 Nenhuma confluência relevante neste ciclo.")
-
-                # ---------- DIÁRIO DE TRADER: máquina de estados das posições ----------
-                # Se a leitura de posições da corretora está funcionando, é ELA
-                # que confirma execução — o preço lido não abre posição sozinho.
-                eventos_pos = atualizar_posicoes_com_preco(
-                    preco, ativo,
-                    exigir_confirmacao_plataforma=self._plataforma_confirma_fills())
-                for tipo, pos in eventos_pos:
-                    self._tratar_evento_posicao(tipo, pos,
-                                                origem_preco="da análise")
-
-                if preco is not None:
-                    self.after(0, self._atualizar_dashboard)
-
-                # DISPENSA PELO TRADER: se o cenário ativo corresponde a um sinal
-                # que o trader marcou como "Não operei", encerramos o
-                # acompanhamento — nada de seguir mandando "Cenário em PENDENTE".
-                if (sinal_ativo.get("estado") != "ENCERRADA"
-                        and sinal_ativo.get("sinal_id") in self.sinais_dispensados):
-                    self.log("🚪 Cenário dispensado pelo trader (Não operei) — "
-                              "acompanhamento encerrado, sem novos avisos de pendente.")
-                    self.sinais_dispensados.discard(sinal_ativo.get("sinal_id"))
-                    sinal_ativo = {"estado": "ENCERRADA"}
-
-                # SINCRONIA COM O DIÁRIO (relatório fiel). O cenário e a ordem no
-                # diário são duas visões da MESMA coisa. Se a ordem já saiu de
-                # cena — você cancelou, bateu stop/alvo, ou a plataforma encerrou
-                # — o acompanhamento do cenário TEM de morrer junto. Sem esta
-                # trava, o robô seguia narrando um trade que não existia mais.
-                if sinal_ativo.get("estado") != "ENCERRADA" and sinal_ativo.get("sinal_id"):
-                    _pos_lig = next((p for p in carregar_posicoes()
-                                     if p.get("sinal_id") == sinal_ativo["sinal_id"]), None)
-                    if _pos_lig and _pos_lig.get("status") not in ("PENDENTE", "ABERTA"):
-                        self.log(f"🔗 A ordem deste cenário está "
-                                  f"{_pos_lig.get('status')} — encerrando o "
-                                  "acompanhamento para o relatório não divergir.")
-                        self.sinais_acatados.discard(sinal_ativo["sinal_id"])
-                        sinal_ativo = {"estado": "ENCERRADA"}
-
-                # ACOMPANHAMENTO SÓ SE ACATADO: o robô só manda follow-up no
-                # WhatsApp (entrada acionada, alvo, stop, acompanhamento) de um
-                # cenário que o trader ACATOU (no dashboard ou no WhatsApp). Um
-                # cenário não acatado recebe só a sugestão inicial, sem follow-up.
-                acatado_atual = sinal_ativo.get("sinal_id") in self.sinais_acatados
-
-                # ---------------- TIMEOUT DE ACATAR (10 min) ----------------
-                # Se você NÃO acatou a sugestão dentro do prazo, ela é cancelada
-                # automaticamente e o robô fica livre para considerar novos
-                # cenários — não fica preso numa sugestão velha que você não vai
-                # operar. (Uma sugestão ACATADA vira sua operação e não expira.)
-                if (sinal_ativo["estado"] != "ENCERRADA" and not acatado_atual
-                        and (time.time() - sinal_ativo.get("ts_criacao", 0)) > TIMEOUT_ACATAR_SEG):
-                    sid_exp = sinal_ativo.get("sinal_id")
-                    atualizar_decisao_sinal(sid_exp, "EXPIRADO")
-                    self.sinais_dispensados.discard(sid_exp)
-                    self.log(f"⌛ Sugestão não acatada em {TIMEOUT_ACATAR_SEG // 60} min — "
-                              "cancelada automaticamente. Considerando novos cenários.")
-                    sinal_ativo = {"estado": "ENCERRADA"}
-                    self.after(0, self._atualizar_dashboard)
-
-                # ---------------- MÁQUINA DE ESTADOS ----------------
-                # Exige preço VÁLIDO (>0). Quando a captura falha, a IA devolve
-                # preço 0 — processar isso disparava stop/alvo fantasma (ex.:
-                # "TAKE PROFIT em 0") e poluía o diário/KPI.
-                if sinal_ativo["estado"] != "ENCERRADA" and preco is not None and preco > 0:
-                    direcao = sinal_ativo["direcao"]
-
-                    if sinal_ativo["estado"] == "PENDENTE":
-                        sinal_ativo["candles"] += 1
-                        bateu_entrada = (direcao == "BUY" and preco <= sinal_ativo["entry"]) or \
-                                         (direcao == "SELL" and preco >= sinal_ativo["entry"])
-                        rompeu_stop = (direcao == "BUY" and preco <= sinal_ativo["stop"]) or \
-                                      (direcao == "SELL" and preco >= sinal_ativo["stop"])
-
-                        if rompeu_stop:
-                            sinal_ativo = {"estado": "ENCERRADA"}
-                            self.log("🚫 SINAL CANCELADO: Stop rompido antes de mitigar a entrada.")
-                        elif bateu_entrada:
-                            sinal_ativo["estado"] = "ATIVA"
-                            msg = f"🎯 *ENTRADA ACIONADA — {direcao}*\nPreço mitigou a zona em {sinal_ativo['entry']}."
-                            self.log(msg)
-                            if acatado_atual:
-                                enviar_relatorio_whatsapp(msg, screenshot, self.log)
-                                falar(f"Ordem de {direcao} ativada no mercado.")
-                        elif sinal_ativo["candles"] >= MAX_CANDLES:
-                            sinal_ativo = {"estado": "ENCERRADA"}
-                            self.log("⌛ SINAL EXPIRADO: Nenhuma mitigação no tempo limite.")
-
-                    elif sinal_ativo["estado"] == "ATIVA":
-                        bateu_stop = (direcao == "BUY" and preco <= sinal_ativo["stop"]) or \
-                                     (direcao == "SELL" and preco >= sinal_ativo["stop"])
-                        bateu_tp2 = (direcao == "BUY" and preco >= sinal_ativo["tp2"]) or \
-                                    (direcao == "SELL" and preco <= sinal_ativo["tp2"])
-                        bateu_tp1 = (direcao == "BUY" and preco >= sinal_ativo["tp1"]) or \
-                                    (direcao == "SELL" and preco <= sinal_ativo["tp1"])
-
-                        if bateu_stop:
-                            # Resultado realizado no NÍVEL do stop (não no preço lido,
-                            # que pode ter overshoot) — mantém o comparativo honesto.
-                            salvar_resultado_performance(direcao, sinal_ativo["entry"], sinal_ativo["stop"],
-                                                          sinal_ativo["tp1"], sinal_ativo["stop"], "LOSS", ativo,
-                                                          sinal_ativo.get("confluencias"))
-                            sinal_ativo = {"estado": "ENCERRADA"}
-                            msg = f"🔴 *STOP ATINGIDO (LOSS) — {direcao}*\nOperação invalidada em {preco}."
-                            self.log(msg)
-                            if acatado_atual:
-                                enviar_relatorio_whatsapp(msg, screenshot, self.log)
-                                falar("Stop atingido. Dados gravados no banco de aprendizado.")
-                            self.after(0, self._atualizar_dashboard)
-
-                        elif bateu_tp2:
-                            salvar_resultado_performance(direcao, sinal_ativo["entry"], sinal_ativo["stop"],
-                                                          sinal_ativo["tp2"], sinal_ativo["tp2"], "WIN", ativo,
-                                                          sinal_ativo.get("confluencias"))
-                            sinal_ativo = {"estado": "ENCERRADA"}
-                            msg = f"🟢🟢 *TAKE PROFIT 2 (WIN) — {direcao}*\nLucro máximo em {preco}."
-                            self.log(msg)
-                            if acatado_atual:
-                                enviar_relatorio_whatsapp(msg, screenshot, self.log)
-                                falar("Take profit final atingido. Excelente operação.")
-                            self.after(0, self._atualizar_dashboard)
-
-                        elif bateu_tp1 and not sinal_ativo.get("tp1_notificado"):
-                            sinal_ativo["tp1_notificado"] = True
-                            salvar_resultado_performance(direcao, sinal_ativo["entry"], sinal_ativo["stop"],
-                                                          sinal_ativo["tp1"], sinal_ativo["tp1"], "WIN", ativo,
-                                                          sinal_ativo.get("confluencias"))
-                            msg = f"🟢 *TAKE PROFIT 1 (WIN PARCIAL) — {direcao}*\nParcial realizada em {preco}."
-                            self.log(msg)
-                            if acatado_atual:
-                                enviar_relatorio_whatsapp(msg, screenshot, self.log)
-                            self.after(0, self._atualizar_dashboard)
-
-                # ---------------- NOVO SINAL (se estado livre) ----------------
-                # PISO DE QUALIDADE: calcula o R:R até o 1º alvo e exige R:R>=2
-                # e probabilidade>=mínimo. Setups fracos (alvo curto, baixa
-                # convicção) NÃO viram sugestão — cortam o ruído.
-                _ep = sinal.get("entry_price") or 0
-                _sl = sinal.get("stop_loss") or 0
-                _alvo_rr = sinal.get("take_profit_1") or sinal.get("take_profit_2") or 0
-                _risco = abs(_ep - _sl)
-                rr_sinal = (abs(_alvo_rr - _ep) / _risco) if (_risco and _alvo_rr) else 0
-
-                # APRENDIZADO ENTRA NA CONTA. A probabilidade que a IA leu do
-                # gráfico é corrigida pelo que ESTA conta já viveu com estes
-                # mesmos padrões e neste mesmo horário. Um padrão que vem
-                # falhando perde pontos e passa a ser barrado pelo piso; um que
-                # vem acertando ganha. O número original fica guardado, para o
-                # log mostrar de onde veio a diferença.
-                probabilidade_ia = probabilidade
-                _delta, _porques = ajuste_por_aprendizado(
-                    confluencias, time.strftime('%H'))
-                if _delta:
-                    probabilidade = round(
-                        max(0.0, min(100.0, probabilidade + _delta)), 1)
-                    if acao in ("BUY", "SELL"):
-                        self.log(
-                            f"🧠 APRENDIZADO: probabilidade {probabilidade_ia:.0f}% → "
-                            f"{probabilidade:.0f}% ({_delta:+.1f} pts pelo seu "
-                            f"histórico). " + " · ".join(_porques))
-
-                qualidade_ok = (rr_sinal >= RR_MINIMO and probabilidade >= PROBABILIDADE_MINIMA)
-
-                # ---- INVALIDAÇÃO POR MUDANÇA DE CENÁRIO ----
-                # Antes, uma sugestão pendente só saía por cancelamento manual ou
-                # pelo timeout — ficava acompanhando um cenário que já morreu.
-                # Agora, se a leitura nova traz um setup VÁLIDO na direção
-                # CONTRÁRIA, a sugestão pendente é invalidada na hora e a ordem
-                # pendente ligada a ela é cancelada, liberando o robô para o
-                # cenário novo. Posição JÁ EXECUTADA não é tocada.
-                if (sinal_ativo.get("estado") == "PENDENTE"
-                        and acao in ("BUY", "SELL")
-                        and acao != sinal_ativo.get("direcao")
-                        and qualidade_ok and _ep > 0 and _sl > 0):
-                    sid_inv = sinal_ativo.get("sinal_id")
-                    atualizar_decisao_sinal(sid_inv, "INVALIDADO")
-                    self.sinais_dispensados.discard(sid_inv)
-                    self.sinais_acatados.discard(sid_inv)
-                    n_canc = cancelar_pendentes_do_sinal(
-                        sid_inv, f"cenário mudou para {acao}")
-                    self.log(
-                        f"🔄 CENÁRIO MUDOU: a sugestão {sinal_ativo.get('direcao')} "
-                        f"{ativo} @ {sinal_ativo.get('entry')} foi INVALIDADA (surgiu "
-                        f"um setup de {acao} com qualidade)."
-                        + (f" {n_canc} ordem(ns) pendente(s) cancelada(s)." if n_canc else "")
-                    )
-                    if sid_inv in getattr(self, "_sinais_notificados", set()):
-                        self._sinais_notificados.discard(sid_inv)
-                    sinal_ativo = {"estado": "ENCERRADA"}
-                    self.after(0, self._atualizar_dashboard)
-
-                # ANTI-REPETIÇÃO: se o MESMO setup (ativo + direção + entrada
-                # praticamente igual) já foi sugerido há pouco, não vira sugestão
-                # nova. Sem isso, o mesmo POI era reemitido a cada ciclo, enchendo
-                # a lista de cenários idênticos que só expiravam.
-                repetido = False
-                if acao in ("BUY", "SELL") and _ep > 0 and _risco:
-                    limite_rep = (time.time() - JANELA_ANTI_REPETICAO_SEG) * 1000
-                    for s_ant in sinais_da_conta_ativa():
-                        if s_ant.get("id", 0) < limite_rep:
-                            continue
-                        if (s_ant.get("direcao") == acao
-                                and str(s_ant.get("ativo", "")).upper() == str(ativo).upper()
-                                and s_ant.get("entry")
-                                and abs(s_ant["entry"] - _ep) <= _risco * 0.25):
-                            repetido = True
-                            break
-                if repetido:
-                    self.log(f"🔁 {acao} {ativo} @ {_ep} é o MESMO setup já sugerido há pouco "
-                              "— não vou repetir a sugestão. Aguardando cenário novo.")
-
-                # ANTI-CHICOTE: o motor virou de BUY para SELL (ou o contrário)
-                # no mesmo ativo em poucos minutos. Num mercado lateral isso
-                # acontece o tempo todo, e é exatamente o padrão que faz o trader
-                # tomar stop nas duas pontas. Trocar de lado exige convicção
-                # acima do piso — não basta passar raspando.
-                chicote = False
-                if acao in ("BUY", "SELL") and _ep > 0:
-                    limite_chic = (time.time() - JANELA_ANTI_CHICOTE_SEG) * 1000
-                    for s_ant in sinais_da_conta_ativa():
-                        if s_ant.get("id", 0) < limite_chic:
-                            continue
-                        if (str(s_ant.get("ativo", "")).upper() == str(ativo).upper()
-                                and s_ant.get("direcao") in ("BUY", "SELL")
-                                and s_ant.get("direcao") != acao):
-                            chicote = True
-                            break
-                if chicote and probabilidade < PROBABILIDADE_MINIMA + MARGEM_ANTI_CHICOTE:
-                    repetido = True     # trata como "não emitir"
-                    self.log(
-                        f"↔️ {acao} {ativo}: o cenário inverteu de lado nos últimos "
-                        f"{JANELA_ANTI_CHICOTE_SEG // 60} min e a probabilidade "
-                        f"({probabilidade:.0f}%) não chega aos "
-                        f"{PROBABILIDADE_MINIMA + MARGEM_ANTI_CHICOTE:.0f}% que eu exijo "
-                        "para virar a mão. Mercado indeciso não é oportunidade — "
-                        "é a armadilha que faz tomar stop nas duas pontas.")
-
-                # JÁ ESTÁ POSICIONADO NESSE ATIVO? A decisão é de CÓDIGO, não do
-                # modelo — e o cenário contra a posição NÃO é engolido: vira
-                # alerta, que é a informação mais útil para quem está dentro.
-                if not repetido and acao in ("BUY", "SELL") and qualidade_ok:
-                    _dec, _pos_ab, _motivo_pa = politica_com_posicao_aberta(acao, ativo)
-                    if _dec == "ALERTA_CONTRA":
-                        repetido = True      # não vira sugestão de entrada
-                        self._alertar_cenario_contra_posicao(
-                            _pos_ab, acao, ativo, preco, probabilidade,
-                            confluencias, sinal.get("stop_loss"))
-                    elif _dec == "BLOQUEIA":
-                        repetido = True
-                        self.log(f"⏸️ {acao} {ativo}: {_motivo_pa}")
-                    elif _dec == "AUMENTO":
-                        self.log(f"➕ {acao} {ativo}: {_motivo_pa} Vai como "
-                                 "sugestão de AUMENTO — confira o risco somado "
-                                 "antes de acatar.")
-
-                # FREIO DE SUGESTÕES: perda diária, stops seguidos e teto de
-                # operações. É a trava que impede o dia de virar sequência de
-                # stops. Roda depois dos outros filtros para o log mostrar o
-                # motivo real de o cenário não ter virado sugestão.
-                if not repetido and acao in ("BUY", "SELL") and qualidade_ok:
-                    pode, motivo_freio = freio_de_sugestoes()
-                    if not pode:
-                        repetido = True
-                        if motivo_freio != getattr(self, "_ultimo_motivo_freio", None):
-                            self._ultimo_motivo_freio = motivo_freio
-                            self.log(f"🛑 FREIO: {motivo_freio}")
-                            self._chat_feed(f"🛑 Segurei a sugestão: {motivo_freio}")
-                    else:
-                        self._ultimo_motivo_freio = None
-
-                # Loga a rejeição só quando havia um candidato REAL (BUY/SELL válido)
-                # com estado livre — pra você ver o filtro trabalhando.
-                if (sinal_ativo["estado"] == "ENCERRADA" and acao in ("BUY", "SELL")
-                        and preco and _ep > 0 and _sl > 0 and not qualidade_ok and not repetido):
-                    motivo = (f"R:R 1:{rr_sinal:.2f} (mínimo 1:{RR_MINIMO:.0f})"
-                              if rr_sinal < RR_MINIMO
-                              else f"probabilidade {probabilidade:.0f}% (mínimo {PROBABILIDADE_MINIMA:.0f}%)")
-                    self.log(f"🚧 {acao} {ativo} descartado pelo piso de qualidade: {motivo}. "
-                              "Aguardando um setup melhor.")
-
-                # Só cria sinal com preços VÁLIDOS (>0), preço de tela lido E que
-                # passe no piso de qualidade.
-                if sinal_ativo["estado"] == "ENCERRADA" and acao in ("BUY", "SELL") \
-                        and preco is not None and preco > 0 \
-                        and sinal.get("entry_price") and sinal.get("stop_loss") \
-                        and sinal.get("entry_price") > 0 and sinal.get("stop_loss") > 0 \
-                        and qualidade_ok and not repetido:
-                    novo_sinal_id = registrar_novo_sinal_log(
-                        acao, sinal.get("entry_price"), sinal.get("stop_loss"),
-                        sinal.get("take_profit_1"), sinal.get("take_profit_2"), ativo)
-                    sinal_ativo = {
-                        "estado": "PENDENTE",
-                        "direcao": acao,
-                        "entry": sinal.get("entry_price"),
-                        "stop": sinal.get("stop_loss"),
-                        "tp1": sinal.get("take_profit_1"),
-                        "tp2": sinal.get("take_profit_2"),
-                        "candles": 0,
-                        "tp1_notificado": False,
-                        "sinal_id": novo_sinal_id,   # elo com a decisão do trader
-                        "confluencias": list(confluencias),  # p/ o aprendizado
-                        "ts_criacao": time.time(),   # p/ o timeout de acatar (10 min)
-                    }
-
-                    # Dimensionamento de posição com base no Plano da Mesa
-                    # (Margem, Risco%, Drawdown) e no valor por ponto do
-                    # ativo identificado no gráfico, na CONTA SELECIONADA.
-                    plano = plano_da_conta_ativa()
-                    sizing = calcular_contratos(
-                        sinal_ativo["entry"], sinal_ativo["stop"], ativo,
-                        plano.get("margem", 0), plano.get("risco_pct", 1.0),
-                        plano.get("drawdown_maximo", 0)
-                    )
-
-                    # R:R do relatório é SEMPRE calculado dos preços reais (nunca
-                    # vem do texto da IA). Usa o mesmo alvo do piso de qualidade
-                    # (tp1, ou tp2 se não houver tp1), então o número exibido nunca
-                    # fica abaixo do RR_MINIMO que aprovou o sinal.
-                    rr1 = None
-                    _alvo_rr_disp = sinal_ativo["tp1"] or sinal_ativo["tp2"]
-                    if _alvo_rr_disp and sinal_ativo["entry"] != sinal_ativo["stop"]:
-                        rr1 = round(abs((_alvo_rr_disp - sinal_ativo["entry"]) /
-                                        (sinal_ativo["entry"] - sinal_ativo["stop"])), 2)
-
-                    linha_contratos = ""
-                    if sizing["contratos"] > 0:
-                        linha_contratos = (
-                            f"\n📐 *Contratos (plano da mesa): {sizing['contratos']}* ({ativo})\n"
-                            f"Risco: US${sizing['risco_real_usd']} "
-                            f"(US${sizing['risco_por_contrato']}/contrato · teto US${sizing['risco_usd']})"
-                        )
-                    else:
-                        linha_contratos = (
-                            f"\n⚠️ 0 contratos: risco do trade excede o permitido pelo plano, "
-                            f"ou Margem/Risco% não configurados no Plano de Trading."
-                        )
-
-                    bloco_confluencias = ""
-                    if confluencias:
-                        bloco_confluencias = "\n\n🔎 *Confluências:*\n" + "\n".join(
-                            f"• {c}" for c in confluencias
-                        )
-
-                    # PLANO DE GESTÃO — como raspar o máximo do movimento sem
-                    # devolver o lucro. Parcial no 1º alvo, risco zerado, e o
-                    # restante corre até o alvo institucional.
-                    n_ctr = sizing["contratos"]
-                    if n_ctr >= 2:
-                        parcial = max(1, n_ctr // 2)
-                        runner = n_ctr - parcial
-                        bloco_gestao = (
-                            f"\n\n🎯 *Gestão (para extrair o máximo):*\n"
-                            f"• No Objetivo 1 ({sinal_ativo['tp1']}): realize {parcial} de "
-                            f"{n_ctr} contrato(s) e leve o stop para o preço de entrada "
-                            f"({sinal_ativo['entry']}) — a partir daí o trade não perde mais.\n"
-                            f"• Deixe {runner} contrato(s) correndo até o Objetivo 2 "
-                            f"({sinal_ativo['tp2']}), que é o alvo de liquidez cheio.\n"
-                            f"• Só saia antes se a estrutura virar contra (CHoCH oposto)."
-                        )
-                    else:
-                        bloco_gestao = (
-                            f"\n\n🎯 *Gestão:* com 1 contrato não dá para fracionar. "
-                            f"Leve até o Objetivo 1 ({sinal_ativo['tp1']}) OU, se quiser "
-                            f"raspar o movimento cheio, segure até o Objetivo 2 "
-                            f"({sinal_ativo['tp2']}) movendo o stop para a entrada assim "
-                            f"que o preço passar do Objetivo 1."
-                        )
-
-                    mensagem_wpp = (
-                        f"📘 *Estudo de Cenário — {ativo}*\n"
-                        f"🕐 {time.strftime('%d/%m/%Y %H:%M:%S')}\n"
-                        f"Viés: *{'Alta (compradora)' if acao == 'BUY' else 'Baixa (vendedora)'}*\n"
-                        f"Confiança: *{confianca}%*  |  Probabilidade: *{probabilidade}%*\n\n"
-                        f"Região de interesse: {sinal_ativo['entry']}\n"
-                        f"Invalidação: {sinal_ativo['stop']}\n"
-                        f"Objetivo 1: {sinal_ativo['tp1']}  |  Objetivo 2: {sinal_ativo['tp2']}"
-                        f"{f'  |  R:R {rr1}' if rr1 else ''}"
-                        f"{linha_contratos}"
-                        f"{bloco_confluencias}"
-                        f"{bloco_gestao}\n\n"
-                        f"_{sinal.get('market_analysis', '')}_\n\n"
-                        f"❓ *Deseja acatar este cenário?*\n"
-                        f"Responda *ACATAR* para eu registrar e plotar as ordens (entrada, "
-                        f"stop e alvo) na plataforma, ou *NÃO ACATAR* para dispensar.\n\n"
-                        f"_Material educacional. A decisão de operar é sua._"
-                    )
-                    enviar_relatorio_whatsapp(mensagem_wpp, screenshot, self.log)
-                    falar(f"Novo cenário de {acao} em {ativo}, probabilidade {probabilidade:.0f} por cento.")
-
-                    # Alerta na tela do computador (além do WhatsApp).
-                    self._sinais_notificados.add(novo_sinal_id)
-                    # A sugestão também entra na CONVERSA da aba 🐯 TIGER — você
-                    # pode responder 'acatar' / 'dispensar' ali, por texto ou voz.
-                    self._chat_feed(
-                        f"📘 Nova sugestão: {acao} {ativo} — entrada "
-                        f"{sinal_ativo['entry']}, stop {sinal_ativo['stop']}, alvo "
-                        f"{sinal_ativo['tp1']}"
-                        + (f", R:R {rr1}" if rr1 else "") +
-                        f", probabilidade {probabilidade:.0f}%. Quer conversar sobre "
-                        "o cenário? Ou diga 'acatar' / 'dispensar'.")
-                    self._notificar_desktop(
-                        f"📘 Nova sugestão — {acao} {ativo}",
-                        [f"Entrada {sinal_ativo['entry']}  ·  Stop {sinal_ativo['stop']}",
-                         f"Alvo {sinal_ativo['tp1']}" + (f"  ·  R:R {rr1}" if rr1 else ""),
-                         f"Probabilidade {probabilidade:.0f}%  ·  {sizing['contratos']} ctr"
-                         f"  ·  conta {nome_conta_ativa()}",
-                         f"Decida aqui ou no app (prazo {TIMEOUT_ACATAR_SEG // 60} min)."],
-                        cor="#1f8b4c" if acao == "BUY" else "#c53030",
-                        # O aviso fica de pé durante todo o prazo de acatar,
-                        # com os botões de decisão.
-                        segundos=TIMEOUT_ACATAR_SEG,
-                        sinal_id=novo_sinal_id, direcao=acao)
-                    self.after(0, self._atualizar_dashboard)
-
-                else:
-                    # ------------------------------------------------------------
-                    # RELATÓRIO INFORMATIVO — enviado em TODO ciclo sem sinal novo.
-                    # Antes, ciclos HOLD (ou com sinal já em acompanhamento) não
-                    # disparavam nada, o que dava a impressão de que os relatórios
-                    # "pararam" de chegar mesmo com o WhatsApp conectado.
-                    # ------------------------------------------------------------
-                    bloco_confluencias = ""
-                    if confluencias:
-                        bloco_confluencias = "\n\n🔎 *Confluências observadas:*\n" + "\n".join(
-                            f"• {c}" for c in confluencias
-                        )
-
-                    if sinal_ativo["estado"] != "ENCERRADA" and acatado_atual:
-                        # Só faz ACOMPANHAMENTO de trade se o trader ACATOU o cenário.
-                        cabecalho = (f"⏳ *Acompanhamento — {ativo}*\n"
-                                      f"🕐 {time.strftime('%d/%m/%Y %H:%M:%S')}\n"
-                                      f"Cenário {sinal_ativo['direcao']} em {sinal_ativo['estado']} "
-                                      f"(entrada {sinal_ativo['entry']})")
-                    elif sinal_ativo["estado"] != "ENCERRADA":
-                        # Há um cenário aberto, mas o trader ainda NÃO acatou: nota
-                        # neutra, sem tratar como se fosse a operação dele.
-                        cabecalho = (f"👀 *Cenário aguardando sua decisão — {ativo}*\n"
-                                      f"🕐 {time.strftime('%d/%m/%Y %H:%M:%S')}\n"
-                                      f"Sugestão {sinal_ativo['direcao']} (entrada {sinal_ativo['entry']}). "
-                                      f"Acate no app/WhatsApp para receber o acompanhamento.")
-                    else:
-                        cabecalho = (f"⚪ *Sem cenário acionável — {ativo}*\n"
-                                      f"🕐 {time.strftime('%d/%m/%Y %H:%M:%S')}\n"
-                                      f"Confluência insuficiente neste momento.")
-
-                    mensagem_info = (
-                        f"{cabecalho}\n"
-                        f"Preço atual: {preco}  |  Confiança: {confianca}%  |  Probabilidade: {probabilidade}%"
-                        f"{bloco_confluencias}\n\n"
-                        f"_{sinal.get('market_analysis', '')[:400]}_\n\n"
-                        f"_Material educacional. A decisão de operar é sua._"
-                    )
-                    enviar_relatorio_whatsapp(mensagem_info, screenshot, self.log)
-
+                        # Falha numa janela NÃO pode calar as outras: cada uma é
+                        # um ativo, e um erro de captura no MES não pode impedir
+                        # a análise do NQ no mesmo ciclo.
+                        self.log(f"⚠️ Erro ao analisar '{nome_janela or 'tela cheia'}': {e}")
+                    finally:
+                        est["sinal_ativo"] = sinal_ativo
+                        est["hash_captura_anterior"] = hash_captura_anterior
+                        est["capturas_congeladas"] = capturas_congeladas
+                        est["preco_anterior_lido"] = preco_anterior_lido
+                        est["ciclos_preco_igual"] = ciclos_preco_igual
+                        est["ledger_text_memory"] = ledger_text_memory
             except Exception as e:
                 self.log(f"⚠️ Erro no ciclo de análise: {e}")
                 time.sleep(10)

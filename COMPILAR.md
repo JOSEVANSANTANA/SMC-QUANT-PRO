@@ -1,4 +1,4 @@
-# Como compilar o SMC Quant Pro v2.11.0 (TIGER)
+# Como compilar o SMC Quant Pro v2.12.0 (TIGER)
 
 > **Resumo:** o processo de build **não mudou**. É o mesmo fluxo do `.spec`
 > que você já usa. Nesta versão mudaram **dois** arquivos — substitua os dois
@@ -13,6 +13,56 @@
 
 O **motor NÃO mudou** — reaproveite a pasta `motor\` com o `node_modules` que
 você já tem.
+
+### Novidades da 2.12.0
+
+**🪟 Vários gráficos ao mesmo tempo.** Antes era um ativo por vez, e abrir o
+programa duas vezes esbarrava na **porta 3939** já ocupada pelo motor da
+primeira cópia. Agora existe uma **lista de gráficos** na aba Motor, e **um
+motor só** percorre todos a cada ciclo.
+
+Como a segurança foi tratada — que é o que você pediu:
+
+- O **estado é por janela**: cenário ativo, hash da última captura e preço
+  anterior. Compartilhar isso faria o hash do MES marcar a captura do NQ como
+  *"quadro congelado"*, e um cenário aberto num ativo ser fechado pelo preço do
+  outro. Cada gráfico tem a sua própria memória de ciclo.
+- **Erro numa janela não derruba as outras**: cada uma é analisada dentro do seu
+  próprio bloco de proteção.
+- A **primeira da lista é a principal**, e só ela conversa com a corretora
+  (envio de ordem e leitura de posições). Sem isso, a leitura de posição da
+  Tradovate poderia ser associada ao ativo da janela errada.
+- A leitura guardada para o chat diz **de qual janela veio**, e fica guardada
+  também **por ativo** — dá para perguntar de um sem perder a do outro.
+- A janela que você já usava é **migrada sozinha** para a lista.
+
+> ⚠️ Cada gráfico a mais **consome cota da API por ciclo**. Com a chave gratuita,
+> dois gráficos a cada 5 min gastam o dobro do que um. Se a cota estourar, aumente
+> o intervalo ou use chave paga.
+
+**⚡ TIGER muito mais rápida.** Os seis feeds de notícia eram buscados **em
+sequência**, com 8 s de timeout cada — até **48 segundos** antes de ela começar a
+pensar, e isso acontecia em **toda** pergunta, inclusive *"o que é um order
+block"*. Agora:
+
+- os feeds são buscados **em paralelo** (o tempo passa a ser o do mais lento, não
+  a soma de todos);
+- **cotação e notícias** vão juntas, não uma esperando a outra;
+- a internet só é consultada quando a pergunta **pede dado do momento**. Pergunta
+  de metodologia responde na hora, pela base local, sem tocar na rede.
+
+**🛡️ Trava contra lição impossível.** Dia 06/08 ela aceitou gravar *"tira um
+print e leia off line se não tiver acesso a api gemini"* e respondeu **"Anotado e
+aprendido"**. Ler imagem é a única coisa que depende da visão da API — **offline
+não existe leitura, existe invenção**. Aquilo virou uma ordem permanente para
+fabricar número de gráfico, valendo em toda análise futura. Agora ela **recusa**
+lições desse tipo e explica o porquê.
+
+> **Confira suas lições gravadas** com *"o que você aprendeu?"* e apague essa se
+> ela ainda estiver lá. A regra da casa — *nunca invente número* — não pode ser
+> revogada por lição.
+
+---
 
 ### Novidade da 2.11.0 — posição aberta agora AVISA, não emudece
 
@@ -164,7 +214,7 @@ cd C:\Users\jovan\Documents\SMC_QUANT_PRO
 python main_app.py
 ```
 
-Checklist da v2.11.0 — **comece pelos cinco primeiros**, que são os problemas
+Checklist da v2.12.0 — **comece pelos cinco primeiros**, que são os problemas
 do pregão de 05–06/08. Os quatro primeiros exigem a Tradovate aberta com o
 *"Chamado do pedido"* visível.
 
@@ -326,17 +376,17 @@ Repita o checklist do passo 2 dentro do `.exe`.
 ## 6. Gerar o instalador (Inno Setup)
 
 1. Abra `instalador\SMC_Quant_Pro.iss` no Inno Setup Compiler.
-2. Confira que `MyAppVersion` está **"2.11.0"** (já está).
+2. Confira que `MyAppVersion` está **"2.12.0"** (já está).
 3. Pressione **F9** (Compile).
 
-Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.11.0.exe`.
+Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.12.0.exe`.
 
 ---
 
 ## 7. Publicar a atualização
 
-1. Suba o `SMC_Quant_Pro_Setup_2.11.0.exe` na pasta do Google Drive.
-2. O `versao.json` **já está publicado como 2.11.0** — assim que o arquivo
+1. Suba o `SMC_Quant_Pro_Setup_2.12.0.exe` na pasta do Google Drive.
+2. O `versao.json` **já está publicado como 2.12.0** — assim que o arquivo
    estiver no Drive, os clientes veem o aviso de nova versão.
 
 ---
