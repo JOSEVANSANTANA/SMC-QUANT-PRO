@@ -112,7 +112,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.12.0"
+VERSAO_ATUAL = "2.13.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1474,6 +1474,139 @@ def freio_de_sugestoes(plano=None, agora=None):
                     "ritmo. Se quiser voltar antes, mude 'stops seguidos' ou "
                     "'pausa após stop' no Plano de Trading.")
     return True, None
+
+# ====================================================================
+# REGISTRO DE MODELOS — o motor e a TIGER usam a MESMA lista
+# ====================================================================
+# O DEFEITO QUE ISTO CORRIGE (pregão de 06-07/08): o motor analisava o gráfico
+# normalmente de 5 em 5 minutos, caindo para os modelos de reserva
+# (gemini-flash-lite-latest, gemini-3.1-flash-lite...), enquanto a TIGER, no
+# chat, respondia "a cota da sua chave estourou" para o MESMO print, no MESMO
+# minuto. Não era desculpa: eram DUAS listas diferentes. O motor tentava 14
+# modelos, com cooldown por modelo; o chat tinha 5 fixos no código (4 quando
+# havia anexo), todos da família 2.0 — justamente a que estava esgotada o dia
+# inteiro. Acabada a lista curta, ela desistia.
+#
+# Agora existe UM registro só: a lista descoberta na conta, o cooldown de cada
+# modelo e os descontinuados. Quem descobre que um modelo está sem cota avisa o
+# outro — o motor poupa a TIGER e a TIGER poupa o motor.
+_MODELOS_PREFERENCIA = [
+    "gemini-2.0-flash",          # estável, rápido, amplamente disponível
+    "gemini-2.0-flash-001",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash-lite-001",
+    "gemini-2.0-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-flash-latest",
+    "gemini-flash-lite-latest",
+    "gemini-3.5-flash",
+]
+COOLDOWN_COTA_SEG = 900        # 429 (cota esgotada): estaciona por 15 min
+COOLDOWN_SOBRECARGA_SEG = 120  # 503/timeout: estaciona por 2 min
+
+_MODELOS = {
+    "lista": list(_MODELOS_PREFERENCIA),
+    "cooldown": {},        # modelo -> epoch até quando pular
+    "invalidos": set(),    # descontinuados (404): nunca mais tentar
+    "descoberta_ts": 0,    # quando a lista foi conferida na conta
+}
+_trava_modelos = threading.Lock()
+
+def descobrir_modelos(client, forcar=False, log=None):
+    """Pergunta à conta quais modelos existem e monta a ordem de tentativa.
+    Reconfere no máximo a cada 30 min — não é dado que muda a toda hora."""
+    agora = time.time()
+    with _trava_modelos:
+        if not forcar and (agora - _MODELOS["descoberta_ts"]) < 1800:
+            return list(_MODELOS["lista"])
+    try:
+        disponiveis = [m.name.replace("models/", "") for m in client.models.list()
+                       if "generateContent" in m.supported_actions]
+        ordenados = [m for m in _MODELOS_PREFERENCIA if m in disponiveis]
+        # Variantes de tts/imagem/áudio não servem para analisar gráfico.
+        inadequados = ("tts", "image", "audio", "omni", "embedding")
+        extras = [m for m in disponiveis
+                  if "flash" in m and m not in ordenados
+                  and not any(x in m.lower() for x in inadequados)]
+        nova = ordenados + extras
+    except Exception as e:
+        if log:
+            log(f"⚠️ Não consegui listar modelos disponíveis, usando lista padrão: {e}")
+        nova = list(_MODELOS_PREFERENCIA)
+    with _trava_modelos:
+        _MODELOS["lista"] = [m for m in (nova or _MODELOS_PREFERENCIA)
+                             if m not in _MODELOS["invalidos"]]
+        _MODELOS["descoberta_ts"] = agora
+        return list(_MODELOS["lista"])
+
+def modelos_para_tentar(excluir=(), preferido=None):
+    """A ordem de tentativa AGORA: descontinuados fora, quem está em cooldown
+    por último (não excluído — é melhor uma chance do que recusar a resposta),
+    e o `preferido` na frente."""
+    agora = time.time()
+    with _trava_modelos:
+        base = [m for m in _MODELOS["lista"]
+                if m not in _MODELOS["invalidos"] and m not in excluir]
+        livres = [m for m in base if _MODELOS["cooldown"].get(m, 0) <= agora]
+        parados = [m for m in base if _MODELOS["cooldown"].get(m, 0) > agora]
+    ordem = livres + parados            # os estacionados vão para o fim da fila
+    if preferido and preferido in ordem:
+        ordem = [preferido] + [m for m in ordem if m != preferido]
+    return ordem
+
+def classificar_erro_modelo(erro):
+    """'invalido' (404), 'cota' (429), 'transitorio' (503/timeout...) ou 'fatal'."""
+    e = str(erro or "").upper()
+    if "404" in e or "NOT_FOUND" in e or "NO LONGER AVAILABLE" in e:
+        return "invalido"
+    if "429" in e or "RESOURCE_EXHAUSTED" in e:
+        return "cota"
+    transitorios = ("503", "UNAVAILABLE", "500", "INTERNAL", "504", "DEADLINE",
+                    "TIMEOUT", "TIMED OUT", "OVERLOADED", "CONNECTION", "SSL",
+                    "TEMPORARILY")
+    if any(t in e for t in transitorios):
+        return "transitorio"
+    return "fatal"
+
+def registrar_falha_modelo(modelo, erro):
+    """Anota o que aconteceu com o modelo, para o OUTRO lado do app não repetir
+    a mesma tentativa perdida. Devolve a classificação."""
+    tipo = classificar_erro_modelo(erro)
+    with _trava_modelos:
+        if tipo == "invalido":
+            _MODELOS["invalidos"].add(modelo)
+            _MODELOS["lista"] = [m for m in _MODELOS["lista"] if m != modelo]
+        elif tipo == "cota":
+            _MODELOS["cooldown"][modelo] = time.time() + COOLDOWN_COTA_SEG
+        elif tipo == "transitorio":
+            _MODELOS["cooldown"][modelo] = time.time() + COOLDOWN_SOBRECARGA_SEG
+    return tipo
+
+def registrar_sucesso_modelo(modelo):
+    """Respondeu: sai do cooldown e passa a liderar a fila dos dois lados."""
+    with _trava_modelos:
+        _MODELOS["cooldown"].pop(modelo, None)
+        if modelo in _MODELOS["lista"] and _MODELOS["lista"][0] != modelo:
+            _MODELOS["lista"] = ([modelo] +
+                                 [m for m in _MODELOS["lista"] if m != modelo])
+
+def diagnostico_modelos():
+    """Frase curta sobre o estado dos modelos — para ela explicar em vez de só
+    dizer 'a cota estourou'."""
+    agora = time.time()
+    with _trava_modelos:
+        total = len(_MODELOS["lista"])
+        parados = sum(1 for m in _MODELOS["lista"]
+                      if _MODELOS["cooldown"].get(m, 0) > agora)
+        proximo = min((t for t in _MODELOS["cooldown"].values() if t > agora),
+                      default=None)
+    livres = total - parados
+    if livres > 0:
+        return f"{livres} de {total} modelos disponíveis"
+    falta = int((proximo - agora) / 60) + 1 if proximo else None
+    return (f"todos os {total} modelos estão sem cota agora"
+            + (f"; o primeiro volta em ~{falta} min" if falta else ""))
 
 def janelas_monitoradas():
     """As janelas de gráfico que o motor analisa a cada ciclo.
@@ -6795,9 +6928,25 @@ class SmcQuantApp(ctk.CTk):
                     "Me chame de novo em instantes.")
         return f"Falhou aqui: {str(erro)[:180]}"
 
+    def _garantir_modelos(self, client):
+        """Garante que a lista de modelos foi descoberta NA CONTA, e não é só a
+        lista padrão do código.
+
+        Importa quando o motor está DESLIGADO: quem descobria os modelos era só
+        o motor, então, com ele parado, a TIGER ficava presa aos nomes fixos —
+        e perdia os de reserva que a conta tem e que funcionam."""
+        try:
+            descobrir_modelos(client, log=self.log)
+        except Exception:
+            pass          # sem a lista da conta, segue com a padrão
+
     def _chat_worker(self, pergunta, anexo=None):
         resposta = None
         ultimo_erro = None
+        # Inicializado aqui de propósito: se a criação do cliente falhar (chave
+        # inválida, por exemplo), a mensagem de erro lá embaixo ainda cita a
+        # lista — sem isso ela quebraria com NameError e ele não receberia nada.
+        modelos = []
         try:
             # Com anexo o tempo é maior (upload + vídeo processando). Sem anexo
             # o limite subiu de 15 s para 60 s: com busca na internet ligada a
@@ -6854,18 +7003,28 @@ class SmcQuantApp(ctk.CTk):
             # ("faltam 7.6"). Com espaço de sobra ela termina o raciocínio; a
             # persona é quem pede concisão, não a guilhotina do token.
             teto = 4096 if anexo else 2048
-            # Começa pelo modelo que respondeu por último (evita re-tentar os
-            # que estão sem cota a cada pergunta — era boa parte da demora).
-            modelos = ["gemini-2.0-flash", "gemini-2.0-flash-001",
-                       "gemini-2.0-flash-lite", "gemini-flash-latest",
-                       "gemini-3-flash-preview"]
-            if anexo:
-                # O 'lite' não lê vídeo bem; com arquivo, sai da frente.
-                modelos.remove("gemini-2.0-flash-lite")
-            bom = getattr(self, "_chat_modelo_bom", None)
-            if bom in modelos:
-                modelos.remove(bom)
-                modelos.insert(0, bom)
+            # A MESMA LISTA DO MOTOR — este era o defeito que mais atrapalhava.
+            # Aqui havia CINCO modelos escritos à mão (quatro com anexo), todos
+            # da família 2.0. O motor tentava catorze e seguia analisando o
+            # gráfico de 5 em 5 minutos usando os de reserva
+            # (gemini-flash-lite-latest, gemini-3.1-flash-lite...), enquanto ela
+            # respondia "a cota da sua chave estourou" para o MESMO print, no
+            # MESMO minuto — porque a lista curta dela acabava antes.
+            # Agora ela puxa a lista descoberta na conta, respeita o cooldown
+            # compartilhado e só desiste depois de tentar TODOS.
+            self._garantir_modelos(client)
+            excluir = ()
+            if anexo and not str(anexo).lower().endswith(
+                    (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp")):
+                # Vídeo/PDF: os *-lite tropeçam. Com IMAGEM eles servem bem e
+                # ficam na lista — é justamente o print do gráfico que ela mais
+                # precisa ler quando os modelos maiores estão sem cota.
+                excluir = ("gemini-2.0-flash-lite", "gemini-2.0-flash-lite-001",
+                           "gemini-flash-lite-latest", "gemini-2.5-flash-lite")
+            modelos = modelos_para_tentar(
+                excluir=excluir, preferido=getattr(self, "_chat_modelo_bom", None))
+            if not modelos:
+                modelos = list(_MODELOS_PREFERENCIA)
             for modelo in modelos:
                 for config in self._chat_configs(modelo, teto, com_busca=not anexo):
                     try:
@@ -6879,6 +7038,8 @@ class SmcQuantApp(ctk.CTk):
                             # provou que responde, mesmo que a continuação falhe.
                             if not anexo:
                                 self._chat_modelo_bom = modelo
+                            # Avisa o motor: este modelo está de pé agora.
+                            registrar_sucesso_modelo(modelo)
                             # Cortou no teto? Pede a continuação e emenda, para
                             # a frase nunca morrer pela metade na tela.
                             if self._resposta_cortada(r):
@@ -6887,6 +7048,12 @@ class SmcQuantApp(ctk.CTk):
                             break
                     except Exception as e:
                         ultimo_erro = e
+                        # Anota no registro compartilhado: cota, sobrecarga ou
+                        # descontinuado. Assim o motor não repete a tentativa
+                        # perdida no ciclo seguinte.
+                        tipo_falha = registrar_falha_modelo(modelo, e)
+                        if tipo_falha in ("cota", "invalido"):
+                            break      # não adianta tentar outra config do mesmo
                         continue
                 if resposta:
                     break
@@ -6924,6 +7091,11 @@ class SmcQuantApp(ctk.CTk):
                     "certinho. O que eu NÃO consigo agora é LER a imagem: essa "
                     "é a única parte que depende da API da Gemini, e ela está "
                     f"fora ({self._diagnostico_erro(ultimo_erro)}).\n\n"
+                    + (f"Tentei {len(modelos)} modelos, um por um, antes de te "
+                       f"dizer isso — {diagnostico_modelos()}. Não é desculpa: "
+                       "se sobrasse um só de pé, eu teria lido.\n\n"
+                       if modelos else "")
+                    +
                     "Nada do que eu dissesse sobre esse gráfico agora seria "
                     "leitura de verdade — seria chute, e chute na mesa vira "
                     "prejuízo. Assim que a cota voltar (ou com uma chave paga "
@@ -10072,50 +10244,24 @@ class SmcQuantApp(ctk.CTk):
         # sobrecarregado (503), ele é "estacionado" por um tempo. Assim paramos
         # de gastar ida-e-volta de rede tentando modelos mortos EM TODO CICLO —
         # o maior ralo de tempo quando a cota diária começa a estourar.
-        cooldown_modelos = {}   # nome_modelo -> timestamp (epoch) até quando pular
-        COOLDOWN_COTA = 900     # 429 cota esgotada: pula por 15 min
-        COOLDOWN_SOBRECARGA = 120  # 503/timeout: pula por 2 min
+        # COOLDOWN COMPARTILHADO COM A TIGER. Antes cada lado tinha o seu, e o
+        # chat gastava rede tentando modelos que o motor já sabia estarem sem
+        # cota — e vice-versa. Agora é o mesmo dicionário: quem descobre, avisa.
+        cooldown_modelos = _MODELOS["cooldown"]
+        COOLDOWN_COTA = COOLDOWN_COTA_SEG
+        COOLDOWN_SOBRECARGA = COOLDOWN_SOBRECARGA_SEG
 
         # Lista de modelos de reserva: se o principal esgotar a cota (comum
         # no plano gratuito — 20 requisições/dia por modelo), tenta os
         # próximos automaticamente em vez de travar o ciclo inteiro.
-        def montar_lista_fallback():
-            # Ordem de preferência: modelos atuais primeiro. O gemini-2.5-flash
-            # foi descontinuado para novas contas (erro 404), por isso não
-            # lidera mais a lista — fica só como reserva para contas antigas.
-            # Ordem por VELOCIDADE + DISPONIBILIDADE real observada em produção.
-            # Os aliases "-latest" e o "3.5-flash" vivem dando 503/sobrecarga e
-            # gastavam segundos de espera todo ciclo antes de cair no que funciona,
-            # por isso foram REBAIXADOS. Lideram agora os modelos flash estáveis e
-            # os *-lite (os mais rápidos), que respondem na primeira tentativa.
-            preferencia = [
-                "gemini-2.0-flash",          # estável, rápido, amplamente disponível
-                "gemini-2.0-flash-001",
-                "gemini-2.5-flash",          # rápido; reserva imediata
-                "gemini-2.5-flash-lite",     # ainda mais rápido (baixa latência)
-                "gemini-2.0-flash-lite-001",
-                "gemini-2.0-flash-lite",
-                "gemini-3-flash-preview",    # respondeu bem nos testes recentes
-                "gemini-flash-latest",       # alias — costuma estar sobrecarregado
-                "gemini-flash-lite-latest",
-                "gemini-3.5-flash",          # frequentemente indisponível
-            ]
-            try:
-                disponiveis = [m.name.replace("models/", "") for m in client.models.list()
-                                if "generateContent" in m.supported_actions]
-                ordenados = [m for m in preferencia if m in disponiveis]
-                # Variantes de tts/image/audio não servem para analisar gráfico.
-                inadequados = ("tts", "image", "audio", "omni", "embedding")
-                extras = [m for m in disponiveis
-                           if "flash" in m and m not in ordenados
-                           and not any(x in m.lower() for x in inadequados)]
-                return ordenados + extras or preferencia
-            except Exception as e:
-                self.log(f"⚠️ Não consegui listar modelos disponíveis, usando lista padrão: {e}")
-                return preferencia
-
-        modelos_fallback = montar_lista_fallback()
-        modelos_invalidos = set()  # descontinuados (404) — expurgados da lista
+        # A LISTA VEM DO REGISTRO COMPARTILHADO — a mesma que a TIGER usa.
+        # Duas listas diferentes foi o que fez o motor analisar normalmente
+        # enquanto ela dizia "cota estourada" para o mesmo print, no mesmo
+        # minuto: o chat só conhecia cinco modelos da família 2.0, justamente
+        # a que estava esgotada.
+        modelos_fallback = descobrir_modelos(client, forcar=True, log=self.log)
+        # Mesmo conjunto de descontinuados que a TIGER enxerga.
+        modelos_invalidos = _MODELOS["invalidos"]
         self.log(f"✅ Modelos disponíveis (ordem de tentativa): {modelos_fallback}")
 
         SIGNAL_SCHEMA = types.Schema(
@@ -10630,7 +10776,10 @@ class SmcQuantApp(ctk.CTk):
                                     )
                                 )
                                 modelo_vencedor = modelo_atual
-                                cooldown_modelos.pop(modelo_atual, None)  # respondeu: sai do cooldown
+                                # Respondeu: sai do cooldown E passa a liderar a
+                                # fila também no chat — a TIGER começa pelo que
+                                # acabou de funcionar, em vez de descobrir sozinha.
+                                registrar_sucesso_modelo(modelo_atual)
                                 if modelo_atual != candidatos[0]:
                                     self.log(f"ℹ️ Análise concluída usando modelo de reserva: {modelo_atual}")
                                 break
@@ -10674,9 +10823,11 @@ class SmcQuantApp(ctk.CTk):
 
                         # Expurga de vez os modelos descontinuados, para não perder
                         # tempo tentando-os em todos os ciclos seguintes.
-                        if modelos_invalidos:
+                        if modelos_invalidos & set(modelos_fallback):
+                            # NÃO limpa o conjunto: ele é compartilhado com a
+                            # TIGER, e esquecer o que foi descontinuado faria os
+                            # dois lados tentarem de novo o que já morreu.
                             modelos_fallback = [m for m in modelos_fallback if m not in modelos_invalidos]
-                            modelos_invalidos.clear()
                             if not modelos_fallback:
                                 raise RuntimeError("Nenhum modelo Gemini válido para esta chave de API.")
                             self.log(f"📋 Lista de modelos atualizada: {modelos_fallback[:4]}...")

@@ -1,4 +1,4 @@
-# Como compilar o SMC Quant Pro v2.12.0 (TIGER)
+# Como compilar o SMC Quant Pro v2.13.0 (TIGER)
 
 > **Resumo:** o processo de build **não mudou**. É o mesmo fluxo do `.spec`
 > que você já usa. Nesta versão mudaram **dois** arquivos — substitua os dois
@@ -13,6 +13,53 @@
 
 O **motor NÃO mudou** — reaproveite a pasta `motor\` com o `node_modules` que
 você já tem.
+
+### Novidades da 2.13.0
+
+**🎯 A TIGER usa a MESMA lista de modelos do motor** — este era o defeito que
+você apontou: *"de 5 em 5 minutos ele analisa normalmente usando Gemini, quando
+peço pela IA ela fica inventando essa desculpa"*.
+
+**Não era desculpa dela: eram duas listas.** O motor tentava **catorze** modelos
+com cooldown e seguia lendo o gráfico com os de reserva
+(`gemini-flash-lite-latest`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview`).
+A TIGER tinha **cinco escritos à mão no código** (quatro quando havia anexo),
+**todos da família 2.0** — justamente a que o log mostrava `cota esgotada
+(pausado 15min)` o dia inteiro. Acabada a lista curta, ela desistia e dizia que
+a cota tinha estourado. No mesmo minuto, para o mesmo print, o motor lia.
+
+Agora existe **um registro só**, compartilhado pelos dois:
+
+- a lista é **descoberta na sua conta** (não é a lista fixa do código), e ela
+  descobre **mesmo com o motor desligado** — antes só o motor descobria, então,
+  com ele parado, ela ficava presa aos nomes fixos e perdia os de reserva que a
+  sua conta tem e que funcionam;
+- **cooldown compartilhado**: quem descobre que um modelo está sem cota avisa o
+  outro. Cota (`429`) estaciona **15 min**; sobrecarga (`503`/timeout),
+  **2 min**. O motor poupa a TIGER e a TIGER poupa o motor;
+- modelo em cooldown vai para o **fim da fila, não some** — é melhor uma
+  tentativa do que recusar a resposta antes de tentar;
+- modelo **descontinuado** (`404`) sai de vez, dos dois lados — e a memória
+  disso **não é mais apagada** a cada troca de dia;
+- o modelo que **respondeu** passa a liderar a fila nos dois lados;
+- com **imagem**, os `*-lite` continuam na lista (só saem em vídeo/PDF, onde
+  tropeçam). É justamente o print do gráfico que ela mais precisa ler quando os
+  modelos maiores estão sem cota.
+
+E quando **realmente** não houver nenhum de pé, a resposta deixa de ser genérica:
+ela diz **quantos modelos tentou** e o estado real deles — *"tentei 10 modelos,
+um por um, antes de te dizer isso — todos os 10 estão sem cota agora; o primeiro
+volta em ~7 min"*. Continua **sem inventar leitura de gráfico**: isso não mudou
+e não vai mudar.
+
+**🩺 Setinha ← do comprovante: âncora à prova de painel fora do lugar.** A busca
+sobe do texto do comprovante até o painel do ticket. Faltava conferir que o
+ancestral escolhido **contém** o comprovante — um wrapper de geometria
+degenerada era aceito mesmo sendo menor que o ticket, o "topo do painel" ia
+parar em outro lugar da tela e a seta caía fora da janela de busca. Resultado
+possível: **entrada enviada, stop e alvo não**. Acontecia com o ticket desenhado
+na parte de **baixo** da tela. Agora o ancestral só vira âncora se contiver o
+ticket.
 
 ### Novidades da 2.12.0
 
@@ -214,9 +261,19 @@ cd C:\Users\jovan\Documents\SMC_QUANT_PRO
 python main_app.py
 ```
 
-Checklist da v2.12.0 — **comece pelos cinco primeiros**, que são os problemas
-do pregão de 05–06/08. Os quatro primeiros exigem a Tradovate aberta com o
-*"Chamado do pedido"* visível.
+Checklist da v2.13.0 — **comece pelo primeiro**, que é o defeito desta versão.
+Os itens A a D exigem a Tradovate aberta com o *"Chamado do pedido"* visível.
+
+0. **MOTOR LÊ E TIGER LÊ (o defeito desta versão).** Com o **motor ligado** e
+   analisando normalmente de 5 em 5 minutos, peça no chat **"olha o gráfico"**.
+   Ela **tem que ler**. Não pode mais acontecer o que aconteceu em 06/08 e
+   07/08: o motor analisando com os modelos de reserva no mesmo minuto em que
+   ela respondia *"a cota da sua chave Gemini estourou"*.
+   Repita com o **motor desligado** — tem que ler igual (ela descobre os
+   modelos da conta sozinha agora).
+   Se um dia realmente não houver nenhum modelo de pé, a resposta tem que
+   trazer **quantos ela tentou** e **em quantos minutos o primeiro volta** — se
+   vier só *"a cota estourou"*, sem esse número, algo ficou para trás.
 
 A. **BRACKET COMPLETO (o mais importante).** Com a automação em modo real,
    acate um cenário e acompanhe o log. Tem que sair **ENTRADA, STOP e ALVO**.
@@ -376,17 +433,17 @@ Repita o checklist do passo 2 dentro do `.exe`.
 ## 6. Gerar o instalador (Inno Setup)
 
 1. Abra `instalador\SMC_Quant_Pro.iss` no Inno Setup Compiler.
-2. Confira que `MyAppVersion` está **"2.12.0"** (já está).
+2. Confira que `MyAppVersion` está **"2.13.0"** (já está).
 3. Pressione **F9** (Compile).
 
-Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.12.0.exe`.
+Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.13.0.exe`.
 
 ---
 
 ## 7. Publicar a atualização
 
-1. Suba o `SMC_Quant_Pro_Setup_2.12.0.exe` na pasta do Google Drive.
-2. O `versao.json` **já está publicado como 2.12.0** — assim que o arquivo
+1. Suba o `SMC_Quant_Pro_Setup_2.13.0.exe` na pasta do Google Drive.
+2. O `versao.json` **já está publicado como 2.13.0** — assim que o arquivo
    estiver no Drive, os clientes veem o aviso de nova versão.
 
 ---

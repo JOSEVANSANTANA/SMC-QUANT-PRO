@@ -583,11 +583,23 @@ class TradovateAuto:
           //    o ticket tem ~330px; passar disso é sair para o layout inteiro.
           var painel=nucleo;
           if(nucleo){
+            var rn=nucleo.getBoundingClientRect();
             var c=nucleo.parentElement;
             for(var s=0; s<5 && c; s++){
               var rc=c.getBoundingClientRect();
               if(rc.width > Math.min(560, window.innerWidth*0.45)) break;
               if(rc.height <= 0) break;
+              // O ancestral só vira âncora se ELE CONTIVER o comprovante.
+              // Sem esta conferência, um wrapper de geometria degenerada
+              // (display:contents, inline vazio, painel fora de fluxo) era
+              // aceito mesmo sendo MENOR que o ticket: o "topo do painel"
+              // passava a ser outro lugar da tela, a setinha ← caía fora da
+              // janela de busca e o robô concluía que ela não existia —
+              // entrada enviada, stop e alvo não. Já aconteceu com o ticket
+              // desenhado na parte de BAIXO da tela.
+              if(rc.x > rn.x+1 || rc.y > rn.y+1 ||
+                 rc.x+rc.width  < rn.x+rn.width-1 ||
+                 rc.y+rc.height < rn.y+rn.height-1) break;
               painel=c;
               c=c.parentElement;
             }
