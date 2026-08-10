@@ -82,6 +82,38 @@ sozinho (1 a 2 minutos, precisa de internet). Isso só acontece uma vez.
 
 
 ========================================================================
+  PAINEL DE LICENÇAS  (só você usa — não é para cliente)
+========================================================================
+Dois cliques em:  ABRIR_PAINEL_LICENCAS.command
+
+Abre no navegador. Nele você:
+  • CRIA licenças (com gerador de chave sem letras que o cliente confunde:
+    sem I, sem O, sem 0 e sem 1);
+  • VÊ quem ativou, em qual máquina e quando foi o último acesso;
+  • REVOGA uma licença (o programa do cliente para na próxima validação);
+  • LIBERA a máquina quando o cliente troca de computador — a chave volta
+    a valer e se casa com a próxima máquina que ativar.
+
+O painel conversa com o SEU servidor, que já está no ar em
+https://smc-quant-pro.onrender.com
+
+Ele pede a SENHA DE ADMINISTRADOR (o ADMIN_TOKEN configurado no servidor).
+Marque "lembrar nesta máquina" para não digitar toda vez — fica guardada
+só neste Mac, no navegador, e some se você desmarcar.
+
+⚠️ NÃO mande o arquivo painel_licencas.html para ninguém. Quem tiver ele
+   mais o token cria e revoga licenças no seu lugar.
+
+SOBRE A PRIMEIRA CONEXÃO DO DIA: o Render, no plano gratuito, hiberna o
+servidor quando fica parado. A primeira chamada pode levar uns 50
+segundos para acordá-lo. O painel avisa isso na tela em vez de parecer
+travado — é só esperar.
+
+A pasta "servidor_licencas" tem o código do servidor, caso um dia você
+queira rodá-lo em outro lugar. Você NÃO precisa dela no dia a dia.
+
+
+========================================================================
   UMA LIMITAÇÃO REAL, DITA NA CARA
 ========================================================================
 Se você MINIMIZAR a janela do gráfico no Dock, o macOS descarta o
