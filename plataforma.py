@@ -278,8 +278,11 @@ def _janelas_macos(so_na_tela=True):
                 continue
             b = w.get("kCGWindowBounds") or {}
             larg, alt = int(b.get("Width", 0)), int(b.get("Height", 0))
-            # Descarta tranqueira: janelas minúsculas não são gráfico.
-            if larg < 200 or alt < 150:
+            # Descarta só tranqueira de verdade. O limiar era 200x150 e cortava
+            # janela legítima: quem opera com o gráfico numa metade da tela, ou
+            # com a corretora numa janela estreita, ficava sem a janela na
+            # lista e sem entender por quê.
+            if larg < 120 or alt < 80:
                 continue
             app = str(w.get("kCGWindowOwnerName") or "").strip()
             nome = str(w.get("kCGWindowName") or "").strip()
@@ -295,6 +298,27 @@ def _janelas_macos(so_na_tela=True):
             })
         except Exception:
             continue
+
+    # RÓTULO ÚNICO POR JANELA — este era o defeito que sumia com a janela da
+    # corretora. Os rótulos iam para um CONJUNTO lá em listar_janelas(), e sem
+    # a permissão de Gravação de Tela o macOS devolve TODAS as janelas do
+    # Chrome com o nome VAZIO. Resultado: cinco janelas viravam cinco vezes
+    # "Google Chrome", o conjunto colapsava tudo em UMA, e a do Tradovate
+    # simplesmente não existia para escolher.
+    #
+    # Agora, quando o rótulo se repete, ele ganha a ORDEM e o TAMANHO — que é
+    # o que dá para distinguir sem o título: "Google Chrome — janela 2
+    # (1512x982)". Não é bonito, mas é honesto e dá para escolher.
+    contagem = {}
+    for j in janelas:
+        contagem[j["titulo"]] = contagem.get(j["titulo"], 0) + 1
+    vistos = {}
+    for j in janelas:
+        base_rot = j["titulo"]
+        if contagem[base_rot] > 1:
+            vistos[base_rot] = vistos.get(base_rot, 0) + 1
+            j["titulo"] = (f"{base_rot} — janela {vistos[base_rot]} "
+                           f"({j['largura']}x{j['altura']})")
     return janelas
 
 
@@ -319,7 +343,19 @@ def listar_janelas():
         return sorted(set(titulos))
 
     if E_MACOS:
-        return sorted({j["titulo"] for j in _janelas_macos()})
+        # Sem `set`: cada janela é uma linha. Ordena pelo nome do aplicativo e
+        # depois pela posição na tela, para a lista sair estável entre uma
+        # atualização e outra.
+        js = sorted(_janelas_macos(),
+                    key=lambda j: (j["app"].lower(), j["y"], j["x"]))
+        rotulos = [j["titulo"] for j in js]
+        # A LISTA MENTE SE A PERMISSÃO FALTA — e mente calada. Sem Gravação de
+        # Tela os títulos vêm vazios e o trader não descobre o motivo sozinho.
+        # Então o próprio seletor diz.
+        if rotulos and permissao_de_tela_ok() is False:
+            rotulos.insert(0, "(⚠️ SEM permissão de Gravação de Tela — os "
+                              "títulos das janelas vêm vazios; veja o log)")
+        return rotulos
 
     return []
 
@@ -356,14 +392,35 @@ def encontrar_janela(nome_parcial):
         return achado["exato"] or achado["parcial"]
 
     if E_MACOS:
-        janelas = _janelas_macos()
-        for j in janelas:                       # 1) título completo, exato
+        # O item de aviso não é janela: escolher ele não pode virar captura.
+        if alvo.startswith("(⚠"):
+            return None
+        janelas = sorted(_janelas_macos(),
+                         key=lambda j: (j["app"].lower(), j["y"], j["x"]))
+        for j in janelas:                       # 1) rótulo completo, exato
             if j["titulo"].strip().lower() == alvo:
                 return j["id"]
-        for j in janelas:                       # 2) trecho do título
+        for j in janelas:                       # 2) trecho do rótulo
             if alvo in j["titulo"].strip().lower():
                 return j["id"]
-        for j in janelas:                       # 3) só o nome do aplicativo
+        # 3) O rótulo pode ter sido salvo com a numeração de OUTRO momento
+        #    ("Google Chrome — janela 2 (1512x982)"). Reaproveita o que dele é
+        #    estável: o aplicativo e o TAMANHO da janela.
+        import re as _re
+        m = _re.search(r"^(.*?)\s+—\s+janela\s+\d+\s+\((\d+)x(\d+)\)$",
+                       str(nome_parcial).strip(), _re.I)
+        if m:
+            app_alvo = m.group(1).strip().lower()
+            lg, at = int(m.group(2)), int(m.group(3))
+            for j in janelas:
+                if (j["app"].strip().lower() == app_alvo
+                        and abs(j["largura"] - lg) <= 4
+                        and abs(j["altura"] - at) <= 4):
+                    return j["id"]
+            for j in janelas:                   # mesmo app, tamanho mudou
+                if j["app"].strip().lower() == app_alvo:
+                    return j["id"]
+        for j in janelas:                       # 4) só o nome do aplicativo
             if alvo in j["app"].strip().lower():
                 return j["id"]
         return None

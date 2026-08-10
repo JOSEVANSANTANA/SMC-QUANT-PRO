@@ -82,6 +82,30 @@ sozinho (1 a 2 minutos, precisa de internet). Isso só acontece uma vez.
 
 
 ========================================================================
+  DEIXAR COMO APLICATIVO (ícone no Launchpad e no Dock)
+========================================================================
+Dois cliques em:  CRIAR_APP.command
+
+Sai em segundos. Ele monta o "SMC Quant Pro.app" dentro de Aplicativos,
+apontando para esta pasta. Não é uma cópia: quando eu te mandar uma
+versão nova, você troca os .py aqui e o aplicativo já usa a nova, sem
+recriar nada.
+
+Depois: abra uma vez, botão direito no ícone do Dock → Opções →
+Manter no Dock.
+
+⚠️ A PERMISSÃO É POR APLICATIVO. Você liberou a Gravação de Tela para o
+   TERMINAL. Aos olhos do macOS o aplicativo é OUTRO programa e precisa
+   da própria permissão:
+
+     Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela
+       → botão "+" → Aplicativos → "SMC Quant Pro" → e ABRA o app de novo
+
+⚠️ NÃO MOVA esta pasta depois de criar o aplicativo. Ele aponta para ela.
+   Se precisar mover, rode o CRIAR_APP.command de novo no lugar novo.
+
+
+========================================================================
   PAINEL DE LICENÇAS  (só você usa — não é para cliente)
 ========================================================================
 Dois cliques em:  ABRIR_PAINEL_LICENCAS.command
@@ -134,6 +158,16 @@ Lista de janelas vazia
 
 Janelas aparecem só com o nome do app, sem título
   → Passo 5 (Gravação de Tela), e REABRIR o programa.
+    Mesmo assim dá para escolher: quando há mais de uma janela do mesmo
+    aplicativo, a lista mostra "Google Chrome — janela 2 (1512x982)".
+    O tamanho é o que te diz qual é qual. Com a permissão concedida, o
+    título real aparece ("Google Chrome — Tradovate Trader").
+
+A janela da corretora NÃO aparece na lista
+  → clique em "Atualizar lista de janelas abertas";
+  → a janela precisa estar ABERTA e não minimizada no Dock;
+  → se a lista começa com "(⚠️ SEM permissão de Gravação de Tela…)",
+    é o Passo 5 — conceda e REABRA o programa.
 
 Captura sai preta
   → Passo 5, e REABRIR o programa.
