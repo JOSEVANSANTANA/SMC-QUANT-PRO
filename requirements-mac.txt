@@ -1,0 +1,49 @@
+# SMC Quant Pro — dependências para macOS (Apple Silicon M1/M2/M3)
+#
+# Instale com o Python 3.11 ou 3.12 do python.org (ver INSTALAR_NO_MAC.md —
+# o Python que já vem no Mac NÃO serve, ele não traz o Tk da interface):
+#
+#     python3 -m pip install -r requirements-mac.txt
+#
+# ------------------------------------------------------------------
+# INTERFACE
+# ------------------------------------------------------------------
+customtkinter>=5.2.0
+# tkinter NÃO se instala por pip: vem junto do Python do python.org.
+
+# ------------------------------------------------------------------
+# IMAGEM (captura do gráfico) E REDE
+# ------------------------------------------------------------------
+Pillow>=10.0.0
+requests>=2.31.0
+
+# ------------------------------------------------------------------
+# INTELIGÊNCIA (TIGER + análise do motor)
+# ------------------------------------------------------------------
+google-genai>=1.0.0
+
+# ------------------------------------------------------------------
+# VOZ
+# ------------------------------------------------------------------
+# No macOS a TIGER FALA pelo comando `say` do próprio sistema (nativo, não
+# precisa de biblioteca). O pyttsx3 continua na lista porque o import existe
+# no código e porque no Windows é ele quem fala.
+pyttsx3>=2.90
+
+# Comando por voz ("Olá Tiger"). Opcional: sem eles o programa funciona
+# inteiro e o botão do microfone explica como habilitar.
+SpeechRecognition>=3.10.0
+sounddevice>=0.4.6
+
+# ------------------------------------------------------------------
+# JANELAS DO macOS  (ESTE É O ITEM QUE NÃO PODE FALTAR)
+# ------------------------------------------------------------------
+# É o equivalente do pywin32 no Mac: sem ele o programa não LISTA as janelas
+# abertas e não acha a janela do gráfico para capturar. A captura em si usa o
+# `screencapture`, que já vem no macOS.
+pyobjc-framework-Quartz>=10.0
+
+# ------------------------------------------------------------------
+# EMPACOTAR EM .app (só para gerar o aplicativo; não é preciso para rodar)
+# ------------------------------------------------------------------
+# pyinstaller>=6.3.0

@@ -1650,15 +1650,24 @@ def abrir_chrome_debug(porta=PORTA_DEBUG_PADRAO, url="https://trader.tradovate.c
                        perfil_dir=None, chrome_path=None, log=print):
     if perfil_dir is None:
         perfil_dir = os.path.join(os.path.expanduser("~"), ".smc_tradovate_chrome")
-    candidatos = [chrome_path] if chrome_path else [
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        os.path.join(os.environ.get("LOCALAPPDATA", ""),
-                     r"Google\Chrome\Application\chrome.exe"),
-    ]
+    # ONDE PROCURAR O CHROME: a lista vem da camada de plataforma, porque o
+    # caminho muda de sistema (C:\Program Files... no Windows,
+    # /Applications/Google Chrome.app no macOS). Chromium e Edge entram como
+    # reserva: falam o mesmo protocolo CDP.
+    if chrome_path:
+        candidatos = [chrome_path]
+    else:
+        try:
+            import plataforma
+            candidatos = plataforma.caminhos_chrome()
+        except Exception:
+            candidatos = [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ]
     exe = next((c for c in candidatos if c and os.path.exists(c)), None)
     if not exe:
-        log("❌ chrome.exe não encontrado. Informe o caminho em chrome_path=.")
+        log("❌ Google Chrome não encontrado. Informe o caminho em chrome_path=.")
         return None
     # FLAGS ANTI-CONGELAMENTO (essenciais para a captura em 2º plano):
     #   Por padrão o Chrome PARA de renderizar uma janela que está atrás de

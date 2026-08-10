@@ -13,23 +13,28 @@ from google import genai
 from google.genai import types
 
 # --------------------------------------------------------------------
-# DEPENDÊNCIA WINDOWS (foco de janela + criptografia DPAPI)
+# CAMADA DE PLATAFORMA (Windows / macOS)
 # --------------------------------------------------------------------
-try:
-    import win32gui
-    import win32con
-    import win32crypt
-    PYWIN32_DISPONIVEL = True
-except ImportError:
-    PYWIN32_DISPONIVEL = False
+# Até a v2.13 este arquivo chamava win32gui/win32crypt/winsound DIRETO no meio
+# da lógica de trading, o que prendia o programa ao Windows. Agora existe UMA
+# fronteira: plataforma.py sabe se "capturar a janela do gráfico" significa
+# PrintWindow (Windows) ou screencapture -l (macOS). Nada da lógica de SMC,
+# do motor, do plano ou da TIGER muda entre os dois sistemas.
+import plataforma
 
-# Som do alerta no desktop. winsound é da biblioteca padrão do Windows — não
-# adiciona dependência; em outro sistema o alerta sai apenas visual.
-try:
-    import winsound
-    WINSOUND_DISPONIVEL = True
-except ImportError:
-    WINSOUND_DISPONIVEL = False
+# ARMADILHA DO macOS: aplicativo aberto pelo Finder NÃO herda o PATH do shell,
+# então o Node instalado pelo Homebrew (/opt/homebrew/bin) some. No terminal
+# funciona, no ícone não. Completar o PATH aqui, no arranque, evita isso.
+plataforma.garantir_path_do_sistema()
+
+SISTEMA = plataforma.SISTEMA
+E_MACOS = plataforma.E_MACOS
+E_WINDOWS = plataforma.E_WINDOWS
+
+# Mantido com o nome antigo porque o resto do arquivo já o consulta: agora
+# significa "sei mexer nas janelas deste sistema", seja ele qual for.
+PYWIN32_DISPONIVEL = (plataforma.PYWIN32_DISPONIVEL or plataforma.QUARTZ_DISPONIVEL)
+WINSOUND_DISPONIVEL = True      # o bipe existe nos dois; plataforma.bipe() decide como
 
 # COMANDO POR VOZ (opcional). Instalação recomendada:
 #     pip install SpeechRecognition sounddevice
@@ -112,7 +117,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.13.0"
+VERSAO_ATUAL = "2.14.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -176,10 +181,10 @@ def diretorio_da_aplicacao():
     return os.path.dirname(os.path.abspath(__file__))
 
 def pasta_dados_usuario():
-    base = os.environ.get('APPDATA') or os.path.expanduser("~")
-    pasta = os.path.join(base, "SMC_Quant_Pro")
-    os.makedirs(pasta, exist_ok=True)
-    return pasta
+    """Windows: %APPDATA%\\SMC_Quant_Pro.
+    macOS:   ~/Library/Application Support/SMC_Quant_Pro (lugar canônico do
+    sistema, o mesmo que qualquer app nativo usa)."""
+    return plataforma.pasta_dados()
 
 DIR_ORIGEM_MOTOR = os.path.join(diretorio_da_aplicacao(), "motor")
 DIR_DADOS_MOTOR = os.path.join(pasta_dados_usuario(), "motor")
@@ -548,21 +553,13 @@ def _e_da_conta_ativa(reg):
 # gerar/guardar uma chave separada (que seria mais um segredo pra vazar).
 # Só o mesmo usuário, na mesma máquina, consegue descriptografar de volta.
 def dpapi_encrypt(texto: str) -> str:
-    if not PYWIN32_DISPONIVEL or not texto:
-        return texto
-    dados = texto.encode('utf-8')
-    blob = win32crypt.CryptProtectData(dados, "SMC_Quant_Pro_APIKey", None, None, None, 0)
-    return base64.b64encode(blob).decode('utf-8')
+    """Protege a chave da API com o cofre DO SISTEMA.
+    Windows: DPAPI. macOS: Chaveiro. Os dois têm a propriedade que importa —
+    copiar o config para outra máquina NÃO leva a chave junto."""
+    return plataforma.proteger_segredo(texto)
 
 def dpapi_decrypt(texto_cifrado: str) -> str:
-    if not PYWIN32_DISPONIVEL or not texto_cifrado:
-        return texto_cifrado
-    try:
-        blob = base64.b64decode(texto_cifrado)
-        _, dados = win32crypt.CryptUnprotectData(blob, None, None, None, 0)
-        return dados.decode('utf-8')
-    except Exception:
-        return ""
+    return plataforma.revelar_segredo(texto_cifrado)
 
 def carregar_api_key() -> str:
     cfg = carregar_config()
@@ -2035,149 +2032,48 @@ def atualizar_decisao_sinal(sinal_id, decisao):
 # PW_RENDERFULLCONTENT, necessária para capturar corretamente conteúdo
 # renderizado por GPU — como uma aba do Chrome (o Tradovate roda em Chrome).
 def encontrar_janela_por_titulo(nome_parcial: str):
-    """Retorna o hwnd de uma janela visível pelo título. Prefere o título
-    EXATO (o dropdown guarda o título completo); se não houver, cai para
-    correspondência parcial. Retorna None se não encontrar."""
-    if not nome_parcial or not PYWIN32_DISPONIVEL:
-        return None
+    """Handle da janela pelo título. Prefere o título EXATO (o dropdown guarda
+    o título completo); se não houver, cai para correspondência parcial.
+    None significa NÃO ACHEI — nunca "pode seguir assim mesmo".
 
-    alvo = nome_parcial.strip().lower()
-    resultado = {"exato": None, "parcial": None}
-
-    def callback(hwnd, extra):
-        if win32gui.IsWindowVisible(hwnd):
-            titulo = win32gui.GetWindowText(hwnd)
-            if titulo:
-                t = titulo.strip().lower()
-                if t == alvo and resultado["exato"] is None:
-                    resultado["exato"] = hwnd
-                elif alvo in t and resultado["parcial"] is None:
-                    resultado["parcial"] = hwnd
-        return True
-
-    try:
-        win32gui.EnumWindows(callback, None)
-    except Exception:
-        pass
-    return resultado["exato"] or resultado["parcial"]
+    No Windows o handle é um HWND; no macOS, o número da janela do Quartz.
+    Quem chama não precisa saber a diferença."""
+    return plataforma.encontrar_janela(nome_parcial)
 
 def garantir_janela_renderizando(hwnd, restaurar_se_minimizada=True):
-    """
-    Prepara QUALQUER janela para ser capturada com conteúdo ATUAL, sem roubar
-    o foco do usuário. Funciona para Chrome, NinjaTrader, MT5, TradingView
-    desktop — não depende de flags específicas de nenhum aplicativo.
+    """Deixa a janela apta a ser capturada COM CONTEÚDO ATUAL, sem roubar o
+    foco do trader.
 
-    IMPORTANTE SOBRE FOCO:
-      - Se a janela JÁ ESTIVER VISÍVEL (mesmo parcialmente coberta, mesmo em
-        outro monitor), NADA aqui muda foco, posição ou z-order. O usuário
-        segue trabalhando sem qualquer interrupção.
-      - Se estiver MINIMIZADA, e `restaurar_se_minimizada` for True, usamos
-        SW_SHOWNOACTIVATE: a janela reaparece na tela, mas NÃO recebe o foco
-        do teclado nem do mouse — você continua digitando no programa em que
-        estava. Isso é necessário porque uma janela minimizada não é
-        renderizada pelo Windows: não existe pixel atual para capturar.
-      - Se `restaurar_se_minimizada` for False, não tocamos na janela e o
-        ciclo será pulado com aviso.
-    Retorna True se a janela está apta a ser capturada.
-    """
-    if not PYWIN32_DISPONIVEL:
-        return True
-    try:
-        if win32gui.IsIconic(hwnd):  # minimizada
-            if not restaurar_se_minimizada:
-                return False
-            # SW_SHOWNOACTIVATE = 4 -> mostra sem ativar/roubar foco
-            win32gui.ShowWindow(hwnd, 4)
-            time.sleep(0.4)  # dá tempo do app redesenhar
-            # Empurra a janela restaurada para o FUNDO da pilha, sem ativá-la.
-            # Assim ela volta a ser renderizável (dá pra capturar), mas NÃO fica
-            # por cima do que você está fazendo — nada de "pular na sua frente".
-            # HWND_BOTTOM=1 ; SWP_NOSIZE=0x1|NOMOVE=0x2|NOACTIVATE=0x10 = 0x13
-            try:
-                ctypes.windll.user32.SetWindowPos(hwnd, 1, 0, 0, 0, 0, 0x13)
-            except Exception:
-                pass
-    except Exception:
-        pass
-    try:
-        # RDW_INVALIDATE(0x1) | RDW_UPDATENOW(0x100) | RDW_ALLCHILDREN(0x80)
-        # Apenas pede repintura ao app. Não altera foco, posição ou z-order.
-        ctypes.windll.user32.RedrawWindow(hwnd, None, None, 0x1 | 0x100 | 0x80)
-        time.sleep(0.15)
-    except Exception:
-        pass
-    return True
+    Windows: janela visível não é tocada (nem foco, nem posição, nem z-order).
+    Minimizada é restaurada com SW_SHOWNOACTIVATE e empurrada para o fundo da
+    pilha — reaparece renderizável sem pular na frente de ninguém.
+
+    macOS: janela coberta continua com buffer válido, então nada precisa ser
+    feito. Minimizada no Dock é outra história: desminimizar no Mac obriga a
+    ATIVAR o aplicativo, e ativar é tomar a tela de quem está operando. Nesse
+    caso devolvemos False e o ciclo é pulado com aviso — perder um ciclo é
+    melhor do que interromper o pregão.
+
+    Retorna True se a janela está apta a ser capturada."""
+    return plataforma.preparar_janela(hwnd, restaurar_se_minimizada)
 
 def capturar_via_recorte_de_tela(hwnd):
-    """
-    Plano C: recorta a região da TELA onde a janela está.
-    Captura o que está fisicamente visível naquelas coordenadas — sempre
-    conteúdo atual, nunca congelado. A limitação é real e conhecida: se outra
-    janela estiver POR CIMA, o recorte pega a janela de cima. Por isso é o
-    último recurso, e só é usado quando o PrintWindow retorna quadro velho.
-    Retorna (imagem, houve_sobreposicao).
-    """
-    if not PYWIN32_DISPONIVEL:
-        return None, False
-    try:
-        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-        if right - left <= 0 or bottom - top <= 0:
-            return None, False
-        # A janela do topo naquele ponto central é a nossa? Se não, há sobreposição.
-        centro = ((left + right) // 2, (top + bottom) // 2)
-        hwnd_no_ponto = win32gui.WindowFromPoint(centro)
-        sobreposto = True
-        try:
-            raiz = ctypes.windll.user32.GetAncestor(hwnd_no_ponto, 2)  # GA_ROOT
-            sobreposto = (raiz != hwnd)
-        except Exception:
-            pass
-        imagem = ImageGrab.grab(bbox=(left, top, right, bottom))
-        return imagem, sobreposto
-    except Exception:
-        return None, False
+    """Plano C: recorta a região da TELA onde a janela está.
+    Sempre conteúdo atual, nunca congelado. A limitação é real e declarada: se
+    outra janela estiver POR CIMA, o recorte pega a de cima — por isso é o
+    último recurso, usado só quando a captura direta devolve quadro velho.
+    Retorna (imagem, houve_sobreposicao)."""
+    return plataforma.capturar_regiao_da_tela(hwnd)
 
 def capturar_janela_em_segundo_plano(hwnd):
-    """
-    Captura o conteúdo de uma janela específica pelo handle, SEM trazê-la
-    para o primeiro plano e sem tirar o usuário do que ele estiver fazendo.
-    Retorna uma imagem PIL, ou None se a captura falhar.
-    """
-    if not PYWIN32_DISPONIVEL:
-        return None
-    import win32ui
+    """Conteúdo da janela pelo handle, SEM trazê-la para o primeiro plano e sem
+    tirar o trader do que ele estiver fazendo. Imagem PIL, ou None se falhar.
 
-    try:
-        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-        largura, altura = right - left, bottom - top
-        if largura <= 0 or altura <= 0:
-            return None
-
-        hwndDC = win32gui.GetWindowDC(hwnd)
-        mfcDC = win32ui.CreateDCFromHandle(hwndDC)
-        saveDC = mfcDC.CreateCompatibleDC()
-
-        saveBitMap = win32ui.CreateBitmap()
-        saveBitMap.CreateCompatibleBitmap(mfcDC, largura, altura)
-        saveDC.SelectObject(saveBitMap)
-
-        PW_RENDERFULLCONTENT = 0x00000002
-        resultado = ctypes.windll.user32.PrintWindow(hwnd, saveDC.GetSafeHdc(), PW_RENDERFULLCONTENT)
-
-        bmpinfo = saveBitMap.GetInfo()
-        bmpstr = saveBitMap.GetBitmapBits(True)
-        imagem = Image.frombuffer(
-            'RGB', (bmpinfo['bmWidth'], bmpinfo['bmHeight']), bmpstr, 'raw', 'BGRX', 0, 1
-        )
-
-        win32gui.DeleteObject(saveBitMap.GetHandle())
-        saveDC.DeleteDC()
-        mfcDC.DeleteDC()
-        win32gui.ReleaseDC(hwnd, hwndDC)
-
-        return imagem if resultado == 1 else None
-    except Exception:
-        return None
+    Windows: PrintWindow com PW_RENDERFULLCONTENT — a flag é obrigatória para
+    conteúdo desenhado pela GPU, que é o caso de uma aba do Chrome.
+    macOS: screencapture -l <id>, que lê o buffer da janela pelo Quartz e
+    funciona mesmo com a janela coberta por outras."""
+    return plataforma.capturar_janela(hwnd)
 
 def imagem_esta_em_branco(imagem_pil):
     """Heurística: se a imagem capturada for essencialmente uma cor sólida,
@@ -2240,24 +2136,14 @@ def idade_do_ultimo_print(info):
         return None
 
 def listar_janelas_abertas():
-    """Retorna os títulos de todas as janelas visíveis abertas no Windows,
-    para popular o dropdown de seleção (em vez do usuário digitar na mão)."""
-    if not PYWIN32_DISPONIVEL:
-        return []
-    titulos = []
+    """Títulos das janelas visíveis, para popular o dropdown (em vez de o
+    trader digitar na mão).
 
-    def callback(hwnd, extra):
-        if win32gui.IsWindowVisible(hwnd):
-            titulo = win32gui.GetWindowText(hwnd)
-            if titulo.strip():
-                titulos.append(titulo)
-        return True
-
-    try:
-        win32gui.EnumWindows(callback, None)
-    except Exception:
-        pass
-    return sorted(set(titulos))
+    No macOS o rótulo vem como "Aplicativo — Título da janela". O nome do
+    aplicativo vem primeiro de propósito: sem a permissão de Gravação de Tela,
+    o macOS entrega a lista SEM os títulos, e assim ainda dá para escolher a
+    janela certa pelo aplicativo."""
+    return plataforma.listar_janelas()
 
 # --------------------------------------------------------------------
 # NÚCLEO DE SUPORTE
@@ -2357,7 +2243,11 @@ def parar_fala():
     if engine is None:
         return False
     try:
-        engine.stop()
+        # No macOS o "engine" é o processo do `say`: calar é matá-lo.
+        if plataforma.VOZ_NATIVA:
+            engine.terminate()
+        else:
+            engine.stop()
     except Exception:
         pass
     return True
@@ -2372,22 +2262,39 @@ def falar(texto: str):
         parar_fala()
         TTS_FALANDO = True
         _TTS_TEXTO = texto
-        engine = pyttsx3.init()
         # Velocidade ajustável pelo trader ("acelere a fala" / "fala mais
         # devagar"). 165 é o padrão; a faixa evita ficar ininteligível.
-        engine.setProperty('rate', velocidade_da_voz())
-        for v in engine.getProperty('voices'):
-            if 'brazil' in v.name.lower() or 'portugu' in v.name.lower():
-                engine.setProperty('voice', v.id)
-                break
-        with _TTS_LOCK:
-            _TTS_ENGINE = engine
-        engine.say(texto)
-        engine.runAndWait()          # parar_fala() faz este retornar na hora
-        try:
-            engine.stop()
-        except Exception:
-            pass
+        if plataforma.VOZ_NATIVA:
+            # macOS: fala pelo `say` do sistema. O pyttsx3 aqui usa
+            # NSSpeechSynthesizer, que precisa do run loop do Cocoa na thread
+            # principal — a TIGER fala de uma thread de trabalho e ali ele
+            # trava ou fica mudo.
+            engine = plataforma.falar_nativo(texto, velocidade_da_voz())
+            if engine is None:
+                return
+            with _TTS_LOCK:
+                _TTS_ENGINE = engine
+            engine.wait()            # parar_fala() mata o processo e libera
+        else:
+            engine = pyttsx3.init()
+            engine.setProperty('rate', velocidade_da_voz())
+            # Casa pelo NOME e também pelo ID/idioma: no Windows as vozes PT
+            # trazem "Brazil"/"Portugu" no nome, mas em outros sistemas o que
+            # identifica o idioma é o id ("...pt-BR...").
+            for v in engine.getProperty('voices'):
+                marca = f"{getattr(v, 'name', '')} {getattr(v, 'id', '')}".lower()
+                if ('brazil' in marca or 'portugu' in marca
+                        or 'pt-br' in marca or 'pt_br' in marca):
+                    engine.setProperty('voice', v.id)
+                    break
+            with _TTS_LOCK:
+                _TTS_ENGINE = engine
+            engine.say(texto)
+            engine.runAndWait()      # parar_fala() faz este retornar na hora
+            try:
+                engine.stop()
+            except Exception:
+                pass
     except Exception:
         pass
     finally:
@@ -4899,6 +4806,22 @@ class SmcQuantApp(ctk.CTk):
         self._montar_tab_plano(tab_plano)
         self._montar_tab_ia(tab_ia)
 
+        # DIAGNÓSTICO DE PLATAFORMA no arranque. No Mac isto responde de cara
+        # as duas perguntas que quebram a instalação: a permissão de Gravação
+        # de Tela está concedida? o Node foi encontrado apesar do PATH pobre
+        # do Finder? Sem isso, o sintoma aparece só na hora do pregão.
+        try:
+            for linha in plataforma.diagnostico().split("\n"):
+                self.log(f"🖥️ {linha}")
+            if plataforma.E_MACOS and not plataforma.permissao_de_tela_ok():
+                self.log("⚠️ macOS: sem a permissão de GRAVAÇÃO DE TELA eu não "
+                         "leio o título das janelas e a captura do gráfico sai "
+                         "preta. Ajustes do Sistema → Privacidade e Segurança → "
+                         "Gravação de Tela → ligue o SMC Quant Pro e REABRA o "
+                         "programa.")
+        except Exception as e:
+            self.log(f"⚠️ Não consegui montar o diagnóstico do sistema: {e}")
+
         self.verificar_node()
         self.after(3000, self._loop_atualizar_dashboard)
 
@@ -5131,7 +5054,7 @@ class SmcQuantApp(ctk.CTk):
             ctk.CTkButton(frame_dev_btns, text="♻️ Restaurar backup", fg_color="#5a3010",
                           command=self._restaurar_backup).pack(side="left", padx=6)
             ctk.CTkButton(frame_dev_btns, text="📂 Abrir pasta de dados", fg_color="#444444",
-                          command=lambda: os.startfile(pasta_dados_usuario())).pack(side="left", padx=6)
+                          command=lambda: plataforma.abrir_pasta(pasta_dados_usuario())).pack(side="left", padx=6)
 
     # ==================================================================
     # AUTOMAÇÃO TRADOVATE (item #7) — opcional, desligada por padrão.
@@ -6471,7 +6394,7 @@ class SmcQuantApp(ctk.CTk):
                         recorte, sobreposto = capturar_via_recorte_de_tela(hwnd)
                         imagem = None if sobreposto else recorte
             if imagem is None or imagem_esta_em_branco(imagem):
-                imagem = ImageGrab.grab()
+                imagem = plataforma.capturar_tela_inteira()
                 nome_janela = nome_janela or "tela inteira"
             if imagem is None or imagem_esta_em_branco(imagem):
                 return None
@@ -7694,11 +7617,9 @@ class SmcQuantApp(ctk.CTk):
                 espera = int(max(5, min(segundos, 90)) * 1000)
                 win.after(espera, lambda j=win: self._fechar_notificacao(j))
 
-                if WINSOUND_DISPONIVEL:
-                    try:
-                        winsound.MessageBeep(winsound.MB_ICONASTERISK)
-                    except Exception:
-                        pass
+                # Bipe do alerta: MessageBeep no Windows, som do sistema
+                # (afplay) no macOS. Falhar o som nunca derruba o aviso.
+                plataforma.bipe()
             except Exception as e:
                 # Notificação nunca pode derrubar o app.
                 self.log(f"⚠️ Não consegui exibir a notificação: {e}")
@@ -8738,7 +8659,7 @@ class SmcQuantApp(ctk.CTk):
         cache = self._hwnd_cache
         if cache and self._hwnd_cache_nome == nome_janela:
             try:
-                if PYWIN32_DISPONIVEL and win32gui.IsWindow(cache):
+                if PYWIN32_DISPONIVEL and plataforma.janela_existe(cache):
                     return cache
             except Exception:
                 pass
@@ -8864,17 +8785,36 @@ class SmcQuantApp(ctk.CTk):
             pass
 
     def abrir_download(self):
+        # No Mac M2 o instalador certo é o ARM64 (Apple Silicon). O link direto
+        # da página de download já oferece o pacote correto para o sistema.
         webbrowser.open_new("https://nodejs.org/en/download/")
+        self.log(plataforma.como_instalar_node())
 
     def verificar_node(self):
-        try:
-            subprocess.run(["node", "-v"], check=True, capture_output=True)
-            self.lbl_status.configure(text="STATUS: Ambiente pronto!", text_color="lime")
-            self.btn_ligar.configure(state="normal", text="▶️ LIGAR MOTOR", fg_color="green")
-            self.log("Node.js detectado.")
-        except Exception:
+        """Procura o Node de verdade, não só no PATH herdado.
+
+        No Mac, aberto pelo Finder, o PATH não traz /opt/homebrew/bin — e o
+        programa dizia "Node.js não encontrado" com o Node instalado e
+        funcionando no terminal. Aqui resolvemos o caminho completo antes de
+        desistir, e o erro diz COMO instalar NESTE sistema."""
+        node = plataforma.caminho_node()
+        if not node:
             self.lbl_status.configure(text="STATUS: Node.js não encontrado.", text_color="red")
             self.btn_ligar.configure(state="disabled", fg_color="gray")
+            self.log("❌ Node.js não encontrado.\n" + plataforma.como_instalar_node())
+            return
+        try:
+            r = subprocess.run([node, "-v"], check=True, capture_output=True,
+                               **plataforma.opcoes_subprocess())
+            versao = (r.stdout or b"").decode("utf-8", "ignore").strip()
+            self.lbl_status.configure(text="STATUS: Ambiente pronto!", text_color="lime")
+            self.btn_ligar.configure(state="normal", text="▶️ LIGAR MOTOR", fg_color="green")
+            self.log(f"Node.js detectado ({versao or 'versão não lida'}) em {node}")
+        except Exception as e:
+            self.lbl_status.configure(text="STATUS: Node.js não encontrado.", text_color="red")
+            self.btn_ligar.configure(state="disabled", fg_color="gray")
+            self.log(f"❌ Node.js está em {node} mas não executou: {e}\n"
+                     + plataforma.como_instalar_node())
 
     def log(self, msg):
         def _escrever():
@@ -10012,7 +9952,7 @@ class SmcQuantApp(ctk.CTk):
                 f"SOLUÇÃO: a pasta 'motor' (contendo index.js e package.json) precisa estar "
                 f"na MESMA PASTA do programa:\n{DIR_ORIGEM_MOTOR}\n\n"
                 f"Se você extraiu de um .zip, confirme que a pasta 'motor' veio junto e "
-                f"está ao lado do SMC_Quant_Pro.exe."
+                f"está ao lado do {plataforma.nome_do_executavel()}."
             )
 
         self.log(f"✅ Motor preparado em: {DIR_DADOS_MOTOR}")
@@ -10075,7 +10015,7 @@ class SmcQuantApp(ctk.CTk):
             )
 
         self.log("Instalando dependências do Node (primeira vez, pode levar 1-2 min)...")
-        npm_cmd = "npm.cmd" if os.name == "nt" else "npm"
+        npm_cmd = plataforma.comando_npm()
         processo = subprocess.Popen(
             [npm_cmd, "install"], cwd=DIR_DADOS_MOTOR, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
@@ -10110,18 +10050,12 @@ class SmcQuantApp(ctk.CTk):
     def _subir_processo_node(self):
         self.log("🚀 Iniciando processo do motor (node index.js)...")
 
-        startupinfo = None
-        creationflags = 0
-        if os.name == "nt":
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = subprocess.SW_HIDE
-            creationflags = subprocess.CREATE_NO_WINDOW
-
+        # No Windows isso esconde o console preto do node; no macOS o
+        # dicionário volta vazio, porque lá não existe console para esconder.
         self.processo_motor = subprocess.Popen(
-            ["node", "index.js"], cwd=DIR_DADOS_MOTOR,
+            [plataforma.caminho_node() or "node", "index.js"], cwd=DIR_DADOS_MOTOR,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            startupinfo=startupinfo, creationflags=creationflags,
+            **plataforma.opcoes_subprocess(),
         )
         self.motor_rodando = True
         self.log(f"✅ Processo criado (PID {self.processo_motor.pid}). Aguardando resposta...")
@@ -10132,9 +10066,8 @@ class SmcQuantApp(ctk.CTk):
         if self.processo_motor.poll() is not None:
             self.motor_rodando = False
             self.log(f"⚠️ O processo do Node encerrou IMEDIATAMENTE (código {self.processo_motor.returncode}). "
-                      "Causa mais provável: já existe um 'node.exe' órfão de um teste anterior segurando a "
-                      "porta 3939. Abra o Gerenciador de Tarefas, finalize todo processo 'node.exe' e tente "
-                      "'LIGAR MOTOR' de novo.")
+                      "Causa mais provável: a porta 3939 já está ocupada por um processo de um teste "
+                      f"anterior.\n{plataforma.como_matar_processo_travado(3939)}")
             self.after(0, lambda: self.btn_ligar.configure(state="normal", text="▶️ LIGAR MOTOR", fg_color="green", hover_color="#1f8b4c"))
 
     def _ler_saida_motor(self):
@@ -10531,7 +10464,7 @@ class SmcQuantApp(ctk.CTk):
                                 continue
                         else:
                             self.log(f"📸 [{hora_atual}] Nenhuma janela específica configurada — capturando tela inteira...")
-                            screenshot = ImageGrab.grab()
+                            screenshot = plataforma.capturar_tela_inteira()
                             metodo = "Tela inteira"
 
                         # ------------------------------------------------------------

@@ -1,4 +1,4 @@
-# Como compilar o SMC Quant Pro v2.13.0 (TIGER)
+# Como compilar o SMC Quant Pro v2.14.0 (TIGER)
 
 > **Resumo:** o processo de build **não mudou**. É o mesmo fluxo do `.spec`
 > que você já usa. Nesta versão mudaram **dois** arquivos — substitua os dois
@@ -9,10 +9,63 @@
 ## 0. O que mudou nesta versão
 
 - `main_app.py` ← alterado
-- `tradovate_auto.py` ← **alterado** (leitura de posição e envio do bracket)
+- `tradovate_auto.py` ← alterado
+- `plataforma.py` ← **NOVO — precisa estar junto, senão o programa nem abre**
+
+E, só para quem for usar no Mac: `requirements-mac.txt`,
+`SMC_Quant_Pro_MAC.spec` e `INSTALAR_NO_MAC.md`.
 
 O **motor NÃO mudou** — reaproveite a pasta `motor\` com o `node_modules` que
 você já tem.
+
+### Novidades da 2.14.0
+
+**🍎 O programa roda no Mac (Apple Silicon M1/M2/M3).** Até aqui o `main_app.py`
+chamava a API do Windows DIRETO no meio da lógica de trading: `win32gui` para
+listar janelas, `PrintWindow` para capturar o gráfico, `win32crypt` (DPAPI) para
+guardar a chave da Gemini, `winsound` para o bipe. Isso prendia o programa
+inteiro ao Windows.
+
+Agora existe **uma fronteira só**, o `plataforma.py`. O resto do programa pede
+*"capture a janela do gráfico"* e é lá dentro que se decide se isso significa
+`PrintWindow` (Windows) ou `screencapture -l` (macOS).
+
+| O que o programa faz | Windows | macOS |
+|---|---|---|
+| Guardar a chave da Gemini | DPAPI | **Chaveiro do macOS** |
+| Listar janelas abertas | win32gui | **Quartz (pyobjc)** |
+| Capturar o gráfico em 2º plano | PrintWindow | **`screencapture -l`** |
+| Bipe do alerta | winsound | **som do sistema** |
+| A TIGER falar | pyttsx3 / SAPI5 | **voz `say` nativa** |
+| Pasta de dados | `%APPDATA%` | **`~/Library/Application Support`** |
+
+**Nada da lógica de trading mudou** — e isso é verificado por teste: nenhuma das
+funções de decisão (`freio_de_sugestoes`, `ajuste_por_aprendizado`,
+`politica_com_posicao_aberta`, `posicao_aberta_no_ativo`, `modelos_para_tentar`,
+`classificar_erro_modelo`) consulta o sistema operacional. **No Windows tudo
+continua exatamente como está** — a rota do Windows é o mesmo código de antes,
+só que agora mora no `plataforma.py`.
+
+Três defeitos reais foram corrigidos no caminho, e valem para os dois sistemas:
+
+- **A voz sairia em inglês no Mac.** A escolha da voz procurava
+  `"brazil"`/`"portugu"` **no nome** — e no Mac as vozes de português se chamam
+  *Luciana*, *Joana*, *Catarina*. Agora a busca olha o **id/idioma** também.
+- **O motor não subiria no Mac.** Um app aberto pelo **Finder não herda o PATH
+  do shell**, então o Node do Homebrew (`/opt/homebrew/bin`) "sumia": `node -v`
+  funcionava no Terminal e o programa jurava que o Node não existia. O PATH é
+  completado no arranque e o Node é procurado pelo caminho real.
+- **Mensagens de erro mandavam o usuário de Mac abrir o Gerenciador de Tarefas
+  e procurar `node.exe`.** Agora cada sistema recebe a instrução dele
+  (`lsof -ti :3939 | xargs kill -9` no Mac).
+
+**Diagnóstico no arranque:** a aba Motor passa a abrir com as linhas `🖥️`
+dizendo sistema, Python, onde a chave está guardada, se o Quartz está instalado
+e — no Mac — **se a permissão de Gravação de Tela está concedida**. Sem essa
+permissão o macOS não dá erro: ele entrega as janelas sem título e a captura sai
+preta. Agora isso aparece de cara, não no meio do pregão.
+
+> 📖 **Instalação no Mac: `INSTALAR_NO_MAC.md`**, passo a passo do zero.
 
 ### Novidades da 2.13.0
 
@@ -261,7 +314,7 @@ cd C:\Users\jovan\Documents\SMC_QUANT_PRO
 python main_app.py
 ```
 
-Checklist da v2.13.0 — **comece pelo primeiro**, que é o defeito desta versão.
+Checklist da v2.14.0 — **comece pelo primeiro**, que é o defeito desta versão.
 Os itens A a D exigem a Tradovate aberta com o *"Chamado do pedido"* visível.
 
 0. **MOTOR LÊ E TIGER LÊ (o defeito desta versão).** Com o **motor ligado** e
@@ -433,17 +486,17 @@ Repita o checklist do passo 2 dentro do `.exe`.
 ## 6. Gerar o instalador (Inno Setup)
 
 1. Abra `instalador\SMC_Quant_Pro.iss` no Inno Setup Compiler.
-2. Confira que `MyAppVersion` está **"2.13.0"** (já está).
+2. Confira que `MyAppVersion` está **"2.14.0"** (já está).
 3. Pressione **F9** (Compile).
 
-Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.13.0.exe`.
+Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.14.0.exe`.
 
 ---
 
 ## 7. Publicar a atualização
 
-1. Suba o `SMC_Quant_Pro_Setup_2.13.0.exe` na pasta do Google Drive.
-2. O `versao.json` **já está publicado como 2.13.0** — assim que o arquivo
+1. Suba o `SMC_Quant_Pro_Setup_2.14.0.exe` na pasta do Google Drive.
+2. O `versao.json` **já está publicado como 2.14.0** — assim que o arquivo
    estiver no Drive, os clientes veem o aviso de nova versão.
 
 ---
