@@ -250,13 +250,40 @@ def onde_fica_o_segredo():
 # O "handle" é opaco de propósito: no Windows é um HWND (int), no macOS é o
 # número da janela do Quartz (int). Quem chama nunca precisa saber a diferença.
 
-def _janelas_macos(so_na_tela=True):
-    """Lista de dicionários {id, titulo, app, bounds} pelo Quartz.
+def _ids_na_tela():
+    """IDs das janelas que estão no espaço de trabalho ATUAL."""
+    if not QUARTZ_DISPONIVEL:
+        return set()
+    try:
+        bruto = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionOnScreenOnly
+            | Quartz.kCGWindowListExcludeDesktopElements,
+            Quartz.kCGNullWindowID) or []
+        return {int(w.get("kCGWindowNumber", 0)) for w in bruto}
+    except Exception:
+        return set()
 
-    ATENÇÃO À PERMISSÃO: sem "Gravação de Tela" liberada, o macOS devolve a
-    lista COM os aplicativos mas SEM os títulos das janelas. Por isso o rótulo
-    montado aqui sempre começa pelo nome do app — assim o trader consegue
-    escolher a janela mesmo antes de conceder a permissão.
+
+def _janelas_macos(so_na_tela=False):
+    """Lista de dicionários {id, titulo, app, bounds, na_tela} pelo Quartz.
+
+    POR QUE O PADRÃO AGORA É `so_na_tela=False` — foi ISTO que sumia com a
+    janela da corretora mesmo com a permissão concedida:
+
+    `kCGWindowListOptionOnScreenOnly` devolve SÓ as janelas do espaço de
+    trabalho ATUAL. No Mac, cada "área de trabalho" do Mission Control é um
+    espaço, e uma janela em TELA CHEIA vira um espaço só dela. Ou seja: o
+    Chrome com a Tradovate em outra área — ou em tela cheia — não existia na
+    lista, e nenhuma permissão do mundo mudava isso, porque não era
+    permissão: era escopo.
+
+    Agora a lista vem de TODAS as janelas, e cada uma diz se está no espaço
+    atual (`na_tela`). O rótulo marca as que não estão, para o trader saber o
+    que está escolhendo.
+
+    SOBRE A PERMISSÃO: sem "Gravação de Tela" liberada, o macOS devolve a
+    lista COM os aplicativos mas SEM os títulos. Por isso o rótulo começa pelo
+    nome do app — dá para escolher mesmo antes de conceder.
     """
     if not QUARTZ_DISPONIVEL:
         return []
@@ -268,6 +295,7 @@ def _janelas_macos(so_na_tela=True):
             Quartz.kCGNullWindowID) or []
     except Exception:
         return []
+    _na_tela = _ids_na_tela()
 
     janelas = []
     for w in bruto:
@@ -288,13 +316,15 @@ def _janelas_macos(so_na_tela=True):
             nome = str(w.get("kCGWindowName") or "").strip()
             if not app:
                 continue
+            _id = int(w.get("kCGWindowNumber", 0))
             janelas.append({
-                "id": int(w.get("kCGWindowNumber", 0)),
+                "id": _id,
                 "app": app,
                 "nome": nome,
                 "titulo": f"{app} — {nome}" if nome else app,
                 "x": int(b.get("X", 0)), "y": int(b.get("Y", 0)),
                 "largura": larg, "altura": alt,
+                "na_tela": (_id in _na_tela),
             })
         except Exception:
             continue
@@ -348,7 +378,11 @@ def listar_janelas():
         # atualização e outra.
         js = sorted(_janelas_macos(),
                     key=lambda j: (j["app"].lower(), j["y"], j["x"]))
-        rotulos = [j["titulo"] for j in js]
+        # Janela de OUTRA área de trabalho (ou em tela cheia noutro espaço)
+        # entra na lista, mas dita como tal. Antes ela sumia sem explicação.
+        rotulos = [j["titulo"] + ("" if j.get("na_tela", True)
+                                  else "  [outra área de trabalho]")
+                   for j in js]
         # A LISTA MENTE SE A PERMISSÃO FALTA — e mente calada. Sem Gravação de
         # Tela os títulos vêm vazios e o trader não descobre o motivo sozinho.
         # Então o próprio seletor diz.
@@ -397,6 +431,8 @@ def encontrar_janela(nome_parcial):
             return None
         janelas = sorted(_janelas_macos(),
                          key=lambda j: (j["app"].lower(), j["y"], j["x"]))
+        # O rótulo salvo pode carregar o sufixo de área de trabalho.
+        alvo = alvo.replace("[outra área de trabalho]", "").strip()
         for j in janelas:                       # 1) rótulo completo, exato
             if j["titulo"].strip().lower() == alvo:
                 return j["id"]
@@ -483,11 +519,16 @@ def preparar_janela(handle, restaurar_se_minimizada=True):
         return True
 
     if E_MACOS:
-        # Está na lista de janelas NA TELA? Se sim, dá para capturar.
-        if any(j["id"] == handle for j in _janelas_macos(so_na_tela=True)):
+        # No espaço de trabalho atual: captura direta, sem nenhuma ressalva.
+        if handle in _ids_na_tela():
             return True
-        # Existe, mas fora da tela = minimizada no Dock.
-        return False
+        # Fora do espaço atual: pode ser OUTRA ÁREA DE TRABALHO (o buffer da
+        # janela costuma continuar válido, e o screencapture -l lê) ou
+        # MINIMIZADA no Dock (aí não há pixel nenhum). Deixamos tentar: se
+        # não der, capturar_janela() devolve None e quem chamou avisa — é
+        # melhor tentar e falhar honestamente do que recusar de antemão uma
+        # janela que estava perfeitamente capturável.
+        return any(j["id"] == handle for j in _janelas_macos())
 
     return True
 
@@ -881,6 +922,32 @@ def nome_do_executavel():
 # ====================================================================
 # 6. DIAGNÓSTICO — para o trader saber o que está valendo na máquina dele
 # ====================================================================
+def diagnostico_janelas():
+    """Despejo CRU do que o sistema está reportando, para quando a janela
+    esperada não aparece na lista. Sem interpretação: o que vier, vai."""
+    if not E_MACOS:
+        return "\n".join(listar_janelas()[:40]) or "(nenhuma janela)"
+    if not QUARTZ_DISPONIVEL:
+        return ("Quartz (pyobjc) NÃO está instalado — sem ele o macOS não me "
+                "deixa enxergar janela nenhuma. Rode o INSTALAR_MAC.command.")
+    todas = _janelas_macos()
+    na_tela = _ids_na_tela()
+    linhas = [f"Janelas encontradas: {len(todas)}  "
+              f"(no espaço de trabalho atual: {len(na_tela)})",
+              f"Permissão de Gravação de Tela: "
+              + ("concedida" if permissao_de_tela_ok() else "NÃO concedida"),
+              ""]
+    for j in sorted(todas, key=lambda x: (x["app"].lower(), x["y"], x["x"])):
+        linhas.append(
+            f"  [{j['id']:>6}] {j['app']}"
+            + (f" · \"{j['nome']}\"" if j["nome"] else "  (sem título)")
+            + f"  {j['largura']}x{j['altura']} em ({j['x']},{j['y']})"
+            + ("" if j.get("na_tela") else "  ← outra área de trabalho"))
+    if not todas:
+        linhas.append("  (nenhuma — algo está bloqueando o acesso às janelas)")
+    return "\n".join(linhas)
+
+
 def permissao_de_tela_ok():
     """No macOS, responde se a permissão de Gravação de Tela está concedida.
 

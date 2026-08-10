@@ -117,7 +117,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.16.1"
+VERSAO_ATUAL = "2.16.2"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -5110,6 +5110,10 @@ class SmcQuantApp(ctk.CTk):
                       command=self._incluir_janela_monitorada).pack(side="left", padx=(0, 6))
         ctk.CTkButton(frame_btn_janelas, text="🔄 Atualizar", fg_color="#555555", width=110,
                       command=self._render_lista_janelas).pack(side="left")
+        ctk.CTkButton(frame_btn_janelas,
+                      text="🩺 Diagnosticar janelas", width=190,
+                      fg_color=COR["borda"], hover_color=COR["input"],
+                      command=self._diagnosticar_janelas).pack(side="left", padx=(6, 0))
         self._render_lista_janelas()
 
         # ---------- PLATAFORMA (detectada automaticamente) ----------
@@ -5468,6 +5472,21 @@ class SmcQuantApp(ctk.CTk):
             ctk.CTkButton(linha, text="🗑 Remover", width=90, fg_color=COR["vermelho"],
                           command=lambda t=titulo: self._remover_janela_monitorada(t)
                           ).pack(side="right", padx=6, pady=4)
+
+    def _diagnosticar_janelas(self):
+        """Despeja no log TUDO o que o sistema reporta sobre as janelas.
+
+        Serve para o caso em que a janela esperada não aparece no seletor: em
+        vez de adivinhar, olha-se o dado cru. No Mac isso mostra também as
+        janelas que estão em OUTRA ÁREA DE TRABALHO — que era o motivo real de
+        a janela da corretora sumir mesmo com a permissão concedida."""
+        try:
+            self.log("🩺 DIAGNÓSTICO DE JANELAS")
+            for linha in plataforma.diagnostico_janelas().split("\n"):
+                self.log("   " + linha)
+            self.log("   ——— fim do diagnóstico ———")
+        except Exception as e:
+            self.log(f"⚠️ Não consegui montar o diagnóstico de janelas: {e}")
 
     def _incluir_janela_monitorada(self):
         titulo = (self.janela_var.get() or "").strip()
