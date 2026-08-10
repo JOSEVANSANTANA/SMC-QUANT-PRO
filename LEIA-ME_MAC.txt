@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.17.0 — MAC (Apple Silicon M1 / M2 / M3)
+  SMC QUANT PRO v2.18.0 — MAC (Apple Silicon M1 / M2 / M3)
   Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.
 ========================================================================
 
@@ -76,6 +76,27 @@ janelas SEM OS TÍTULOS (só o nome do aplicativo) e a captura sai PRETA.
 
 Para conferir: clique em "🩺 Diagnosticar janelas" na aba Motor. Ele diz
 qual das duas está respondendo e mostra o título de cada janela.
+
+
+>>> IMPORTANTE, LEIA ISTO: existe um caminho que NAO depende de permissao
+>>> nenhuma, e e o recomendado para a corretora.
+>>>
+>>> Abra o Chrome da corretora PELO BOTAO DO PROPRIO PROGRAMA.
+>>> Quando voce faz isso, a janela da corretora passa a aparecer no seletor
+>>> assim:
+>>>
+>>>     🌐 Chrome · Tradovate Trader
+>>>
+>>> Essas entradas com o globo vem do PROPRIO Chrome, nao do macOS. Elas:
+>>>   - sempre trazem o nome certo da pagina;
+>>>   - capturam o grafico SEM Gravacao de Tela e SEM Acessibilidade;
+>>>   - funcionam com a janela coberta, em outra area de trabalho e ate
+>>>     minimizada;
+>>>   - dao uma imagem melhor (so a pagina, sem a moldura do navegador).
+>>>
+>>> Se a sua corretora e a Tradovate (ou qualquer coisa em navegador),
+>>> ESCOLHA A ENTRADA COM O GLOBO. As permissoes do Passo 5 passam a ser
+>>> so para as OUTRAS plataformas (ProfitPro, NinjaTrader, MT5).
 
 
 PASSO 6 — ABRIR O PROGRAMA

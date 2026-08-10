@@ -414,6 +414,126 @@ def _completar_titulos(janelas):
     return janelas
 
 
+# ====================================================================
+# ABAS DO CHROME PELO CDP — o caminho que NAO depende de permissao
+# ====================================================================
+# POR QUE ISTO EXISTE, e por que passou a ser o caminho PREFERIDO no Mac:
+#
+# No macOS, ler o titulo de uma janela alheia e capturar o conteudo dela
+# dependem de permissoes que o sistema atribui ao "processo responsavel". Com o
+# programa aberto por um .command, ou por um .app que so lanca o python3, essa
+# atribuicao se perde -- o trader concede Gravacao de Tela E Acessibilidade, ve
+# "concedida" nos Ajustes, e os titulos CONTINUAM vindo vazios, sem erro
+# nenhum. Foi o que aconteceu: o seletor listava "Google Chrome - janela 2
+# (1710x985)" e nenhuma das janelas dele aparecia pelo nome.
+#
+# A corretora, porem, roda num Chrome que o proprio programa abre COM A PORTA
+# DE DEPURACAO LIGADA. Por essa porta da para perguntar ao Chrome, direto:
+# quais abas estao abertas, com titulo e endereco. E da para pedir a IMAGEM da
+# pagina (Page.captureScreenshot).
+#
+# Nada disso passa pelo macOS. Nao ha permissao a conceder, e ainda por cima:
+#   - a imagem e a da PAGINA, sem a moldura do navegador;
+#   - funciona com a janela COBERTA, em OUTRA area de trabalho, e ate
+#     MINIMIZADA -- casos em que a captura de tela nao tem pixel nenhum;
+#   - o titulo vem certo sempre ("Tradovate Trader"), porque quem responde e o
+#     proprio Chrome.
+#
+# O handle de uma aba e a string "cdp:<id>", para nao se confundir com o id
+# numerico de janela do Quartz.
+PORTA_CDP_PADRAO = 9222
+_PREFIXO_CDP = "cdp:"
+_CACHE_ABAS = {"quando": 0, "dados": []}
+
+
+def _cdp_http(caminho, porta=PORTA_CDP_PADRAO, timeout=3):
+    import json as _json
+    from urllib.request import urlopen
+    with urlopen(f"http://127.0.0.1:{porta}{caminho}", timeout=timeout) as r:
+        return _json.loads(r.read().decode("utf-8"))
+
+
+def abas_chrome(porta=PORTA_CDP_PADRAO, forcar=False):
+    """Abas abertas no Chrome de depuracao: [{id, titulo, url, ws}].
+
+    Lista vazia quando nao ha Chrome com a porta ligada -- e isso NAO e erro:
+    e so o trader ainda nao ter aberto a corretora pelo botao do programa.
+    """
+    agora = time.time()
+    if not forcar and (agora - _CACHE_ABAS["quando"]) < 3:
+        return list(_CACHE_ABAS["dados"])
+    abas = []
+    try:
+        for a in _cdp_http("/json/list", porta):
+            if a.get("type") != "page":
+                continue
+            url = str(a.get("url") or "")
+            # Abas internas do navegador nao sao grafico de ninguem.
+            if url.startswith(("devtools://", "chrome-extension://", "chrome://")):
+                continue
+            abas.append({"id": str(a.get("id") or ""),
+                         "titulo": str(a.get("title") or "").strip() or url[:60],
+                         "url": url,
+                         "ws": str(a.get("webSocketDebuggerUrl") or "")})
+    except Exception:
+        abas = []
+    _CACHE_ABAS.update({"quando": agora, "dados": abas})
+    return list(abas)
+
+
+def _rotulo_aba(aba):
+    return "🌐 Chrome · " + aba["titulo"][:70]
+
+
+def capturar_aba_cdp(id_aba, porta=PORTA_CDP_PADRAO):
+    """Imagem PIL da PAGINA, pedida ao proprio Chrome. None se nao der.
+
+    Nao depende de permissao do macOS, nao depende de a janela estar visivel,
+    e nao pega a moldura do navegador -- so o conteudo.
+    """
+    if not PIL_DISPONIVEL:
+        return None
+    try:
+        import base64 as _b64
+        import io as _io
+        alvo = next((a for a in abas_chrome(porta, forcar=True)
+                     if a["id"] == str(id_aba)), None)
+        if not alvo or not alvo["ws"]:
+            return None
+        # O WebSocket minimo ja existe no modulo da automacao da corretora;
+        # reaproveitar evita uma segunda implementacao do mesmo protocolo.
+        import tradovate_auto
+        resto = alvo["ws"].split("://", 1)[1]
+        hostporta, caminho = resto.split("/", 1)
+        host, prt = hostporta.split(":")
+        ws = tradovate_auto._WebSocketMinimo(host, int(prt), "/" + caminho)
+        try:
+            import json as _json
+            ws.enviar(_json.dumps({"id": 1, "method": "Page.captureScreenshot",
+                                   "params": {"format": "png"}}))
+            fim = time.time() + 20
+            while time.time() < fim:
+                bruto = ws.receber()
+                if not bruto:
+                    continue
+                msg = _json.loads(bruto)
+                if msg.get("id") != 1:
+                    continue
+                dados = (msg.get("result") or {}).get("data")
+                if not dados:
+                    return None
+                with Image.open(_io.BytesIO(_b64.b64decode(dados))) as im:
+                    return im.convert("RGB").copy()
+            return None
+        finally:
+            try:
+                ws.fechar()
+            except Exception:
+                pass
+    except Exception:
+        return None
+
+
 def _ids_na_tela():
     """IDs das janelas que estão no espaço de trabalho ATUAL."""
     if not QUARTZ_DISPONIVEL:
@@ -485,11 +605,19 @@ def _janelas_macos(so_na_tela=False):
                 pass
             b = w.get("kCGWindowBounds") or {}
             larg, alt = int(b.get("Width", 0)), int(b.get("Height", 0))
-            # Descarta só tranqueira de verdade. O limiar era 200x150 e cortava
-            # janela legítima: quem opera com o gráfico numa metade da tela, ou
-            # com a corretora numa janela estreita, ficava sem a janela na
-            # lista e sem entender por quê.
+            # Descarta tranqueira. Duas medidas, porque o Chrome cria varias
+            # superficies auxiliares por janela real: no Mac dele apareceram
+            # entradas de 1710x140, 1386x139, 1386x89 -- nenhuma delas era
+            # janela, eram sombras e camadas de barra. As janelas de verdade
+            # tinham 1710x985.
             if larg < 120 or alt < 80:
+                continue
+            nome_bruto = str(w.get("kCGWindowName") or "").strip()
+            # SEM titulo o unico criterio que resta e a forma. Uma janela util
+            # de grafico nao tem 89 px de altura; uma faixa larga e baixinha e
+            # sempre camada auxiliar. COM titulo, nada disso se aplica: se o
+            # sistema deu nome, e janela de verdade e entra.
+            if not nome_bruto and (alt < 200 or (larg > 600 and alt < 250)):
                 continue
             app = str(w.get("kCGWindowOwnerName") or "").strip()
             nome = str(w.get("kCGWindowName") or "").strip()
@@ -561,11 +689,16 @@ def listar_janelas():
         # atualização e outra.
         js = sorted(_janelas_macos(),
                     key=lambda j: (j["app"].lower(), j["y"], j["x"]))
+        # ABAS DO CHROME NA FRENTE. Sao as unicas entradas que trazem o nome
+        # certo SEMPRE e que capturam sem depender de permissao do macOS --
+        # exatamente o caso da corretora. Se houver Chrome de depuracao
+        # aberto, e por aqui que ele deve escolher.
+        abas = [_rotulo_aba(a) for a in abas_chrome()]
         # Janela de OUTRA área de trabalho (ou em tela cheia noutro espaço)
         # entra na lista, mas dita como tal. Antes ela sumia sem explicação.
-        rotulos = [j["titulo"] + ("" if j.get("na_tela", True)
-                                  else "  [outra área de trabalho]")
-                   for j in js]
+        rotulos = abas + [j["titulo"] + ("" if j.get("na_tela", True)
+                                         else "  [outra área de trabalho]")
+                          for j in js]
         # A LISTA MENTE SE A PERMISSÃO FALTA — e mente calada. Sem Gravação de
         # Tela os títulos vêm vazios e o trader não descobre o motivo sozinho.
         # Então o próprio seletor diz.
@@ -607,6 +740,17 @@ def encontrar_janela(nome_parcial):
         except Exception:
             pass
         return achado["exato"] or achado["parcial"]
+
+    # ABA DO CHROME (vale em qualquer sistema): o rótulo começa com o globo.
+    if str(nome_parcial).strip().startswith("🌐 Chrome · "):
+        buscado = str(nome_parcial).strip()[len("🌐 Chrome · "):].strip().lower()
+        for a in abas_chrome():
+            if a["titulo"][:70].strip().lower() == buscado:
+                return _PREFIXO_CDP + a["id"]
+        for a in abas_chrome():          # o título da aba muda o tempo todo
+            if buscado[:25] and buscado[:25] in a["titulo"].lower():
+                return _PREFIXO_CDP + a["id"]
+        return None
 
     if E_MACOS:
         # O item de aviso não é janela: escolher ele não pode virar captura.
@@ -650,6 +794,9 @@ def encontrar_janela(nome_parcial):
 def janela_existe(handle):
     if handle is None:
         return False
+    if isinstance(handle, str) and handle.startswith(_PREFIXO_CDP):
+        alvo = handle[len(_PREFIXO_CDP):]
+        return any(a["id"] == alvo for a in abas_chrome())
     if E_WINDOWS:
         try:
             return bool(win32gui.IsWindow(handle))
@@ -676,6 +823,10 @@ def preparar_janela(handle, restaurar_se_minimizada=True):
     """
     if handle is None:
         return False
+    # Aba do Chrome nao precisa de preparo: o navegador desenha a pagina de
+    # qualquer jeito, coberta ou nao.
+    if isinstance(handle, str) and handle.startswith(_PREFIXO_CDP):
+        return True
 
     if E_WINDOWS:
         if not PYWIN32_DISPONIVEL:
@@ -738,6 +889,10 @@ def capturar_janela(handle):
     """
     if handle is None:
         return None
+    # ABA DO CHROME: pede a imagem ao proprio navegador. Sem permissao, sem
+    # depender de a janela estar visivel.
+    if isinstance(handle, str) and handle.startswith(_PREFIXO_CDP):
+        return capturar_aba_cdp(handle[len(_PREFIXO_CDP):])
 
     if E_WINDOWS:
         if not (PYWIN32_DISPONIVEL and PIL_DISPONIVEL):
@@ -791,6 +946,8 @@ def capturar_janela(handle):
 
 
 def capturar_regiao_da_tela(handle):
+    """(a aba do Chrome nao tem plano C: a captura por CDP ja e o conteudo
+    exato da pagina, entao nao ha "recorte de tela" que melhore isso)"""
     """Plano C: recorta a região da TELA onde a janela está.
     Devolve (imagem, houve_sobreposicao). A limitação é conhecida e declarada:
     se outra janela estiver por cima, o recorte pega a de cima — por isso só é
@@ -798,6 +955,8 @@ def capturar_regiao_da_tela(handle):
     """
     if handle is None or not PIL_DISPONIVEL:
         return None, False
+    if isinstance(handle, str) and handle.startswith(_PREFIXO_CDP):
+        return capturar_aba_cdp(handle[len(_PREFIXO_CDP):]), False
 
     if E_WINDOWS:
         if not PYWIN32_DISPONIVEL:
@@ -1115,6 +1274,7 @@ def diagnostico_janelas():
                 "deixa enxergar janela nenhuma. Rode o INSTALAR_MAC.command.")
     todas = _janelas_macos()
     na_tela = _ids_na_tela()
+    abas = abas_chrome(forcar=True)
     pids = _pids_de_aplicativos()
     linhas = [f"Janelas encontradas: {len(todas)}  "
               f"(no espaço de trabalho atual: {len(na_tela)})",
@@ -1137,6 +1297,20 @@ def diagnostico_janelas():
             + ("" if j.get("na_tela") else "  ← outra área de trabalho"))
     if not todas:
         linhas.append("  (nenhuma — algo está bloqueando o acesso às janelas)")
+    # AS ABAS DO CHROME são o caminho que não depende de permissão nenhuma.
+    # Se elas estão aqui, o problema de título/captura está resolvido para a
+    # corretora, independentemente do que o macOS libere ou deixe de liberar.
+    linhas.append("")
+    if abas:
+        linhas.append(f"ABAS DO CHROME (porta {PORTA_CDP_PADRAO}) — "
+                      "estas capturam SEM permissão do macOS:")
+        for a in abas:
+            linhas.append(f"  🌐 \"{a['titulo']}\"  ({a['url'][:60]})")
+    else:
+        linhas.append(f"ABAS DO CHROME: nenhuma. Não há Chrome com a porta "
+                      f"{PORTA_CDP_PADRAO} aberta — use o botão do programa "
+                      "para abrir a corretora, e a janela dela passa a "
+                      "aparecer aqui pelo nome, sem depender de permissão.")
     return "\n".join(linhas)
 
 
