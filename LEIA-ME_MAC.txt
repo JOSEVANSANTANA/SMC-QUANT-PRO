@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.16.2 — MAC (Apple Silicon M1 / M2 / M3)
+  SMC QUANT PRO v2.16.3 — MAC (Apple Silicon M1 / M2 / M3)
   Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.
 ========================================================================
 
@@ -172,6 +172,14 @@ A janela da corretora NÃO aparece na lista
   → a janela precisa estar ABERTA (minimizada no Dock não conta);
   → se a lista começa com "(⚠️ SEM permissão de Gravação de Tela…)",
     é o Passo 5 — conceda e REABRA o programa.
+
+A lista mostra COISAS QUE NÃO SÃO MINHAS JANELAS
+  → corrigido na v2.16.3. O seletor passou a mostrar só aplicativos com
+    ícone no Dock (Chrome, ProfitPro, o próprio programa). Serviços
+    internos do macOS como "Accessibility Services" e "Window Server"
+    ficam de fora, assim como janelas invisíveis e menus.
+    Isso depende do pyobjc-framework-Cocoa: se o "🩺 Diagnosticar
+    janelas" disser "AppKit AUSENTE", rode o INSTALAR_MAC.command.
 
   SOBRE ÁREAS DE TRABALHO: até a v2.16.1 o programa só enxergava as
   janelas da área de trabalho ATUAL. No Mac, cada área do Mission

@@ -42,6 +42,11 @@ sounddevice>=0.4.6
 # abertas e não acha a janela do gráfico para capturar. A captura em si usa o
 # `screencapture`, que já vem no macOS.
 pyobjc-framework-Quartz>=10.0
+# O AppKit (Cocoa) diz QUAIS processos sao aplicativos de verdade — os que tem
+# icone no Dock. E o que separa a janela do Chrome de um servico interno do
+# macOS: sem ele, o seletor de janelas mostrava coisas como
+# "Accessibility Services", que nunca vao ser o grafico de ninguem.
+pyobjc-framework-Cocoa>=10.0
 
 # ------------------------------------------------------------------
 # EMPACOTAR EM .app (só para gerar o aplicativo; não é preciso para rodar)

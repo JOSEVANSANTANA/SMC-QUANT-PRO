@@ -135,7 +135,8 @@ echo "      Conferindo o que REALMENTE ficou instalado:"
 import importlib, sys
 itens = [("tkinter", "interface"), ("PIL", "imagem/captura"),
          ("customtkinter", "interface"), ("requests", "internet"),
-         ("google.genai", "IA (Gemini)"), ("Quartz", "janelas do macOS")]
+         ("google.genai", "IA (Gemini)"), ("Quartz", "janelas do macOS"),
+         ("AppKit", "saber quais janelas sao de aplicativos de verdade")]
 faltou = []
 for mod, papel in itens:
     try:

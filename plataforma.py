@@ -71,6 +71,7 @@ NOME_SISTEMA = {"windows": "Windows", "macos": "macOS", "linux": "Linux"}[SISTEM
 # --------------------------------------------------------------------
 PYWIN32_DISPONIVEL = False
 QUARTZ_DISPONIVEL = False
+APPKIT_DISPONIVEL = False
 
 if E_WINDOWS:
     try:
@@ -86,6 +87,11 @@ elif E_MACOS:
         QUARTZ_DISPONIVEL = True
     except Exception:
         QUARTZ_DISPONIVEL = False
+    try:
+        import AppKit
+        APPKIT_DISPONIVEL = True
+    except Exception:
+        APPKIT_DISPONIVEL = False
 
 try:
     from PIL import Image, ImageGrab
@@ -250,6 +256,46 @@ def onde_fica_o_segredo():
 # O "handle" é opaco de propósito: no Windows é um HWND (int), no macOS é o
 # número da janela do Quartz (int). Quem chama nunca precisa saber a diferença.
 
+# Aplicativos que NÃO são aplicativos do usuário. Só entram em cena quando o
+# AppKit não está disponível — com ele, o critério é bem melhor (ver abaixo).
+_DONOS_DE_SISTEMA = {
+    "accessibility services", "window server", "windowserver", "dock",
+    "control center", "controlcenter", "notification center",
+    "notificationcenter", "spotlight", "systemuiserver", "loginwindow",
+    "wallpaper", "universalaccessd", "textinputmenuagent",
+    "textinputswitcher", "screen sharing", "coreservicesuiagent",
+    "talagent", "universalcontrol", "shortcuts events", "airplayuiagent",
+    "keyboardsetupassistant", "screencaptureui", "wifiagent",
+    "storeuid", "bluetoothuiserver", "siriviewservice", "cursorui",
+}
+
+
+def _pids_de_aplicativos():
+    """PIDs dos aplicativos DE VERDADE — os que têm ícone no Dock.
+
+    POR QUE ISTO EXISTE: ao passar a listar TODAS as janelas (para achar as de
+    outra área de trabalho), a lista encheu de janela que não é janela: o
+    seletor chegou a mostrar "Accessibility Services", que é um processo
+    interno do macOS, não um programa que o trader abriu.
+
+    O critério certo é o do próprio sistema: `activationPolicy == Regular` é
+    exatamente "aplicativo com ícone no Dock". Chrome, ProfitPro e o SMC Quant
+    Pro passam; agentes de fundo e serviços de acessibilidade não.
+
+    Devolve None quando o AppKit não está instalado — aí quem chama cai na
+    lista de nomes conhecidos, que é pior mas ainda ajuda.
+    """
+    if not APPKIT_DISPONIVEL:
+        return None
+    try:
+        REGULAR = 0        # NSApplicationActivationPolicyRegular
+        apps = AppKit.NSWorkspace.sharedWorkspace().runningApplications()
+        return {int(a.processIdentifier()) for a in apps
+                if int(a.activationPolicy()) == REGULAR}
+    except Exception:
+        return None
+
+
 def _ids_na_tela():
     """IDs das janelas que estão no espaço de trabalho ATUAL."""
     if not QUARTZ_DISPONIVEL:
@@ -296,6 +342,7 @@ def _janelas_macos(so_na_tela=False):
     except Exception:
         return []
     _na_tela = _ids_na_tela()
+    pids_ok = _pids_de_aplicativos()
 
     janelas = []
     for w in bruto:
@@ -304,6 +351,20 @@ def _janelas_macos(so_na_tela=False):
             # sistema — nada que contenha um gráfico de trading.
             if int(w.get("kCGWindowLayer", 0)) != 0:
                 continue
+            # SÓ JANELA DE APLICATIVO DE VERDADE. Sem este filtro o seletor
+            # mostrava "Accessibility Services" e companhia — processos do
+            # sistema que nunca serão o gráfico de ninguém.
+            if pids_ok is not None:
+                if int(w.get("kCGWindowOwnerPID", -1)) not in pids_ok:
+                    continue
+            elif str(w.get("kCGWindowOwnerName") or "").strip().lower() in _DONOS_DE_SISTEMA:
+                continue
+            # Janela transparente não é janela que dê para ver nem capturar.
+            try:
+                if float(w.get("kCGWindowAlpha", 1.0)) <= 0.01:
+                    continue
+            except Exception:
+                pass
             b = w.get("kCGWindowBounds") or {}
             larg, alt = int(b.get("Width", 0)), int(b.get("Height", 0))
             # Descarta só tranqueira de verdade. O limiar era 200x150 e cortava
@@ -932,8 +993,12 @@ def diagnostico_janelas():
                 "deixa enxergar janela nenhuma. Rode o INSTALAR_MAC.command.")
     todas = _janelas_macos()
     na_tela = _ids_na_tela()
+    pids = _pids_de_aplicativos()
     linhas = [f"Janelas encontradas: {len(todas)}  "
               f"(no espaço de trabalho atual: {len(na_tela)})",
+              "Filtro de aplicativos: " + (
+                  f"AppKit ({len(pids)} apps com ícone no Dock)" if pids is not None
+                  else "AppKit AUSENTE — usando lista de nomes de sistema"),
               f"Permissão de Gravação de Tela: "
               + ("concedida" if permissao_de_tela_ok() else "NÃO concedida"),
               ""]
