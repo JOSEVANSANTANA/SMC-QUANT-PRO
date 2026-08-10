@@ -1,0 +1,141 @@
+========================================================================
+  SMC QUANT PRO v2.16.0 — MAC (Apple Silicon M1 / M2 / M3)
+  Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.
+========================================================================
+
+PASSO 1 — DESCOMPACTE E COLOQUE A PASTA NUM LUGAR FIXO
+------------------------------------------------------
+Arraste a pasta "SMC_QUANT_PRO" para dentro de Documentos.
+Depois de instalar, NÃO mova mais a pasta de lugar.
+
+ATENÇÃO: no Finder a pasta aparece como "Documentos", mas no disco ela
+se chama "Documents" (em inglês). É normal do macOS. Se for digitar um
+caminho no Terminal, use ~/Documents.
+
+
+PASSO 2 — INSTALE O PYTHON CERTO  (obrigatório, 5 min)
+-------------------------------------------------------
+O Python que já vem no Mac NÃO SERVE — ele não traz o Tk, que é a
+biblioteca da interface, e o programa nem abre.
+
+  1. Abra:  https://www.python.org/downloads/macos/
+  2. Baixe: "macOS 64-bit universal2 installer" do Python 3.12
+  3. Instale normalmente (Avançar, Avançar).
+
+
+PASSO 3 — INSTALE O NODE.JS  (obrigatório para o motor)
+--------------------------------------------------------
+Baixe o instalador ARM64 (Apple Silicon) em https://nodejs.org
+— pegue a versão LTS.
+
+Se você já usa o Homebrew, "brew install node" também serve.
+
+
+PASSO 4 — DOIS CLIQUES EM:  INSTALAR_MAC.command
+-------------------------------------------------
+Ele confere tudo e instala as bibliotecas sozinho. Vai abrir uma janela
+preta com o passo a passo — é assim mesmo.
+
+SE O MAC RECUSAR ABRIR ("não pode ser aberto porque é de um
+desenvolvedor não identificado"):
+
+  → Clique com o BOTÃO DIREITO no arquivo → Abrir → Abrir de novo.
+
+  Se ainda assim recusar, abra o app Terminal e cole isto (uma linha):
+
+      chmod +x ~/Documents/SMC_QUANT_PRO/*.command
+
+  Depois tente os dois cliques de novo.
+
+
+PASSO 5 — A PERMISSÃO QUE FAZ TUDO FUNCIONAR  (não pule)
+---------------------------------------------------------
+  Ajustes do Sistema
+    → Privacidade e Segurança
+      → Gravação de Tela
+        → botão "+"  →  adicione o TERMINAL
+          → FECHE e ABRA o programa de novo
+
+POR QUE ISSO IMPORTA: sem essa permissão o macOS NÃO DÁ ERRO. Ele
+simplesmente entrega a lista de janelas SEM OS TÍTULOS e a captura do
+gráfico sai PRETA. É a causa número 1 de "instalei e não funciona".
+
+Para conferir: na aba Motor, o log tem que mostrar
+      Gravação de Tela: concedida
+
+
+PASSO 6 — ABRIR O PROGRAMA
+---------------------------
+Dois cliques em:  ABRIR_SMC_QUANT_PRO.command
+
+Na aba Motor:
+  • cole a chave da Gemini (ela vai para o Chaveiro do Mac, não fica em
+    texto no arquivo de configuração);
+  • na lista de gráficos, escolha a janela. No Mac ela aparece como
+    "Google Chrome — Tradovate" (o aplicativo vem primeiro de propósito:
+    sem a permissão do Passo 5 o título vem vazio, e assim você ainda
+    consegue escolher pelo aplicativo);
+  • LIGAR MOTOR.
+
+Na PRIMEIRA vez que ligar o motor ele instala as dependências do Node
+sozinho (1 a 2 minutos, precisa de internet). Isso só acontece uma vez.
+
+
+========================================================================
+  UMA LIMITAÇÃO REAL, DITA NA CARA
+========================================================================
+Se você MINIMIZAR a janela do gráfico no Dock, o macOS descarta o
+conteúdo dela e NÃO EXISTE pixel para capturar. O programa pula o ciclo
+e avisa — ele não desminimiza sozinho de propósito, porque no Mac
+desminimizar obriga a ATIVAR o aplicativo, ou seja, pular na sua frente
+no meio do pregão.
+
+DEIXE A JANELA DO GRÁFICO ABERTA. Atrás de outras funciona perfeitamente
+— só não pode estar minimizada.
+
+
+========================================================================
+  SE ALGO DER ERRADO
+========================================================================
+Lista de janelas vazia
+  → falta o pyobjc. Rode o INSTALAR_MAC.command de novo.
+
+Janelas aparecem só com o nome do app, sem título
+  → Passo 5 (Gravação de Tela), e REABRIR o programa.
+
+Captura sai preta
+  → Passo 5, e REABRIR o programa.
+
+"Node.js não encontrado" mas "node -v" funciona no Terminal
+  → abra pelo ABRIR_SMC_QUANT_PRO.command (ele corrige o PATH).
+
+Motor não sobe, porta 3939 ocupada
+  → no Terminal:  lsof -ti :3939 | xargs kill -9
+
+A TIGER fala em inglês
+  → Ajustes → Acessibilidade → Conteúdo Falado → Voz do Sistema
+    → Português (Brasil) → Luciana
+
+Erro "ModuleNotFoundError: tkinter"
+  → Passo 2: o Python do python.org não foi instalado.
+
+
+========================================================================
+  O QUE FOI TESTADO — E O QUE SÓ O SEU MAC PODE TESTAR
+========================================================================
+Testado automaticamente (32 suítes Python + 6 JavaScript, todas
+passando): a camada de plataforma monta os comandos certos do macOS
+(screencapture, Chaveiro, voz say), a chave da API nunca é gravada em
+texto claro, falha de captura devolve "não consegui" em vez de imagem
+inventada, a correção do PATH funciona, e NENHUMA função de decisão de
+trading consulta o sistema operacional — a lógica de SMC é idêntica no
+Windows e no Mac.
+
+NÃO testado: eu não tenho um Mac. A permissão concedida de verdade, a
+captura real da janela do Chrome e a voz saindo no alto-falante só a sua
+máquina confirma. Se algo escapar, o log do arranque (as linhas que
+começam com o ícone de monitor) diz exatamente onde parou — me mande
+que eu ajusto.
+
+Guia completo e detalhado: INSTALAR_NO_MAC.md
+========================================================================

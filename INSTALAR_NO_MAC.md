@@ -1,4 +1,4 @@
-# SMC Quant Pro no Mac (M1 / M2 / M3) — v2.14.0
+# SMC Quant Pro no Mac (M1 / M2 / M3) — v2.16.0
 
 > Este guia é para o **Mac com chip Apple Silicon** (o M2 é um deles). Tudo
 > roda **nativo em ARM**, sem Rosetta.
@@ -85,22 +85,31 @@ npm -v
 
 ## Passo 3 — Baixar o programa e instalar as dependências (5 min)
 
+> ⚡ **ATALHO:** se você baixou o **zip**, não precisa fazer os passos 3 e 4 na
+> mão — dê **dois cliques em `INSTALAR_MAC.command`** e ele faz tudo sozinho,
+> conferindo cada dependência. Veja o `LEIA-ME_MAC.txt`.
+
 Coloque a pasta do programa em algum lugar fixo, por exemplo
-`~/Documentos/SMC_QUANT_PRO`. Ela precisa conter:
+`~/Documents/SMC_QUANT_PRO`. Ela precisa conter:
 
 ```
 main_app.py
-plataforma.py          ← novo nesta versão
+plataforma.py                 ← obrigatório
 tradovate_auto.py
 requirements-mac.txt
 versao.json
-motor/                 ← a pasta do motor Node, inteira
+INSTALAR_MAC.command          ← instalador automático
+ABRIR_SMC_QUANT_PRO.command   ← abre o programa
+LEIA-ME_MAC.txt
+motor/
+   index.js
+   package.json
 ```
 
 No Terminal:
 
 ```bash
-cd ~/Documentos/SMC_QUANT_PRO
+cd ~/Documents/SMC_QUANT_PRO
 python3 -m pip install --upgrade pip
 python3 -m pip install -r requirements-mac.txt
 ```
@@ -113,7 +122,7 @@ do `pywin32` no Mac. **Sem ele o programa não enxerga as janelas abertas.**
 ## Passo 4 — Primeira abertura
 
 ```bash
-cd ~/Documentos/SMC_QUANT_PRO
+cd ~/Documents/SMC_QUANT_PRO
 python3 main_app.py
 ```
 
@@ -196,7 +205,7 @@ dia a dia. Se preferir abrir na mão:
 Para ter o ícone e abrir com duplo clique, sem Terminal:
 
 ```bash
-cd ~/Documentos/SMC_QUANT_PRO
+cd ~/Documents/SMC_QUANT_PRO
 python3 -m pip install pyinstaller
 rm -rf build dist
 python3 -m PyInstaller SMC_Quant_Pro_MAC.spec

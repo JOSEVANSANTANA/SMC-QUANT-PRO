@@ -1,0 +1,20 @@
+{
+  "name": "smc-quant-pro-motor",
+  "version": "2.16.0",
+  "description": "Motor do SMC Quant Pro - ponte com o WhatsApp (Baileys) e API local na porta 3939",
+  "main": "index.js",
+  "private": true,
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.0",
+    "cors": "^2.8.5",
+    "express": "^4.19.0",
+    "pino": "^8.21.0",
+    "qrcode": "^1.5.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
