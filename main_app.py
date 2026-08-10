@@ -117,7 +117,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.15.0"
+VERSAO_ATUAL = "2.16.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -2926,6 +2926,14 @@ def responder_offline(pergunta, cenario=None):
         return None
     if pergunta_sobre_capacidades(pergunta):
         return texto_das_capacidades()
+    # HISTÓRICO DE SUGESTÕES: dado que está no disco dela. Vem antes da base
+    # de metodologia porque "onde foi a última sugestão de venda de MGCV6?" é
+    # pergunta de FATO REGISTRADO, não de conceito — e caía no despejo de
+    # "não está na minha base" com o arquivo ali do lado.
+    if pergunta_sobre_historico_sugestoes(pergunta):
+        hist = responder_historico_sugestoes(pergunta)
+        if hist:
+            return hist
     # Base própria (metodologia + macro) responde de verdade a pergunta —
     # e, quando há cenário, a teoria vem AMARRADA ao que está na mesa dele.
     item = buscar_base_smc(pergunta)
@@ -3951,7 +3959,10 @@ def extrair_licao(texto):
     # 2. SUFIXO: "<a regra>, aprenda isso". Depois do gatilho pode vir uma
     #    justificativa ("…, aprenda isso, tendo em base que você já conhece
     #    SMC") — a lição é o que vem ANTES dele.
-    m = re.search(r"[,.;:\s]+" + _LICAO_VERBO + r"\s+" + _LICAO_OBJETO + r"\b",
+    # O separador aceita HÍFEN colado: ele escreveu
+    # "É SÓ VOCÊ OLHAR NOS HISTÓRICOS DE SUGESTÕES-APRENDA ISSO" e a lição não
+    # foi gravada — o padrão exigia espaço/vírgula antes do verbo.
+    m = re.search(r"[,.;:\-–—\s]+" + _LICAO_VERBO + r"\s+" + _LICAO_OBJETO + r"\b",
                   t, re.IGNORECASE)
     if m:
         antes = bruto[:m.start()].strip(" ,.;:—-")
@@ -4453,6 +4464,137 @@ def resumo_da_configuracao(cfg, plano, nome_conta="", campos=None):
                   "'meta de 6 mil em 10 dias'.")
     return "\n\n".join(partes)
 
+# Pergunta que SÓ o gráfico responde: onde entra, onde para, onde sai.
+# Repare no que NÃO entra aqui: "o que é um stop?" e "como se calcula o R:R?"
+# são metodologia e continuam sendo respondidas de cabeça, sem gastar captura
+# nem cota. O que dispara é o pedido de um NÚMERO para a operação DELE.
+_RE_NIVEL = re.compile(
+    r"\b(onde|qual|quais|quanto|em que (n[íi]vel|pre[çc]o|ponto)|"
+    r"at[ée] onde|pra onde|para onde)\b[^?]{0,80}?"
+    r"\b(stop|alvo|alvos|take|tp\d?|sa[íi]da|saio|sair|realiz\w+|parcial|"
+    r"prote[çc][ãa]o|prote(g|j)\w+|entrada|entro|zerar|encerr\w+)\b"
+    r"|\b(onde|como)\b[^?]{0,40}\b(posicion\w+|coloc\w+|ponho|por|p[ôo]e|"
+    r"deixo|movo|mover|ajust\w+)\b[^?]{0,40}"
+    r"\b(stop|alvo|take|tp\d?|prote[çc][ãa]o|parcial)\b", re.I)
+# "o que é / o que significa / como funciona" = teoria, não é pedido de número.
+_RE_NIVEL_TEORIA = re.compile(
+    r"\b(o que (é|e|significa|seria)|que (é|e) um|como (se )?(calcula|funciona|"
+    r"define)|defini[çc][ãa]o de|explica\w*|conceito)\b", re.I)
+
+def pergunta_pede_nivel(texto):
+    """True quando ele pede um NÚMERO da operação dele (stop, alvo, saída).
+
+    Isto é o gatilho para ela CAPTURAR e LER o gráfico por conta própria, em
+    vez de mandar o trader digitar 'tira um print' — que foi exatamente a
+    reclamação: ela sabia fazer e devolvia a tarefa."""
+    t = _norm_busca(texto or "")
+    if not t:
+        return False
+    if _RE_NIVEL_TEORIA.search(t):
+        return False
+    return bool(_RE_NIVEL.search(t))
+
+# --------------------------------------------------------------------
+# HISTÓRICO DE SUGESTÕES — dado que a ferramenta TEM no disco
+# --------------------------------------------------------------------
+# 14:46 ❯ "onde foi a última sugestão de venda de MGCV6?"
+# 14:46 ✳ "não está na minha base, não consegui confirmar na internet, e a API
+#          está fora..."
+# Ela tinha o arquivo de sugestões na mão. Ele respondeu: "É SÓ VOCÊ OLHAR NOS
+# HISTÓRICOS DE SUGESTÕES - APRENDA ISSO". Estava certo: isto é leitura de
+# arquivo local, não precisa de cota, de internet nem de modelo nenhum.
+_RE_HISTORICO_SUG = re.compile(
+    r"\b(ultim\w+|penultim\w+|anterior|passad\w+|hist[óo]ric\w+|"
+    r"j[áa] sugeri\w*|voc[êe] sugeri\w*|foi sugerid\w*|sugest\w+|sugeri\w+)\b",
+    re.I)
+_RE_HISTORICO_PEDE = re.compile(
+    r"\b(onde|qual|quais|quando|que horas?|quanto|lista|mostra|me diz|"
+    r"teve|houve|existe|existiu)\b", re.I)
+
+def pergunta_sobre_historico_sugestoes(texto):
+    t = _norm_busca(texto or "")
+    return bool(t and _RE_HISTORICO_SUG.search(t) and _RE_HISTORICO_PEDE.search(t))
+
+def responder_historico_sugestoes(texto, sinais=None):
+    """Responde do ARQUIVO de sugestões. Sem API, sem internet, sem chute.
+    Devolve None quando não há o que responder — e "não achei" é dito com
+    esses termos, nunca convertido em 'não sei'."""
+    def _quando(reg):
+        """'10/08/2026 13:02:41' -> '13:02'. O campo gravado é `data_hora`, com
+        segundos; devolve string vazia quando não dá para ler — nunca inventa
+        um horário."""
+        txt = str(reg.get("data_hora") or reg.get("hora") or "").strip()
+        m = re.search(r"(\d{1,2}:\d{2})", txt)
+        return m.group(1) if m else ""
+
+    try:
+        registros = list(sinais if sinais is not None else
+                         [r for r in carregar_sinais_log()
+                          if _e_da_conta_ativa(r)])
+    except Exception:
+        return None
+    if not registros:
+        return ("Ainda não há nenhuma sugestão registrada nesta conta — o "
+                "histórico está vazio. Não é falta de acesso: é que o motor "
+                "não gerou cenário nenhum ainda.")
+    t = _norm_busca(texto)
+    # Filtro por ATIVO, se ele citou um.
+    ativos = sorted({str(r.get("ativo", "")).upper() for r in registros
+                     if r.get("ativo")}, key=len, reverse=True)
+    ativo_alvo = next((a for a in ativos if a and _norm_busca(a) in t), None)
+    # ELE CITOU UM ATIVO QUE NÃO ESTÁ NO HISTÓRICO? Isso tem de ser dito como
+    # "procurei e não achei", nunca virar a sugestão de OUTRO ativo — devolver
+    # o MGCV6 para quem perguntou de PETR4 seria pior que não responder.
+    if not ativo_alvo:
+        citados = [c for c in re.findall(r"\b[A-Z]{3,6}\d{0,2}\b",
+                                         str(texto or "").upper())
+                   if c not in ("SELL", "BUY", "STOP", "TP", "SMC", "IA",
+                                "API", "USD", "PNL")]
+        if citados and not any(c in ativos for c in citados):
+            return (f"Procurei no histórico e NÃO há sugestão de "
+                    f"{citados[0]} registrada. O que existe lá: "
+                    + ", ".join(sorted({f"{r.get('direcao','?')} {r.get('ativo','?')}"
+                                        for r in registros[-25:]})) + ".")
+    # Filtro por LADO, se ele disse compra ou venda.
+    lado = None
+    if re.search(r"\b(vend\w+|sell|short)\b", t):
+        lado = "SELL"
+    elif re.search(r"\b(compr\w+|buy|long)\b", t):
+        lado = "BUY"
+    filtrados = [r for r in registros
+                 if (not ativo_alvo or str(r.get("ativo", "")).upper() == ativo_alvo)
+                 and (not lado or str(r.get("direcao", "")).upper().startswith(lado[0]))]
+    if not filtrados:
+        alvo_txt = " ".join(x for x in (lado and ("de venda" if lado == "SELL"
+                                                 else "de compra"),
+                                        ativo_alvo and f"de {ativo_alvo}") if x)
+        return (f"Procurei no histórico e NÃO há sugestão {alvo_txt} registrada. "
+                "O que existe lá: " +
+                ", ".join(sorted({f"{r.get('direcao','?')} {r.get('ativo','?')}"
+                                  for r in registros[-25:]})) + ".")
+    quer_lista = bool(re.search(r"\b(lista|todas|quais|hist[óo]ric)", t))
+    escolhidos = filtrados[-8:] if quer_lista else filtrados[-1:]
+    linhas = []
+    for r in escolhidos:
+        dec = r.get("decisao") or ""
+        res = r.get("resultado")
+        situacao = (f" · {dec}" if dec else "") + (
+            f" · resultado US$ {_num(res):+,.2f}" if _num(res) is not None else "")
+        linhas.append(
+            f"• {_quando(r) or '—'} — {r.get('direcao','?')} "
+            f"{r.get('ativo','?')}: entrada {r.get('entry','—')}, "
+            f"stop {r.get('stop','—')}, alvo {r.get('tp1','—')}"
+            + (f", probabilidade {_num(r.get('probabilidade')) or 0:.0f}%"
+               if r.get("probabilidade") is not None else "") + situacao)
+    cabeca = ("As últimas sugestões registradas:" if quer_lista else
+              "A última sugestão registrada"
+              + (f" de {ativo_alvo}" if ativo_alvo else "")
+              + (" de venda" if lado == "SELL" else
+                 " de compra" if lado == "BUY" else "") + ":")
+    return cabeca + "\n" + "\n".join(linhas) + (
+        "\n\nIsso vem do histórico gravado aqui no seu computador — não "
+        "depende de cota nem de internet.")
+
 def interpretar_intencao(texto):
     """Detecta comandos em LINGUAGEM NATURAL, sem depender da IA (dinheiro e
     controle do motor não passam por modelo — o modelo ALUCINA "motor ligado"
@@ -4588,6 +4730,22 @@ def interpretar_intencao(texto):
             re.search(r"\bprint\s*window\b", t) or \
             re.search(_PRINT_SOZINHO, t) or re.search(_PRINT_COM_AGORA, t):
         return "PRINT_AGORA"
+    # PERGUNTA DE NÍVEL = OLHAR O GRÁFICO. Esta é a correção do pregão de
+    # 10/08, e o log mostra o defeito com todas as letras:
+    #   14:26 ❯ ONDE POSICIONO MEU STOP DA OPERAÇÃO EM ANDAMENTO?
+    #   14:26 ✳ "...o motor não tem leitura fresca. Diga 'tira um print'."
+    #   14:26 ❯ TIRA UM PRINT
+    #   14:26 ✳ "seu stop técnico ideal fica entre 7791.00 e 7792.50."   ← perfeito
+    #   14:27 ❯ ONDE EU DEVERIA POSICIONAR MEU ALVO?
+    #   14:27 ✳ "...diga 'tira um print'."                               ← de novo
+    #
+    # Ou seja: ela SABIA fazer, e mesmo assim devolvia a tarefa para ele
+    # digitar o comando. Ele chegou a ENSINAR ("TIRA UM PRINT, USA O MOTOR
+    # PARA DETERMINAR ISSO") e ela passou a CITAR a lição sem cumpri-la.
+    # Perguntar onde vai o stop JÁ É pedir para olhar o gráfico: não existe
+    # responder isso sem ver o preço. Então a pergunta captura e lê, sozinha.
+    if pergunta_pede_nivel(t):
+        return "VER_GRAFICO"
     # OLHAR O GRÁFICO: ela busca o último print capturado pelo motor e analisa
     # a imagem de verdade, em vez de responder de memória sobre o texto velho.
     if re.search(r"\b(gr[áa]fico|print|tela|captura|imagem|screenshot)\b", t) and \

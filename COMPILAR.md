@@ -1,4 +1,4 @@
-# Como compilar o SMC Quant Pro v2.15.0 (TIGER)
+# Como compilar o SMC Quant Pro v2.16.0 (TIGER)
 
 > **Resumo:** o processo de build **não mudou**. É o mesmo fluxo do `.spec`
 > que você já usa. Nesta versão mudaram **dois** arquivos — substitua os dois
@@ -17,6 +17,54 @@ E, só para quem for usar no Mac: `requirements-mac.txt`,
 
 O **motor NÃO mudou** — reaproveite a pasta `motor\` com o `node_modules` que
 você já tem.
+
+### Novidades da 2.16.0
+
+**🎯 Ela FAZ, em vez de mandar você fazer.** Este é o defeito, e o log de 10/08
+mostra em quatro linhas:
+
+> 14:26 ❯ *ONDE POSICIONO MEU STOP DA OPERAÇÃO EM ANDAMENTO?*
+> 14:26 ✳ *"…o motor não tem leitura fresca. **Diga 'tira um print'**."*
+> 14:26 ❯ *TIRA UM PRINT*
+> 14:26 ✳ *"seu stop técnico ideal fica entre **7791.00 e 7792.50**."* ← perfeito
+> 14:27 ❯ *ONDE EU DEVERIA POSICIONAR MEU ALVO?*
+> 14:27 ✳ *"…**diga 'tira um print'**."* ← de novo
+
+**Ela sabia fazer.** Só devolvia a tarefa para você digitar o comando. Você
+chegou a **ensinar** (*"TIRA UM PRINT, USA O MOTOR PARA DETERMINAR ISSO"*) e ela
+passou a **citar a lição** sem cumpri-la — que é a definição exata de "não está
+aprendendo".
+
+Agora, **perguntar onde vai o stop JÁ É pedir para olhar o gráfico**. Não existe
+responder isso sem ver o preço. Então a pergunta **captura e lê sozinha**:
+
+*"onde posiciono meu stop"* · *"onde deveria posicionar meu alvo"* · *"qual o
+alvo"* · *"onde eu saio"* · *"onde coloco a proteção"* · *"onde faço a parcial"*
+
+**O que NÃO dispara captura** (para não gastar cota à toa): *"o que é um stop"*,
+*"como se calcula o R:R"*, *"explica o conceito"* — teoria continua sendo
+respondida de cabeça, na hora, sem tocar na API.
+
+**📒 Ela passa a consultar o HISTÓRICO DE SUGESTÕES.** Às 14:46:
+
+> ❯ *onde foi a última sugestão de venda de MGCV6?*
+> ✳ *"não está na minha base, não consegui confirmar na internet, e a API está
+> fora…"*
+
+Com o arquivo de sugestões **ali no disco dela**. Você respondeu certo: *"É SÓ
+VOCÊ OLHAR NOS HISTÓRICOS DE SUGESTÕES"*. Agora ela olha — e devolve a sugestão
+com entrada, stop, alvo, hora e o que aconteceu com ela (acatada, dispensada,
+resultado). **Sem cota, sem internet, sem modelo.** Pedindo "o histórico do X"
+ela lista as últimas.
+
+Com duas travas: se você perguntar de um ativo que **não está** no histórico,
+ela diz *"procurei e NÃO há sugestão de PETR4"* e mostra o que existe — **nunca**
+devolve a sugestão de outro ativo no lugar. E histórico vazio é dito como vazio,
+sem culpar a API.
+
+**✍️ "SUGESTÕES-APRENDA ISSO".** Você escreveu assim, com o hífen colado, e a
+lição **não foi gravada** — o padrão exigia espaço ou vírgula antes do verbo.
+Agora o hífen (e o travessão) valem como separador.
 
 ### Novidades da 2.15.0
 
@@ -363,7 +411,7 @@ cd C:\Users\jovan\Documents\SMC_QUANT_PRO
 python main_app.py
 ```
 
-Checklist da v2.15.0 — **comece pelo primeiro**, que é o defeito desta versão.
+Checklist da v2.16.0 — **comece pelo primeiro**, que é o defeito desta versão.
 Os itens A a D exigem a Tradovate aberta com o *"Chamado do pedido"* visível.
 
 0. **MOTOR LÊ E TIGER LÊ (o defeito desta versão).** Com o **motor ligado** e
@@ -535,17 +583,17 @@ Repita o checklist do passo 2 dentro do `.exe`.
 ## 6. Gerar o instalador (Inno Setup)
 
 1. Abra `instalador\SMC_Quant_Pro.iss` no Inno Setup Compiler.
-2. Confira que `MyAppVersion` está **"2.15.0"** (já está).
+2. Confira que `MyAppVersion` está **"2.16.0"** (já está).
 3. Pressione **F9** (Compile).
 
-Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.15.0.exe`.
+Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.16.0.exe`.
 
 ---
 
 ## 7. Publicar a atualização
 
-1. Suba o `SMC_Quant_Pro_Setup_2.15.0.exe` na pasta do Google Drive.
-2. O `versao.json` **já está publicado como 2.15.0** — assim que o arquivo
+1. Suba o `SMC_Quant_Pro_Setup_2.16.0.exe` na pasta do Google Drive.
+2. O `versao.json` **já está publicado como 2.16.0** — assim que o arquivo
    estiver no Drive, os clientes veem o aviso de nova versão.
 
 ---
