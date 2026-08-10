@@ -117,7 +117,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.14.0"
+VERSAO_ATUAL = "2.15.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -2815,12 +2815,63 @@ def ler_cenario_do_topico(item, cenario):
                  "para antecipar a saída."))
         elif any(k in tema for k in ("stop", "alvo", "gestao", "drawdown", "r:r",
                                      "risco")):
+            # SEM STOP REGISTRADO não é "stop None": é um buraco de risco, e
+            # tem de vir primeiro, com essas palavras.
+            tem_stop = _num(pos.get("stop")) is not None
+            tem_alvo = _num(pos.get("tp1")) is not None
             linhas.append(
                 f"Aplicando à sua posição aberta: {direcao} {pos.get('ativo','')} "
-                f"@ {pos.get('entry')}, stop {pos.get('stop')}, alvo "
-                f"{pos.get('tp1')}" +
+                f"@ {pos.get('entry')}, " +
+                (f"stop {pos.get('stop')}" if tem_stop
+                 else "⚠️ SEM STOP registrado") + ", " +
+                (f"alvo {pos.get('tp1')}" if tem_alvo else "sem alvo definido") +
                 (f", P&L agora de US$ {_num(pos.get('pnl_atual')) or 0:+,.2f}"
                  if pos.get("pnl_atual") is not None else "") + ".")
+            # O MOTOR JÁ CALCULOU ISSO — e era exatamente o que ficava de fora.
+            # Antes, este ramo só olhava a posição registrada; a leitura fresca
+            # do gráfico (que traz stop e alvo REAIS, com as confluências que os
+            # justificam) só era usada quando NÃO havia posição aberta. Ou seja:
+            # justo quando ele tinha dinheiro na mesa e perguntava "onde ponho o
+            # stop?", a ferramenta respondia com o aforismo do manual e ignorava
+            # o número que ela mesma tinha acabado de ler.
+            m_stop, m_alvo = _num(ua.get("stop")), _num(ua.get("tp1"))
+            mesmo_ativo = (str(ua.get("ativo", "")).upper() ==
+                           str(pos.get("ativo", "")).upper())
+            if mesmo_ativo and (m_stop is not None or m_alvo is not None):
+                partes = [f"O MOTOR leu {ua.get('ativo')} às "
+                          f"{ua.get('hora','—')} e calculou: "
+                          + " · ".join(
+                              ([f"stop {m_stop:g}"] if m_stop is not None else [])
+                              + ([f"alvo {m_alvo:g}"] if m_alvo is not None else [])
+                              + ([f"2º alvo {_num(ua.get('tp2')):g}"]
+                                 if _num(ua.get("tp2")) is not None else []))
+                          + "."]
+                if ua.get("confluencias"):
+                    partes.append("O que sustenta esses níveis: "
+                                  + " · ".join(str(c) for c in
+                                               list(ua["confluencias"])[:5]) + ".")
+                # A leitura do motor pode ser do LADO OPOSTO ao dele. Dizer isso
+                # é obrigatório: senão ele copia um stop que foi calculado para
+                # a operação contrária.
+                lado_motor = str(ua.get("acao", "")).upper()
+                if lado_motor and direcao and lado_motor[:1] != direcao[:1]:
+                    partes.append(
+                        f"⚠️ Atenção: essa leitura do motor é de {lado_motor}, "
+                        f"e você está {direcao}. Os níveis acima foram "
+                        "calculados para a operação no OUTRO sentido — sirva-se "
+                        "deles como mapa da liquidez, não como o seu stop.")
+                elif not tem_stop:
+                    partes.append(
+                        f"Como você está SEM stop na plataforma e a leitura do "
+                        f"motor é do mesmo lado, o número dele — {m_stop:g} — é "
+                        "o candidato direto: é onde a leitura que gerou o "
+                        "cenário deixa de valer." if m_stop is not None else "")
+                linhas.append(" ".join(p for p in partes if p))
+            elif not tem_stop:
+                linhas.append(
+                    "O motor ainda não tem leitura fresca deste ativo para eu "
+                    "tirar o nível de você. Diga 'tira um print' que eu capturo "
+                    "e leio agora — prefiro isso a chutar um número.")
         elif contra:
             linhas.append(
                 f"Vale para agora: você está {direcao} {pos.get('ativo','')} "
@@ -3764,7 +3815,11 @@ _MOTOR_LIGAR = (r"\b(lig(a|ar|ue)|ativ(a|ar|e)|inici(a|ar|e)|sob(e|ir)|"
 # ("espera PARA a análise ficar pronta"). Como verbo de comando ele aparece no
 # começo da fala ou logo depois de uma vírgula/vocativo — como preposição, vem
 # depois de outro verbo. Os demais verbos não têm essa ambiguidade.
-_MOTOR_DESLIGAR = (r"\b(deslig(a|ar|ue)|par(ar|e)|paus(a|ar|e)|encerr(a|ar|e)|"
+# "deliga o motor" (sem o S) foi digitado no pregão e caiu no despejo genérico
+# de "não tenho como responder". Tolerar o erro de digitação é seguro porque o
+# SUBSTANTIVO continua obrigatório — a regra que impede o falso positivo é o
+# verbo estar GRUDADO em "motor"/"robô"/"análises", e ela não mudou.
+_MOTOR_DESLIGAR = (r"\b(desl?ig(a|ar|ue)|delig(a|ar|ue)|par(ar|e)|paus(a|ar|e)|encerr(a|ar|e)|"
                    r"desativ(a|ar|e)|interromp(e|er|a)|stop)" + _MOTOR_ARTIGO +
                    _MOTOR_SUBSTANTIVOS + r"\b")
 _MOTOR_PARA = (r"(^|[,.;!?]\s*|\b(tiger|pode|favor|agora|j[áa])\s+)para" +
@@ -5877,7 +5932,20 @@ class SmcQuantApp(ctk.CTk):
                     break
         except Exception:
             pass
+        # LEITURA DO MOTOR DO ATIVO QUE ELE OPERA — não a do último ativo
+        # analisado. Sem isto, com posição no MES e o motor tendo acabado de
+        # ler o ouro, a resposta sobre "minha operação" vinha com o ouro.
         cenario["analise"] = getattr(self, "_ultima_analise", None) or {}
+        _ativo_foco = ((cenario.get("posicao") or {}).get("ativo") or "").upper()
+        if not _ativo_foco:
+            _alvo_txt = simbolo_do_texto(pergunta)
+            _ativo_foco = (_alvo_txt[1].upper() if _alvo_txt else "")
+        if _ativo_foco:
+            _porativo = getattr(self, "_analises_por_ativo", {}) or {}
+            for _k, _v in _porativo.items():
+                if _k == _ativo_foco or _ativo_foco in _k or _k in _ativo_foco:
+                    cenario["analise"] = _v
+                    break
         try:
             cenario["pendente"] = self._ultimo_sinal_pendente()
         except Exception:
@@ -6997,7 +7065,16 @@ class SmcQuantApp(ctk.CTk):
                                               self._cenario_da_mesa(pergunta))
             except Exception:
                 local = None
+            # A GUARDA ANTI-REPETIÇÃO ERA FURADA AQUI. O caminho local já
+            # evitava repetir mandando o turno para o modelo; com a cota
+            # estourada o modelo falhava, caía neste bloco, chamava
+            # responder_offline() DE NOVO e devolvia o MESMO texto. Foi assim
+            # que a mesma resposta sobre alvo saiu três vezes seguidas, palavra
+            # por palavra. Agora, texto repetido aqui é recusado.
+            if local and local == getattr(self, "_ultima_resposta_local", None):
+                local = None
             if local:
+                self._ultima_resposta_local = local
                 resposta = (f"{local}\n\n(Respondi sem a API, com o que eu tenho "
                             "aqui e o que busquei na internet — a API está "
                             f"indisponível: {self._diagnostico_erro(ultimo_erro)})")

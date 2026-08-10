@@ -1,4 +1,4 @@
-# Como compilar o SMC Quant Pro v2.14.0 (TIGER)
+# Como compilar o SMC Quant Pro v2.15.0 (TIGER)
 
 > **Resumo:** o processo de build **não mudou**. É o mesmo fluxo do `.spec`
 > que você já usa. Nesta versão mudaram **dois** arquivos — substitua os dois
@@ -17,6 +17,55 @@ E, só para quem for usar no Mac: `requirements-mac.txt`,
 
 O **motor NÃO mudou** — reaproveite a pasta `motor\` com o `node_modules` que
 você já tem.
+
+### Novidades da 2.15.0
+
+**🔧 A TIGER passa a USAR O MOTOR para responder sobre stop e alvo.** Era este o
+defeito que você apontou — *"ela está cega, não usa o motor"*. E era literal.
+
+Dia 10/08, às 14:02, com a operação aberta:
+
+> ❯ *ONDE DEVERIA POSICIONAR MEU ALVO NESSA OPERAÇÃO QUE ESTOU POSICIONADO?*
+> ✳ *"O alvo é a próxima liquidez do lado oposto… Aplicando à sua posição
+> aberta: SELL MESU6 @ 7784.75, **stop None, alvo None**."*
+
+E o **motor já tinha calculado, para o MESMO ativo**, às 12:16:
+`SELL MESU6 — stop 7796.5, alvo 7761.25`.
+
+A causa está numa linha só de `ler_cenario_do_topico`: a leitura fresca do
+gráfico era consultada num ramo `elif` que **só rodava quando NÃO havia posição
+aberta**. Ou seja — exatamente quando você tinha dinheiro na mesa e perguntava
+onde pôr o stop, a ferramenta respondia com o aforismo do manual e **ignorava o
+número que ela mesma tinha acabado de ler**.
+
+Agora, com posição aberta e pergunta sobre stop/alvo/risco, a resposta traz:
+
+- os **níveis calculados pelo motor** (stop, alvo, 2º alvo) e a **hora** da leitura;
+- as **confluências** que sustentam esses níveis;
+- **⚠️ SEM STOP registrado** com essas palavras, em vez de `stop None`;
+- e o número do motor apontado como **candidato direto** ao seu stop.
+
+Com três travas que os testes cobrem:
+- leitura do motor **no lado oposto** ao seu (o caso das 11:55, você SELL e o
+  motor virando BUY) → **avisa** que aqueles níveis são da operação contrária e
+  servem de mapa de liquidez, **nunca** entrega como "o seu stop";
+- leitura de **outro ativo** (motor acabou de ler o ouro, sua posição é no MES)
+  → **não mistura**, oferece capturar o gráfico agora;
+- **sem leitura nenhuma** → oferece *"tira um print"*, e **não chuta nível**.
+
+**🔁 A mesma resposta três vezes seguidas.** Às 14:01 e 14:02 saiu texto
+idêntico, palavra por palavra, três vezes. A guarda anti-repetição existia, mas
+tinha um furo: ela mandava o turno para o modelo em vez de repetir — e, com a
+cota estourada, o modelo falhava, caía no caminho de emergência e ali
+`responder_offline()` era chamado **de novo**, devolvendo o mesmo texto. A guarda
+agora também vale nesse caminho.
+
+**⌨️ "deliga o motor".** Você digitou assim (sem o S) e caiu no despejo de *"não
+tenho como responder"*. Agora o erro de digitação é tolerado — com segurança: o
+**substantivo continua obrigatório**, que é a regra que impede o falso positivo
+que já desligou o motor no meio de um pregão. Os testes conferem que
+*"não precisa acionar a cota da API para algumas análises"* e *"vou deligar para
+o meu corretor"* continuam **não** desligando nada.
 
 ### Novidades da 2.14.0
 
@@ -314,7 +363,7 @@ cd C:\Users\jovan\Documents\SMC_QUANT_PRO
 python main_app.py
 ```
 
-Checklist da v2.14.0 — **comece pelo primeiro**, que é o defeito desta versão.
+Checklist da v2.15.0 — **comece pelo primeiro**, que é o defeito desta versão.
 Os itens A a D exigem a Tradovate aberta com o *"Chamado do pedido"* visível.
 
 0. **MOTOR LÊ E TIGER LÊ (o defeito desta versão).** Com o **motor ligado** e
@@ -486,17 +535,17 @@ Repita o checklist do passo 2 dentro do `.exe`.
 ## 6. Gerar o instalador (Inno Setup)
 
 1. Abra `instalador\SMC_Quant_Pro.iss` no Inno Setup Compiler.
-2. Confira que `MyAppVersion` está **"2.14.0"** (já está).
+2. Confira que `MyAppVersion` está **"2.15.0"** (já está).
 3. Pressione **F9** (Compile).
 
-Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.14.0.exe`.
+Sai em `instalador\Output\SMC_Quant_Pro_Setup_2.15.0.exe`.
 
 ---
 
 ## 7. Publicar a atualização
 
-1. Suba o `SMC_Quant_Pro_Setup_2.14.0.exe` na pasta do Google Drive.
-2. O `versao.json` **já está publicado como 2.14.0** — assim que o arquivo
+1. Suba o `SMC_Quant_Pro_Setup_2.15.0.exe` na pasta do Google Drive.
+2. O `versao.json` **já está publicado como 2.15.0** — assim que o arquivo
    estiver no Drive, os clientes veem o aviso de nova versão.
 
 ---
