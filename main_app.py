@@ -117,7 +117,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.16.3"
+VERSAO_ATUAL = "2.17.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -5027,11 +5027,19 @@ class SmcQuantApp(ctk.CTk):
             for linha in plataforma.diagnostico().split("\n"):
                 self.log(f"🖥️ {linha}")
             if plataforma.E_MACOS and not plataforma.permissao_de_tela_ok():
-                self.log("⚠️ macOS: sem a permissão de GRAVAÇÃO DE TELA eu não "
-                         "leio o título das janelas e a captura do gráfico sai "
-                         "preta. Ajustes do Sistema → Privacidade e Segurança → "
-                         "Gravação de Tela → ligue o SMC Quant Pro e REABRA o "
-                         "programa.")
+                self.log(
+                    "⚠️ macOS: NÃO estou conseguindo ler o TÍTULO das janelas — "
+                    "elas vão aparecer só com o nome do aplicativo, e a captura "
+                    "pode sair preta.\n"
+                    "   Existem DUAS permissões, e basta uma delas funcionar:\n"
+                    "   1) Ajustes do Sistema → Privacidade e Segurança → "
+                    "GRAVAÇÃO DE TELA\n"
+                    "   2) Ajustes do Sistema → Privacidade e Segurança → "
+                    "ACESSIBILIDADE\n"
+                    "   Ligue o SMC Quant Pro (ou o Terminal, se abriu por ele) "
+                    "nas DUAS e REABRA o programa.\n"
+                    "   Depois clique em '🩺 Diagnosticar janelas' para conferir "
+                    "qual das duas passou a responder.")
         except Exception as e:
             self.log(f"⚠️ Não consegui montar o diagnóstico do sistema: {e}")
 

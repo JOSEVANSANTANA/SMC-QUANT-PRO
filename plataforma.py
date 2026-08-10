@@ -296,6 +296,124 @@ def _pids_de_aplicativos():
         return None
 
 
+# ====================================================================
+# SEGUNDA FONTE DE TITULOS: ACESSIBILIDADE (System Events)
+# ====================================================================
+# POR QUE PRECISOU DISTO. O titulo da janela pelo Quartz (kCGWindowName)
+# depende da permissao GRAVACAO DE TELA -- e essa permissao gruda no processo
+# que o macOS considera "responsavel". Quando o programa e aberto por um
+# .command, ou por um .app que so lanca o python3, a atribuicao vai para o
+# lugar errado com facilidade: o trader concede a permissao, ve "concedida"
+# nos Ajustes, e os titulos CONTINUAM vindo vazios. Foi exatamente o que
+# aconteceu -- o seletor mostrava "Claude" e "Accessibility Services", que nao
+# sao titulos: sao nomes de APLICATIVO.
+#
+# O System Events le o nome de cada janela por outro caminho (Acessibilidade),
+# com OUTRA permissao, que o macOS pede numa caixa de dialogo clara na
+# primeira vez. Ele devolve nome, posicao e tamanho; com posicao e tamanho da
+# para casar cada nome com a janela certa do Quartz e recuperar o ID que o
+# `screencapture -l` precisa.
+#
+# E fonte COMPLEMENTAR: se o Quartz ja trouxe o titulo, ele manda. Este aqui
+# entra so para preencher o que veio vazio.
+_LINHAS_APPLESCRIPT = [
+    'tell application "System Events"',
+    '  set saida to ""',
+    '  repeat with p in (every process whose background only is false)',
+    '    set pn to name of p',
+    '    try',
+    '      repeat with w in (every window of p)',
+    '        try',
+    '          set wp to position of w',
+    '          set ws to size of w',
+    '          set saida to saida & pn & tab & (name of w) & tab & '
+    '(item 1 of wp) & tab & (item 2 of wp) & tab & '
+    '(item 1 of ws) & tab & (item 2 of ws) & linefeed',
+    '        end try',
+    '      end repeat',
+    '    end try',
+    '  end repeat',
+    '  return saida',
+    'end tell',
+]
+_APPLESCRIPT_JANELAS = "\n".join(_LINHAS_APPLESCRIPT)
+
+_CACHE_AX = {"quando": 0, "dados": [], "ok": None}
+
+
+def titulos_por_acessibilidade(forcar=False):
+    """[{app, nome, x, y, largura, altura}] pelo System Events.
+
+    Guarda por 4 segundos: a consulta leva uns 200 ms e o seletor pode ser
+    atualizado varias vezes seguidas. Devolve lista vazia quando a permissao
+    de Acessibilidade nao foi concedida -- e nesse caso `_CACHE_AX["ok"]` fica
+    False, para o diagnostico poder DIZER isso em vez de ficar mudo.
+    """
+    if not E_MACOS:
+        return []
+    agora = time.time()
+    if not forcar and (agora - _CACHE_AX["quando"]) < 4:
+        return list(_CACHE_AX["dados"])
+    ok, saida = _rodar(["osascript", "-e", _APPLESCRIPT_JANELAS], timeout=15)
+    _CACHE_AX["quando"] = agora
+    _CACHE_AX["ok"] = bool(ok)
+    if not ok:
+        _CACHE_AX["dados"] = []
+        return []
+    itens = []
+    for linha in (saida or "").splitlines():
+        partes = linha.split("\t")
+        if len(partes) < 6:
+            continue
+        try:
+            itens.append({"app": partes[0].strip(), "nome": partes[1].strip(),
+                          "x": int(float(partes[2])), "y": int(float(partes[3])),
+                          "largura": int(float(partes[4])),
+                          "altura": int(float(partes[5]))})
+        except Exception:
+            continue
+    _CACHE_AX["dados"] = itens
+    return list(itens)
+
+
+def _completar_titulos(janelas):
+    """Preenche o `nome` das janelas que vieram sem titulo, casando com o
+    System Events por aplicativo + posicao + tamanho.
+
+    O casamento e por geometria porque e o unico dado que as duas fontes tem
+    em comum e que identifica a janela sem ambiguidade. Tolerancia de alguns
+    pixels: o Quartz mede o quadro da janela e o System Events a area util, e
+    eles divergem por um fio.
+    """
+    faltando = [j for j in janelas if not j.get("nome")]
+    if not faltando:
+        return janelas
+    ax = titulos_por_acessibilidade()
+    if not ax:
+        return janelas
+    usados = set()
+    for j in faltando:
+        melhor, melhor_dist = None, None
+        for i, a in enumerate(ax):
+            if i in usados or not a["nome"]:
+                continue
+            if a["app"].strip().lower() != j["app"].strip().lower():
+                continue
+            dist = (abs(a["x"] - j["x"]) + abs(a["y"] - j["y"])
+                    + abs(a["largura"] - j["largura"])
+                    + abs(a["altura"] - j["altura"]))
+            if melhor_dist is None or dist < melhor_dist:
+                melhor, melhor_dist = i, dist
+        # 60 px somados e folga suficiente para a diferenca de medicao e
+        # apertado o bastante para nao casar com a janela errada do mesmo app.
+        if melhor is not None and melhor_dist is not None and melhor_dist <= 60:
+            usados.add(melhor)
+            j["nome"] = ax[melhor]["nome"]
+            j["titulo"] = j["app"] + " - " + j["nome"]
+            j["origem_titulo"] = "acessibilidade"
+    return janelas
+
+
 def _ids_na_tela():
     """IDs das janelas que estão no espaço de trabalho ATUAL."""
     if not QUARTZ_DISPONIVEL:
@@ -400,6 +518,10 @@ def _janelas_macos(so_na_tela=False):
     # Agora, quando o rótulo se repete, ele ganha a ORDEM e o TAMANHO — que é
     # o que dá para distinguir sem o título: "Google Chrome — janela 2
     # (1512x982)". Não é bonito, mas é honesto e dá para escolher.
+    # Titulo vazio? Tenta a segunda fonte ANTES de desistir e cair no
+    # "Aplicativo - janela 2 (1512x982)", que e o ultimo recurso.
+    janelas = _completar_titulos(janelas)
+
     contagem = {}
     for j in janelas:
         contagem[j["titulo"]] = contagem.get(j["titulo"], 0) + 1
@@ -996,6 +1118,9 @@ def diagnostico_janelas():
     pids = _pids_de_aplicativos()
     linhas = [f"Janelas encontradas: {len(todas)}  "
               f"(no espaço de trabalho atual: {len(na_tela)})",
+              "Titulos por Acessibilidade (System Events): " + (
+                  "ok" if _CACHE_AX.get("ok") else
+                  "NAO autorizado - sem isto os titulos podem vir vazios"),
               "Filtro de aplicativos: " + (
                   f"AppKit ({len(pids)} apps com ícone no Dock)" if pids is not None
                   else "AppKit AUSENTE — usando lista de nomes de sistema"),
@@ -1005,7 +1130,9 @@ def diagnostico_janelas():
     for j in sorted(todas, key=lambda x: (x["app"].lower(), x["y"], x["x"])):
         linhas.append(
             f"  [{j['id']:>6}] {j['app']}"
-            + (f" · \"{j['nome']}\"" if j["nome"] else "  (sem título)")
+            + (f" · \"{j['nome']}\""
+               + (" [via Acessibilidade]" if j.get("origem_titulo") else "")
+               if j["nome"] else "  (SEM TÍTULO — nem Quartz nem Acessibilidade)")
             + f"  {j['largura']}x{j['altura']} em ({j['x']},{j['y']})"
             + ("" if j.get("na_tela") else "  ← outra área de trabalho"))
     if not todas:
