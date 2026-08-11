@@ -152,6 +152,37 @@ def pasta_dados():
     return pasta
 
 
+def janela_sem_roubar_foco(janela):
+    """Faz uma janela de aviso APARECER sem trazer o programa para a frente.
+
+    O DEFEITO (macOS, relatado em 11/08): a cada nova sugestão o aviso surgia e
+    o Mac trocava o aplicativo ativo — o trader estava na corretora e a tela
+    pulava para o SMC Quant Pro sozinha. No meio do pregão isso é inaceitável:
+    quem decide quando olhar o programa é ele.
+
+    A CAUSA é do Tk no macOS: criar um `Toplevel` ATIVA o aplicativo, mesmo com
+    `overrideredirect(True)`. Não é o programa chamando `focus_force` — é o
+    sistema respondendo ao nascimento da janela.
+
+    O CONSERTO é o estilo de janela `help` com o atributo `noActivates`, que é
+    o mecanismo do próprio Tk-macOS para janelas flutuantes que não roubam o
+    foco (é o que barra de ferramentas e tooltip usam). No Windows não existe
+    esse problema — janela nova não ativa o app —, então lá isto não faz nada.
+
+    Devolve True quando conseguiu aplicar; False quando não havia o que aplicar
+    (ou a versão do Tk não conhece o comando). Nunca levanta exceção: um aviso
+    na tela não pode derrubar o programa.
+    """
+    if not E_MACOS:
+        return False
+    try:
+        janela.tk.call("::tk::unsupported::MacWindowStyle", "style",
+                       janela._w, "help", "noActivates")
+        return True
+    except Exception:
+        return False
+
+
 def abrir_arquivo(caminho):
     """Abre um arquivo no programa padrão do sistema (imagem no visualizador,
     PDF no leitor). É o mesmo mecanismo de `abrir_pasta`, com outro nome porque

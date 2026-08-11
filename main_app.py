@@ -209,7 +209,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.21.1"
+VERSAO_ATUAL = "2.22.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1026,6 +1026,42 @@ def calcular_contratos(entry, stop, asset_symbol, margem, risco_pct, drawdown_ma
         "motivo_limite": motivo,
     }
 
+# Quantas leituras seguidas com o MESMO preço bastam para a leitura deixar de
+# valer como base de decisão. Duas podem ser coincidência num mercado parado;
+# três já significam que a tela não está atualizando (aba em segundo plano,
+# gráfico congelado, mercado fechado) — e o log de 11/08 chegou a TREZE.
+CICLOS_PARA_PRECO_CONGELADO = 3
+
+# A entrada sugerida pode estar longe do preço atual — é assim que trabalha uma
+# ordem limitada esperando o preço voltar à zona. Mas há um limite: entrada a
+# 8,6 R do preço (SELL @7785 com o mercado em 7741,75, no log de 11/08) não é
+# ordem, é um desejo. Ela nunca é tocada, o cenário expira, e o trader recebeu
+# uma "sugestão" que nunca teve chance. Medimos em MÚLTIPLOS DO RISCO porque é
+# a única régua que se ajusta sozinha ao ativo e à volatilidade do momento.
+MAX_DISTANCIA_ENTRADA_R = 3.0
+
+def avaliar_distancia_da_entrada(entry, stop, preco, max_r=MAX_DISTANCIA_ENTRADA_R):
+    """A entrada está a uma distância operável do preço de agora?
+
+    Função PURA. Devolve (ok, distancia_em_R). `ok` é True quando não dá para
+    medir (falta preço, ou entrada e stop iguais) — na dúvida NÃO se barra um
+    cenário, porque ausência de medida não é prova de defeito."""
+    e, s, p = _num(entry), _num(stop), _num(preco)
+    if e is None or s is None or p is None or e == s or p <= 0:
+        return True, None
+    risco = abs(e - s)
+    if risco <= 0:
+        return True, None
+    dist_r = abs(p - e) / risco
+    try:
+        limite = float(max_r)
+    except (TypeError, ValueError):
+        limite = MAX_DISTANCIA_ENTRADA_R
+    if limite <= 0:
+        return True, round(dist_r, 2)
+    return dist_r <= limite, round(dist_r, 2)
+
+
 def avisos_do_plano(plano):
     """O que os números do plano IMPLICAM, dito em voz alta. Função pura.
 
@@ -1532,7 +1568,7 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
     Devolve um resumo {'criadas','atualizadas','encerradas','ignoradas'}."""
     log = log or (lambda _m: None)
     resumo = {"criadas": 0, "atualizadas": 0, "encerradas": 0, "ignoradas": 0,
-              "corrigidas": 0, "confirmadas": 0}
+              "corrigidas": 0, "confirmadas": 0, "fundidas": 0}
     conta = conta_ativa_id()
     lista = carregar_posicoes()
 
@@ -1666,6 +1702,42 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
                 "para PENDENTE e zerei o resultado falso.")
 
         elif pos["status"] == "PENDENTE" and mesma_direcao:
+            # ---- UMA POSIÇÃO REAL, UM REGISTRO ----
+            # O DEFEITO (log de 11/08): às 16:05 a leitura da tela criou um
+            # registro PLATAFORMA de SELL MESU6 40 ctr. Às 16:10 o trader acatou
+            # uma sugestão e nasceu um registro ROBO, PENDENTE. Às 16:15 essa
+            # ordem foi CONFIRMADA — contra a MESMA posição de 40 contratos que
+            # já estava no diário como PLATAFORMA.
+            #
+            # A partir daí havia DOIS registros para UMA posição. Os dois
+            # fecharam, e o diário somou o resultado duas vezes:
+            #     🔻 encerrada na plataforma: SELL MESU6 — US$-600,00
+            #     📕 FECHADA no diário:       SELL MESU6 — US$-1.176,00
+            # Resultado do dia, win rate, drawdown e o freio de perda passaram
+            # todos a trabalhar com número inflado.
+            #
+            # Quem sobrevive é o registro do ROBÔ: ele tem o elo com a sugestão
+            # (sinal_id), o stop, o alvo e o dimensionamento planejado. O
+            # registro da PLATAFORMA vira uma ANOTAÇÃO fundida — não some do
+            # arquivo (histórico não se apaga), mas sai da contagem.
+            gemeas = [g for g in lista
+                      if g is not pos
+                      and g.get("origem") == "PLATAFORMA"
+                      and g.get("conta_id") == conta
+                      and str(g.get("ativo", "")).upper() == nome
+                      and g.get("status") in ("ABERTA", "PENDENTE")
+                      and g.get("direcao") == pos.get("direcao")]
+            for g in gemeas:
+                g["status"] = "FUNDIDA"
+                g["fundida_em"] = pos.get("id")
+                g["pnl_final"] = 0.0        # o resultado é contado no registro do robô
+                g["data_fechamento"] = time.strftime('%d/%m/%Y %H:%M')
+                resumo["fundidas"] += 1
+                log(f"🔗 {pos.get('direcao')} {nome}: esta posição já estava no "
+                    f"diário como leitura da plataforma. É a MESMA operação — "
+                    "fundi os dois registros num só para o resultado não ser "
+                    "contado em dobro.")
+
             # O QUE FOI PLANEJADO, antes de ser sobrescrito pelo que de fato
             # aconteceu. Sem guardar isto, a divergência some sem deixar rastro.
             entry_plan = _num(pos.get("entry"))
@@ -1738,6 +1810,28 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
                 pos["pnl_atual"] = round(atual["pnl"], 2)
             if atual["preco"] is not None:
                 pos["preco_atual"] = atual["preco"]
+
+        elif (pos["status"] == "ABERTA" and not mesma_direcao
+                and pos.get("execucao") == "CONFIRMADA"):
+            # POSIÇÃO DO ROBÔ QUE SUMIU DA PLATAFORMA = você encerrou lá.
+            #
+            # Antes NÃO havia este ramo: uma posição do robô já confirmada que
+            # desaparecia da corretora ficava ABERTA no diário para sempre, e
+            # só era encerrada se o preço batesse no stop/alvo registrados. Quem
+            # fechava na mão saía da plataforma e continuava "em operação" aqui.
+            # Isso não aparecia antes porque o registro DUPLICADO da plataforma
+            # encerrava e dava a impressão de que o diário tinha fechado — com
+            # o número errado, e ainda por cima em dobro.
+            #
+            # O resultado realizado é o ÚLTIMO P&L que a PRÓPRIA corretora
+            # reportou: dado real dela, não estimativa nossa.
+            pos["status"] = "FECHADA"
+            pos["data_fechamento"] = time.strftime('%d/%m/%Y %H:%M')
+            pos["pnl_final"] = round(pos.get("pnl_atual") or 0.0, 2)
+            resumo["encerradas"] += 1
+            log(f"🔻 Posição encerrada na plataforma: {pos.get('direcao')} "
+                f"{pos.get('ativo')} — resultado US${pos['pnl_final']:+.2f} "
+                "(registrado no diário, uma única vez).")
 
     # --- 3) Cria as que ainda não existem no diário ---
     ja_no_diario = {str(p.get("ativo", "")).upper() for p in lista
@@ -5598,6 +5692,28 @@ def montar_persona_ia():
     )
 
 # --------------------------------------------------------------------
+# O TEMA É ESCURO, E ISSO PRECISA SER DITO AO CustomTkinter
+# --------------------------------------------------------------------
+# ESTE PROGRAMA PINTA A PRÓPRIA PALETA (o dicionário COR, lá em cima): fundo
+# #0a0e14, cartões #12161f, texto claro. Só que 22 dos 101 rótulos da interface
+# não declaram cor de texto — eles usam o padrão do tema do CustomTkinter.
+#
+# E o CustomTkinter começa em modo "System". Num sistema em MODO CLARO — que é
+# o padrão do macOS e do Windows recém-instalados — esse padrão vira `gray10`,
+# quase preto, desenhado em cima do NOSSO fundo escuro. O resultado é texto
+# invisível: "Janela do gráfico a monitorar", "Plataforma:", o rótulo do
+# "Restaurar a janela minimizada" e mais uma dúzia de linhas somem da tela.
+#
+# Isto foi encontrado abrindo o programa de verdade num servidor gráfico
+# virtual e OLHANDO a imagem (ver tests/fumaca_gui.py). Nenhum teste de lógica
+# pegaria: a janela abre, os widgets existem, nada levanta exceção — e o
+# trader simplesmente não consegue ler metade da aba.
+#
+# Como a paleta é escura por decisão de projeto, o modo é FIXADO em escuro.
+# Não é preferência: é coerência com as cores que o próprio app desenha.
+ctk.set_appearance_mode("dark")
+
+# --------------------------------------------------------------------
 # TAMANHO DA LETRA — acessibilidade de verdade, não zoom do sistema
 # --------------------------------------------------------------------
 # Pedido direto do trader: "inclua uma opção de aumentar as letras em todos os
@@ -8764,6 +8880,12 @@ class SmcQuantApp(ctk.CTk):
                 win = ctk.CTkToplevel(self)
                 win.overrideredirect(True)          # sem barra de título
                 win.attributes("-topmost", True)    # sempre visível
+                # NÃO ROUBAR A TELA. No macOS, criar um Toplevel ATIVA o
+                # aplicativo — o trader estava na corretora e a tela pulava
+                # para cá a cada sugestão. O estilo 'help/noActivates' é o
+                # mecanismo do Tk-macOS para janela flutuante que não ativa.
+                # No Windows isto é um no-op (lá o problema não existe).
+                plataforma.janela_sem_roubar_foco(win)
                 decidivel = sinal_id is not None
                 larg = 430 if decidivel else 400
                 # A altura é calculada DEPOIS de montar o conteúdo (mais abaixo).
@@ -9080,7 +9202,8 @@ class SmcQuantApp(ctk.CTk):
 
                 resumo = sincronizar_posicoes_plataforma(linhas, log=self.log)
                 houve = any(resumo[k] for k in
-                            ("criadas", "encerradas", "corrigidas", "confirmadas"))
+                            ("criadas", "encerradas", "corrigidas", "confirmadas",
+                             "fundidas"))
                 if houve or not silencioso:
                     self.log(
                         f"🔎 Posições da plataforma (conta '{nome_conta_ativa()}'): "
@@ -9088,6 +9211,8 @@ class SmcQuantApp(ctk.CTk):
                         f"{resumo['encerradas']} encerrada(s), "
                         f"{resumo['confirmadas']} confirmada(s), "
                         f"{resumo['corrigidas']} corrigida(s)"
+                        + (f", {resumo['fundidas']} fundida(s) com o registro do robô"
+                           if resumo["fundidas"] else "")
                         + (f", {resumo['ignoradas']} ignorada(s) por leitura duvidosa"
                            if resumo["ignoradas"] else "")
                         + "."
@@ -12362,6 +12487,37 @@ class SmcQuantApp(ctk.CTk):
                         else:
                             ciclos_preco_igual = 0
                         preco_anterior_lido = preco
+
+                        # ---- LEITURA CONGELADA NÃO GERA SUGESTÃO ----
+                        # Este é o defeito que explica "nenhuma entrada de hoje foi
+                        # válida". No log de 11/08, das 18:01 às 18:11, o preço ficou
+                        # travado em 7753,25 por TREZE ciclos — e o motor seguiu
+                        # despejando cenário em cima da MESMA imagem parada, virando
+                        # de SELL para BUY e de volta para SELL:
+                        #     18:05 BUY · 18:06 SELL · 18:07 SELL · 18:10 BUY · 18:11 BUY
+                        # Não era leitura de mercado: era o modelo inventando estrutura
+                        # numa figura que não mudava. O aviso existia e não impedia
+                        # nada — avisar sem agir é o mesmo que não avisar.
+                        leitura_congelada = (
+                            ciclos_preco_igual + 1 >= CICLOS_PARA_PRECO_CONGELADO)
+                        if leitura_congelada and acao in ("BUY", "SELL"):
+                            if not getattr(self, "_avisou_congelado", False):
+                                self._avisou_congelado = True
+                                self.log(
+                                    f"🧊 SUGESTÕES SUSPENSAS: o preço de {ativo} está "
+                                    f"parado em {preco} há {ciclos_preco_igual + 1} "
+                                    "leituras. Uma tela que não muda não é análise — "
+                                    "qualquer cenário daqui seria o modelo inventando "
+                                    "estrutura numa figura parada. Volto a sugerir no "
+                                    "instante em que o preço se mexer. Se o mercado "
+                                    "está aberto, confira se a janela do gráfico é a "
+                                    "certa e se ela está atualizando.")
+                                self._chat_feed(
+                                    f"🧊 Parei de sugerir: o preço de {ativo} não se "
+                                    f"mexe há {ciclos_preco_igual + 1} leituras. "
+                                    "Volto sozinha quando a tela atualizar.")
+                        elif not leitura_congelada:
+                            self._avisou_congelado = False
                         if confluencias:
                             self.log("🔎 Confluências identificadas:")
                             for c in confluencias:
@@ -12592,7 +12748,34 @@ class SmcQuantApp(ctk.CTk):
                         # nova. Sem isso, o mesmo POI era reemitido a cada ciclo, enchendo
                         # a lista de cenários idênticos que só expiravam.
                         repetido = False
-                        if acao in ("BUY", "SELL") and _ep > 0 and _risco:
+
+                        # LEITURA CONGELADA: entra na MESMA porta que os outros
+                        # filtros (`repetido`), porque o efeito é o mesmo — não
+                        # emitir. O aviso já saiu acima; aqui é a ação.
+                        if leitura_congelada and acao in ("BUY", "SELL"):
+                            repetido = True
+
+                        # ENTRADA LONGE DEMAIS DO PREÇO. No log de 11/08 saiu um
+                        # SELL com entrada em 7785,00 com o mercado em 7741,75 —
+                        # 8,6 vezes o risco de distância. Aquilo não é ordem
+                        # limitada esperando o preço voltar; é um nível que não
+                        # seria tocado, e não foi: a ordem ficou pendente e
+                        # morreu. Sugestão que não tem chance de acontecer não
+                        # deveria ocupar o lugar de uma que tem.
+                        if not repetido and acao in ("BUY", "SELL"):
+                            _ok_dist, _dist_r = avaliar_distancia_da_entrada(
+                                _ep, _sl, preco)
+                            if not _ok_dist:
+                                repetido = True
+                                self.log(
+                                    f"📏 {acao} {ativo} @ {_ep} descartado: a entrada "
+                                    f"está a {_dist_r:.1f}× o risco de distância do "
+                                    f"preço atual ({preco}), acima do limite de "
+                                    f"{MAX_DISTANCIA_ENTRADA_R:g}×. Uma ordem tão "
+                                    "longe raramente é tocada — ela expiraria sem "
+                                    "nunca ter tido chance.")
+
+                        if not repetido and acao in ("BUY", "SELL") and _ep > 0 and _risco:
                             limite_rep = (time.time() - JANELA_ANTI_REPETICAO_SEG) * 1000
                             for s_ant in sinais_da_conta_ativa():
                                 if s_ant.get("id", 0) < limite_rep:

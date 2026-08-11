@@ -9,6 +9,23 @@ python3 tests/run.py
 Sem instalar nada. Não abre janela, não toca em disco do app, não precisa de
 chave de API nem de internet.
 
+### E o teste que ABRE a janela
+
+```
+xvfb-run -a python3 tests/fumaca_gui.py     # sem monitor (servidor/CI)
+python3 tests/fumaca_gui.py                 # com monitor
+```
+
+Precisa de tela e das bibliotecas da interface instaladas. Ele sobe o programa
+de verdade, percorre as abas, aplica todas as escalas de letra, recolhe e abre
+seções, dispara notificações, salva o plano e grava um PNG para conferência
+humana.
+
+Existe porque há uma classe de defeito que o `run.py` não alcança: a janela
+abre, nenhum widget levanta exceção, e mesmo assim o trader não consegue usar.
+Foi assim que se descobriu que 22 rótulos ficavam **invisíveis** quando o
+sistema está em modo claro.
+
 ## Por que estes testes estão AQUI dentro
 
 A suíte anterior morava numa pasta temporária, fora do repositório, e foi
@@ -35,6 +52,8 @@ vez de passar testando o vazio.
 | `test_mac.py` | `No module named 'numpy'` matando o microfone; mensagens mandando um usuário de Mac abrir telas do Windows. |
 | `test_motor.py` | "Motor no ar" dito sobre um processo que já tinha morrido; a porta 3939 ocupada virando tarefa do trader no Terminal; cenário morto ficando "aguardando decisão" para sempre. |
 | `test_interface.py` | A aba Motor recolhível: um widget cujo bloco pai é criado DEPOIS dele impede o app de abrir, e o pyflakes não pega isso. Também o tamanho de letra (valor absurdo no config não pode inutilizar a janela). |
+| `test_qualidade_leitura.py` | Preço congelado por 13 ciclos com o motor sugerindo em cima; entrada a 8,6 R do preço; tema escuro não fixado (rótulos invisíveis em sistema no modo claro). |
+| `test_duplicidade.py` | A MESMA operação virando dois registros no diário e o resultado sendo contado em dobro; a notificação roubando a tela no macOS. |
 | `test_empacotamento.py` | O repositório ficou versões inteiras sabendo compilar para Mac e **não** para Windows — o `.spec` do `.exe` vivia só na máquina do trader. A simetria entre os dois sistemas virou teste. |
 
 ## Regra da casa

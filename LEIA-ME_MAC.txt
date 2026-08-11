@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.21.1 — MAC (Apple Silicon M1 / M2 / M3)
+  SMC QUANT PRO v2.22.0 — MAC (Apple Silicon M1 / M2 / M3)
   Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.
 ========================================================================
 
@@ -183,6 +183,50 @@ no meio do pregão.
 
 DEIXE A JANELA DO GRÁFICO ABERTA. Atrás de outras funciona perfeitamente
 — só não pode estar minimizada.
+
+
+========================================================================
+  O QUE MUDOU NA v2.22.0
+========================================================================
+1) O RESULTADO ESTAVA SENDO CONTADO EM DOBRO.
+   As 16:05 a leitura da tela criou um registro de SELL MESU6 40 ctr.
+   As 16:10 voce acatou uma sugestao e nasceu um SEGUNDO registro. As
+   16:15 a execucao foi confirmada contra a MESMA posicao de 40 ctr — e
+   os dois registros ficaram vivos. Os dois fecharam:
+        encerrada na plataforma: US$-600,00
+        FECHADA no diario:       US$-1.176,00
+   Uma operacao so. Resultado do dia, win rate, drawdown e o FREIO DE
+   PERDA passaram a trabalhar com numero inflado — e foi o freio
+   inflado que travou o seu pregao.
+   AGORA: ao confirmar a execucao os dois registros sao FUNDIDOS num so
+   (mesmo ativo, mesma direcao). O registro fundido nao some do arquivo,
+   mas sai da contagem.
+
+2) A NOTIFICACAO ROUBAVA A TELA NO MAC.
+   Nao era o programa pedindo foco. No macOS, criar a janelinha de aviso
+   ATIVA o aplicativo, mesmo sem barra de titulo. Corrigido com o estilo
+   'help/noActivates' do proprio Tk-macOS, que existe exatamente para
+   janela flutuante que nao ativa o app. Clicar no aviso continua
+   trazendo o programa para frente — isso e decisao sua.
+
+3) "NENHUMA ENTRADA VALIDA" — a causa esta no log.
+   Das 18:01 as 18:11 o preco ficou travado em 7753,25 por TREZE
+   leituras, e o motor continuou sugerindo em cima da MESMA imagem
+   parada, virando de lado quatro vezes. O aviso de "preco nao muda" ja
+   existia e nao impedia nada. Agora tres leituras iguais SUSPENDEM as
+   sugestoes ate a tela se mexer — e o aviso sai uma vez, nao treze.
+   Junto: entrada longe demais do preco. As 15:30 saiu um SELL com
+   entrada em 7785,00 com o mercado em 7741,75 (8,6 vezes o risco). O
+   limite passou a ser 3 vezes o risco.
+
+4) TEMA ESCURO NAO ESTAVA FIXADO.
+   Se o seu Mac estiver em MODO CLARO, 22 rotulos da interface ficavam
+   INVISIVEIS (texto quase preto sobre o fundo escuro do app). Agora o
+   tema e fixado em escuro.
+
+TESTES: 135 automaticos, mais um teste que ABRE a janela de verdade,
+percorre as abas, aplica todas as escalas de letra, recolhe secoes e
+dispara notificacoes. Foi ele que achou o item 4.
 
 
 ========================================================================

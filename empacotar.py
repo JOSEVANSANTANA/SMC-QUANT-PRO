@@ -45,12 +45,15 @@ COMUM = [
     "tests/LEIA-ME.md",
     "tests/harness.py",
     "tests/run.py",
+    "tests/fumaca_gui.py",
     "tests/test_conversa.py",
+    "tests/test_duplicidade.py",
     "tests/test_dimensionamento.py",
     "tests/test_interface.py",
     "tests/test_mac.py",
     "tests/test_motor.py",
     "tests/test_piso_qualidade.py",
+    "tests/test_qualidade_leitura.py",
 ]
 
 # A CASCA de cada sistema.
