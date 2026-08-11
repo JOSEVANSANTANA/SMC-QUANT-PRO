@@ -95,14 +95,16 @@ class TestNaoFalarDeWindowsNoMac(unittest.TestCase):
         # Estas duas sumiram do arquivo inteiro.
         for frase in ("permissões do Windows", "padrão do Windows"):
             self.assertNotIn(frase, fonte, frase)
-        # Esta pode existir, mas SÓ dentro do ramo do Windows das constantes de
-        # ajuda (ou num comentário). Nunca solta no meio de uma mensagem.
+        # A frase do WINDOWS é "Configurações → Sistema → Som". A do macOS é
+        # "Ajustes do Sistema → Som → Entrada" — palavras diferentes de
+        # propósito, porque são telas diferentes. O que não pode é a versão do
+        # Windows aparecer solta; a do Mac é livre.
         for n, linha in enumerate(fonte.splitlines(), 1):
-            if "Sistema → Som" not in linha:
+            if "Configurações → Sistema → Som" not in linha:
                 continue
             self.assertTrue(
                 linha.lstrip().startswith("#") or "(Windows)" in linha
-                or "(macOS)" in linha or "E_MACOS" in linha,
+                or "E_MACOS" in linha,
                 f"linha {n} manda o trader para uma tela do Windows sem "
                 f"checar o sistema: {linha.strip()}")
 

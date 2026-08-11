@@ -52,6 +52,7 @@ COMUM = [
     "tests/test_interface.py",
     "tests/test_mac.py",
     "tests/test_motor.py",
+    "tests/test_notificacao.py",
     "tests/test_piso_qualidade.py",
     "tests/test_qualidade_leitura.py",
 ]

@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.22.0 — MAC (Apple Silicon M1 / M2 / M3)
+  SMC QUANT PRO v2.23.0 — MAC (Apple Silicon M1 / M2 / M3)
   Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.
 ========================================================================
 
@@ -183,6 +183,51 @@ no meio do pregão.
 
 DEIXE A JANELA DO GRÁFICO ABERTA. Atrás de outras funciona perfeitamente
 — só não pode estar minimizada.
+
+
+========================================================================
+  O QUE MUDOU NA v2.23.0
+========================================================================
+A NOTIFICACAO PAROU DE ROUBAR A TELA — pela raiz.
+  Na 2.22.0 eu tentei convencer o Tk a nao ativar o app. Nao bastou: no
+  macOS, criar uma janela ATIVA o aplicativo, ponto. Brigar com isso e
+  brigar com o sistema.
+
+  AGORA o padrao no Mac e a NOTIFICACAO NATIVA — a mesma da Central de
+  Notificacoes. Ela aparece no canto e, por construcao, nao tira o foco
+  de ninguem.
+
+  O preco: nela nao cabem os botoes ACATAR / NAO OPEREI. A decisao sai
+  por 'acatar' no chat ou pelos botoes do dashboard — e a propria
+  notificacao diz isso.
+
+  Se voce PREFERIR os botoes, escolha "Janela na tela" na aba Motor,
+  secao ALERTAS. O programa avisa, ao gravar, que naquele modo a tela
+  vai pular. Tem tambem o modo silencioso (so log e WhatsApp).
+
+MICROFONE MUDO — a causa era permissao, nao dispositivo.
+  Seu log das 18:32 mostrou o microfone ABRINDO sem erro e nao chegando
+  som nenhum. No macOS, app sem permissao de microfone NAO recebe erro:
+  recebe SILENCIO. A mensagem antiga mandava trocar o dispositivo de
+  entrada — o lugar errado.
+
+  Agora ela ABRE a tela de permissoes sozinha e diz QUAL app marcar.
+  ATENCAO a esta parte: se voce abre o programa por um .command, quem
+  aparece na lista de Microfone e o TERMINAL, nao o "SMC Quant Pro".
+  Quem procura pelo nome do programa nao acha e conclui que ja
+  autorizou. Depois de marcar, FECHE e ABRA o programa — a permissao so
+  vale a partir do proximo arranque.
+
+ACATAR NO CHAT
+  Voce digitou ACATAR e disse que nada aconteceu. Do lado do codigo
+  estava certo: ela perguntou "confirma?" e ficou esperando. Do seu
+  lado, voce deu uma ordem e recebeu uma pergunta — e o indicador
+  voltava para "pronta" logo depois, sem sinal de que havia algo
+  pendente.
+
+  Corrigido dos dois lados: o indicador mostra "aguardando confirmacao
+  do ACATAR" enquanto espera, e DIGITAR ACATAR DE NOVO confirma. A
+  trava continua: nada roda no primeiro comando.
 
 
 ========================================================================

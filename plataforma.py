@@ -152,6 +152,82 @@ def pasta_dados():
     return pasta
 
 
+def quem_pede_a_permissao():
+    """QUEM o macOS vai listar na tela de permissões — e é nele que o trader
+    precisa marcar o visto.
+
+    Isto não é detalhe: se o programa é aberto pelo Terminal (ou por um
+    `.command`, que abre o Terminal), quem pede microfone e gravação de tela é
+    o TERMINAL, não o 'SMC Quant Pro'. O trader procura pelo nome do programa
+    na lista, não acha, conclui que já autorizou tudo — e continua sem áudio.
+    """
+    if not E_MACOS:
+        return "SMC Quant Pro"
+    try:
+        pai = os.environ.get("__CFBundleIdentifier", "")
+        if "Terminal" in pai:
+            return "Terminal"
+        if "iTerm" in pai:
+            return "iTerm"
+        if pai:
+            return "SMC Quant Pro"
+    except Exception:
+        pass
+    # Sem a variável do bundle, o programa foi aberto por um shell — logo, quem
+    # aparece na lista de permissões é o terminal que o abriu.
+    return "Terminal (ou o app que você usou para abrir o programa)"
+
+
+def abrir_permissao_microfone():
+    """Abre a tela de permissão de Microfone do macOS direto no painel certo.
+
+    Mandar o trader navegar por Ajustes → Privacidade e Segurança → Microfone
+    no meio do pregão é pedir para ele desistir. O macOS aceita uma URL que
+    abre exatamente esse painel."""
+    if not E_MACOS:
+        return False
+    try:
+        subprocess.Popen([
+            "open",
+            "x-apple.systempreferences:com.apple.preference.security"
+            "?Privacy_Microphone"])
+        return True
+    except Exception:
+        return False
+
+
+def notificacao_do_sistema(titulo, texto, subtitulo=""):
+    """Notificação NATIVA do sistema — a que NUNCA rouba o foco.
+
+    POR QUE ISTO EXISTE: a janelinha de aviso desenhada pelo próprio programa
+    (um Toplevel do Tk) ATIVA o aplicativo no macOS. O trader está na corretora
+    e a tela pula para cá a cada sugestão. Tentar convencer o Tk a não ativar é
+    lutar contra o comportamento do sistema; a Central de Notificações do macOS
+    já faz exatamente o que se quer: aparece no canto, não tira o foco de
+    ninguém, e some sozinha.
+
+    Devolve True quando a notificação saiu. False significa "não consegui" — e
+    quem chamou precisa cair de volta na janela desenhada, nunca ficar calado.
+    """
+    if not E_MACOS:
+        return False
+    try:
+        def _limpo(t):
+            # Aspas e barras quebram o AppleScript. Nada de escapar na mão: o
+            # texto vem de análise de mercado e pode conter qualquer coisa.
+            return str(t or "").replace("\\", " ").replace('"', "'").replace("\n", " ")
+        partes = [f'display notification "{_limpo(texto)}"',
+                  f'with title "{_limpo(titulo)}"']
+        if subtitulo:
+            partes.append(f'subtitle "{_limpo(subtitulo)}"')
+        partes.append('sound name "Submarine"')
+        r = subprocess.run(["osascript", "-e", " ".join(partes)],
+                           capture_output=True, timeout=8)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 def janela_sem_roubar_foco(janela):
     """Faz uma janela de aviso APARECER sem trazer o programa para a frente.
 

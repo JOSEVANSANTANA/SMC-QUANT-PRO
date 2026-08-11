@@ -54,6 +54,7 @@ vez de passar testando o vazio.
 | `test_interface.py` | A aba Motor recolhível: um widget cujo bloco pai é criado DEPOIS dele impede o app de abrir, e o pyflakes não pega isso. Também o tamanho de letra (valor absurdo no config não pode inutilizar a janela). |
 | `test_qualidade_leitura.py` | Preço congelado por 13 ciclos com o motor sugerindo em cima; entrada a 8,6 R do preço; tema escuro não fixado (rótulos invisíveis em sistema no modo claro). |
 | `test_duplicidade.py` | A MESMA operação virando dois registros no diário e o resultado sendo contado em dobro; a notificação roubando a tela no macOS. |
+| `test_notificacao.py` | A notificação roubando a tela no macOS (resolvida com a notificação nativa, não com truque de Tk); o microfone que abre e devolve silêncio por falta de permissão. |
 | `test_empacotamento.py` | O repositório ficou versões inteiras sabendo compilar para Mac e **não** para Windows — o `.spec` do `.exe` vivia só na máquina do trader. A simetria entre os dois sistemas virou teste. |
 
 ## Regra da casa

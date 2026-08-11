@@ -266,3 +266,56 @@ class TestMostrarPrint(unittest.TestCase):
         ns = _ns_intencao()
         self.assertEqual(ns["processar_turno_chat"]("me mostre o print"),
                          ("EXECUTAR", "MOSTRAR_PRINT"))
+
+
+class TestConfirmacaoDoAcatar(unittest.TestCase):
+    """11/08, 19:21 — ele digitou ACATAR e relatou que "nada aconteceu".
+
+        ❯ ACATAR
+        ✳ "Confirmando: ACATAR o BUY MESU6 ... Responda 'sim'"
+
+    Do lado do código estava tudo certo: ela perguntou e ficou esperando. Do
+    lado dele, ele deu a ordem e o programa devolveu uma pergunta — e o
+    indicador de estado voltava para "pronta" logo depois, sem nenhum sinal de
+    que havia decisão pendente.
+    """
+
+    def test_repetir_o_comando_confirma(self):
+        """ACATAR duas vezes é a mesma ordem, dita pela mesma pessoa. Não é
+        ambíguo."""
+        ns = _ns_intencao()
+        self.assertEqual(
+            ns["processar_turno_chat"]("acatar", confirmacao_pendente="ACATAR"),
+            ("EXECUTAR", "ACATAR"))
+
+    def test_o_primeiro_comando_continua_nao_executando(self):
+        """A trava de responsabilidade não pode afrouxar: dinheiro nunca sai de
+        um comando só."""
+        ns = _ns_intencao()
+        self.assertEqual(ns["processar_turno_chat"]("acatar"),
+                         ("PEDIR_CONFIRMACAO", "ACATAR"))
+
+    def test_sim_continua_confirmando(self):
+        ns = _ns_intencao()
+        self.assertEqual(
+            ns["processar_turno_chat"]("sim", confirmacao_pendente="ACATAR"),
+            ("EXECUTAR", "ACATAR"))
+
+    def test_dispensar_cancela_um_acatar_pendente(self):
+        ns = _ns_intencao()
+        self.assertEqual(
+            ns["processar_turno_chat"]("dispensar", confirmacao_pendente="ACATAR"),
+            ("CONF_CANCELADA", None))
+
+    def test_comando_DIFERENTE_nao_confirma_por_acidente(self):
+        """Repetir ZERAR não pode confirmar um ACATAR pendente — são ordens
+        diferentes, e uma delas mexe em dinheiro."""
+        ns = _ns_intencao()
+        tipo, _ = ns["processar_turno_chat"]("zera o ciclo",
+                                             confirmacao_pendente="ACATAR")
+        self.assertNotEqual(tipo, "EXECUTAR")
+
+    def test_trocar_de_assunto_derruba_a_confirmacao(self):
+        ns = _ns_intencao()
+        tipo, _ = ns["processar_turno_chat"]("status", confirmacao_pendente="ACATAR")
+        self.assertEqual(tipo, "EXECUTAR")   # executa o STATUS, não o ACATAR

@@ -209,7 +209,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.22.0"
+VERSAO_ATUAL = "2.23.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -5531,6 +5531,21 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
     if confirmacao_pendente:
         if intencao == "SIM":
             return ("EXECUTAR", confirmacao_pendente)
+        # REPETIR O MESMO COMANDO É CONFIRMAR.
+        #
+        # No log de 11/08, 19:21:
+        #     ❯ ACATAR
+        #     ✳ "Confirmando: ACATAR o BUY MESU6 ... Responda 'sim'"
+        # e o trader relatou que "nada aconteceu". Do lado do código estava
+        # tudo certo — ela perguntou e ficou esperando. Do lado dele, ele deu
+        # a ordem e o programa devolveu uma pergunta.
+        #
+        # Digitar ACATAR de novo, com um ACATAR pendente, não é ambíguo: é a
+        # mesma ordem, dita duas vezes, pela mesma pessoa. Isso confirma. A
+        # trava de responsabilidade continua de pé — nada roda no PRIMEIRO
+        # comando, e trocar de assunto continua derrubando a confirmação.
+        if intencao == confirmacao_pendente:
+            return ("EXECUTAR", confirmacao_pendente)
         if intencao in ("NAO", "DISPENSAR"):
             return ("CONF_CANCELADA", None)
         # qualquer outra coisa derruba a confirmação e segue o fluxo normal
@@ -6108,6 +6123,32 @@ class SmcQuantApp(ctk.CTk):
                         text_color=COR["texto"], fg_color="#1f8b4c",
                         border_color="#63b3ed", hover_color="#25a35a"
                         ).pack(pady=(0, 4), padx=12, anchor="w")
+        # COMO o aviso aparece. No Mac isto não é preferência estética: a
+        # janela desenhada pelo Tk ATIVA o aplicativo e faz a tela pular da
+        # corretora para cá. Por isso o padrão no Mac é a notificação nativa.
+        linha_estilo = ctk.CTkFrame(frame_notif, fg_color="transparent")
+        linha_estilo.pack(pady=(2, 2), padx=12, anchor="w", fill="x")
+        ctk.CTkLabel(linha_estilo, text="Como avisar:", text_color=COR["texto"],
+                     font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 8))
+        self._var_estilo_notif = tk.StringVar(
+            value=self.ESTILOS_NOTIFICACAO[self._estilo_notificacao()])
+        ctk.CTkOptionMenu(
+            linha_estilo, variable=self._var_estilo_notif, width=330,
+            values=list(self.ESTILOS_NOTIFICACAO.values()),
+            fg_color=COR["input"], button_color=COR["borda"],
+            text_color=COR["texto"],
+            command=self._salvar_estilo_notificacao).pack(side="left")
+        ctk.CTkLabel(
+            frame_notif, justify="left", text_color=COR["dim"],
+            font=ctk.CTkFont(size=10), wraplength=560,
+            text="No macOS, uma janela desenhada pelo programa ATIVA o aplicativo — "
+                 "a tela pula da corretora para cá a cada sugestão, sem você clicar "
+                 "em nada. É comportamento do sistema, não escolha do app. Por isso "
+                 "o padrão no Mac é a NOTIFICAÇÃO DO SISTEMA, que aparece no canto e "
+                 "não tira o foco de ninguém. Nela não cabem os botões ACATAR / NÃO "
+                 "OPEREI: a decisão sai pelo chat ('acatar') ou pelo dashboard."
+        ).pack(pady=(0, 4), padx=12, anchor="w")
+
         linha_notif = ctk.CTkFrame(frame_notif, fg_color="transparent")
         linha_notif.pack(pady=(0, 10), padx=12, anchor="w")
         ctk.CTkButton(linha_notif, text="🔔 Testar notificação", width=170,
@@ -6696,7 +6737,17 @@ class SmcQuantApp(ctk.CTk):
             self.txt_chat.see("end")
         except Exception:
             pass
-        self._chat_status("pronta", "#3fb950")
+        # "pronta" só quando NÃO há decisão esperando por ele. Sem isto, a
+        # animação de digitação terminava e apagava o "⏳ aguardando
+        # confirmação" que tinha acabado de ser posto — o trader digitava
+        # ACATAR, via a pergunta, o indicador voltava para "pronta" e ele
+        # concluía que nada estava pendente.
+        if getattr(self, "_chat_conf", None) == "ACATAR":
+            self._chat_status("⏳ aguardando confirmação do ACATAR", "#ffcc66")
+        elif getattr(self, "_chat_conf", None) == "ZERAR_CICLO":
+            self._chat_status("⏳ aguardando o seu 'sim' para ZERAR", "#ffcc66")
+        else:
+            self._chat_status("pronta", "#3fb950")
         self._chat_ocupada = False
         self.after(1, self._chat_render_proximo)
 
@@ -6814,6 +6865,8 @@ class SmcQuantApp(ctk.CTk):
                     "dashboard e começa um ciclo novo agora. Seu histórico NÃO "
                     "é apagado — fica arquivado. Responda 'sim' para eu zerar "
                     "ou 'não' para deixar como está.")
+                self._chat_status("⏳ aguardando o seu 'sim' para ZERAR",
+                                  "#ffcc66")
                 return
             sinal = self._ultimo_sinal_pendente()
             if not sinal:
@@ -6822,9 +6875,14 @@ class SmcQuantApp(ctk.CTk):
                 return
             self._chat_responder(
                 f"Confirmando: ACATAR o {sinal.get('direcao')} {sinal.get('ativo','')} "
-                f"com entrada {sinal.get('entry')} e stop {sinal.get('stop')}? "
-                "Responda 'sim' para eu registrar (e enviar as ordens, se a "
-                "automação estiver ligada) ou 'não' para deixar quieto.")
+                f"com entrada {sinal.get('entry')} e stop {sinal.get('stop')}?\n\n"
+                "👉 Responda 'sim' — ou digite ACATAR de novo, que eu tomo como "
+                "confirmado. 'não' deixa quieto.\n"
+                "NADA foi registrado ainda: dinheiro nunca sai de um comando só.")
+            # O ESTADO DE ESPERA PRECISA APARECER. O trader digitou ACATAR,
+            # recebeu uma pergunta e concluiu que "nada aconteceu" — o programa
+            # estava esperando e não mostrava isso em lugar nenhum.
+            self._chat_status("⏳ aguardando confirmação do ACATAR", "#ffcc66")
             return
         if tipo == "CONF_CANCELADA":
             self._chat_responder("Certo, deixei como estava — nada foi feito.")
@@ -8745,23 +8803,60 @@ class SmcQuantApp(ctk.CTk):
                 if frase is None:
                     continue                       # interrompida (🎤/pensando/TTS)
                 if frase == b"":
-                    # Microfone aberto, mas NENHUM som chegou. Isso é quase
-                    # sempre microfone errado selecionado no sistema — e é
-                    # exatamente o caso de "o mic consta em uso mas ela não me
-                    # ouve". Diz qual dispositivo está sendo usado.
+                    # MICROFONE ABERTO E MUDO. No macOS isto tem UMA causa
+                    # dominante, e não é o dispositivo errado: é a PERMISSÃO DE
+                    # MICROFONE. Quando o app não tem a permissão, o macOS NÃO
+                    # devolve erro — ele entrega silêncio, zeros. O stream abre,
+                    # o nome do dispositivo é lido corretamente, e não chega som
+                    # nenhum. Foi exatamente o que o log de 11/08 mostrou às
+                    # 18:32: "escutando pelo MacBook Air Microphone" seguido de
+                    # "não chega som nenhum".
+                    #
+                    # A mensagem anterior mandava trocar o dispositivo de
+                    # entrada — o lugar errado. E há uma armadilha a mais: quem
+                    # aparece na lista de permissões é o processo RESPONSÁVEL.
+                    # Abrindo pelo .command (que abre o Terminal), quem precisa
+                    # do visto é o TERMINAL, não o "SMC Quant Pro". O trader
+                    # procura pelo nome do programa, não acha, e conclui que já
+                    # autorizou.
                     if not getattr(self, "_tiger_avisou_mudo", False):
                         self._tiger_avisou_mudo = True
                         try:
                             dev = _sd.query_devices(kind="input")["name"]
                         except Exception:
                             dev = "desconhecido"
-                        self.after(0, lambda d=dev: self._chat_escrever(
-                            "sistema",
-                            f"(🐯 estou escutando pelo microfone “{d}” mas não "
-                            "chega som nenhum há um tempo. Se esse não é o seu "
-                            "microfone, troque o dispositivo de ENTRADA padrão "
-                            f"em {ONDE_TROCAR_MIC} e desligue/religue o "
-                            "OLÁ TIGER.)", persistir=False))
+                        if plataforma.E_MACOS:
+                            quem = plataforma.quem_pede_a_permissao()
+                            msg = (
+                                f"(🐯 o microfone “{dev}” abriu, mas não chega "
+                                "som nenhum.\n\n"
+                                "NO MAC ISSO É QUASE SEMPRE A PERMISSÃO DE "
+                                "MICROFONE — e ela não dá erro: o sistema "
+                                "simplesmente entrega silêncio.\n\n"
+                                "Abri a tela de permissões para você. Marque "
+                                f"“{quem}” na lista de Microfone.\n"
+                                "ATENÇÃO: como você abriu o programa por aí, é "
+                                f"“{quem}” que aparece na lista — NÃO procure "
+                                "por 'SMC Quant Pro'.\n\n"
+                                "Depois de marcar, FECHE e ABRA o programa "
+                                "(a permissão só vale a partir do próximo "
+                                "arranque) e ligue o OLÁ TIGER de novo.\n\n"
+                                f"Se “{quem}” já estiver marcado, aí sim pode "
+                                "ser o dispositivo errado: troque a entrada "
+                                "padrão em Ajustes do Sistema → Som → Entrada.)")
+                            try:
+                                plataforma.abrir_permissao_microfone()
+                            except Exception:
+                                pass
+                        else:
+                            msg = (
+                                f"(🐯 estou escutando pelo microfone “{dev}” mas "
+                                "não chega som nenhum há um tempo. Se esse não é "
+                                "o seu microfone, troque o dispositivo de ENTRADA "
+                                f"padrão em {ONDE_TROCAR_MIC} e desligue/religue "
+                                "o OLÁ TIGER.)")
+                        self.after(0, lambda m=msg: self._chat_escrever(
+                            "sistema", m, persistir=False))
                     continue
                 self._tiger_avisou_mudo = False    # chegou som: zera o aviso
                 try:
@@ -8835,6 +8930,27 @@ class SmcQuantApp(ctk.CTk):
     # ------------------------------------------------------------------
     # NOTIFICAÇÃO NO COMPUTADOR (independente do WhatsApp)
     # ------------------------------------------------------------------
+    def _salvar_estilo_notificacao(self, rotulo=None):
+        """Grava a escolha, RELÊ DO DISCO e confirma com o que ficou gravado."""
+        escolha = next((k for k, v in self.ESTILOS_NOTIFICACAO.items()
+                        if v == (rotulo or self._var_estilo_notif.get())), None)
+        if not escolha:
+            return
+        salvar_config({"estilo_notificacao": escolha})
+        gravado = self._estilo_notificacao()
+        if gravado != escolha:
+            self.log(f"⚠️ NÃO consegui gravar o estilo de aviso — continua "
+                     f"'{self.ESTILOS_NOTIFICACAO[gravado]}'.")
+            return
+        self.log(f"🔔 Aviso de sugestão: {self.ESTILOS_NOTIFICACAO[gravado]}.")
+        if gravado == "sistema":
+            self.log("   (a decisão sai por 'acatar' / 'dispensar' no chat, ou "
+                     "pelos botões do dashboard)")
+        elif gravado == "janela" and plataforma.E_MACOS:
+            self.log("   ⚠️ No macOS esta opção FAZ a tela pular para o programa "
+                     "a cada aviso — é o sistema que ativa o app quando a janela "
+                     "nasce. Você escolheu com essa informação.")
+
     def _salvar_pref_notificacao(self):
         salvar_config({"notificar_desktop": bool(self.notif_var.get())})
         self.log("🔔 Notificações no computador LIGADAS."
@@ -8861,6 +8977,23 @@ class SmcQuantApp(ctk.CTk):
             self._fechar_notificacao(w)
         self._notif_abertas = []
 
+    # Como o aviso de nova sugestão aparece. No macOS o padrão é a notificação
+    # NATIVA, porque a janela desenhada pelo Tk ativa o aplicativo e faz a tela
+    # pular da corretora para cá — foi a queixa, e é comportamento do sistema,
+    # não escolha do programa.
+    ESTILOS_NOTIFICACAO = {
+        "sistema": "Notificação do sistema (não rouba o foco)",
+        "janela": "Janela na tela, com botões ACATAR / NÃO OPEREI",
+        "silencioso": "Nenhum aviso na tela (só log e WhatsApp)",
+    }
+
+    def _estilo_notificacao(self):
+        """'sistema' | 'janela' | 'silencioso'. Padrão: nativo no Mac, janela
+        no Windows (lá a janela nunca roubou foco)."""
+        padrao = "sistema" if plataforma.E_MACOS else "janela"
+        v = str(carregar_config().get("estilo_notificacao", padrao)).lower()
+        return v if v in self.ESTILOS_NOTIFICACAO else padrao
+
     def _notificar_desktop(self, titulo, linhas, cor="#1f8b4c", segundos=15,
                             sinal_id=None, direcao=None):
         """Mostra um aviso no canto da tela (sempre por cima) + um bipe. Não usa
@@ -8871,6 +9004,29 @@ class SmcQuantApp(ctk.CTk):
         a sugestão direto da notificação, sem abrir o app."""
         if not (getattr(self, "notif_var", None) and self.notif_var.get()):
             return
+
+        # ---- NOTIFICAÇÃO NATIVA: a única que NÃO rouba o foco ----
+        # Tentei resolver isso pelo Tk (estilo 'help/noActivates') e não bastou:
+        # no macOS, criar um Toplevel ATIVA o aplicativo, e brigar com isso é
+        # brigar com o comportamento do sistema. A Central de Notificações do
+        # próprio macOS já faz exatamente o que se quer — aparece no canto, não
+        # tira o foco de ninguém, some sozinha.
+        #
+        # O preço é perder os botões ACATAR / NÃO OPEREI de dentro do aviso. Por
+        # isso a mensagem diz, ali mesmo, que a decisão sai pelo chat ('acatar')
+        # ou pelo dashboard. E quem prefere os botões escolhe "janela" na aba
+        # Motor, ciente de que ali a tela vai pular.
+        if self._estilo_notificacao() == "silencioso":
+            return
+        if self._estilo_notificacao() == "sistema":
+            corpo = " · ".join(str(l) for l in linhas if l)[:230]
+            if plataforma.notificacao_do_sistema(
+                    titulo, corpo,
+                    subtitulo=("Responda 'acatar' ou 'dispensar' no chat"
+                               if sinal_id is not None else "")):
+                return
+            # A notificação nativa falhou: NÃO ficar calado. Cai na janela.
+            self.log("(a notificação do sistema não saiu — usando o aviso na tela)")
 
         def mostrar():
             try:
