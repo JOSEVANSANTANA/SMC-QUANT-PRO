@@ -542,8 +542,14 @@ const servidor = app.listen(PORTA, () => {
 
 servidor.on('error', (erro) => {
     if (erro.code === 'EADDRINUSE') {
-        console.log(`❌ ERRO: a porta ${PORTA} já está em uso por outro programa/processo node.exe.`);
-        console.log('   Finalize processos node.exe órfãos no Gerenciador de Tarefas e reinicie.');
+        // A instrução tem de ser a do sistema em que o motor está rodando.
+        // Antes esta mensagem falava de "node.exe" e "Gerenciador de Tarefas"
+        // dentro de um Mac — uma tela que não existe naquela máquina.
+        const noMac = process.platform === 'darwin';
+        console.log(`❌ ERRO: a porta ${PORTA} já está em uso por outro processo.`);
+        console.log(noMac
+            ? `   Um motor anterior ficou de pé. O app tenta encerrar sozinho ao ligar; se insistir, no Terminal:  lsof -ti :${PORTA} | xargs kill -9`
+            : `   Um 'node.exe' órfão ficou de pé. O app tenta encerrar sozinho ao ligar; se insistir, finalize os processos 'node.exe' no Gerenciador de Tarefas.`);
         process.exit(1);
     } else {
         console.log(`❌ Erro inesperado ao iniciar o servidor: ${erro.message}`);

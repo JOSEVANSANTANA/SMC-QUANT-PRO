@@ -20,9 +20,16 @@ Uso:
 import ast
 import os
 import re
+import sys
 
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ARQUIVO = os.path.join(RAIZ, "main_app.py")
+
+# A raiz do projeto entra no path para que `import plataforma` funcione nos
+# testes. O plataforma.py é importável de verdade (todos os módulos de sistema
+# dele entram com guarda), ao contrário do main_app.py, que sobe a janela.
+if RAIZ not in sys.path:
+    sys.path.insert(0, RAIZ)
 
 
 def _arvore(caminho=None):

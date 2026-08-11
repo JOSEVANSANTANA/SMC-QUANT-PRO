@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.20.0 — MAC (Apple Silicon M1 / M2 / M3)
+  SMC QUANT PRO v2.21.0 — MAC (Apple Silicon M1 / M2 / M3)
   Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.
 ========================================================================
 
@@ -183,6 +183,51 @@ no meio do pregão.
 
 DEIXE A JANELA DO GRÁFICO ABERTA. Atrás de outras funciona perfeitamente
 — só não pode estar minimizada.
+
+
+========================================================================
+  O QUE MUDOU NA v2.21.0
+========================================================================
+O MOTOR DIZIA QUE SUBIU SEM TER SUBIDO — corrigido.
+  "liga o motor" respondia "Motor no ar: ja estou capturando e
+  analisando" enquanto, no mesmo minuto, o log dizia que o processo do
+  Node tinha morrido com a porta 3939 ocupada. Agora ela so diz que o
+  motor subiu quando a PORTA RESPONDE, e a morte do processo corta a
+  espera na hora, com o motivo real.
+
+A PORTA 3939 OCUPADA AGORA E RESOLVIDA PELO PROGRAMA
+  Aquele Node orfao e lixo que o proprio app deixou ao ser fechado a
+  forca. Antes voce tinha que abrir o Terminal e digitar
+  "lsof -ti :3939 | xargs kill -9" no meio do pregao. Agora o app
+  encerra o orfao sozinho antes de ligar. Ele so mata processo chamado
+  "node": se a porta estiver com outro programa, ele NAO mata nada e
+  diz de quem e.
+
+CENARIO QUE MORREU DEIXAVA DE "AGUARDAR DECISAO"
+  Quando o preco rompia o stop antes de tocar a entrada, o motor matava
+  o cenario so na memoria e o registro continuava marcado como
+  pendente. Por isso "acatar" respondia "nao ha cenario aguardando
+  decisao". Agora o registro e marcado e a resposta conta o que houve.
+
+CHAT
+  - "aprenda tudo isso" e "aprenda isso tudo que pedi acima" caiam no
+    despejo generico. Agora sao entendidos — e como "tudo" pode ser
+    varias falas, ela grava a ultima e MOSTRA as outras para voce
+    apontar, em vez de adivinhar e gravar regra errada para sempre.
+  - "me mostre o print" abre a imagem (arquivo local: sem cota, sem
+    internet, sem modelo).
+  - "envia o print no whatsapp" manda a IMAGEM, nao so texto.
+
+INTERFACE — os dois pedidos
+  - A aba Motor virou uma pilha de SECOES RECOLHIVEIS: instalacao,
+    janelas, WhatsApp/QR, pregao, alertas, log, Tradovate. Cada uma abre
+    e fecha com um clique no titulo e o app lembra como voce deixou. O
+    botao LIGAR MOTOR fica sempre a vista, fora das secoes. A secao do
+    WhatsApp abre sozinha quando chega um QR code.
+  - TAMANHO DA LETRA: Normal / Grande / Maior / Maximo, valendo para
+    TODAS as abas — inclusive o terminal da TIGER e o log do motor.
+    Botoes A- e A+ na barra da TIGER, e um menu na aba Motor
+    ("Tamanho da letra"). A janela cresce junto para nada ficar cortado.
 
 
 ========================================================================

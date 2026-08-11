@@ -156,7 +156,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.20.0"
+VERSAO_ATUAL = "2.21.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -2416,6 +2416,9 @@ def situacao_do_sinal(sinal, posicoes=None):
         return ("🚫 você cancelou a ordem — cenário encerrado", COR["dim"])
     if decisao == "EXPIRADO":
         return ("⌛ expirou — não foi acatada no prazo", COR["dim"])
+    if decisao == "CANCELADO_STOP":
+        return ("🚫 cancelada — stop rompido antes de o preço tocar a entrada",
+                COR["dim"])
     if decisao == "INVALIDADO":
         return ("🔄 invalidada — o cenário mudou antes de você acatar", COR["dim"])
     return ("⏳ aguardando sua decisão", COR["amarelo"])
@@ -4352,7 +4355,12 @@ _PRINT_COM_AGORA = (r"\b(captur(a|e|ar)|printa|printe|screenshot)\s+"
 # sem gravar nada. Daí a queixa de que a IA "não estava aprendendo".
 _LICAO_VERBO = (r"(aprend(a|e|er)|memoriz(a|e|ar)|guard(a|e|ar)|anot(a|e|ar)|"
                 r"li[çc][ãa]o)")
-_LICAO_OBJETO = r"(isso|isto|essa regra|esse ponto|isso a[íi]|bem isso)"
+# "APRENDA TUDO ISSO" e "APRENDA ISSO TUDO QUE PEDI ACIMA" caíam no despejo
+# genérico ("não tenho como responder isso com segurança agora") — duas vezes
+# seguidas no log de 10/08, 18:09 e 18:10. O objeto aceitava "isso", mas não
+# "tudo isso" nem "isso tudo".
+_LICAO_OBJETO = (r"((tudo|todo)\s+)?(isso|isto|essa regra|esse ponto|"
+                 r"isso a[íi]|bem isso|tudo)(\s+(tudo|isso))?")
 # Cortesias que sobram grudadas na ponta da lição e não fazem parte dela.
 _LICAO_SOBRA = (r"[\s,;:]*\b(considere|considera|considerar|leve em conta|"
                 r"quero que voc[êe]|gostaria que voc[êe]|por favor|e|ent[ãa]o|"
@@ -4371,6 +4379,28 @@ def extrair_licao(texto):
     t = bruto.lower()
     if not t:
         return None
+
+    # A forma SOZINHA é testada ANTES das outras duas de propósito: "aprenda
+    # isso tudo QUE pedi acima" tem um "que" no meio, e a forma PREFIXO tratava
+    # esse "que" como separador, gravando a lição "pedi acima" — uma frase sem
+    # sentido nenhum, gravada para sempre. Como esta forma exige casamento
+    # COMPLETO da frase normalizada, ela não rouba lição de verdade.
+    # ORDEM: a forma SOZINHA vem PRIMEIRO — "" avisa quem trata o turno para usar a fala anterior dele.
+    #    Antes de comparar, tira a CAUDA de referência ("que pedi acima", "que
+    #    eu falei") e as cortesias. Sem isso, "aprenda isso tudo que pedi
+    #    acima" não casava com nada e virava despejo genérico. Cada pedaço sai
+    #    numa substituição própria, sem quantificador sobre grupo opcional —
+    #    aninhar isso num só padrão trava o motor de regex em frases longas.
+    t3 = re.sub(r"\b(que\s+)?(eu\s+)?(pedi|falei|disse|escrevi|mandei|mostrei|"
+                r"ensinei|ensinou|passei)\b", " ", t, flags=re.IGNORECASE)
+    t3 = re.sub(r"\b(acima|em cima|a[íi] em cima|antes|agora|hoje|a[íi])\b",
+                " ", t3, flags=re.IGNORECASE)
+    t3 = re.sub(r"\b(por favor|ok|t[áa]|beleza|certo|valeu|obrigad[oa]|"
+                r"voc[êe] pode|voc[êe] consegue)\b", " ", t3, flags=re.IGNORECASE)
+    t3 = re.sub(r"[\s,.!?]+", " ", t3).strip()
+    if re.fullmatch(r"(considere\s+)?" + _LICAO_VERBO + r"\s+" + _LICAO_OBJETO,
+                    t3, re.IGNORECASE):
+        return ""
 
     # 1. PREFIXO, com ou sem "considere" na frente. O separador pode ser
     #    dois-pontos, "que" — ou VÍRGULA/travessão, que é como ele escreve de
@@ -4403,12 +4433,6 @@ def extrair_licao(texto):
         if len(antes.split()) >= 4:
             return antes
 
-    # 3. SOZINHA — "" avisa quem trata o turno para usar a fala anterior dele.
-    if re.fullmatch(r"\s*(considere\s+)?" + _LICAO_VERBO + r"\s+" + _LICAO_OBJETO +
-                    r"[\s,.!]*(por favor|voc[êe] pode|voc[êe] consegue|ok|t[áa]|"
-                    r"beleza|certo)?[\s,.!]*", t, re.IGNORECASE):
-        return ""
-    return None
 
 # --------------------------------------------------------------------
 # A IA CONFIGURA A PRÓPRIA FERRAMENTA (autorizado pelo trader)
@@ -5285,6 +5309,15 @@ def interpretar_intencao(texto):
             re.search(r"\bprint\s*window\b", t) or \
             re.search(_PRINT_SOZINHO, t) or re.search(_PRINT_COM_AGORA, t):
         return "PRINT_AGORA"
+    # "ME MOSTRE O PRINT" — ele quer VER a imagem, não uma análise dela. Caía
+    # no despejo genérico ("não está na minha base, a API está fora"), com o
+    # arquivo PNG salvo no disco ali do lado. Abrir um arquivo local não
+    # depende de cota, de internet nem de modelo nenhum.
+    if re.search(r"\b(mostr(a|ar|e)|me mostra|exib(e|ir)|abr(e|ir)|v[êe]r?|"
+                 r"cad[êe]|onde (est[áa]|ficou|salvou))\b", t) and \
+            re.search(r"\b(print|captura|screenshot|imagem|foto)\b", t) and \
+            not re.search(r"\b(analis\w+|l[êe]|ler|leitura|interpret\w+)\b", t):
+        return "MOSTRAR_PRINT"
     # PERGUNTA DE NÍVEL = OLHAR O GRÁFICO. Esta é a correção do pregão de
     # 10/08, e o log mostra o defeito com todas as letras:
     #   14:26 ❯ ONDE POSICIONO MEU STOP DA OPERAÇÃO EM ANDAMENTO?
@@ -5374,7 +5407,7 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
         return ("PEDIR_CONFIRMACAO", "ZERAR_CICLO")
     if intencao in ("VER_GRAFICO", "PRINT_AGORA"):
         return (intencao, None)
-    if intencao in ("DISPENSAR", "CANCELAR", "STATUS", "AJUDA",
+    if intencao in ("DISPENSAR", "CANCELAR", "STATUS", "AJUDA", "MOSTRAR_PRINT",
                     "LIGAR_MOTOR", "DESLIGAR_MOTOR", "ENVIAR_WHATSAPP",
                     "CONECTAR_WHATSAPP", "LISTAR_LICOES", "LISTAR_CONHECIMENTO",
                     "NOTICIAS", "COTACAO", "PESQUISAR", "VER_CONFIG",
@@ -5511,16 +5544,69 @@ def montar_persona_ia():
         "operações').\n"
     )
 
+# --------------------------------------------------------------------
+# TAMANHO DA LETRA — acessibilidade de verdade, não zoom do sistema
+# --------------------------------------------------------------------
+# Pedido direto do trader: "inclua uma opção de aumentar as letras em todos os
+# dashboards, principalmente na IA". Quem passa o pregão lendo número pequeno
+# em tela grande erra de leitura, e errar de leitura na mesa custa dinheiro.
+#
+# O CustomTkinter tem UM lever global (`set_widget_scaling`) que escala fonte E
+# widget de uma vez, em todas as abas, ao vivo. Os dois campos de texto puro
+# (o terminal da TIGER e o log do motor) são `tk.Text` e ficam de fora desse
+# lever — por isso são reconfigurados na mão junto.
+ESCALAS_LETRA = {
+    "Normal": 1.00,
+    "Grande": 1.15,
+    "Maior": 1.30,
+    "Máximo": 1.50,
+}
+ESCALA_LETRA_PADRAO = 1.00
+# Tamanho base de cada campo de texto puro, em pontos. Multiplicado pela escala.
+_FONTE_BASE_CHAT = 11
+_FONTE_BASE_CONSOLE = 10
+
+def escala_letra_salva():
+    """A escala gravada, presa à faixa que a interface oferece. Valor estranho
+    no config (editado à mão, arquivo corrompido) volta ao padrão em vez de
+    deixar a janela inutilizável."""
+    try:
+        v = float(carregar_config().get("escala_letra", ESCALA_LETRA_PADRAO))
+    except (TypeError, ValueError):
+        return ESCALA_LETRA_PADRAO
+    return min(max(v, 1.0), 2.0)
+
+def nome_da_escala(valor):
+    """O rótulo que corresponde a uma escala — o mais próximo, nunca um chute."""
+    return min(ESCALAS_LETRA.items(), key=lambda kv: abs(kv[1] - valor))[0]
+
+
 class SmcQuantApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("SMC Quant Pro - Trader Institucional AI")
-        self.geometry("680x900")
-        self.minsize(680, 800)
+        # A escala é aplicada ANTES de montar as abas: assim os widgets já
+        # nascem no tamanho certo, sem precisar redesenhar a tela inteira.
+        self._escala_letra = escala_letra_salva()
+        try:
+            ctk.set_widget_scaling(self._escala_letra)
+        except Exception:
+            self._escala_letra = 1.0
+        # A janela cresce junto: com letra maior, a mesma largura em pixels
+        # cabe menos coisa, e botão cortado é pior que letra pequena.
+        _larg = int(680 * self._escala_letra)
+        _alt = min(int(900 * self._escala_letra), 1000)
+        self.geometry(f"{_larg}x{_alt}")
+        self.minsize(_larg, min(int(800 * self._escala_letra), 900))
         self.protocol("WM_DELETE_WINDOW", self.ao_fechar)
 
         self.processo_motor = None
         self.motor_rodando = False
+        # motor_rodando = "o Popen voltou". motor_confirmado = "a porta 3939
+        # respondeu". A diferença entre as duas é a diferença entre dizer que o
+        # motor subiu e o motor ter subido — só a segunda vale como resposta.
+        self.motor_confirmado = False
+        self.motor_morreu_ao_subir = False
         self.robo_ativo = False
         self.parar_solicitado = False
         # IDs de sinais que o trader marcou como "Não operei". O robô usa isto
@@ -5623,6 +5709,16 @@ class SmcQuantApp(ctk.CTk):
     # ABA 1: MOTOR / WHATSAPP / SETUP
     # ------------------------------------------------------------------
     def _montar_tab_motor(self, master, config_atual):
+        """A aba Motor virou uma PILHA DE SEÇÕES RECOLHÍVEIS.
+
+        Antes era uma lista corrida de uns quinze blocos: para chegar no log de
+        atividade — que é o que se olha no meio do pregão — era preciso rolar
+        por instalação, janelas, plataforma, horário, alertas e QR code. Agora
+        cada bloco abre e fecha com um clique no título, e o app LEMBRA como
+        você deixou (o mesmo mecanismo do Plano de Trading).
+
+        O que NÃO entra em seção nenhuma: o status e o botão LIGAR MOTOR. São
+        a ação principal da aba e ficam sempre à vista, no topo."""
         scroll_motor = ctk.CTkScrollableFrame(master)
         scroll_motor.pack(fill="both", expand=True)
         master = scroll_motor  # todos os widgets vão para o frame rolável
@@ -5642,13 +5738,15 @@ class SmcQuantApp(ctk.CTk):
         # Checa em segundo plano para não travar a abertura do app
         threading.Thread(target=self._checar_atualizacao, daemon=True).start()
 
-        self.btn_instalar = ctk.CTkButton(master, text="1. Baixar Node.js (Obrigatório)", fg_color="blue", command=self.abrir_download)
+        sec_inst = self._secao(master, "⚙️  INSTALAÇÃO E CHAVE DA API",
+                               "motor_instalacao", aberta_padrao=True)
+        self.btn_instalar = ctk.CTkButton(sec_inst, text="1. Baixar Node.js (Obrigatório)", fg_color="blue", command=self.abrir_download)
         self.btn_instalar.pack(pady=4)
 
-        self.btn_verificar = ctk.CTkButton(master, text="2. Verificar Instalação", fg_color="gray", command=self.verificar_node)
+        self.btn_verificar = ctk.CTkButton(sec_inst, text="2. Verificar Instalação", fg_color="gray", command=self.verificar_node)
         self.btn_verificar.pack(pady=4)
 
-        self.api_entry = ctk.CTkEntry(master, placeholder_text="Cole sua Chave da API Gemini", width=420, show="*")
+        self.api_entry = ctk.CTkEntry(sec_inst, placeholder_text="Cole sua Chave da API Gemini", width=420, show="*")
         # O campo mostra asteriscos: uma chave colada em DOBRO passaria
         # despercebida e so apareceria como 401 na hora do pregao.
         ligar_colar_sem_duplicar(self.api_entry)
@@ -5658,21 +5756,23 @@ class SmcQuantApp(ctk.CTk):
         if api_key_salva:
             self.api_entry.insert(0, api_key_salva)
 
-        ctk.CTkLabel(master, text="Janela do gráfico a monitorar (qualquer plataforma):"
+        sec_jan = self._secao(master, "🪟  JANELAS DO GRÁFICO E PLATAFORMA",
+                              "motor_janelas", aberta_padrao=True)
+        ctk.CTkLabel(sec_jan, text="Janela do gráfico a monitorar (qualquer plataforma):"
                      ).pack(pady=(6, 0))
         nome_janela_salvo = config_atual.get("nome_janela_corretora", "")
         self.janela_var = tk.StringVar(value=nome_janela_salvo or "(clique em Atualizar lista)")
-        self.janela_dropdown = ctk.CTkOptionMenu(master, variable=self.janela_var,
+        self.janela_dropdown = ctk.CTkOptionMenu(sec_jan, variable=self.janela_var,
                                                  values=[self.janela_var.get()], width=420,
                                                  command=self._ao_trocar_janela)
         self.janela_dropdown.pack(pady=4)
-        ctk.CTkButton(master, text="🔄 Atualizar lista de janelas abertas", fg_color="#555555",
+        ctk.CTkButton(sec_jan, text="🔄 Atualizar lista de janelas abertas", fg_color="#555555",
                       command=self._atualizar_lista_janelas).pack(pady=(0, 4))
 
         # ---------- MAIS DE UM ATIVO AO MESMO TEMPO ----------
         # Um motor só percorre todas estas janelas a cada ciclo. Antes era uma
         # janela por vez, e abrir o programa duas vezes esbarrava na porta 3939.
-        frame_multi = ctk.CTkFrame(master, fg_color=COR["card"])
+        frame_multi = ctk.CTkFrame(sec_jan, fg_color=COR["card"])
         frame_multi.pack(fill="x", padx=10, pady=(4, 6))
         ctk.CTkLabel(frame_multi, text="🪟  Gráficos analisados a cada ciclo",
                      font=ctk.CTkFont(size=12, weight="bold"),
@@ -5701,7 +5801,7 @@ class SmcQuantApp(ctk.CTk):
         self._render_lista_janelas()
 
         # ---------- PLATAFORMA (detectada automaticamente) ----------
-        frame_plat = ctk.CTkFrame(master, fg_color="transparent")
+        frame_plat = ctk.CTkFrame(sec_jan, fg_color="transparent")
         frame_plat.pack(pady=(2, 0))
         ctk.CTkLabel(frame_plat, text="Plataforma:").pack(side="left", padx=(4, 4))
         self.plataforma_var = tk.StringVar(value=rotulo_plataforma(self.plataforma_atual))
@@ -5713,7 +5813,7 @@ class SmcQuantApp(ctk.CTk):
                                                  font=ctk.CTkFont(size=10))
         self.lbl_plataforma_info.pack(side="left", padx=8)
         ctk.CTkLabel(
-            master, justify="left", text_color="gray", font=ctk.CTkFont(size=10),
+            sec_jan, justify="left", text_color="gray", font=ctk.CTkFont(size=10),
             text="A ANÁLISE funciona em qualquer plataforma (TradingView, Profit/Nelogica,\n"
                  "NinjaTrader, MT5...): o robô lê o gráfico da janela escolhida acima.\n"
                  "Só o envio automático de ordem e a leitura de posições são exclusivos\n"
@@ -5725,27 +5825,57 @@ class SmcQuantApp(ctk.CTk):
             value=config_atual.get("restaurar_janela_minimizada", True)
         )
         ctk.CTkCheckBox(
-            master,
+            sec_jan,
             text="Restaurar a janela se ela estiver minimizada (não rouba o foco)",
             variable=self.restaurar_minimizada_var,
             command=self._salvar_pref_restaurar
         ).pack(pady=(2, 0))
         ctk.CTkLabel(
-            master,
+            sec_jan,
             text="Se desmarcado e a janela estiver minimizada, o ciclo é pulado com aviso.\n"
                  "Uma janela minimizada não é desenhada pelo Windows — não há como capturá-la.",
             text_color="gray", font=ctk.CTkFont(size=10), justify="left"
         ).pack(pady=(0, 4))
         self._atualizar_lista_janelas(manter_selecao=nome_janela_salvo)
 
-        # ---------- CONTATOS QUE RECEBEM RELATÓRIO (WhatsApp) ----------
-        self._montar_painel_inscritos(master)
-
         if not PYWIN32_DISPONIVEL:
-            ctk.CTkLabel(master, text="⚠️ pywin32 não encontrado — foco automático de janela desativado.",
+            ctk.CTkLabel(sec_jan, text="⚠️ pywin32 não encontrado — foco automático de janela desativado.",
                          text_color="orange").pack(pady=2)
 
-        frame_horario = ctk.CTkFrame(master, fg_color="transparent")
+        # ---------- WHATSAPP: quem recebe + QR code ----------
+        # Bloco recolhível próprio: depois que o WhatsApp está pareado, isso
+        # aqui não se toca mais no dia a dia e só ocupava a tela.
+        self.sec_whatsapp = self._secao(
+            master, "📱  WHATSAPP — CONTATOS E CONEXÃO (QR CODE)",
+            "motor_whatsapp", aberta_padrao=False)
+        self._montar_painel_inscritos(self.sec_whatsapp)
+
+        # ---------- APARÊNCIA: TAMANHO DA LETRA ----------
+        sec_letra = self._secao(master, "🔠  TAMANHO DA LETRA (todas as abas)",
+                                "motor_aparencia", aberta_padrao=False)
+        linha_letra = ctk.CTkFrame(sec_letra, fg_color="transparent")
+        linha_letra.pack(anchor="w", padx=12, pady=(8, 2))
+        ctk.CTkLabel(linha_letra, text="Tamanho da letra:",
+                     text_color=COR["texto"]).pack(side="left", padx=(0, 8))
+        self._var_escala_motor = tk.StringVar(
+            value=nome_da_escala(getattr(self, "_escala_letra", 1.0)))
+        ctk.CTkOptionMenu(
+            linha_letra, variable=self._var_escala_motor, width=140,
+            values=list(ESCALAS_LETRA.keys()),
+            command=lambda nome: self._aplicar_escala_letra(ESCALAS_LETRA[nome])
+        ).pack(side="left")
+        ctk.CTkLabel(
+            sec_letra, justify="left", text_color=COR["dim"],
+            font=ctk.CTkFont(size=10),
+            text="Vale para TODAS as abas — dashboard, plano, log do motor e o "
+                 "terminal da TIGER.\nA janela cresce junto para nada ficar "
+                 "cortado. Na aba da TIGER há os botões A－ e A＋ para\najustar "
+                 "sem sair da conversa. A escolha fica salva."
+        ).pack(anchor="w", padx=12, pady=(2, 10))
+
+        sec_horario = self._secao(master, "⏰  PREGÃO E INTERVALO DE ANÁLISE",
+                                  "motor_horario", aberta_padrao=False)
+        frame_horario = ctk.CTkFrame(sec_horario, fg_color="transparent")
         frame_horario.pack(pady=6)
 
         ctk.CTkLabel(frame_horario, text="Pregão de:").grid(row=0, column=0, padx=(4, 4), sticky="w")
@@ -5759,20 +5889,24 @@ class SmcQuantApp(ctk.CTk):
         self.entry_hora_fim.insert(0, config_atual.get("hora_fim", "17:00"))
 
         ctk.CTkLabel(
-            master,
+            sec_horario,
             text="Dica: no plano gratuito da API Gemini (20 análises/dia por modelo), 15 min\n"
                  "dentro do horário de pregão cabe folgado na cota. A cada 5 min estoura rápido.",
             text_color="gray", font=ctk.CTkFont(size=11), justify="left"
         ).pack(pady=(0, 4))
 
+        # AÇÃO PRINCIPAL DA ABA — fica FORA de qualquer seção recolhível, para
+        # nunca ficar escondida atrás de um bloco fechado.
         self.btn_ligar = ctk.CTkButton(master, text="▶️ LIGAR MOTOR", fg_color="gray",
-                                        state="disabled", command=self.alternar_motor)
-        self.btn_ligar.pack(pady=8)
+                                        state="disabled", command=self.alternar_motor,
+                                        height=40,
+                                        font=ctk.CTkFont(size=14, weight="bold"))
+        self.btn_ligar.pack(pady=8, padx=10, fill="x")
 
         # Dropdown de intervalo alterável AO VIVO (mesmo com o motor ligado).
         # O loop de análise relê esse valor a cada ciclo, então mudar aqui
         # ajusta a frequência sem precisar reiniciar o motor.
-        frame_intervalo_vivo = ctk.CTkFrame(master, fg_color="transparent")
+        frame_intervalo_vivo = ctk.CTkFrame(sec_horario, fg_color="transparent")
         frame_intervalo_vivo.pack(pady=2)
         ctk.CTkLabel(frame_intervalo_vivo, text="⏱️ Intervalo de análise (ao vivo):").pack(side="left", padx=6)
         self.intervalo_vivo_var = tk.StringVar(value=str(config_atual.get("intervalo_minutos", 15)))
@@ -5785,7 +5919,9 @@ class SmcQuantApp(ctk.CTk):
         ).pack(side="left", padx=6)
 
         # ---------- NOTIFICAÇÃO NO COMPUTADOR ----------
-        frame_notif = ctk.CTkFrame(master, fg_color="#1b2735",
+        sec_notif = self._secao(master, "🔔  ALERTAS NA TELA DO COMPUTADOR",
+                                "motor_alertas", aberta_padrao=False)
+        frame_notif = ctk.CTkFrame(sec_notif, fg_color="#1b2735",
                                     border_color="#3d7fc0", border_width=1)
         frame_notif.pack(padx=10, pady=(8, 2), fill="x")
         ctk.CTkLabel(frame_notif, text="🔔 Alertas no computador",
@@ -5817,10 +5953,10 @@ class SmcQuantApp(ctk.CTk):
                       fg_color="#5a3a3a", hover_color="#8b4513",
                       command=self._fechar_todas_notificacoes).pack(side="left", padx=6)
 
-        self.lbl_qr_titulo = ctk.CTkLabel(master, text="", text_color="white",
+        self.lbl_qr_titulo = ctk.CTkLabel(self.sec_whatsapp, text="", text_color="white",
                                            font=ctk.CTkFont(size=14, weight="bold"))
         self.lbl_qr_titulo.pack(pady=(12, 4))
-        self.lbl_qr_imagem = ctk.CTkLabel(master, text="")
+        self.lbl_qr_imagem = ctk.CTkLabel(self.sec_whatsapp, text="")
         # Imagem vazia permanente, mantida como referência forte — usada
         # para "limpar" o QR sem nunca passar image=None (isso quebra o
         # CustomTkinter quando a imagem anterior já foi coletada pelo GC,
@@ -5832,19 +5968,27 @@ class SmcQuantApp(ctk.CTk):
         )
         self.lbl_qr_imagem.pack(pady=(0, 16))
 
-        ctk.CTkLabel(master, text="📋 Registro de atividade",
-                     font=ctk.CTkFont(weight="bold", size=13)).pack(padx=10, pady=(6, 2), anchor="w")
-        self.console = tk.Text(master, height=22, bg="#0d0d0d", fg="#00ff00",
-                                font=("Consolas", 10), relief="flat", borderwidth=0,
+        sec_log = self._secao(master, "📋  REGISTRO DE ATIVIDADE (log do motor)",
+                              "motor_log", aberta_padrao=True)
+        self.console = tk.Text(sec_log, height=22, bg="#0d0d0d", fg="#00ff00",
+                                font=("Consolas",
+                                      max(8, int(round(_FONTE_BASE_CONSOLE *
+                                                       getattr(self, "_escala_letra", 1.0))))),
+                                relief="flat", borderwidth=0,
                                 insertbackground="#00ff00")
         self.console.pack(pady=(0, 8), padx=10, fill="both", expand=True)
 
         # ---------- AUTOMAÇÃO TRADOVATE (opcional) ----------
-        self._montar_painel_tradovate(master)
+        self._montar_painel_tradovate(
+            self._secao(master, "🤖  AUTOMAÇÃO TRADOVATE (envio de ordem)",
+                        "motor_tradovate", aberta_padrao=False))
 
         # ---------- SEÇÃO DESENVOLVEDOR (oculta no app do cliente) ----------
         if MODO_DEV:
-            frame_dev = ctk.CTkFrame(master, fg_color="#2b1b1b", border_color="#8b4513", border_width=1)
+            frame_dev = ctk.CTkFrame(
+                self._secao(master, "🛠️  MODO DESENVOLVEDOR", "motor_dev",
+                            aberta_padrao=False),
+                fg_color="#2b1b1b", border_color="#8b4513", border_width=1)
             frame_dev.pack(padx=10, pady=8, fill="x")
             ctk.CTkLabel(frame_dev, text="🛠️ MODO DESENVOLVEDOR",
                          font=ctk.CTkFont(weight="bold", size=12), text_color="#ff9955").pack(pady=(6, 2))
@@ -6180,26 +6324,49 @@ class SmcQuantApp(ctk.CTk):
         self.lbl_ia_status = ctk.CTkLabel(topo, text="pronta", text_color="#3fb950",
                                            font=ctk.CTkFont(size=11))
         self.lbl_ia_status.pack(side="right", padx=12)
+        # TAMANHO DA LETRA, à mão, aqui na barra — é nesta tela que ele mais lê.
+        # Dois botões em vez de um menu: no meio do pregão, um clique resolve.
+        ctk.CTkButton(topo, text="A＋", width=38, height=26,
+                      fg_color="#21262d", hover_color="#30363d",
+                      text_color="#e6edf3",
+                      font=ctk.CTkFont(size=13, weight="bold"),
+                      command=lambda: self._escala_por_passo(+1)
+                      ).pack(side="right", padx=(0, 4))
+        ctk.CTkButton(topo, text="A－", width=38, height=26,
+                      fg_color="#21262d", hover_color="#30363d",
+                      text_color="#e6edf3",
+                      font=ctk.CTkFont(size=11, weight="bold"),
+                      command=lambda: self._escala_por_passo(-1)
+                      ).pack(side="right", padx=(6, 2))
+        self.lbl_escala_ia = ctk.CTkLabel(
+            topo, text=f"letra: {nome_da_escala(getattr(self, '_escala_letra', 1.0))}",
+            text_color="#4a5163", font=ctk.CTkFont(size=10))
+        self.lbl_escala_ia.pack(side="right", padx=(6, 0))
         ctk.CTkLabel(topo, text="Smart Money Concepts + análise técnica clássica",
                      text_color="#4a5163", font=ctk.CTkFont(size=10)
                      ).pack(side="right", padx=8)
 
         # ---------- Transcript (a "tela" do terminal) ----------
+        # O tk.Text NÃO é escalado pelo CustomTkinter — a fonte dele é calculada
+        # aqui, com a escala de letra escolhida pelo trader (botões A− / A+ na
+        # barra acima). Sem isto, aumentar a letra deixava tudo maior MENOS a
+        # tela onde ele mais lê.
+        _tam = max(8, int(round(_FONTE_BASE_CHAT * getattr(self, "_escala_letra", 1.0))))
         self.txt_chat = tk.Text(raiz, bg="#0d1117", fg="#c9d1d9", wrap="word",
                                  relief="flat", padx=14, pady=10,
-                                 font=("Consolas", 11), insertbackground="#c9d1d9",
+                                 font=("Consolas", _tam), insertbackground="#c9d1d9",
                                  selectbackground="#264f78", state="disabled")
         self.txt_chat.pack(fill="both", expand=True, padx=2, pady=(2, 0))
         self.txt_chat.tag_configure("prompt", foreground="#00E676",
-                                     font=("Consolas", 11, "bold"))
+                                     font=("Consolas", _tam, "bold"))
         self.txt_chat.tag_configure("voce", foreground="#e6edf3")
         self.txt_chat.tag_configure("ia_pref", foreground="#ff9f43",
-                                     font=("Consolas", 11, "bold"))
+                                     font=("Consolas", _tam, "bold"))
         self.txt_chat.tag_configure("ia", foreground="#c9d1d9")
         self.txt_chat.tag_configure("sistema", foreground="#8a92a5",
-                                     font=("Consolas", 10, "italic"))
+                                     font=("Consolas", max(8, _tam - 1), "italic"))
         self.txt_chat.tag_configure("hora", foreground="#3d434f",
-                                     font=("Consolas", 8))
+                                     font=("Consolas", max(7, _tam - 3)))
 
         # ---------- Entrada ----------
         rodape = ctk.CTkFrame(raiz, fg_color="#161b22", corner_radius=0)
@@ -6208,7 +6375,9 @@ class SmcQuantApp(ctk.CTk):
         self.entrada_chat = ctk.CTkTextbox(rodape, height=58, fg_color="#0d1117",
                                             text_color="#e6edf3", corner_radius=8,
                                             border_width=1, border_color="#30363d",
-                                            font=ctk.CTkFont(family="Consolas", size=12))
+                                            font=ctk.CTkFont(
+                                                family="Consolas",
+                                                size=max(9, int(round(12 * getattr(self, "_escala_letra", 1.0))))))
         self.entrada_chat.pack(fill="x", padx=10, pady=(8, 4))
         self.entrada_chat.bind("<Return>", self._chat_enviar)
         self.entrada_chat.bind("<Shift-Return>", lambda e: None)  # quebra de linha
@@ -6511,6 +6680,24 @@ class SmcQuantApp(ctk.CTk):
                         "exemplo: 'nunca opere contra o H4 depois das 15h, "
                         "aprenda isso'.")
                     return
+                # "APRENDA TUDO ISSO" — ele está apontando para VÁRIAS falas, e
+                # eu não sei onde "tudo" começa. Gravar a última e dizer
+                # "aprendi tudo" seria mentira; adivinhar o resto seria gravar
+                # lixo na memória permanente. Então gravo a última (que é o que
+                # eu sei) e mostro as outras para ele apontar.
+                if re.search(r"\b(tudo|todo)\b", texto, re.IGNORECASE):
+                    recentes = [t for t in anteriores[-7:-1] if t.strip()][-5:]
+                    if len(recentes) > 1:
+                        lista = "\n".join(f"  {i}. “{t.strip()[:110]}”"
+                                          for i, t in enumerate(recentes, 1))
+                        self._chat_responder(
+                            f"Vou gravar a última: “{dado[:160]}”.\n\n"
+                            "Mas “tudo isso” eu NÃO sei onde começa, e chutar "
+                            "aqui é gravar regra errada na memória permanente. "
+                            "Estas são as suas últimas falas:\n" + lista +
+                            "\n\nMe diga qual delas virar regra — ou repita a "
+                            "regra na mesma frase, que é como eu gravo com "
+                            "certeza: '<a regra>, aprenda isso'.")
             # UMA LIÇÃO NÃO REVOGA A REGRA DA CASA. Se o que ele está pedindo é
             # que ela produza dado que NÃO TEM, gravar isso seria transformar
             # "nunca invente número" em "invente quando faltar" — e para sempre,
@@ -7252,8 +7439,34 @@ class SmcQuantApp(ctk.CTk):
                 "está DESLIGADO. Diga 'liga o motor', espere ele subir e me "
                 "peça de novo que eu disparo.")
             return
+        # "ENVIA O PRINT NO WHATSAPP" mandava só texto — e, quando não havia
+        # sugestão, respondia "não tenho nada para enviar" com a imagem do
+        # gráfico salva no disco ali do lado. Se ele pediu o PRINT, vai o print.
+        pedido = str(getattr(self, "_ultimo_pedido", "") or "")
+        quer_imagem = bool(re.search(
+            r"\b(print|imagem|foto|captura|screenshot|gr[áa]fico|tela)\b",
+            pedido, re.IGNORECASE))
+        info = getattr(self, "_ultimo_print", None)
+        idade = idade_do_ultimo_print(info)
+        imagem = None
+        if quer_imagem and idade is not None:
+            try:
+                imagem = Image.open(info["caminho"])
+            except Exception as e:
+                self.log(f"(não consegui abrir o último print para enviar: {e})")
+
         texto = self._resumo_para_whatsapp()
+        if imagem is not None and not texto:
+            # Sem cenário e sem leitura, mas COM print: o print já é o conteúdo.
+            texto = (f"📸 *Captura do gráfico* — {info.get('hora','—')}"
+                     + (f" · {info.get('janela')}" if info.get("janela") else "")
+                     + f"\n(enviada a pedido, {idade:.0f} min após a captura)")
         if not texto:
+            if quer_imagem:
+                self._chat_responder(
+                    "Não tenho print nenhum guardado para enviar. Peça 'tira um "
+                    "print' primeiro — aí eu capturo e mando.")
+                return
             self._chat_responder(
                 "Não tenho nada para enviar ainda: não há sugestão nem leitura "
                 "do gráfico nesta sessão. Assim que o motor fizer a primeira "
@@ -7262,15 +7475,17 @@ class SmcQuantApp(ctk.CTk):
         self._chat_status("📲 enviando no WhatsApp…", "#ff9f43")
         recibo = []
         try:
-            enviar_relatorio_whatsapp(texto, None, lambda m: (self.log(m),
-                                                              recibo.append(m)))
+            enviar_relatorio_whatsapp(texto, imagem, lambda m: (self.log(m),
+                                                                recibo.append(m)))
         except Exception as e:
             recibo.append(f"⚠️ Falha no disparo: {e}")
         # Só diz que enviou se o próprio disparo confirmou o sucesso.
         if any("✅" in m for m in recibo):
             self._chat_responder(
-                "Enviado no seu WhatsApp agora, pelo motor. Mandei o cenário "
-                "com entrada, stop, alvo e o status da conta.")
+                "Enviado no seu WhatsApp agora, pelo motor."
+                + (f" Mandei a IMAGEM do gráfico (captura das {info.get('hora','—')})"
+                   " junto com o texto." if imagem is not None else
+                   " Mandei o cenário com entrada, stop, alvo e o status da conta."))
         else:
             motivo = next((m for m in recibo if "⚠️" in m), "sem resposta do motor")
             self._chat_responder(
@@ -7326,23 +7541,46 @@ class SmcQuantApp(ctk.CTk):
             return None
 
     def _confirmar_motor(self, esperado_ligado):
-        """Confere o que REALMENTE aconteceu e avisa no chat. Subir o motor pode
-        levar minutos na primeira vez (npm install), por isso a espera é longa e
-        o silêncio nunca é tratado como sucesso."""
+        """Confere o que REALMENTE aconteceu e avisa no chat.
+
+        O DEFEITO QUE ISTO CORRIGE (log de 11/08, 13:05):
+            ❯ liga o motor
+            ✳ "Ligando o motor agora..."
+            ✳ "Motor no ar: já estou capturando e analisando o gráfico."
+            [log da aba Motor, no mesmo minuto]
+            ⚠️ O processo do Node encerrou IMEDIATAMENTE (código 1).
+            ❌ ERRO: a porta 3939 já está em uso.
+
+        Ela anunciou "motor no ar" porque olhava a flag `motor_rodando`, que era
+        ligada assim que o Popen retornava — 1,5 segundo ANTES da checagem que
+        descobria o processo morto. Era um relatório de sucesso sobre um
+        processo que não existia mais. Agora ela espera a porta RESPONDER
+        (`motor_confirmado`), e a morte do processo interrompe a espera na hora,
+        com o motivo real."""
         limite = 180 if esperado_ligado else 20
         for _ in range(limite):
             time.sleep(1)
-            ligado = bool(getattr(self, "motor_rodando", False) or
-                          getattr(self, "robo_ativo", False))
-            if ligado == esperado_ligado:
-                if esperado_ligado:
-                    self._chat_feed("Motor no ar: já estou capturando e "
-                                     "analisando o gráfico. Quando aparecer um "
-                                     "cenário válido eu te aviso aqui.")
-                else:
+            if esperado_ligado:
+                if getattr(self, "motor_morreu_ao_subir", False):
+                    self._chat_feed(
+                        "O motor NÃO subiu. O processo do Node morreu ao "
+                        "iniciar — o motivo está no log da aba Motor, logo "
+                        "acima. Quando é a porta 3939 ocupada, eu já tento "
+                        "liberar sozinha antes de ligar; se a mensagem disser "
+                        "que quem está na porta não é o motor, feche aquele "
+                        "programa e mande ligar de novo.")
+                    return
+                if getattr(self, "motor_confirmado", False):
+                    self._chat_feed("Motor no ar: a porta respondeu, já estou "
+                                     "capturando e analisando o gráfico. Quando "
+                                     "aparecer um cenário válido eu te aviso aqui.")
+                    return
+            else:
+                if not (getattr(self, "motor_rodando", False) or
+                        getattr(self, "robo_ativo", False)):
                     self._chat_feed("Motor desligado, confirmado. Nenhuma "
                                      "análise nova sai até você mandar ligar.")
-                return
+                    return
         self._chat_feed(
             "Não consegui confirmar que o motor " +
             ("subiu" if esperado_ligado else "parou") +
@@ -7479,6 +7717,28 @@ class SmcQuantApp(ctk.CTk):
                 "sugeri um cenário, peça notícia do mercado que eu pesquiso na "
                 "internet, discuta o plano — por texto, pelo 🎤 ou dizendo "
                 "'Olá Tiger'.")
+            return
+        if acao == "MOSTRAR_PRINT":
+            info = getattr(self, "_ultimo_print", None)
+            idade = idade_do_ultimo_print(info)
+            if idade is None:
+                self._chat_responder(
+                    "Não tenho print guardado. Peça 'tira um print' que eu "
+                    "capturo a janela do gráfico agora.")
+                return
+            try:
+                plataforma.abrir_arquivo(info["caminho"])
+                abriu = True
+            except Exception as e:
+                self.log(f"(não consegui abrir o print: {e})")
+                abriu = False
+            self._chat_responder(
+                f"É esta: captura das {info.get('hora','—')}"
+                + (f", da janela “{info.get('janela')}”" if info.get("janela") else "")
+                + f", {idade:.0f} min atrás."
+                + (" Abri a imagem no seu visualizador."
+                   if abriu else " Não consegui abrir o visualizador daqui.")
+                + f"\nArquivo: {info['caminho']}")
             return
         if acao == "ACATAR":
             sinal = self._ultimo_sinal_pendente()
@@ -9045,6 +9305,95 @@ class SmcQuantApp(ctk.CTk):
         valor.pack(pady=(0, 8))
         return valor
 
+    # ------------------------------------------------------------------
+    # TAMANHO DA LETRA
+    # ------------------------------------------------------------------
+    def _aplicar_escala_letra(self, escala, avisar=True):
+        """Muda o tamanho da letra em TODAS as abas, na hora, e grava a escolha.
+
+        O `set_widget_scaling` do CustomTkinter cuida de tudo que é widget dele
+        (botões, rótulos, campos, menus) em todas as abas de uma vez. O que ele
+        NÃO alcança são os dois campos de texto puro do Tk — o terminal da TIGER
+        e o log do motor —, que são justamente onde o trader mais lê. Esses dois
+        são reconfigurados aqui, com o mesmo fator."""
+        try:
+            escala = min(max(float(escala), 1.0), 2.0)
+        except (TypeError, ValueError):
+            return
+        self._escala_letra = escala
+        salvar_config({"escala_letra": escala})
+        try:
+            ctk.set_widget_scaling(escala)
+        except Exception as e:
+            if getattr(self, "console", None) is not None:
+                self.log(f"(não consegui aplicar a escala dos widgets: {e})")
+
+        # Terminal da TIGER (tk.Text) — inclusive as tags, que têm fonte própria.
+        tam = max(8, int(round(_FONTE_BASE_CHAT * escala)))
+        chat = getattr(self, "txt_chat", None)
+        if chat is not None:
+            try:
+                chat.configure(font=("Consolas", tam))
+                chat.tag_configure("prompt", font=("Consolas", tam, "bold"))
+                chat.tag_configure("ia_pref", font=("Consolas", tam, "bold"))
+                chat.tag_configure("sistema",
+                                   font=("Consolas", max(8, tam - 1), "italic"))
+                chat.tag_configure("hora", font=("Consolas", max(7, tam - 3)))
+            except Exception:
+                pass
+        entrada = getattr(self, "entrada_chat", None)
+        if entrada is not None:
+            try:
+                entrada.configure(
+                    font=ctk.CTkFont(family="Consolas",
+                                     size=max(9, int(round(12 * escala)))))
+            except Exception:
+                pass
+        console = getattr(self, "console", None)
+        if console is not None:
+            try:
+                console.configure(
+                    font=("Consolas",
+                          max(8, int(round(_FONTE_BASE_CONSOLE * escala)))))
+            except Exception:
+                pass
+
+        # A janela acompanha: letra maior na mesma largura corta botão.
+        try:
+            larg = int(680 * escala)
+            self.minsize(larg, min(int(800 * escala), 900))
+            if self.winfo_width() < larg:
+                self.geometry(f"{larg}x{self.winfo_height()}")
+        except Exception:
+            pass
+
+        # Os dois controles ficam em sincronia: o menu da aba Motor e o rótulo
+        # entre os botões A－ / A＋ da barra da TIGER. Um mostrando "Normal"
+        # enquanto o outro está em "Máximo" seria pior que não ter indicador.
+        rotulo = nome_da_escala(escala)
+        var = getattr(self, "_var_escala_motor", None)
+        if var is not None:
+            try:
+                var.set(rotulo)
+            except Exception:
+                pass
+        lbl = getattr(self, "lbl_escala_ia", None)
+        if lbl is not None:
+            try:
+                lbl.configure(text=f"letra: {rotulo}")
+            except Exception:
+                pass
+        if avisar and getattr(self, "console", None) is not None:
+            self.log(f"🔠 Tamanho da letra: {rotulo} ({escala:.2f}×). "
+                     "Vale para todas as abas e fica salvo.")
+
+    def _escala_por_passo(self, passo):
+        """Botões A− / A+ da barra da TIGER: anda um degrau na lista."""
+        ordem = sorted(ESCALAS_LETRA.values())
+        atual = getattr(self, "_escala_letra", 1.0)
+        i = min(range(len(ordem)), key=lambda k: abs(ordem[k] - atual))
+        self._aplicar_escala_letra(ordem[min(max(i + passo, 0), len(ordem) - 1)])
+
     def _secao(self, master, titulo, chave, aberta_padrao=True, cor_borda=None):
         """Cria um bloco RECOLHÍVEL e devolve o frame de conteúdo.
 
@@ -9091,8 +9440,18 @@ class SmcQuantApp(ctk.CTk):
             est[chave] = aberta
             salvar_config({"secoes_abertas": est})
 
+        def abrir():
+            """Força a seção a aparecer. Existe porque uma seção RECOLHIDA pode
+            esconder algo que o app precisa mostrar na hora — o QR code do
+            WhatsApp é o caso: se ele nasce dentro de um bloco fechado, o
+            trader nunca vê o código para parear."""
+            if not aberta:
+                alternar()
+
         for w in (cabecalho, seta, rotulo, dica):
             w.bind("<Button-1>", alternar)
+        conteudo.abrir_secao = abrir
+        conteudo.alternar_secao = alternar
         return conteudo
 
     def _montar_tab_plano(self, master):
@@ -10549,7 +10908,8 @@ class SmcQuantApp(ctk.CTk):
 
         def _classe(s):
             dec = s.get("decisao")
-            if dec in ("NAO_OPEROU", "EXPIRADO", "INVALIDADO", "CANCELADO"):
+            if dec in ("NAO_OPEROU", "EXPIRADO", "INVALIDADO", "CANCELADO",
+                       "CANCELADO_STOP"):
                 return "Encerradas"
             if dec in ("ACATOU_COMPRA", "ACATOU_VENDA"):
                 p = next((x for x in posicoes if x.get("sinal_id") == s.get("id")), None)
@@ -10591,7 +10951,7 @@ class SmcQuantApp(ctk.CTk):
             # Cenário já resolvido fica visualmente apagado; o que ainda pede
             # decisão (ou está em operação) fica destacado.
             resolvido = s.get("decisao") in ("NAO_OPEROU", "EXPIRADO", "INVALIDADO",
-                                              "CANCELADO")
+                                              "CANCELADO", "CANCELADO_STOP")
             linha = ctk.CTkFrame(self.frame_sinais,
                                   fg_color="#1a1a24" if resolvido else "#20283a",
                                   border_width=1,
@@ -10793,6 +11153,10 @@ class SmcQuantApp(ctk.CTk):
                                    "sugestão antiga"),
                     "NAO_OPEROU": "foi DISPENSADA por você",
                     "CANCELADO": "teve a ordem CANCELADA por você",
+                    "CANCELADO_STOP": ("MORREU antes de nascer — o preço rompeu "
+                                       "o stop ANTES de voltar à zona de entrada, "
+                                       "então o cenário deixou de existir e não "
+                                       "há o que acatar"),
                     "ACATOU_COMPRA": "já foi ACATADA por você",
                     "ACATOU_VENDA": "já foi ACATADA por você",
                 }
@@ -10898,6 +11262,7 @@ class SmcQuantApp(ctk.CTk):
         # Sinaliza a parada; o loop do robô sai em até ~1 segundo.
         self.parar_solicitado = True
         self.motor_rodando = False
+        self.motor_confirmado = False
         threading.Thread(target=self._thread_desligar_motor, daemon=True).start()
 
     def _thread_desligar_motor(self):
@@ -10949,6 +11314,10 @@ class SmcQuantApp(ctk.CTk):
         })
 
         self.parar_solicitado = False
+        # Zera o veredito da tentativa anterior: sem isto, um LIGAR MOTOR novo
+        # herdaria o "morreu ao subir" da tentativa passada.
+        self.motor_confirmado = False
+        self.motor_morreu_ao_subir = False
         self.btn_ligar.configure(state="disabled", text="Iniciando...")
         self.log("Iniciando motor Node.js...")
         threading.Thread(target=self._thread_iniciar_motor, daemon=True).start()
@@ -11087,7 +11456,37 @@ class SmcQuantApp(ctk.CTk):
             )
         self.log("✅ Dependências instaladas.")
 
+    def _liberar_porta_do_motor(self):
+        """Tira da frente o Node ÓRFÃO que sobrou de uma execução anterior.
+
+        Aquele processo é lixo que o PRÓPRIO programa deixou: o motor é um Node
+        que ele sobe, e quando o app é fechado à força o filho fica de pé
+        segurando a porta 3939. A partir daí, todo LIGAR MOTOR morre com
+        EADDRINUSE — foi o que aconteceu três vezes seguidas no log de 11/08.
+        A versão anterior mandava o trader abrir o Terminal e digitar
+        `lsof -ti :3939 | xargs kill -9`. Passar para o trader a limpeza do
+        nosso lixo, no meio do pregão, não é aceitável. Agora o programa limpa.
+
+        Só mata processo chamado 'node'. Se a porta estiver ocupada por outra
+        coisa, ele NÃO mata nada e diz o que encontrou."""
+        try:
+            mortos, recusados = plataforma.liberar_porta(3939, so_processos=("node",))
+        except Exception as e:
+            self.log(f"(não consegui checar a porta 3939: {e})")
+            return
+        for pid, nome in mortos:
+            self.log(f"🧹 Encerrei um motor órfão que estava segurando a porta "
+                     f"3939 (PID {pid}, {nome}). Era sobra de uma execução "
+                     "anterior — agora a porta está livre.")
+        for pid, nome in recusados:
+            self.log(f"⛔ A porta 3939 está ocupada por '{nome}' (PID {pid}), que "
+                     "NÃO é o motor. Não vou matar um processo que não é meu. "
+                     "Feche esse programa e ligue o motor de novo.")
+
     def _subir_processo_node(self):
+        # Limpa ANTES de tentar subir: é a diferença entre "não liga e você que
+        # se vire" e "não liga, então eu resolvo e ligo".
+        self._liberar_porta_do_motor()
         self.log("🚀 Iniciando processo do motor (node index.js)...")
 
         # No Windows isso esconde o console preto do node; no macOS o
@@ -11097,6 +11496,7 @@ class SmcQuantApp(ctk.CTk):
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             **plataforma.opcoes_subprocess(),
         )
+        self.motor_confirmado = False   # só vira True quando a porta responder
         self.motor_rodando = True
         self.log(f"✅ Processo criado (PID {self.processo_motor.pid}). Aguardando resposta...")
         self.after(0, lambda: self.btn_ligar.configure(
@@ -11105,10 +11505,13 @@ class SmcQuantApp(ctk.CTk):
         time.sleep(1.5)
         if self.processo_motor.poll() is not None:
             self.motor_rodando = False
+            self.motor_morreu_ao_subir = True
             self.log(f"⚠️ O processo do Node encerrou IMEDIATAMENTE (código {self.processo_motor.returncode}). "
                       "Causa mais provável: a porta 3939 já está ocupada por um processo de um teste "
                       f"anterior.\n{plataforma.como_matar_processo_travado(3939)}")
             self.after(0, lambda: self.btn_ligar.configure(state="normal", text="▶️ LIGAR MOTOR", fg_color="green", hover_color="#1f8b4c"))
+            return
+        self.motor_morreu_ao_subir = False
 
     def _ler_saida_motor(self):
         # Leitura do stdout do Node por linha, decodificando manualmente
@@ -11145,6 +11548,13 @@ class SmcQuantApp(ctk.CTk):
 
                 if not primeira_conexao_ok:
                     primeira_conexao_ok = True
+                    # ESTE é o único ponto em que o motor está PROVADAMENTE de
+                    # pé: a porta respondeu. É o que a TIGER espera antes de
+                    # dizer "motor no ar" — antes ela olhava só a flag
+                    # `motor_rodando`, que era ligada assim que o Popen voltava,
+                    # e por isso anunciava "motor no ar" 1,5 s antes de o
+                    # processo morrer com a porta ocupada.
+                    self.motor_confirmado = True
                     self.log("✅ Comunicação com o motor estabelecida (porta 3939 respondendo).")
 
                 # Ações de LIMPEZA só disparam na mudança de status — não a
@@ -11184,6 +11594,16 @@ class SmcQuantApp(ctk.CTk):
             imagem_ctk = ctk.CTkImage(light_image=imagem_pil, dark_image=imagem_pil, size=(280, 280))
 
             def _atualizar():
+                # A seção do WhatsApp nasce RECOLHIDA (depois de pareado, ela
+                # não se toca mais). Mas um QR code dentro de um bloco fechado
+                # é um QR que ninguém escaneia — quando ele chega, o bloco abre
+                # sozinho.
+                secao = getattr(self, "sec_whatsapp", None)
+                if secao is not None and hasattr(secao, "abrir_secao"):
+                    try:
+                        secao.abrir_secao()
+                    except Exception:
+                        pass
                 self.lbl_qr_titulo.configure(text="📲 Escaneie o QR Code no WhatsApp:")
                 self.lbl_qr_imagem.configure(image=imagem_ctk, text="")
                 self.lbl_qr_imagem.image = imagem_ctk
@@ -11969,8 +12389,22 @@ class SmcQuantApp(ctk.CTk):
                                               (direcao == "SELL" and preco >= sinal_ativo["stop"])
 
                                 if rompeu_stop:
+                                    # O CENÁRIO MORREU AQUI — e o registro dele
+                                    # precisa saber disso. Antes o motor encerrava
+                                    # só o estado em memória e o sinal no disco
+                                    # continuava com `decisao: None`, ou seja,
+                                    # "aguardando sua decisão" no dashboard, para
+                                    # sempre, num cenário que já não existe. E o
+                                    # 'acatar' no chat ficava tentando acatar um
+                                    # morto.
+                                    _sid_rs = sinal_ativo.get("sinal_id")
+                                    if _sid_rs:
+                                        atualizar_decisao_sinal(_sid_rs, "CANCELADO_STOP")
+                                        cancelar_pendentes_do_sinal(
+                                            _sid_rs, "stop rompido antes da entrada")
                                     sinal_ativo = {"estado": "ENCERRADA"}
                                     self.log("🚫 SINAL CANCELADO: Stop rompido antes de mitigar a entrada.")
+                                    self.after(0, self._atualizar_dashboard)
                                 elif bateu_entrada:
                                     sinal_ativo["estado"] = "ATIVA"
                                     msg = f"🎯 *ENTRADA ACIONADA — {direcao}*\nPreço mitigou a zona em {sinal_ativo['entry']}."
@@ -11979,8 +12413,14 @@ class SmcQuantApp(ctk.CTk):
                                         enviar_relatorio_whatsapp(msg, screenshot, self.log)
                                         falar(f"Ordem de {direcao} ativada no mercado.")
                                 elif sinal_ativo["candles"] >= MAX_CANDLES:
+                                    _sid_mc = sinal_ativo.get("sinal_id")
+                                    if _sid_mc:
+                                        atualizar_decisao_sinal(_sid_mc, "EXPIRADO")
+                                        cancelar_pendentes_do_sinal(
+                                            _sid_mc, "preço não voltou à zona de entrada")
                                     sinal_ativo = {"estado": "ENCERRADA"}
                                     self.log("⌛ SINAL EXPIRADO: Nenhuma mitigação no tempo limite.")
+                                    self.after(0, self._atualizar_dashboard)
 
                             elif sinal_ativo["estado"] == "ATIVA":
                                 bateu_stop = (direcao == "BUY" and preco <= sinal_ativo["stop"]) or \

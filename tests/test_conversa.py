@@ -189,3 +189,80 @@ def _tipo(intencao):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestAprenderTudoIsso(unittest.TestCase):
+    """10/08 18:09 e 18:10 — ele pediu duas vezes e as duas caíram no despejo
+    genérico ("não tenho como responder isso com segurança agora"), enquanto
+    "liste o que você aprendeu" respondia "ainda não gravei nenhuma lição"."""
+
+    def _f(self):
+        return carregar(["_LICAO_VERBO", "_LICAO_OBJETO", "_LICAO_SOBRA",
+                         "extrair_licao"])["extrair_licao"]
+
+    def test_as_duas_frases_do_log(self):
+        f = self._f()
+        # "" = a lição é o turno anterior dele. O que não pode é devolver None,
+        # que é o que mandava a frase para o modelo e virava despejo.
+        self.assertEqual(f("aprenda tudo isso"), "")
+        self.assertEqual(f("aprenda isso tudo que pedi acima"), "")
+
+    def test_variantes_da_mesma_intencao(self):
+        f = self._f()
+        for frase in ("aprenda isso", "aprenda tudo", "memorize tudo isso",
+                      "guarde isso tudo", "anota tudo isso por favor",
+                      "aprenda isso que eu falei", "memorize isso aí"):
+            self.assertEqual(f(frase), "", frase)
+
+    def test_o_que_pedi_acima_nao_vira_a_licao(self):
+        """Bug encontrado ao escrever este teste: a forma PREFIXO tratava o
+        'que' de 'que pedi acima' como separador e gravava a lição
+        'pedi acima' — uma frase sem sentido, na memória permanente."""
+        f = self._f()
+        self.assertNotEqual(f("aprenda isso tudo que pedi acima"), "pedi acima")
+
+    def test_licao_de_verdade_continua_sendo_extraida(self):
+        f = self._f()
+        self.assertEqual(
+            f("nunca opere contra o H4 depois das 15h, aprenda isso"),
+            "nunca opere contra o H4 depois das 15h")
+        self.assertEqual(f("aprenda: nunca opere em premium"),
+                         "nunca opere em premium")
+        self.assertEqual(f("aprenda que o dia começa as 19h"),
+                         "o dia começa as 19h")
+        self.assertEqual(
+            f("É SÓ VOCÊ OLHAR NOS HISTÓRICOS DE SUGESTÕES-APRENDA ISSO"),
+            "É SÓ VOCÊ OLHAR NOS HISTÓRICOS DE SUGESTÕES")
+
+    def test_frase_que_nao_e_licao_continua_nao_sendo(self):
+        f = self._f()
+        for frase in ("eu quero aprender isso melhor", "tira um print",
+                      "qual a ultima sugestao?", "liga o motor"):
+            self.assertIsNone(f(frase), frase)
+
+
+class TestMostrarPrint(unittest.TestCase):
+    """10/08 18:09 — 'me mostre o print' caiu no despejo genérico, com o PNG
+    salvo no disco ali do lado. Abrir arquivo local não depende de cota."""
+
+    def test_pedidos_de_ver_a_imagem(self):
+        ns = _ns_intencao()
+        for frase in ("me mostre o print", "mostra o print",
+                      "cadê o print?", "abre a imagem",
+                      "onde está o screenshot?"):
+            self.assertEqual(ns["interpretar_intencao"](frase),
+                             "MOSTRAR_PRINT", frase)
+
+    def test_pedir_ANALISE_nao_e_pedir_para_ver(self):
+        """'analisa o print' continua sendo leitura do gráfico, não abrir um
+        arquivo — se isto regredir, ele perde a análise."""
+        ns = _ns_intencao()
+        for frase in ("analisa o print", "lê o gráfico do print",
+                      "me diz o que tem na imagem"):
+            self.assertNotEqual(ns["interpretar_intencao"](frase),
+                                "MOSTRAR_PRINT", frase)
+
+    def test_e_uma_acao_local_sem_confirmacao(self):
+        ns = _ns_intencao()
+        self.assertEqual(ns["processar_turno_chat"]("me mostre o print"),
+                         ("EXECUTAR", "MOSTRAR_PRINT"))

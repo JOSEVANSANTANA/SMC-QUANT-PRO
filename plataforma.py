@@ -45,6 +45,7 @@ e `diagnostico()` diz em uma linha se a permissão está valendo.
 """
 import base64
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -149,6 +150,13 @@ def pasta_dados():
     pasta = os.path.join(base, "SMC_Quant_Pro")
     os.makedirs(pasta, exist_ok=True)
     return pasta
+
+
+def abrir_arquivo(caminho):
+    """Abre um arquivo no programa padrão do sistema (imagem no visualizador,
+    PDF no leitor). É o mesmo mecanismo de `abrir_pasta`, com outro nome porque
+    é outra intenção: 'me mostre o print' abre a IMAGEM, não a pasta dela."""
+    return abrir_pasta(caminho)
 
 
 def abrir_pasta(caminho):
@@ -1242,6 +1250,94 @@ def como_instalar_node():
                 "Depois FECHE e ABRA o SMC Quant Pro de novo.")
     return ("Instale o Node.js em https://nodejs.org (versão LTS) e reabra o "
             "SMC Quant Pro.")
+
+
+def _pids_na_porta(porta):
+    """PIDs escutando numa porta TCP. Lista vazia quando não dá para saber —
+    e não saber NUNCA é tratado como 'está livre'."""
+    pids = []
+    try:
+        if E_WINDOWS:
+            saida = subprocess.run(
+                ["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True,
+                timeout=8, **opcoes_subprocess()).stdout
+            for linha in saida.splitlines():
+                partes = linha.split()
+                if len(partes) < 5 or partes[3].upper() != "LISTENING":
+                    continue
+                # A porta é o trecho DEPOIS do último ':' — comparar com
+                # endswith(":3939") casaria também um ":33939", e aí o app
+                # mataria o processo errado.
+                local = partes[1].rsplit(":", 1)
+                if len(local) == 2 and local[1] == str(porta):
+                    try:
+                        pids.append(int(partes[4]))
+                    except ValueError:
+                        continue
+        else:
+            saida = subprocess.run(
+                ["lsof", "-ti", f":{porta}", "-sTCP:LISTEN"],
+                capture_output=True, text=True, timeout=8).stdout
+            pids = [int(p) for p in saida.split() if p.strip().isdigit()]
+    except Exception:
+        return []
+    return sorted(set(pids))
+
+
+def _nome_do_processo(pid):
+    """Nome do executável de um PID. String vazia quando não dá para ler."""
+    try:
+        if E_WINDOWS:
+            saida = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
+                capture_output=True, text=True, timeout=8,
+                **opcoes_subprocess()).stdout
+            partes = saida.strip().strip('"').split('","')
+            return partes[0] if partes and partes[0] else ""
+        return subprocess.run(["ps", "-p", str(pid), "-o", "comm="],
+                              capture_output=True, text=True,
+                              timeout=8).stdout.strip()
+    except Exception:
+        return ""
+
+
+def liberar_porta(porta=3939, so_processos=("node",)):
+    """Mata o processo ÓRFÃO que ficou segurando a porta do motor.
+
+    POR QUE ISTO EXISTE: o motor é um processo Node que o PRÓPRIO programa
+    sobe. Quando o app é fechado à força (ou o Mac derruba o processo filho),
+    esse Node fica de pé segurando a porta 3939, e a partir daí todo LIGAR
+    MOTOR morre com EADDRINUSE. A versão anterior mandava o trader abrir o
+    Terminal e digitar `lsof -ti :3939 | xargs kill -9` — ou seja, passava para
+    ele a limpeza do lixo que o programa deixou. Agora o programa limpa.
+
+    SEGURANÇA: só mata processo cujo nome bate com `so_processos` (por padrão,
+    'node'). Se a porta estiver ocupada por outra coisa, NÃO mata nada e
+    devolve o que encontrou, para o app dizer a verdade em vez de agir no
+    escuro. Devolve (mortos, recusados) — duas listas de (pid, nome).
+    """
+    mortos, recusados = [], []
+    for pid in _pids_na_porta(porta):
+        if pid == os.getpid():
+            continue
+        nome = _nome_do_processo(pid)
+        alvo = nome.lower()
+        if not any(p in alvo for p in so_processos):
+            recusados.append((pid, nome or "desconhecido"))
+            continue
+        try:
+            if E_WINDOWS:
+                subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                               capture_output=True, timeout=8,
+                               **opcoes_subprocess())
+            else:
+                os.kill(pid, signal.SIGKILL)
+            mortos.append((pid, nome))
+        except Exception:
+            recusados.append((pid, nome or "desconhecido"))
+    if mortos:
+        time.sleep(0.6)      # o SO precisa de um instante para soltar a porta
+    return mortos, recusados
 
 
 def como_matar_processo_travado(porta=3939):
