@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.19.0 — MAC (Apple Silicon M1 / M2 / M3)
+  SMC QUANT PRO v2.20.0 — MAC (Apple Silicon M1 / M2 / M3)
   Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.
 ========================================================================
 
@@ -183,6 +183,60 @@ no meio do pregão.
 
 DEIXE A JANELA DO GRÁFICO ABERTA. Atrás de outras funciona perfeitamente
 — só não pode estar minimizada.
+
+
+========================================================================
+  O QUE MUDOU NA v2.20.0
+========================================================================
+TAMANHO DA POSICAO — a correcao mais importante desta versao.
+  O numero de contratos sai de (Margem x Risco%) dividido pela
+  distancia ate o stop. Quanto MAIS CURTO o stop, MAIOR a posicao.
+  Um stop de 1,87 ponto no MES dimensionava 29 contratos numa conta
+  de US$1.400. A conta estava certa; o resultado, insano.
+
+  Agora o Plano de Trading tem dois campos novos:
+    - "Min. ticks de stop" (padrao 8): stop mais curto que isso NAO
+      dimensiona posicao nenhuma, e ela diz por que.
+    - "Max. contratos (0=auto)": teto duro por operacao.
+  E o teto de risco passou a ser o DRAWDOWN QUE AINDA RESTA HOJE, nao
+  o drawdown cheio. Antes, com 20% de risco e drawdown de US$1.400,
+  uma operacao continuava autorizada a arriscar US$280 depois de o dia
+  ja ter perdido US$1.177.
+
+AVISO DE PLANO
+  Ao salvar o Plano, ela faz a conta com os SEUS numeros e diz o que
+  eles implicam. Exemplo real: "com 20% sobre US$1.400, cada operacao
+  arrisca US$280; o seu drawdown de US$1.400 acaba em 5 stops, ANTES
+  do teto de 6 operacoes". Aritmetica, nao opiniao.
+
+EXECUCAO DIFERENTE DA SUGESTAO
+  Sugestao de 14 contratos @ 7773,25 e execucao de 30 @ 7777,1 nao
+  passa mais em silencio: sai o aviso com o fator de risco real.
+
+PISO DE R:R
+  Continua 1:2. O que mudou e contra QUAL alvo se mede: se o 1o alvo
+  nao paga mas o 2o paga (e esta do lado certo), o cenario passa — e a
+  sugestao AVISA que quem pagou foi o 2o e que a parcial no 1o cobra
+  esse preco. As rejeicoes repetidas viraram um balanco periodico com
+  o melhor R:R do periodo, em vez de dezenas de linhas iguais.
+
+CHAT
+  - "qual a utima sugestao?" respondia "nao ha sugestao de QUAL
+    registrada" (a palavra QUAL virava ticker). Corrigido.
+  - "compro ou vendo?" caia no despejo generico. Agora ela captura a
+    tela e le o grafico.
+  - "acatar" dizia "nao ha cenario aguardando decisao" quando o motor
+    tinha marcado a sugestao como EXPIRADA ou INVALIDADA. Agora ela
+    conta o que aconteceu, com a hora.
+  - Posicao aberta na mao entrava com "stop None - alvo None". Agora
+    voce informa: "o stop do MESU6 e 7760 e o alvo e 7800".
+
+MICROFONE E VOZ NO MAC
+  Faltava o numpy. O sounddevice importa numpy, e sem ele o microfone
+  e a fala morriam com "No module named 'numpy'" enquanto a mensagem
+  mandava instalar o que ja estava instalado. Corrigido no
+  requirements-mac.txt; rode o INSTALAR_MAC.command de novo. E nenhuma
+  tela de permissao do Windows aparece mais dentro do Mac.
 
 
 ========================================================================

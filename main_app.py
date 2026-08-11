@@ -37,7 +37,7 @@ PYWIN32_DISPONIVEL = (plataforma.PYWIN32_DISPONIVEL or plataforma.QUARTZ_DISPONI
 WINSOUND_DISPONIVEL = True      # o bipe existe nos dois; plataforma.bipe() decide como
 
 # COMANDO POR VOZ (opcional). Instalação recomendada:
-#     pip install SpeechRecognition sounddevice
+#     pip install SpeechRecognition sounddevice numpy
 # O sounddevice tem instalador pronto para QUALQUER Python (inclusive 3.14);
 # o pyaudio, não — em Python novo ele falha ao instalar. Por isso o microfone
 # aqui usa sounddevice como captador principal e pyaudio só se já existir.
@@ -50,9 +50,48 @@ except ImportError:
 try:
     import sounddevice as _sd
     VOZ_SD = True
-except ImportError:
+    VOZ_SD_ERRO = ""
+except ImportError as _e_sd:
     VOZ_SD = False
+    # O TEXTO DO ERRO IMPORTA. No Mac o pip instalava o sounddevice sem
+    # problema e o import falhava mesmo assim, com "No module named 'numpy'" —
+    # porque o sounddevice importa numpy e o numpy não vinha junto. O app
+    # engolia a mensagem e mandava "rode: pip install sounddevice", que era
+    # justamente o que o trader já tinha feito. Agora ele lê a causa real.
+    VOZ_SD_ERRO = str(_e_sd)
 VOZ_DISPONIVEL = VOZ_SR  # STT precisa do SpeechRecognition; captura tem fallback
+
+# ONDE o trader vai autorizar/trocar o microfone. Cada sistema tem um lugar, e
+# mandar um usuário de Mac abrir "Configurações → Sistema → Som do Windows" é
+# uma instrução que não existe na máquina dele.
+ONDE_PERMITIR_MIC = (
+    "Ajustes do Sistema → Privacidade e Segurança → Microfone (marque o "
+    "SMC Quant Pro, ou o Terminal se você abre por lá)"
+    if plataforma.E_MACOS else
+    "Configurações → Privacidade → Microfone do Windows")
+ONDE_TROCAR_MIC = (
+    "Ajustes do Sistema → Som → Entrada (macOS)" if plataforma.E_MACOS else
+    "Configurações → Sistema → Som (Windows)")
+
+def texto_falta_voz():
+    """O que dizer quando o microfone não sobe — com a CAUSA e o comando certo
+    para a máquina certa. A mensagem antiga era a mesma sempre, mandava
+    reinstalar o que já estava instalado e falava em Windows dentro do Mac."""
+    faltando = []
+    if not VOZ_SR:
+        faltando.append("SpeechRecognition")
+    if not VOZ_SD:
+        faltando.append("sounddevice")
+        if "numpy" in (VOZ_SD_ERRO or ""):
+            faltando.append("numpy")
+    if not faltando:
+        return "microfone indisponível"
+    pacotes = " ".join(dict.fromkeys(faltando))
+    py = "python3" if plataforma.E_MACOS else "python"
+    causa = f" (o erro exato foi: {VOZ_SD_ERRO})" if VOZ_SD_ERRO else ""
+    return (f"para o modo OLÁ TIGER e o 🎤, falta {', '.join(dict.fromkeys(faltando))}"
+            f"{causa}. Rode no Terminal:  {py} -m pip install {pacotes}  "
+            "e reabra o app.")
 
 # --------------------------------------------------------------------
 # AUTOMAÇÃO OPCIONAL DA TRADOVATE (item #7) — envio de ordem por CDP.
@@ -117,7 +156,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.19.0"
+VERSAO_ATUAL = "2.20.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -456,6 +495,11 @@ def salvar_config(dados: dict):
 # se perde ao atualizar.
 ID_CONTA_LEGADA = "conta_1"
 
+# Piso da casa: quantos ticks, no mínimo, um stop precisa ter para ser tratado
+# como stop de verdade (ver `calcular_contratos` e a tabela TICK_MINIMO mais
+# abaixo). É REGRA CONFIGURÁVEL por conta, não constante do mercado.
+MIN_TICKS_STOP_PADRAO = 8
+
 PLANO_PADRAO = {
     "margem": 0,
     "meta_alvo": 0,
@@ -467,6 +511,13 @@ PLANO_PADRAO = {
     #   probabilidade_minima -> abaixo disso o cenário vira HOLD
     "rr_minimo": 2.0,
     "probabilidade_minima": 55,
+    # ---- TRAVAS DE TAMANHO DE POSIÇÃO ----
+    #   max_contratos  -> teto duro por operação (0 = automático, sem teto fixo)
+    #   min_ticks_stop -> stop mais curto que isso NÃO dimensiona posição
+    # Ver `calcular_contratos`: sem esses dois, um stop de 1,87 ponto no MES
+    # dimensionava 30 contratos numa conta de US$1.400.
+    "max_contratos": 0,
+    "min_ticks_stop": MIN_TICKS_STOP_PADRAO,
     # Em quantos dias operados a meta deve ser batida. Era fixo em 5; agora você
     # escolhe — 1 para "quero bater hoje", 20 para um mês de mesa, etc. Isso muda
     # o ritmo exigido por dia E entra no contexto que a IA recebe.
@@ -700,6 +751,41 @@ VALOR_POR_PONTO = {
 }
 VALOR_POR_PONTO_PADRAO = 5.0  # fallback se o ativo não for reconhecido
 
+# TAMANHO DO TICK (menor variação de preço do contrato). É especificação de
+# contrato, não estimativa. Serve para uma coisa só: saber quando um stop é
+# CURTO DEMAIS para ser real.
+#
+# POR QUE ISTO PASSOU A EXISTIR: o dimensionamento divide o risco permitido
+# pela distância até o stop. Quando o motor devolve um stop de 1,87 ponto no
+# MES, essa divisão explode — US$280 ÷ US$9,35 = 30 contratos. Trinta contratos
+# numa conta de US$1.400. O número está aritmeticamente certo e operacionalmente
+# insano: um stop de 7 ticks no MES é ruído de mercado, não invalidação de
+# estrutura. Divisor pequeno demais = posição grande demais. Agora existe piso.
+TICK_MINIMO = {
+    "MES": 0.25, "ES": 0.25,
+    "MNQ": 0.25, "NQ": 0.25,
+    "MYM": 1.0,  "YM": 1.0,
+    "M2K": 0.1,  "RTY": 0.1,
+    "MGC": 0.1,  "GC": 0.1,
+    "MCL": 0.01, "CL": 0.01,
+    "WIN": 5.0,  "IND": 5.0,
+    "WDO": 0.5,  "DOL": 0.5,
+}
+# O piso em ticks (MIN_TICKS_STOP_PADRAO) fica lá em cima, junto do
+# PLANO_PADRAO, porque o plano de cada conta já nasce com ele.
+
+def tick_do_ativo(asset_symbol: str):
+    """Tamanho do tick pelo ticker lido no gráfico. None quando o ativo não
+    está na tabela — e aí o piso de ticks NÃO é aplicado (não dá para medir
+    o que não se conhece; inventar um tick seria pior que não ter piso)."""
+    if not asset_symbol:
+        return None
+    simbolo = str(asset_symbol).upper().strip()
+    for prefixo in sorted(TICK_MINIMO.keys(), key=len, reverse=True):
+        if simbolo.startswith(prefixo):
+            return TICK_MINIMO[prefixo]
+    return None
+
 # --------------------------------------------------------------------
 # PLATAFORMAS SUPORTADAS
 # --------------------------------------------------------------------
@@ -776,36 +862,105 @@ def valor_por_ponto_do_ativo(asset_symbol: str) -> float:
             return VALOR_POR_PONTO[prefixo]
     return VALOR_POR_PONTO_PADRAO
 
-def calcular_contratos(entry, stop, asset_symbol, margem, risco_pct, drawdown_maximo):
+def calcular_contratos(entry, stop, asset_symbol, margem, risco_pct, drawdown_maximo,
+                       max_contratos=0, min_ticks_stop=None, restante_dia=None):
     """
     Dimensiona a posição com base no plano da mesa:
     - risco em US$ por trade = margem × risco_pct%
     - risco por contrato = distância até o stop (pontos) × valor por ponto do ativo
     - contratos = risco permitido ÷ risco por contrato
-    Nunca deixa o risco de um único trade ultrapassar o drawdown máximo.
-    Retorna dict com os detalhes para exibir na mensagem.
+
+    TRÊS TRAVAS, todas determinísticas (nada aqui passa por modelo):
+
+    1) PISO DE STOP. Um stop mais curto que `min_ticks_stop` não dimensiona
+       posição nenhuma. Sem esse piso, um stop de 1,87 ponto no MES virava
+       30 contratos numa conta de US$1.400 — foi exatamente o que aconteceu.
+    2) DRAWDOWN QUE AINDA RESTA HOJE. Antes o teto era o drawdown CHEIO do
+       plano, mesmo depois de o dia já ter consumido quase todo ele. Agora,
+       quem manda é o que sobrou: `restante_dia`.
+    3) TETO DE CONTRATOS. Limite duro por operação, definido pelo trader
+       (0 = automático, sem teto fixo).
+
+    Retorna dict com os detalhes para exibir na mensagem. `motivo_limite` diz
+    QUAL trava mandou no número — sem isso o trader vê "0 contratos" e não faz
+    ideia do porquê.
     """
     vpp = valor_por_ponto_do_ativo(asset_symbol)
+    vazio = {"contratos": 0, "risco_usd": 0, "risco_por_contrato": 0,
+             "valor_por_ponto": vpp, "pontos_risco": 0, "risco_real_usd": 0,
+             "motivo_limite": None, "ticks_risco": None}
     if entry is None or stop is None or entry == stop or not margem:
-        return {"contratos": 0, "risco_usd": 0, "risco_por_contrato": 0,
-                "valor_por_ponto": vpp, "pontos_risco": 0}
+        vazio["motivo_limite"] = ("Margem não configurada no Plano de Trading."
+                                  if not margem else
+                                  "Entrada e stop iguais ou ausentes.")
+        return dict(vazio)
 
-    risco_usd_permitido = margem * (risco_pct / 100.0)
+    try:
+        risco_usd_permitido = float(margem) * (float(risco_pct) / 100.0)
+    except (TypeError, ValueError):
+        vazio["motivo_limite"] = "Margem ou Risco/operação inválidos no plano."
+        return dict(vazio)
 
-    # Trava de segurança: o risco por trade nunca deve exceder o drawdown
-    # máximo configurado para a conta da mesa.
-    if drawdown_maximo and risco_usd_permitido > drawdown_maximo:
-        risco_usd_permitido = drawdown_maximo
+    motivo = None
+
+    # (2) O teto é o drawdown QUE AINDA RESTA hoje, não o drawdown cheio.
+    teto_dd = None
+    if restante_dia is not None:
+        teto_dd = max(0.0, float(restante_dia))
+    elif drawdown_maximo:
+        teto_dd = abs(float(drawdown_maximo))
+    if teto_dd is not None and risco_usd_permitido > teto_dd:
+        risco_usd_permitido = teto_dd
+        motivo = (f"limitado pelo drawdown que ainda resta hoje "
+                  f"(US${teto_dd:,.2f})")
 
     pontos_risco = abs(entry - stop)
     risco_por_contrato = pontos_risco * vpp
+
+    # (1) PISO DE STOP — só é aplicado em ativo cujo tick eu conheço.
+    tick = tick_do_ativo(asset_symbol)
+    ticks_risco = round(pontos_risco / tick, 1) if tick else None
+    # min_ticks_stop=None significa SEM PISO — é o que os recálculos de
+    # histórico usam, para que uma regra de hoje não reescreva o P&L de ontem.
+    # Quem quer a trava é `dimensionar_pelo_plano`, que passa o valor do plano.
+    try:
+        piso_ticks = int(float(min_ticks_stop or 0))
+    except (TypeError, ValueError):
+        piso_ticks = 0
+    if tick and piso_ticks > 0 and ticks_risco is not None and ticks_risco < piso_ticks:
+        fora = dict(vazio)
+        fora.update({"pontos_risco": round(pontos_risco, 2),
+                     "risco_por_contrato": round(risco_por_contrato, 2),
+                     "ticks_risco": ticks_risco,
+                     "risco_usd": round(risco_usd_permitido, 2),
+                     "motivo_limite": (
+                         f"stop curto demais: {ticks_risco:g} tick(s) "
+                         f"({pontos_risco:g} ponto(s)), e o piso do plano é "
+                         f"{piso_ticks} tick(s). Um stop desse tamanho é ruído "
+                         "de mercado, não invalidação de estrutura — dividir o "
+                         "risco por ele inflaria a posição.")})
+        return fora
+
     contratos = int(risco_usd_permitido // risco_por_contrato) if risco_por_contrato > 0 else 0
     contratos = max(contratos, 0)
+
+    # (3) TETO DE CONTRATOS por operação.
+    try:
+        teto_ctr = int(float(max_contratos or 0))
+    except (TypeError, ValueError):
+        teto_ctr = 0
+    if teto_ctr > 0 and contratos > teto_ctr:
+        contratos = teto_ctr
+        motivo = f"limitado pelo teto de {teto_ctr} contrato(s) do seu plano"
 
     # Risco REAL da posição = o que os contratos dimensionados de fato arriscam
     # (nunca ultrapassa o teto permitido pelo plano, pois os contratos são
     # arredondados para baixo). É este o número honesto para mostrar ao trader.
     risco_real_usd = round(contratos * risco_por_contrato, 2)
+
+    if contratos == 0 and motivo is None:
+        motivo = (f"o risco de 1 contrato (US${risco_por_contrato:,.2f}) já passa "
+                  f"do que o plano permite por operação (US${risco_usd_permitido:,.2f}).")
 
     return {
         "contratos": contratos,
@@ -814,7 +969,127 @@ def calcular_contratos(entry, stop, asset_symbol, margem, risco_pct, drawdown_ma
         "risco_por_contrato": round(risco_por_contrato, 2),
         "valor_por_ponto": vpp,
         "pontos_risco": round(pontos_risco, 2),
+        "ticks_risco": ticks_risco,
+        "motivo_limite": motivo,
     }
+
+def avisos_do_plano(plano):
+    """O que os números do plano IMPLICAM, dito em voz alta. Função pura.
+
+    O plano da conta 1 no pregão de 10/08 era: Margem US$1.400 · Drawdown
+    US$1.400 · Risco/operação 20%. Ninguém tinha dito ao trader o que isso
+    significa em sequência: 20% de 1.400 são US$280 por trade, e o drawdown de
+    US$1.400 acaba em CINCO stops. Com o teto de 6 operações por dia, o plano
+    autoriza perder a conta inteira antes de bater o teto de operações.
+
+    Nada aqui é opinião nem recomendação: é aritmética sobre os números que o
+    próprio trader digitou. Se ele quer operar assim, é decisão dele — mas
+    sabendo."""
+    def _f(campo, padrao=0.0):
+        try:
+            return float(plano.get(campo, padrao) or 0)
+        except (TypeError, ValueError):
+            return padrao
+
+    avisos = []
+    margem = _f("margem")
+    risco_pct = _f("risco_pct", 1.0)
+    drawdown = abs(_f("drawdown_maximo"))
+    max_ops = int(_f("max_operacoes_dia"))
+    max_stops = int(_f("max_stops_seguidos"))
+
+    risco_trade = margem * (risco_pct / 100.0)
+    if margem > 0 and drawdown > 0 and risco_trade > 0:
+        stops_ate_o_limite = drawdown / risco_trade
+        if stops_ate_o_limite <= 6:
+            avisos.append(
+                f"⚠️ PLANO: com risco de {risco_pct:g}% sobre uma margem de "
+                f"US${margem:,.2f}, cada operação arrisca US${risco_trade:,.2f}. "
+                f"O seu drawdown máximo é US${drawdown:,.2f} — ou seja, "
+                f"{stops_ate_o_limite:.1f} stop(s) encerram o seu dia."
+                + (f" O seu teto é de {max_ops} operações por dia: o limite de "
+                   "perda chega ANTES do limite de operações."
+                   if max_ops and stops_ate_o_limite < max_ops else "")
+                + (f" A pausa por stops seguidos ({max_stops}) entra antes, e é "
+                   "hoje a sua principal proteção."
+                   if 0 < max_stops < stops_ate_o_limite else ""))
+    if drawdown > 0 and margem > 0 and drawdown >= margem:
+        avisos.append(
+            f"⚠️ PLANO: o seu drawdown máximo (US${drawdown:,.2f}) é igual ou "
+            f"maior que a margem (US${margem:,.2f}). Isso quer dizer que o "
+            "limite de perda do dia só é atingido quando a conta acabou — ele "
+            "não está protegendo nada antes disso.")
+    if _f("min_ticks_stop") <= 0:
+        avisos.append(
+            "ℹ️ PLANO: 'Mín. ticks de stop' está em 0, ou seja, desligado. Um "
+            "stop muito curto vindo da leitura vai dimensionar uma posição "
+            "grande — foi assim que um stop de 1,87 ponto no MES virou dezenas "
+            "de contratos.")
+    return avisos
+
+def avaliar_piso_de_qualidade(acao, entry, stop, tp1, tp2, rr_minimo,
+                              probabilidade, probabilidade_minima):
+    """O cenário passa no piso da casa? Função PURA — é ela que decide se uma
+    leitura vira sugestão, então precisa ser testável fora da interface.
+
+    Devolve dict com:
+      ok           -> passou nos DOIS pisos (R:R e probabilidade)
+      rr           -> o R:R que vale para o piso
+      alvo_do_piso -> 1 ou 2: qual alvo pagou o piso (0 = não há alvo)
+      rr_tp1/rr_tp2-> os dois R:R medidos, para o log e para o aviso de gestão
+
+    POR QUE O 2º ALVO ENTROU NA CONTA: no pregão de 10/08 saíram sete descartes
+    seguidos de MESU6 (1:0,55 · 1:0,66 · 1:1,00 · 1:1,19 · 1:1,74 · 1:1,91 ·
+    1:1,94) contra um piso de 1:2, e em parte deles o 2º alvo — o de liquidez
+    cheia — pagava o piso com folga. O cenário ia para o lixo por causa da
+    PARCIAL, não por causa da estrutura. Isso não afrouxa o piso: mede contra o
+    alvo que de fato paga, e obriga a sugestão a dizer que foi o segundo.
+    """
+    entry = entry or 0
+    stop = stop or 0
+    tp1 = tp1 or 0
+    tp2 = tp2 or 0
+    risco = abs(entry - stop)
+    rr_tp1 = (abs(tp1 - entry) / risco) if (risco and tp1) else 0.0
+    rr_tp2 = (abs(tp2 - entry) / risco) if (risco and tp2) else 0.0
+
+    alvo_do_piso = 1 if tp1 else (2 if tp2 else 0)
+    rr = rr_tp1 if tp1 else rr_tp2
+
+    if rr < rr_minimo and tp2 and risco and acao in ("BUY", "SELL"):
+        # Alvo do lado ERRADO da entrada não é alvo — é preço atrás das costas.
+        lado_ok = (tp2 > entry) if acao == "BUY" else (tp2 < entry)
+        if lado_ok and rr_tp2 >= rr_minimo:
+            rr = rr_tp2
+            alvo_do_piso = 2
+
+    return {
+        "ok": bool(rr >= rr_minimo and probabilidade >= probabilidade_minima),
+        "rr": rr,
+        "alvo_do_piso": alvo_do_piso,
+        "rr_tp1": rr_tp1,
+        "rr_tp2": rr_tp2,
+    }
+
+def dimensionar_pelo_plano(entry, stop, ativo, plano=None, restante_dia=None):
+    """Atalho que junta plano + travas — para nenhum ponto do código precisar
+    lembrar de passar teto de contratos, piso de ticks e drawdown restante um
+    por um (foi assim que o dimensionamento acabou com regras diferentes em
+    lugares diferentes)."""
+    plano = plano if plano is not None else plano_da_conta_ativa()
+    if restante_dia is None:
+        try:
+            restante_dia = drawdown_restante_hoje(plano)
+        except Exception:
+            restante_dia = None
+    return calcular_contratos(
+        entry, stop, ativo,
+        plano.get("margem", 0), plano.get("risco_pct", 1.0),
+        plano.get("drawdown_maximo", 0),
+        max_contratos=plano.get("max_contratos", 0),
+        min_ticks_stop=plano.get("min_ticks_stop", MIN_TICKS_STOP_PADRAO),
+        restante_dia=restante_dia,
+    )
 
 def calcular_r_multiplo(direcao, entry, stop, preco_saida):
     risco_pontos = abs(entry - stop)
@@ -1338,6 +1613,12 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
                 "para PENDENTE e zerei o resultado falso.")
 
         elif pos["status"] == "PENDENTE" and mesma_direcao:
+            # O QUE FOI PLANEJADO, antes de ser sobrescrito pelo que de fato
+            # aconteceu. Sem guardar isto, a divergência some sem deixar rastro.
+            entry_plan = _num(pos.get("entry"))
+            ctr_plan = int(pos.get("contratos") or 0)
+            stop_plan = _num(pos.get("stop"))
+
             pos["status"] = "ABERTA"
             pos["execucao"] = "CONFIRMADA"
             # Preço médio REAL do preenchimento, quando a plataforma informa.
@@ -1349,10 +1630,53 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
             pos["contratos"] = max(int(abs(atual["qtd"])), 1)
             pos["data_abertura"] = time.strftime('%d/%m/%Y %H:%M')
             pos["pnl_atual"] = round(atual["pnl"], 2) if atual["pnl"] is not None else 0.0
+            # Guarda o plano ao lado do executado — é o que permite o diário
+            # mostrar depois "planejado X, executado Y".
+            pos["entry_planejado"] = entry_plan
+            pos["contratos_planejados"] = ctr_plan or None
             resumo["confirmadas"] += 1
             log(f"✅ Execução CONFIRMADA pela plataforma: {pos.get('direcao')} "
                 f"{pos.get('ativo')} @ {pos.get('entry')} "
                 f"({pos['contratos']} contrato(s)).")
+
+            # ---- DIVERGÊNCIA ENTRE O QUE FOI SUGERIDO E O QUE FOI EXECUTADO ----
+            # Isto aconteceu de verdade: a sugestão dizia 14 contratos @ 7773,25
+            # e a execução veio 30 contratos @ 7777,1. O app engolia a diferença
+            # em silêncio e passava a acompanhar uma posição com MAIS DO DOBRO do
+            # risco que o plano tinha autorizado. Silêncio aqui é o pior lugar
+            # possível para silêncio.
+            avisos = []
+            ctr_real = pos["contratos"]
+            if ctr_plan and ctr_real != ctr_plan:
+                fator = ctr_real / ctr_plan
+                avisos.append(
+                    f"quantidade: o plano dimensionou {ctr_plan} contrato(s) e "
+                    f"a plataforma executou {ctr_real}"
+                    + (f" — {fator:.1f}× o risco autorizado" if fator > 1 else
+                       " — abaixo do dimensionado"))
+            entry_real = _num(pos.get("entry"))
+            if entry_plan and entry_real and stop_plan and entry_plan != stop_plan:
+                desvio = abs(entry_real - entry_plan)
+                risco_pts = abs(entry_plan - stop_plan)
+                if risco_pts > 0 and desvio >= risco_pts * 0.20:
+                    avisos.append(
+                        f"preço: sugerido {entry_plan:g}, executado {entry_real:g} "
+                        f"({desvio:g} ponto(s) de diferença = "
+                        f"{desvio / risco_pts * 100:.0f}% do risco do trade). "
+                        "O stop e o alvo da sugestão foram calculados a partir "
+                        f"de {entry_plan:g} — a partir de {entry_real:g} o R:R é outro")
+            if avisos:
+                risco_agora = round(
+                    abs((entry_real or 0) - stop_plan) * pos.get("vpp",
+                        valor_por_ponto_do_ativo(pos.get("ativo"))) * ctr_real, 2
+                ) if (stop_plan and entry_real) else None
+                texto = ("⚠️ A EXECUÇÃO NÃO BATE COM A SUGESTÃO — "
+                         + "; ".join(avisos) + ".")
+                if risco_agora is not None:
+                    texto += (f" Risco real desta posição até o stop "
+                              f"{stop_plan:g}: US${risco_agora:,.2f}.")
+                log(texto)
+                pos["divergencia_execucao"] = texto
 
         elif pos["status"] == "ABERTA" and mesma_direcao:
             # Posição do robô que a corretora confirma: P&L real vem de lá.
@@ -1397,6 +1721,16 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
         log(f"🔎 Detectei que você está posicionado: {direcao} {ativo} "
             f"{pos['contratos']} contrato(s){onde} — incluído no diário "
             f"da conta '{nome_conta_ativa()}'.")
+        # POR QUE ESSA POSIÇÃO APARECE COM "stop None · alvo None": ela não veio
+        # de uma sugestão minha, veio da plataforma. A leitura da tela dá ativo,
+        # direção, quantidade e preço — não dá os níveis do bracket. Inventar um
+        # stop aqui seria inventar risco. Mas ficar calado deixava o trader
+        # olhando "None" sem saber o que fazer com aquilo.
+        log(f"ℹ️ {direcao} {ativo}: não tenho o stop nem o alvo dessa posição "
+            "(ela não saiu de uma sugestão minha e a plataforma não expõe o "
+            "bracket na tela). Sem esses dois números eu não calculo o risco em "
+            "US$ nem aviso quando a estrutura virar contra ela. Me diga no chat, "
+            f"por exemplo: 'o stop do {ativo} é 7760 e o alvo é 7800'.")
 
     salvar_posicoes(lista)
     return resumo
@@ -1461,6 +1795,31 @@ def operacoes_fechadas_hoje():
     fechadas.sort(key=lambda p: _hora_do_registro(p.get("data_fechamento"))
                   or datetime.datetime.min)
     return fechadas
+
+def drawdown_restante_hoje(plano=None):
+    """Quanto do drawdown do dia AINDA SOBRA — realizado + aberto já descontados.
+
+    Existe porque o dimensionamento usava o drawdown CHEIO como teto o dia
+    inteiro: com drawdown de US$1.400 e risco de 20%, uma operação continuava
+    autorizada a arriscar US$280 mesmo depois de o dia já ter perdido US$1.177.
+    A trava que o trader configurou virava decorativa exatamente no momento em
+    que ela deveria apertar. Devolve None quando não há drawdown configurado
+    (nesse caso não existe teto para calcular — e None não é zero)."""
+    plano = plano if plano is not None else plano_da_conta_ativa()
+    try:
+        drawdown = abs(float(plano.get("drawdown_maximo", 0) or 0))
+    except (TypeError, ValueError):
+        return None
+    if drawdown <= 0:
+        return None
+    try:
+        realizado = sum(p["pnl_final"] for p in operacoes_fechadas_hoje())
+        aberto = sum(p.get("pnl_atual", 0) or 0 for p in posicoes_do_ciclo()
+                     if p.get("status") == "ABERTA")
+    except Exception:
+        return drawdown
+    usado = min(0.0, realizado + aberto)      # lucro NÃO aumenta o limite
+    return max(0.0, drawdown - abs(usado))
 
 def freio_de_sugestoes(plano=None, agora=None):
     """PROTEÇÃO CONTRA SEQUÊNCIA DE STOPS.
@@ -4085,6 +4444,8 @@ ROTULO_CONFIG = {
     "max_stops_seguidos": "stops seguidos até a pausa",
     "cooldown_stop_min": "pausa após stops seguidos",
     "max_operacoes_dia": "teto de operações por dia",
+    "max_contratos": "teto de contratos por operação",
+    "min_ticks_stop": "mínimo de ticks de stop",
     "com_posicao_aberta": "quando você já está posicionado",
 }
 
@@ -4106,6 +4467,8 @@ DESTINO_CONFIG = {
     "max_stops_seguidos": "plano",
     "cooldown_stop_min": "plano",
     "max_operacoes_dia": "plano",
+    "max_contratos": "plano",
+    "min_ticks_stop": "plano",
     "com_posicao_aberta": "plano",
 }
 
@@ -4145,6 +4508,10 @@ def formatar_valor_config(campo, valor):
         return f"{int(n)} stop(s) seguidos"
     if campo == "max_operacoes_dia":
         return "sem teto" if int(n) <= 0 else f"{int(n)} operação(ões) por dia"
+    if campo == "max_contratos":
+        return "automático (sem teto fixo)" if int(n) <= 0 else f"{int(n)} contrato(s)"
+    if campo == "min_ticks_stop":
+        return "sem piso" if int(n) <= 0 else f"{int(n)} tick(s)"
     return f"{n:g}"
 
 
@@ -4316,6 +4683,17 @@ def interpretar_configuracao(texto):
          r"\b(m[áa]ximo de opera|teto de opera|limite de opera|opera[çc][õo]es por dia|"
          r"trades? por dia)\b",
          r"(\d{1,3})"),
+        # TRAVAS DE TAMANHO. Vêm antes de "risco"/"margem" porque a frase
+        # natural é "no máximo 5 contratos por operação" e "stop de pelo
+        # menos 10 ticks" — as duas citam número sem citar dinheiro.
+        ("max_contratos",
+         r"\b(m[áa]ximo de contratos?|teto de contratos?|limite de contratos?|"
+         r"no m[áa]ximo\s+\d{1,3}\s+contratos?|contratos? por opera[çc][ãa]o)\b",
+         r"(\d{1,3})"),
+        ("min_ticks_stop",
+         r"\b(ticks?\s+de\s+stop|stop\s+m[íi]nimo|m[íi]nimo de ticks?|"
+         r"piso de (stop|ticks?)|stop de pelo menos)\b",
+         r"(\d{1,3})"),
         ("intervalo_minutos",
          r"\b(intervalo|a cada|de quanto em quanto|frequ[êe]ncia|periodicidade)\b",
          r"(\d{1,3})\s*(?:min\b|minutos?\b)"),
@@ -4424,8 +4802,9 @@ def _valor_config_valido(campo, valor):
         return max(1.0, float(valor)) if valor > 0 else None
     if campo in ("margem", "meta_alvo", "drawdown_maximo"):
         return float(valor) if valor >= 0 else None
-    if campo in ("max_stops_seguidos", "cooldown_stop_min", "max_operacoes_dia"):
-        # Zero é escolha legítima nos três: significa "não quero essa trava".
+    if campo in ("max_stops_seguidos", "cooldown_stop_min", "max_operacoes_dia",
+                 "max_contratos", "min_ticks_stop"):
+        # Zero é escolha legítima em todos: significa "não quero essa trava".
         n = int(round(valor))
         return n if n >= 0 else None
     if campo == "com_posicao_aberta":
@@ -4450,6 +4829,9 @@ _PALAVRAS_CAMPO = {
     "cooldown_stop_min": r"\bpausa\b|\bcooldown\b|\bdescanso\b",
     "max_operacoes_dia": r"\bteto de opera\w*\b|\bmaximo de opera\w*\b|"
                          r"\bopera\w+ por dia\b|\btrades? por dia\b",
+    "max_contratos": r"\bcontratos?\b|\btamanho da posicao\b|\bsizing\b|"
+                     r"\bquantidade\b",
+    "min_ticks_stop": r"\bticks?\b|\bstop minimo\b|\bpiso de stop\b",
     "com_posicao_aberta": r"\bposicao aberta\b|\bposicionad\w*\b|"
                           r"\bja (estou|esteja) (posicionad|com posicao)\w*\b",
 }
@@ -4508,6 +4890,7 @@ def resumo_da_configuracao(cfg, plano, nome_conta="", campos=None):
     ordem = ["hora_inicio", "hora_fim", "intervalo_minutos", "margem",
              "meta_alvo", "dias_meta", "drawdown_maximo", "risco_pct",
              "rr_minimo", "probabilidade_minima", "timeout_acatar_min",
+             "max_contratos", "min_ticks_stop",
              "max_stops_seguidos", "cooldown_stop_min", "max_operacoes_dia",
              "com_posicao_aberta", "data_inicio"]
     escolhidos = [c for c in ordem if not campos or c in campos]
@@ -4618,10 +5001,22 @@ def responder_historico_sugestoes(texto, sinais=None):
     # "procurei e não achei", nunca virar a sugestão de OUTRO ativo — devolver
     # o MGCV6 para quem perguntou de PETR4 seria pior que não responder.
     if not ativo_alvo:
-        citados = [c for c in re.findall(r"\b[A-Z]{3,6}\d{0,2}\b",
+        # QUE ERRO ISTO CONSERTA: o padrão antigo era `[A-Z]{3,6}\d{0,2}` sobre
+        # o texto EM MAIÚSCULAS. O trader escreveu "qual a utima sugestao ?" e
+        # ela respondeu "NÃO há sugestão de QUAL registrada" — porque "QUAL"
+        # tem quatro letras maiúsculas e o dígito era opcional. Qualquer palavra
+        # virava ticker.
+        #
+        # Os ativos que esta ferramenta opera SEMPRE têm dígito no código:
+        # futuros (MESU6, MGCV6, WINZ5) e ações da B3 (PETR4). Exigir o dígito
+        # elimina a palavra comum sem eliminar ticker nenhum. Palavra sem
+        # dígito passa a ser ignorada — silêncio é melhor que afirmação errada.
+        citados = [c for c in re.findall(r"\b[A-Z]{2,6}\d{1,2}\b",
                                          str(texto or "").upper())
-                   if c not in ("SELL", "BUY", "STOP", "TP", "SMC", "IA",
-                                "API", "USD", "PNL")]
+                   if c not in ("SELL", "BUY", "STOP", "TP", "TP1", "TP2",
+                                "SMC", "IA", "API", "USD", "PNL", "H1", "H4",
+                                "M1", "M5", "M15", "M30", "D1", "W1", "RR",
+                                "SP500", "S&P500")]
         if citados and not any(c in ativos for c in citados):
             return (f"Procurei no histórico e NÃO há sugestão de "
                     f"{citados[0]} registrada. O que existe lá: "
@@ -4666,6 +5061,94 @@ def responder_historico_sugestoes(texto, sinais=None):
     return cabeca + "\n" + "\n".join(linhas) + (
         "\n\nIsso vem do histórico gravado aqui no seu computador — não "
         "depende de cota nem de internet.")
+
+# --------------------------------------------------------------------
+# "COMPRO OU VENDO?" — a pergunta mais direta que existe na mesa
+# --------------------------------------------------------------------
+# No log de 10/08 ela recebeu exatamente isso e devolveu o despejo genérico de
+# "não tenho como responder". É a pergunta mais simples e a mais importante do
+# dia inteiro: o trader quer o LADO. Responder isso sem olhar o gráfico é
+# adivinhação; então a pergunta vira captura + leitura, igual à pergunta de
+# nível ("onde ponho o stop?").
+_RE_QUAL_LADO = re.compile(
+    r"\b(compr\w+\s+ou\s+vend\w+|vend\w+\s+ou\s+compr\w+|"
+    r"compra\s+ou\s+venda|venda\s+ou\s+compra|"
+    r"long\s+ou\s+short|short\s+ou\s+long|buy\s+ou\s+sell|sell\s+ou\s+buy|"
+    r"(qual|que)\s+((é|e|a|o|as|os|meu|minha)\s+)*(lado|dire[çc][ãa]o|vi[ée]s)|"
+    r"(devo|posso|vale a pena|melhor)\s+(compr\w+|vend\w+|entrar)|"
+    r"entro\s+(comprad\w+|vendid\w+|na\s+(compra|venda))|"
+    r"(t[áa]|ta|est[áa])\s+(comprad|vendid)\w*\s+ou)\b", re.I)
+
+def pergunta_qual_lado(texto):
+    """'compro ou vendo?', 'qual o lado?', 'devo comprar?'. Não confundir com
+    'estou comprado ou vendido?', que é pergunta de POSIÇÃO — essa fala de
+    'estou/minha posição' e sai daqui pela porta de baixo."""
+    t = _norm_busca(texto or "")
+    if not t:
+        return False
+    if re.search(r"\b(estou|to|tou|minha posi|minha operacao|na plataforma)\b", t):
+        return False
+    return bool(_RE_QUAL_LADO.search(t))
+
+# --------------------------------------------------------------------
+# "O STOP DO MESU6 É 7760 E O ALVO É 7800" — o trader informando o bracket
+# --------------------------------------------------------------------
+# Posição detectada NA PLATAFORMA entra no diário com stop e alvo vazios: a
+# leitura da tela dá ativo, direção, quantidade e preço, e nada mais. Inventar
+# os níveis seria inventar risco. Mas sem eles o app não calcula risco em US$
+# nem avisa quando a estrutura vira contra — e o trader ficava olhando
+# "stop None · alvo None" sem ter como consertar. Agora ele DIZ, e é código
+# que grava.
+_RE_DEFINIR_NIVEL = re.compile(
+    r"\b(stop|alvo|alvos|take|tp1?|objetivo|gain)\b[^.;]{0,20}?"
+    r"\b(é|e|eh|fica|ficou|est[áa]|ta|em|de|:|vai (ser|pra|para))\b", re.I)
+
+def interpretar_niveis_da_posicao(texto, ativos_conhecidos=None):
+    """Extrai {'ativo', 'stop', 'tp1'} de uma frase como
+    'o stop do MESU6 é 7760 e o alvo é 7800'. Devolve None quando não há
+    número nenhum atrelado a stop/alvo — melhor não fazer nada do que gravar
+    um nível errado no risco do trader.
+
+    `ativos_conhecidos` são os tickers que existem HOJE no diário. Só eles
+    valem como ativo: assim a frase não vira um ticker inventado."""
+    bruto = str(texto or "")
+    if not bruto.strip() or not _RE_DEFINIR_NIVEL.search(bruto):
+        return None
+
+    def _apanhar(rotulos):
+        """Número que vem logo DEPOIS de uma das palavras-âncora.
+
+        O número tem de estar SOLTO — nem colado a letra, nem colado a outro
+        dígito. Sem essa exigência, 'o stop do MESU6 é 7760' gravava stop = 6:
+        o "6" do ticker vinha antes do 7760 e ganhava. Um stop de 6 pontos onde
+        deveriam ser 7760 não é um erro de exibição, é o risco inteiro errado."""
+        solto = r"(?<![A-Za-z0-9])(-?\d+(?:[.,]\d+)?)(?![A-Za-z0-9])"
+        for rot in rotulos:
+            m = re.search(rot, bruto, re.I)
+            if not m:
+                continue
+            n = re.search(solto, bruto[m.end():m.end() + 40])
+            if n:
+                try:
+                    return float(n.group(1).replace(",", "."))
+                except ValueError:
+                    continue
+        return None
+
+    stop = _apanhar([r"\bstops?\b"])
+    tp1 = _apanhar([r"\balvos?\b", r"\btakes?\b", r"\btp1?\b", r"\bobjetivos?\b",
+                    r"\bgain\b"])
+    if stop is None and tp1 is None:
+        return None
+
+    ativo = None
+    alto = bruto.upper()
+    for cand in sorted({str(a).upper() for a in (ativos_conhecidos or []) if a},
+                       key=len, reverse=True):
+        if cand and cand in alto:
+            ativo = cand
+            break
+    return {"ativo": ativo, "stop": stop, "tp1": tp1}
 
 def interpretar_intencao(texto):
     """Detecta comandos em LINGUAGEM NATURAL, sem depender da IA (dinheiro e
@@ -4816,7 +5299,20 @@ def interpretar_intencao(texto):
     # PARA DETERMINAR ISSO") e ela passou a CITAR a lição sem cumpri-la.
     # Perguntar onde vai o stop JÁ É pedir para olhar o gráfico: não existe
     # responder isso sem ver o preço. Então a pergunta captura e lê, sozinha.
+    # O TRADER INFORMANDO O BRACKET de uma posição que ele abriu na mão.
+    # Vem ANTES da pergunta de nível porque as duas falam de "stop" e "alvo" —
+    # a diferença é que aqui ELE traz o número, e ali ele PEDE o número.
+    # Pergunta nunca é definição: se a frase começa perguntando, não grava nada.
+    if not re.search(r"^\s*(onde|qual|quais|quanto|quando|como|sera|será|"
+                     r"me diga|me diz|voce|você)\b", t) and \
+            not t.rstrip().endswith("?") and \
+            interpretar_niveis_da_posicao(texto) is not None:
+        return ("DEFINIR_NIVEIS", texto)
     if pergunta_pede_nivel(t):
+        return "VER_GRAFICO"
+    # "COMPRO OU VENDO?" — pergunta de LADO. Igual à pergunta de nível: não dá
+    # para responder sem olhar o gráfico, então ela olha.
+    if pergunta_qual_lado(t):
         return "VER_GRAFICO"
     # OLHAR O GRÁFICO: ela busca o último print capturado pelo motor e analisa
     # a imagem de verdade, em vez de responder de memória sobre o texto velho.
@@ -4865,6 +5361,11 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
     # de ANTES e o de DEPOIS, relidos do disco, para ele conferir e desfazer.
     if isinstance(intencao, tuple) and intencao[0] == "CONFIGURAR":
         return ("CONFIGURAR", intencao[1])
+    # DEFINIR_NIVEIS não pede confirmação: ele está me DANDO um dado que eu não
+    # tinha, não me mandando operar. A trava é a mesma da configuração — eu
+    # releio do disco e mostro o que ficou gravado.
+    if isinstance(intencao, tuple) and intencao[0] == "DEFINIR_NIVEIS":
+        return ("DEFINIR_NIVEIS", intencao[1])
     if intencao == "ACATAR":
         return ("PEDIR_CONFIRMACAO", "ACATAR")
     # Zerar o ciclo limpa o dashboard da conta: passa por confirmação, igual
@@ -5993,6 +6494,9 @@ class SmcQuantApp(ctk.CTk):
         if tipo == "CONFIGURAR":
             self._chat_configurar(dado, texto)
             return
+        if tipo == "DEFINIR_NIVEIS":
+            self._chat_definir_niveis(dado)
+            return
         if tipo == "APRENDER":
             # "aprenda isso" sozinho: a lição é o que ELE disse no turno
             # anterior, que é exatamente o que "isso" quer dizer.
@@ -6413,6 +6917,79 @@ class SmcQuantApp(ctk.CTk):
             return abs(na - nb) < 1e-9
         return str(a).strip() == str(b).strip()
 
+    def _chat_definir_niveis(self, texto):
+        """'o stop do MESU6 é 7760 e o alvo é 7800' — o trader completando o
+        bracket de uma posição que a plataforma reportou sem níveis.
+
+        Mesma regra da casa da configuração: GRAVA, RELÊ DO DISCO e só então
+        confirma. E não escolhe posição por adivinhação: se ele não disse o
+        ativo e há mais de uma posição aberta, PERGUNTA qual."""
+        abertas = [p for p in posicoes_do_ciclo()
+                   if p.get("status") in ("ABERTA", "PENDENTE")]
+        if not abertas:
+            self._chat_responder(
+                "Não há posição aberta nem ordem pendente nesta conta para eu "
+                "anexar esses níveis. Se você acabou de entrar na plataforma, "
+                "espere o próximo ciclo do motor detectar a posição e me diga de novo.")
+            return
+        dados = interpretar_niveis_da_posicao(
+            texto, [p.get("ativo") for p in abertas])
+        if not dados:
+            self._chat_responder(
+                "Entendi que você quer definir stop/alvo, mas não achei o número "
+                "na frase. Diga assim: 'o stop do MESU6 é 7760 e o alvo é 7800'.")
+            return
+        if dados["ativo"]:
+            escolhidas = [p for p in abertas
+                          if str(p.get("ativo", "")).upper() == dados["ativo"]]
+        elif len(abertas) == 1:
+            escolhidas = abertas
+        else:
+            nomes = ", ".join(sorted({str(p.get("ativo")) for p in abertas}))
+            self._chat_responder(
+                f"Você tem posição em mais de um ativo agora ({nomes}) e não "
+                "disse de qual. Repita citando o ativo — por exemplo: 'o stop "
+                f"do {nomes.split(',')[0].strip()} é {dados['stop'] or 7760:g}'. "
+                "Não vou chutar em qual posição mexer.")
+            return
+        if not escolhidas:
+            self._chat_responder(
+                f"Não encontrei posição aberta de {dados['ativo']} nesta conta.")
+            return
+
+        lista = carregar_posicoes()
+        ids = {p["id"] for p in escolhidas}
+        for p in lista:
+            if p.get("id") in ids:
+                if dados["stop"] is not None:
+                    p["stop"] = dados["stop"]
+                if dados["tp1"] is not None:
+                    p["tp1"] = dados["tp1"]
+                p["niveis_informados"] = True   # veio do trader, não da leitura
+        salvar_posicoes(lista)
+
+        # RELÊ DO DISCO — é isso que separa "gravei" de "disse que gravei".
+        confirmadas = [p for p in carregar_posicoes() if p.get("id") in ids]
+        linhas = []
+        for p in confirmadas:
+            risco = None
+            _e, _s = _num(p.get("entry")), _num(p.get("stop"))
+            if _e is not None and _s is not None:
+                risco = round(abs(_e - _s) * (p.get("vpp") or
+                              valor_por_ponto_do_ativo(p.get("ativo"))) *
+                              int(p.get("contratos") or 1), 2)
+            linhas.append(
+                f"• {p.get('direcao')} {p.get('ativo')} "
+                f"{p.get('contratos')} contrato(s) @ {p.get('entry')} · "
+                f"stop {p.get('stop') if p.get('stop') is not None else '—'} · "
+                f"alvo {p.get('tp1') if p.get('tp1') is not None else '—'}"
+                + (f" · risco até o stop US${risco:,.2f}" if risco is not None else ""))
+        self.after(0, self._atualizar_dashboard)
+        self._chat_responder(
+            "Gravado. Reli do disco e ficou assim:\n" + "\n".join(linhas) +
+            "\n\nAgora eu consigo calcular o risco em US$ dessa posição e te "
+            "avisar quando a estrutura virar contra ela.")
+
     def _chat_configurar(self, mudancas, texto=""):
         """Configura a PRÓPRIA ferramenta a pedido dele — horário do pregão,
         intervalo das análises e os números do Plano de Trading da conta.
@@ -6636,6 +7213,23 @@ class SmcQuantApp(ctk.CTk):
                 "está desligado.")
         else:
             linhas.append(f"🛑 O FREIO ESTÁ ATIVO: {motivo}")
+
+        # O NÚMERO QUE FALTAVA: quantos cenários o piso barrou e por quanto.
+        # Sem isto a resposta era teórica ("é porque nenhum passou no piso") e o
+        # trader não tinha como saber se o piso está calibrado para o mercado
+        # de hoje. Vem do contador do motor, não de estimativa.
+        descartes = getattr(self, "_descartes_qualidade", None) or {}
+        if descartes:
+            detalhe = " · ".join(
+                f"{chave}: {d['n']} descarte(s), melhor R:R 1:{d['melhor_rr']:.2f}, "
+                f"melhor probabilidade {d['melhor_prob']:.0f}%"
+                for chave, d in sorted(descartes.items()))
+            linhas.append(
+                "O que o piso barrou desde que o motor ligou — " + detalhe + ". "
+                "Compare com os seus pisos acima: se o melhor R:R do dia ficou "
+                "sempre perto do seu mínimo, o mercado está lateral e o certo é "
+                "ficar de fora; se ficou muito longe, o problema é a leitura, "
+                "não o piso.")
         linhas.append(
             f"Seus limites de hoje: pausa após {plano.get('max_stops_seguidos', 2)} "
             f"stops seguidos por {plano.get('cooldown_stop_min', 30)} min · teto de "
@@ -7494,9 +8088,7 @@ class SmcQuantApp(ctk.CTk):
             self._chat_status("🐯 parei de falar — pode falar", "#3fb950")
         if not VOZ_SR:
             self._chat_escrever(
-                "sistema",
-                "(comando por voz não instalado — rode:  pip install "
-                "SpeechRecognition sounddevice  e reabra o app)", persistir=False)
+                "sistema", f"({texto_falta_voz()})", persistir=False)
             return
         if not VOZ_SD:
             # Sem sounddevice, o único captador é o pyaudio — avisa se faltar.
@@ -7504,9 +8096,7 @@ class SmcQuantApp(ctk.CTk):
                 import pyaudio  # noqa: F401
             except ImportError:
                 self._chat_escrever(
-                    "sistema",
-                    "(falta o captador de microfone — rode:  pip install "
-                    "sounddevice  e reabra o app)", persistir=False)
+                    "sistema", f"({texto_falta_voz()})", persistir=False)
                 return
         if self._chat_ocupada or self._ouvindo:
             return
@@ -7579,10 +8169,8 @@ class SmcQuantApp(ctk.CTk):
         if not (VOZ_SR and VOZ_SD):
             self.ia_tiger_var.set(False)
             salvar_config({"ia_tiger": False})
-            self._chat_escrever(
-                "sistema",
-                "(para o modo OLÁ TIGER, rode:  pip install SpeechRecognition "
-                "sounddevice  e reabra o app)", persistir=False)
+            self._chat_escrever("sistema", f"({texto_falta_voz()})",
+                                persistir=False)
             return
         if self._tiger_rodando:
             return
@@ -7592,7 +8180,7 @@ class SmcQuantApp(ctk.CTk):
         try:
             dispositivo = _sd.query_devices(kind="input")["name"]
         except Exception:
-            dispositivo = "padrão do Windows"
+            dispositivo = "padrão do sistema"
         self._chat_escrever(
             "sistema",
             "(🐯 modo OLÁ TIGER LIGADO — escutando pelo microfone "
@@ -7720,14 +8308,15 @@ class SmcQuantApp(ctk.CTk):
                         "sistema",
                         f"(🐯 não consegui abrir o microfone: {str(er)[:120]}. "
                         "Feche outros programas que estejam usando o mic e "
-                        "confira as permissões do Windows.)", persistir=False))
+                        f"confira as permissões: {ONDE_PERMITIR_MIC}.)",
+                        persistir=False))
                     time.sleep(5)
                     continue
                 if frase is None:
                     continue                       # interrompida (🎤/pensando/TTS)
                 if frase == b"":
                     # Microfone aberto, mas NENHUM som chegou. Isso é quase
-                    # sempre microfone errado selecionado no Windows — e é
+                    # sempre microfone errado selecionado no sistema — e é
                     # exatamente o caso de "o mic consta em uso mas ela não me
                     # ouve". Diz qual dispositivo está sendo usado.
                     if not getattr(self, "_tiger_avisou_mudo", False):
@@ -7741,8 +8330,8 @@ class SmcQuantApp(ctk.CTk):
                             f"(🐯 estou escutando pelo microfone “{d}” mas não "
                             "chega som nenhum há um tempo. Se esse não é o seu "
                             "microfone, troque o dispositivo de ENTRADA padrão "
-                            "no Windows (Configurações → Sistema → Som) e "
-                            "desligue/religue o OLÁ TIGER.)", persistir=False))
+                            f"em {ONDE_TROCAR_MIC} e desligue/religue o "
+                            "OLÁ TIGER.)", persistir=False))
                     continue
                 self._tiger_avisou_mudo = False    # chegou som: zera o aviso
                 try:
@@ -8572,11 +9161,16 @@ class SmcQuantApp(ctk.CTk):
             ("Prazo p/ acatar (min):", "entry_timeout", "timeout_acatar_min", 3, 0, 10),
             ("R:R mínimo (1:X):", "entry_rr", "rr_minimo", 4, 0, 2.0),
             ("Probabilidade mín. (%):", "entry_prob", "probabilidade_minima", 4, 2, 55),
+            # TRAVAS DE TAMANHO — o que impede um stop curto de virar posição
+            # gigante. Ver `calcular_contratos`.
+            ("Máx. contratos (0=auto):", "entry_max_ctr", "max_contratos", 7, 0, 0),
+            ("Mín. ticks de stop:", "entry_min_ticks", "min_ticks_stop", 7, 2,
+             MIN_TICKS_STOP_PADRAO),
             # FREIO DE SUGESTÕES — a trava que impede o dia de virar sequência
             # de stops. Fica no plano de cada conta.
-            ("Stops seguidos p/ pausar:", "entry_max_stops", "max_stops_seguidos", 8, 0, 2),
-            ("Pausa após stops (min):", "entry_cooldown", "cooldown_stop_min", 8, 2, 30),
-            ("Máx. operações no dia:", "entry_max_ops", "max_operacoes_dia", 9, 0, 6),
+            ("Stops seguidos p/ pausar:", "entry_max_stops", "max_stops_seguidos", 9, 0, 2),
+            ("Pausa após stops (min):", "entry_cooldown", "cooldown_stop_min", 9, 2, 30),
+            ("Máx. operações no dia:", "entry_max_ops", "max_operacoes_dia", 10, 0, 6),
         ]
         for rotulo, attr, chave, linha, col, padrao in campos:
             ctk.CTkLabel(frame_config, text=rotulo, text_color=COR["dim"],
@@ -8605,16 +9199,27 @@ class SmcQuantApp(ctk.CTk):
                      ).grid(row=6, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 2))
 
         ctk.CTkLabel(frame_config,
+                     text="📐 TAMANHO DA POSIÇÃO: o nº de contratos sai de "
+                          "(Margem × Risco%) ÷ (distância até o stop × valor do ponto). "
+                          "Stop curto = posição grande, e é assim que um stop de 2 pontos "
+                          "vira 30 contratos. 'Mín. ticks de stop' recusa o cenário quando "
+                          "o stop é ruído (0 desliga); 'Máx. contratos' é o teto duro por "
+                          "operação (0 = sem teto fixo).",
+                     text_color=COR["dim"], font=ctk.CTkFont(size=9), justify="left",
+                     wraplength=560
+                     ).grid(row=8, column=0, columnspan=4, sticky="w", padx=12, pady=(6, 2))
+
+        ctk.CTkLabel(frame_config,
                      text="🛑 FREIO: depois dessa quantidade de stops seguidos o robô fica em "
                           "silêncio pelo tempo da pausa, e para de vez ao bater o teto de "
                           "operações ou o Drawdown Máx. do dia. Use 0 para desligar cada um.",
                      text_color=COR["dim"], font=ctk.CTkFont(size=9), justify="left"
-                     ).grid(row=10, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 2))
+                     ).grid(row=11, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 2))
 
         # QUANDO VOCÊ JÁ ESTÁ POSICIONADO — inclusive numa entrada que você fez
         # na mão, fora da sugestão dele.
         ctk.CTkLabel(frame_config, text="Já posicionado no ativo:", text_color=COR["dim"],
-                     font=ctk.CTkFont(size=11)).grid(row=11, column=0, sticky="e",
+                     font=ctk.CTkFont(size=11)).grid(row=12, column=0, sticky="e",
                                                       padx=(12, 4), pady=4)
         self.opt_com_posicao = ctk.CTkOptionMenu(
             frame_config, width=250,
@@ -8622,7 +9227,7 @@ class SmcQuantApp(ctk.CTk):
                     "Sugerir normalmente",
                     "Não sugerir nada"],
             fg_color=COR["input"], button_color=COR["borda"], text_color=COR["texto"])
-        self.opt_com_posicao.grid(row=11, column=1, columnspan=3, sticky="w",
+        self.opt_com_posicao.grid(row=12, column=1, columnspan=3, sticky="w",
                                   padx=(0, 12), pady=4)
         self.opt_com_posicao.set(self._rotulo_com_posicao(
             self.plano.get("com_posicao_aberta", "alerta")))
@@ -8633,10 +9238,10 @@ class SmcQuantApp(ctk.CTk):
                           "No modo recomendado ele te AVISA que a leitura virou, e segue "
                           "sugerindo a favor e nos outros ativos.",
                      text_color=COR["dim"], font=ctk.CTkFont(size=9), justify="left"
-                     ).grid(row=12, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 2))
+                     ).grid(row=13, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 2))
 
         frame_botoes_plano = ctk.CTkFrame(frame_config, fg_color="transparent")
-        frame_botoes_plano.grid(row=13, column=0, columnspan=4, pady=(6, 10))
+        frame_botoes_plano.grid(row=14, column=0, columnspan=4, pady=(6, 10))
         ctk.CTkButton(frame_botoes_plano, text="💾 Salvar Plano", width=140,
                       fg_color=COR["verde_esc"], hover_color=COR["verde"],
                       command=self.salvar_plano_trading).pack(side="left", padx=6)
@@ -9189,6 +9794,8 @@ class SmcQuantApp(ctk.CTk):
             (self.entry_rr, "rr_minimo", 2.0),
             (self.entry_prob, "probabilidade_minima", 55),
             (self.entry_dias_meta, "dias_meta", 5),
+            (self.entry_max_ctr, "max_contratos", 0),
+            (self.entry_min_ticks, "min_ticks_stop", MIN_TICKS_STOP_PADRAO),
             (self.entry_max_stops, "max_stops_seguidos", 2),
             (self.entry_cooldown, "cooldown_stop_min", 30),
             (self.entry_max_ops, "max_operacoes_dia", 6),
@@ -9306,6 +9913,12 @@ class SmcQuantApp(ctk.CTk):
             # Prazo da meta: pelo menos 1 dia (1 = "quero bater hoje").
             _dm = int(float(self.entry_dias_meta.get().replace(",", ".")))
             self.plano["dias_meta"] = max(1, _dm)
+            # TRAVAS DE TAMANHO. Zero é opção legítima nas duas: 0 contratos =
+            # sem teto fixo; 0 ticks = sem piso de stop. Negativo, não.
+            _mc = int(float(self.entry_max_ctr.get().replace(",", ".")))
+            self.plano["max_contratos"] = max(0, _mc)
+            _mt = int(float(self.entry_min_ticks.get().replace(",", ".")))
+            self.plano["min_ticks_stop"] = max(0, _mt)
             # FREIO DE SUGESTÕES. Zero é opção legítima em todos: significa
             # "não quero essa trava". Por isso o piso aqui é 0, e não 1.
             _ms = int(float(self.entry_max_stops.get().replace(",", ".")))
@@ -9325,6 +9938,8 @@ class SmcQuantApp(ctk.CTk):
 
         salvar_plano_da_conta(self.plano)
         self.log(f"💾 Plano de trading salvo para a conta '{nome_conta_ativa()}'.")
+        for aviso in avisos_do_plano(self.plano):
+            self.log(aviso)
         self._atualizar_dashboard()
 
     def reiniciar_plano_trading(self):
@@ -10049,12 +10664,11 @@ class SmcQuantApp(ctk.CTk):
                 )
                 if not ja_aberta:
                     direcao = "BUY" if decisao == "ACATOU_COMPRA" else "SELL"
-                    plano = plano_da_conta_ativa()
-                    sizing = calcular_contratos(
-                        sinal["entry"], sinal["stop"], sinal.get("ativo", ""),
-                        plano.get("margem", 0), plano.get("risco_pct", 1.0),
-                        plano.get("drawdown_maximo", 0)
-                    )
+                    sizing = dimensionar_pelo_plano(
+                        sinal["entry"], sinal["stop"], sinal.get("ativo", ""))
+                    if sizing["contratos"] <= 0 and sizing.get("motivo_limite"):
+                        self.log(f"⚠️ Acatado, mas o plano dimensionou 0 contrato: "
+                                 f"{sizing['motivo_limite']}")
                     pos = abrir_posicao(
                         "ROBO", direcao, sinal.get("ativo", "DESCONHECIDO"),
                         sinal["entry"], sinal["stop"], sinal.get("tp1"), sinal.get("tp2"),
@@ -10104,16 +10718,97 @@ class SmcQuantApp(ctk.CTk):
                      if not s.get("decisao") and s.get("id", 0) >= limite_ms]
         return pendentes[-1] if pendentes else None
 
+    # Quantos minutos entre um balanço de descartes e o próximo.
+    RESUMO_DESCARTE_MIN = 20
+
+    def _registrar_descarte_qualidade(self, acao, ativo, motivo, rr, prob,
+                                       rr_min, prob_min):
+        """O piso de qualidade rejeitando cenário é o robô TRABALHANDO — mas do
+        jeito antigo ele escrevia a mesma linha a cada ciclo e o log virava um
+        muro de '🚧 descartado'. Sete linhas seguidas de MESU6 no pregão de
+        10/08 diziam ao trader 'a ferramenta não acerta uma', quando o que elas
+        de fato diziam era 'o mercado não está pagando 1:2 agora'.
+
+        Agora: a PRIMEIRA rejeição de cada par ativo+lado aparece na hora (é
+        informação nova), as repetições são contadas em silêncio, e de tempos em
+        tempos sai um BALANÇO com o melhor R:R que apareceu no período — o
+        número que responde 'o piso está alto demais para este mercado?'."""
+        chave = f"{acao} {ativo}"
+        agora = time.time()
+        registro = getattr(self, "_descartes_qualidade", None)
+        if registro is None:
+            registro = self._descartes_qualidade = {}
+        atual = registro.get(chave)
+        if atual is None:
+            registro[chave] = {"n": 1, "melhor_rr": rr, "melhor_prob": prob,
+                               "desde": agora, "ultimo_aviso": agora}
+            self.log(f"🚧 {acao} {ativo} descartado pelo piso de qualidade: "
+                     f"{motivo}. Aguardando um setup melhor.")
+            return
+        atual["n"] += 1
+        atual["melhor_rr"] = max(atual["melhor_rr"], rr)
+        atual["melhor_prob"] = max(atual["melhor_prob"], prob)
+        if agora - atual["ultimo_aviso"] < self.RESUMO_DESCARTE_MIN * 60:
+            return
+        atual["ultimo_aviso"] = agora
+        minutos = max(1, int((agora - atual["desde"]) / 60))
+        self.log(
+            f"🚧 BALANÇO: {atual['n']} cenários de {acao} {ativo} descartados "
+            f"nos últimos {minutos} min. O melhor deles chegou a "
+            f"R:R 1:{atual['melhor_rr']:.2f} (seu piso é 1:{rr_min:g}) e a "
+            f"{atual['melhor_prob']:.0f}% de probabilidade (seu piso é "
+            f"{prob_min:g}%). Não é a ferramenta parada: é o mercado não "
+            "pagando o que o seu plano exige. Se quiser operar este mercado, "
+            "o que muda isso é o piso — 'configura o R:R mínimo para 1.5', "
+            "por exemplo. Se não quiser, o certo é exatamente isto: ficar de fora.")
+
     def _motivo_sem_pendente(self):
         """Por que não há cenário para acatar. Ele disse 'ACATAR' 9 minutos
         depois da sugestão e recebeu só 'não há cenário aguardando decisão' —
         sem saber que o prazo tinha estourado. Agora a resposta diz o motivo."""
         try:
             minutos = max(1, int(self._janela_acatar_seg() / 60))
-            sem_decisao = [s for s in sinais_da_conta_ativa() if not s.get("decisao")]
+            todos = sinais_da_conta_ativa()
+            sem_decisao = [s for s in todos if not s.get("decisao")]
             if not sem_decisao:
-                return ("Não há cenário aguardando decisão agora. Assim que o "
-                        "motor sugerir um, é só dizer 'acatar'.")
+                # AQUI ESTAVA A MENTIRA. O motor marca sozinho a sugestão como
+                # EXPIRADO (prazo estourou) ou INVALIDADO (o cenário virou), e
+                # a partir daí ela some da lista de "sem decisão". A resposta
+                # virava "não há cenário aguardando decisão" — como se nunca
+                # tivesse existido sugestão nenhuma, enquanto o botão da
+                # notificação na tela ainda funcionava. Agora ela conta o que
+                # de fato aconteceu com a última.
+                if not todos:
+                    return ("Não há cenário aguardando decisão agora — e o "
+                            "histórico desta conta está vazio: o motor ainda "
+                            "não gerou sugestão nenhuma. Assim que gerar, é só "
+                            "dizer 'acatar'.")
+                ult = todos[-1]
+                idade = max(0, (time.time() * 1000 - ult.get("id", 0)) / 60000)
+                rotulos = {
+                    "EXPIRADO": (f"EXPIROU — você não respondeu dentro dos "
+                                 f"{minutos} minuto(s) do prazo de acatar"),
+                    "INVALIDADO": ("foi INVALIDADA — o motor leu um cenário "
+                                   "válido na direção contrária e cancelou a "
+                                   "sugestão antiga"),
+                    "NAO_OPEROU": "foi DISPENSADA por você",
+                    "CANCELADO": "teve a ordem CANCELADA por você",
+                    "ACATOU_COMPRA": "já foi ACATADA por você",
+                    "ACATOU_VENDA": "já foi ACATADA por você",
+                }
+                dec = str(ult.get("decisao") or "")
+                fim = rotulos.get(dec, f"está marcada como {dec}")
+                extra = ""
+                if dec == "EXPIRADO":
+                    extra = (" Se o prazo está curto para o seu ritmo, me diga "
+                             "'configura o prazo para acatar em 30 minutos'.")
+                elif dec in ("ACATOU_COMPRA", "ACATOU_VENDA"):
+                    extra = " Ela já está no diário; acompanho entrada, stop e alvo."
+                return (f"Não há cenário AGUARDANDO decisão agora. A última "
+                        f"sugestão foi {ult.get('direcao','?')} "
+                        f"{ult.get('ativo','?')} @ {ult.get('entry','—')}, de "
+                        f"cerca de {idade:.0f} minuto(s) atrás, e ela {fim}."
+                        + extra)
             ultimo = sem_decisao[-1]
             idade = max(0, (time.time() * 1000 - ultimo.get("id", 0)) / 60000)
             return (f"Esse cenário EXPIROU: o {ultimo.get('direcao', '')} "
@@ -11338,9 +12033,9 @@ class SmcQuantApp(ctk.CTk):
                         # convicção) NÃO viram sugestão — cortam o ruído.
                         _ep = sinal.get("entry_price") or 0
                         _sl = sinal.get("stop_loss") or 0
-                        _alvo_rr = sinal.get("take_profit_1") or sinal.get("take_profit_2") or 0
+                        _tp1 = sinal.get("take_profit_1") or 0
+                        _tp2 = sinal.get("take_profit_2") or 0
                         _risco = abs(_ep - _sl)
-                        rr_sinal = (abs(_alvo_rr - _ep) / _risco) if (_risco and _alvo_rr) else 0
 
                         # APRENDIZADO ENTRA NA CONTA. A probabilidade que a IA leu do
                         # gráfico é corrigida pelo que ESTA conta já viveu com estes
@@ -11360,7 +12055,15 @@ class SmcQuantApp(ctk.CTk):
                                     f"{probabilidade:.0f}% ({_delta:+.1f} pts pelo seu "
                                     f"histórico). " + " · ".join(_porques))
 
-                        qualidade_ok = (rr_sinal >= RR_MINIMO and probabilidade >= PROBABILIDADE_MINIMA)
+                        # PISO DE QUALIDADE — decisão de código, em função pura e
+                        # testada (ver tests/test_piso_qualidade.py).
+                        _piso = avaliar_piso_de_qualidade(
+                            acao, _ep, _sl, _tp1, _tp2, RR_MINIMO,
+                            probabilidade, PROBABILIDADE_MINIMA)
+                        qualidade_ok = _piso["ok"]
+                        rr_sinal = _piso["rr"]
+                        rr_tp1, rr_tp2 = _piso["rr_tp1"], _piso["rr_tp2"]
+                        alvo_do_piso = _piso["alvo_do_piso"]
 
                         # ---- INVALIDAÇÃO POR MUDANÇA DE CENÁRIO ----
                         # Antes, uma sugestão pendente só saía por cancelamento manual ou
@@ -11476,8 +12179,11 @@ class SmcQuantApp(ctk.CTk):
                             motivo = (f"R:R 1:{rr_sinal:.2f} (mínimo 1:{RR_MINIMO:.0f})"
                                       if rr_sinal < RR_MINIMO
                                       else f"probabilidade {probabilidade:.0f}% (mínimo {PROBABILIDADE_MINIMA:.0f}%)")
-                            self.log(f"🚧 {acao} {ativo} descartado pelo piso de qualidade: {motivo}. "
-                                      "Aguardando um setup melhor.")
+                            if rr_sinal < RR_MINIMO and rr_tp2 and rr_tp2 > rr_tp1:
+                                motivo += f" · o 2º alvo pagaria 1:{rr_tp2:.2f}"
+                            self._registrar_descarte_qualidade(
+                                acao, ativo, motivo, rr_sinal, probabilidade,
+                                RR_MINIMO, PROBABILIDADE_MINIMA)
 
                         # Só cria sinal com preços VÁLIDOS (>0), preço de tela lido E que
                         # passe no piso de qualidade.
@@ -11489,6 +12195,10 @@ class SmcQuantApp(ctk.CTk):
                             novo_sinal_id = registrar_novo_sinal_log(
                                 acao, sinal.get("entry_price"), sinal.get("stop_loss"),
                                 sinal.get("take_profit_1"), sinal.get("take_profit_2"), ativo)
+                            # Saiu cenário: a contagem de descartes deste ativo+lado
+                            # zera, para o próximo balanço falar do período novo.
+                            getattr(self, "_descartes_qualidade", {}).pop(
+                                f"{acao} {ativo}", None)
                             sinal_ativo = {
                                 "estado": "PENDENTE",
                                 "direcao": acao,
@@ -11507,11 +12217,8 @@ class SmcQuantApp(ctk.CTk):
                             # (Margem, Risco%, Drawdown) e no valor por ponto do
                             # ativo identificado no gráfico, na CONTA SELECIONADA.
                             plano = plano_da_conta_ativa()
-                            sizing = calcular_contratos(
-                                sinal_ativo["entry"], sinal_ativo["stop"], ativo,
-                                plano.get("margem", 0), plano.get("risco_pct", 1.0),
-                                plano.get("drawdown_maximo", 0)
-                            )
+                            sizing = dimensionar_pelo_plano(
+                                sinal_ativo["entry"], sinal_ativo["stop"], ativo, plano)
 
                             # R:R do relatório é SEMPRE calculado dos preços reais (nunca
                             # vem do texto da IA). Usa o mesmo alvo do piso de qualidade
@@ -11530,10 +12237,15 @@ class SmcQuantApp(ctk.CTk):
                                     f"Risco: US${sizing['risco_real_usd']} "
                                     f"(US${sizing['risco_por_contrato']}/contrato · teto US${sizing['risco_usd']})"
                                 )
+                                if sizing.get("motivo_limite"):
+                                    linha_contratos += f"\n🔒 {sizing['motivo_limite']}"
                             else:
+                                # O trader via "0 contratos" e três hipóteses. Agora vem
+                                # o motivo REAL, calculado — nunca uma lista de talvez.
                                 linha_contratos = (
-                                    f"\n⚠️ 0 contratos: risco do trade excede o permitido pelo plano, "
-                                    f"ou Margem/Risco% não configurados no Plano de Trading."
+                                    "\n⚠️ *0 contratos* — "
+                                    + (sizing.get("motivo_limite")
+                                       or "Margem/Risco% não configurados no Plano de Trading.")
                                 )
 
                             bloco_confluencias = ""
@@ -11566,6 +12278,19 @@ class SmcQuantApp(ctk.CTk):
                                     f"({sinal_ativo['tp2']}) movendo o stop para a entrada assim "
                                     f"que o preço passar do Objetivo 1."
                                 )
+
+                            # QUEM PAGOU O PISO FOI O 2º ALVO? Então a parcial no 1º
+                            # alvo cobra um preço, e o trader tem de saber disso ANTES
+                            # de entrar — senão ele realiza metade num alvo que não
+                            # paga 1:2 e depois pergunta por que o resultado não fecha.
+                            if alvo_do_piso == 2 and rr_tp1:
+                                bloco_gestao += (
+                                    f"\n• ⚠️ ATENÇÃO: quem paga o seu piso de "
+                                    f"1:{RR_MINIMO:g} aqui é o Objetivo 2 "
+                                    f"(1:{rr_tp2:.2f}). O Objetivo 1 paga só "
+                                    f"1:{rr_tp1:.2f} — realizar metade nele derruba o "
+                                    "R:R do trade inteiro. Se você quer o 1:2 cheio, "
+                                    "leve tudo até o Objetivo 2.")
 
                             mensagem_wpp = (
                                 f"📘 *Estudo de Cenário — {ativo}*\n"

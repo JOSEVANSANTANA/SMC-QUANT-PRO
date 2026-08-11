@@ -34,6 +34,11 @@ pyttsx3>=2.90
 # inteiro e o botão do microfone explica como habilitar.
 SpeechRecognition>=3.10.0
 sounddevice>=0.4.6
+# O sounddevice IMPORTA numpy assim que é carregado. Sem esta linha o Mac
+# respondia "No module named 'numpy'" e o microfone e a fala da TIGER ficavam
+# mortos, sem que nada na tela explicasse por quê — o pip instalava o
+# sounddevice, dava tudo certo, e o import falhava na hora de usar.
+numpy>=1.24.0
 
 # ------------------------------------------------------------------
 # JANELAS DO macOS  (ESTE É O ITEM QUE NÃO PODE FALTAR)

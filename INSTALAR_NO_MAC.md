@@ -239,6 +239,7 @@ Apple. É esperado:
 | Captura sai **preta** | Gravação de Tela não concedida | Passo 5 (e **reabrir** o programa) |
 | "Node.js não encontrado" mas `node -v` funciona | PATH do Finder | já resolvido; se persistir, abra pelo Terminal e me mande o log |
 | Motor não sobe, porta ocupada | processo órfão | `lsof -ti :3939 \| xargs kill -9` |
+| `No module named 'numpy'` no microfone / na fala | o `sounddevice` importa o numpy | `python3 -m pip install numpy` (a partir da v2.20.0 já vem no requirements-mac.txt) |
 | A TIGER fala **em inglês** | voz PT não instalada | Ajustes → Acessibilidade → Conteúdo Falado → Voz do Sistema → Português (Brasil) → **Luciana** |
 | Gráfico "congelado" a cada ciclo | janela **minimizada** no Dock | deixe a janela aberta, mesmo atrás de outras |
 | App não abre (desenvolvedor não identificado) | Gatekeeper | botão direito → Abrir, ou `xattr -dr com.apple.quarantine` |
