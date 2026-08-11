@@ -2,10 +2,14 @@
 
 Duas coisas quebraram aqui, e as duas custaram um pregão:
 
-1. `No module named 'numpy'` — o sounddevice importa numpy, o numpy não estava
-   em requirements-mac.txt, e o app respondia "rode: pip install sounddevice",
-   que era exatamente o que o trader já tinha feito. O microfone e a fala da
-   TIGER ficaram mortos sem que nada na tela explicasse por quê.
+1. `No module named 'numpy'` matando o microfone — DUAS vezes, por dois
+   motivos diferentes:
+     (a) o numpy não estava em requirements-mac.txt, e o app respondia
+         "rode: pip install sounddevice", que era o que o trader já tinha feito;
+     (b) mesmo com o pacote instalável, a dependência não precisava existir:
+         o `sd.InputStream` exige numpy só para devolver as amostras como
+         array — e este programa sempre leu o stream como bytes crus. O
+         `RawInputStream` faz o mesmo sem numpy. Ver TestMicrofoneSemNumpy.
 2. Mensagens mandando um usuário de macOS abrir telas do Windows.
 """
 
@@ -106,6 +110,88 @@ class TestNaoFalarDeWindowsNoMac(unittest.TestCase):
         fonte = fonte_do_arquivo()
         self.assertIn("ONDE_PERMITIR_MIC", fonte)
         self.assertIn("ONDE_TROCAR_MIC", fonte)
+
+
+
+class TestMicrofoneSemNumpy(unittest.TestCase):
+    """11/08, 16:00 — a contradição que apontou o defeito exato:
+
+        (🐯 modo OLÁ TIGER LIGADO — escutando pelo microfone
+         "MacBook Air Microphone".)
+        (🐯 não consegui abrir o microfone: No module named 'numpy'.)
+
+    Ela LEU o nome do dispositivo e falhou logo depois. Ou seja: o sounddevice
+    importou e o `query_devices` funcionou — não faltava o sounddevice. O numpy
+    era exigido num ponto só: `sd.InputStream` devolve as amostras como array
+    do numpy.
+
+    Só que este programa nunca usou esse array. Todo lugar que lê o stream faz
+    `bytes(bloco)` na hora. O `RawInputStream` entrega os mesmos bytes e não
+    importa numpy — a dependência era paga e não era usada.
+    """
+
+    def test_o_stream_padrao_e_o_raw(self):
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def abrir_stream_microfone")
+        corpo = fonte[i:i + 2200]
+        # O Raw vem PRIMEIRO; o InputStream clássico só como segunda tentativa.
+        self.assertLess(corpo.index("RawInputStream"), corpo.index("_sd.InputStream"))
+
+    def test_ninguem_mais_abre_InputStream_direto(self):
+        """Se um caminho novo voltar a chamar `_sd.InputStream(` na mão, o
+        numpy volta a ser obrigatório sem ninguém perceber."""
+        fonte = fonte_do_arquivo()
+        chamadas = [n for n, l in enumerate(fonte.splitlines(), 1)
+                    if "_sd.InputStream(" in l]
+        self.assertEqual(
+            len(chamadas), 1,
+            f"há {len(chamadas)} chamadas a _sd.InputStream (linhas {chamadas}); "
+            "só a de dentro de abrir_stream_microfone pode existir")
+        # E a única que sobra tem de estar DENTRO do fallback.
+        i = fonte.index("def abrir_stream_microfone")
+        fim = fonte.index("\ndef ", i + 10)
+        linha_inicio = fonte[:i].count("\n") + 1
+        linha_fim = fonte[:fim].count("\n") + 1
+        self.assertTrue(linha_inicio <= chamadas[0] <= linha_fim)
+
+    def test_o_codigo_le_o_stream_como_bytes(self):
+        """A premissa do RawInputStream: nada aqui usa recurso de numpy. Se
+        alguém passar a indexar o bloco como array, isto quebra em silêncio."""
+        fonte = fonte_do_arquivo()
+        for linha in fonte.splitlines():
+            if "stream.read(" in linha:
+                self.assertIn("_ov", linha,
+                              "read() devolve (dados, overflowed) nos dois modos")
+
+
+class TestMensagemDeFalhaDoMicrofone(unittest.TestCase):
+    def _f(self, macos=True):
+        return carregar(
+            ["explicar_falha_do_microfone"],
+            stubs={"plataforma": _Plataforma(macos),
+                   "ONDE_PERMITIR_MIC": "Ajustes → Privacidade → Microfone",
+                   "re": __import__("re")})["explicar_falha_do_microfone"]
+
+    def test_biblioteca_faltando_nao_e_tratada_como_permissao(self):
+        """O erro do log mandava o trader conferir permissões do sistema por
+        causa de um pacote do Python. Ele foi procurar no lugar errado."""
+        msg = self._f()(ModuleNotFoundError("No module named 'numpy'"))
+        self.assertIn("numpy", msg)
+        self.assertIn("NÃO é permissão", msg)
+        self.assertIn("pip install numpy", msg)
+        self.assertNotIn("Privacidade", msg)
+
+    def test_comando_certo_para_cada_sistema(self):
+        erro = ModuleNotFoundError("No module named 'numpy'")
+        self.assertIn("python3 -m pip install", self._f(macos=True)(erro))
+        win = self._f(macos=False)(erro)
+        self.assertIn("python -m pip install", win)
+        self.assertNotIn("python3", win)
+
+    def test_erro_de_verdade_do_microfone_continua_falando_de_permissao(self):
+        msg = self._f()(OSError("Device unavailable"))
+        self.assertIn("Device unavailable", msg)
+        self.assertIn("Privacidade", msg)
 
 
 if __name__ == "__main__":

@@ -73,6 +73,59 @@ ONDE_TROCAR_MIC = (
     "Ajustes do Sistema → Som → Entrada (macOS)" if plataforma.E_MACOS else
     "Configurações → Sistema → Som (Windows)")
 
+def abrir_stream_microfone(taxa, bloco):
+    """Abre o microfone SEM depender do numpy.
+
+    O DEFEITO (log de 11/08, 16:00 — no Mac):
+        (🐯 modo OLÁ TIGER LIGADO — escutando pelo microfone "MacBook Air
+         Microphone".)
+        (🐯 não consegui abrir o microfone: No module named 'numpy'.)
+
+    Repare na contradição: ela CONSEGUIU ler o nome do dispositivo e falhou
+    logo depois. Não era falta do sounddevice — ele importou e o
+    `query_devices` funcionou. O que faltava era o numpy, e ele só é exigido
+    num ponto: o `sd.InputStream` devolve as amostras como array do numpy.
+
+    Só que este programa NUNCA usou o array do numpy. Todo lugar que lê o
+    stream faz `bytes(bloco)` na hora e trata como bytes crus (o RMS é
+    calculado com `array.array("h", ...)`, da biblioteca padrão). Ou seja: a
+    dependência era paga e não era usada.
+
+    O `RawInputStream` entrega exatamente os mesmos bytes crus e não importa
+    numpy nenhum. Com isso o microfone volta a funcionar sem instalar nada —
+    nem no Mac, nem no Windows. O `InputStream` fica como segunda tentativa,
+    para o caso de uma versão do sounddevice que não tenha o Raw.
+    """
+    try:
+        return _sd.RawInputStream(samplerate=taxa, channels=1,
+                                  dtype="int16", blocksize=bloco)
+    except AttributeError:
+        # sounddevice muito antigo, sem RawInputStream: cai no clássico (que
+        # aí sim precisa do numpy — e o erro vai dizer isso com todas as letras).
+        return _sd.InputStream(samplerate=taxa, channels=1,
+                               dtype="int16", blocksize=bloco)
+
+
+def explicar_falha_do_microfone(erro):
+    """A mensagem certa para a falha certa.
+
+    Antes, QUALQUER erro ao abrir o microfone virava "feche outros programas e
+    confira as permissões". Quando a causa era uma biblioteca faltando, aquilo
+    mandava o trader procurar num lugar onde não havia nada de errado — foi o
+    que aconteceu com o numpy: ele foi conferir permissões do sistema por causa
+    de um pacote do Python."""
+    texto = str(erro)
+    faltando = re.search(r"No module named ['\"]([\w.]+)['\"]", texto)
+    if faltando or isinstance(erro, ImportError):
+        pacote = faltando.group(1) if faltando else "uma biblioteca"
+        py = "python3" if plataforma.E_MACOS else "python"
+        return (f"falta a biblioteca {pacote} — isto NÃO é permissão nem "
+                f"microfone ocupado. Rode no Terminal:  {py} -m pip install "
+                f"{pacote}  e reabra o app.")
+    return (f"{texto[:120]}. Feche outros programas que estejam usando o mic e "
+            f"confira as permissões: {ONDE_PERMITIR_MIC}.")
+
+
 def texto_falta_voz():
     """O que dizer quando o microfone não sobe — com a CAUSA e o comando certo
     para a máquina certa. A mensagem antiga era a mesma sempre, mandava
@@ -156,7 +209,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.21.0"
+VERSAO_ATUAL = "2.21.1"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -8301,8 +8354,7 @@ class SmcQuantApp(ctk.CTk):
                 amostras = array.array("h", dados)
                 return (sum(a * a for a in amostras) / max(len(amostras), 1)) ** 0.5
 
-            with _sd.InputStream(samplerate=TAXA, channels=1, dtype="int16",
-                                  blocksize=BLOCO) as stream:
+            with abrir_stream_microfone(TAXA, BLOCO) as stream:
                 # Limiar calibrado pelo silêncio da SUA sala (com piso e teto):
                 # microfone de ganho baixo passava despercebido com valor fixo.
                 ambiente = []
@@ -8394,9 +8446,13 @@ class SmcQuantApp(ctk.CTk):
                     persistir=False))
                 return
             except Exception as e:
+                # Mesma regra do OLÁ TIGER: biblioteca faltando NÃO é permissão
+                # nem microfone ocupado, e a mensagem tem de dizer qual é e o
+                # comando exato — não deixar o trader caçando no lugar errado.
                 self.after(0, lambda: self._chat_status("pronta", "#3fb950"))
                 self.after(0, lambda er=e: self._chat_escrever(
-                    "sistema", f"(voz indisponível: {er})", persistir=False))
+                    "sistema", "(🎤 " + explicar_falha_do_microfone(er) + ")",
+                    persistir=False))
                 return
             finally:
                 self._ouvindo = False
@@ -8560,15 +8616,13 @@ class SmcQuantApp(ctk.CTk):
                     self.after(0, lambda: self._chat_status(
                         "🐯 à escuta — diga 'Olá Tiger'", "#ff9f43"))
                 try:
-                    with _sd.InputStream(samplerate=TAXA, channels=1,
-                                          dtype="int16", blocksize=BLOCO) as stream:
+                    with abrir_stream_microfone(TAXA, BLOCO) as stream:
                         frase = self._tiger_capturar_frase(stream, rms)
                 except Exception as e:
                     self.after(0, lambda er=e: self._chat_escrever(
                         "sistema",
-                        f"(🐯 não consegui abrir o microfone: {str(er)[:120]}. "
-                        "Feche outros programas que estejam usando o mic e "
-                        f"confira as permissões: {ONDE_PERMITIR_MIC}.)",
+                        "(🐯 não consegui abrir o microfone: "
+                        + explicar_falha_do_microfone(er) + ")",
                         persistir=False))
                     time.sleep(5)
                     continue

@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.21.0 — MAC (Apple Silicon M1 / M2 / M3)
+  SMC QUANT PRO v2.21.1 — MAC (Apple Silicon M1 / M2 / M3)
   Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.
 ========================================================================
 
@@ -183,6 +183,40 @@ no meio do pregão.
 
 DEIXE A JANELA DO GRÁFICO ABERTA. Atrás de outras funciona perfeitamente
 — só não pode estar minimizada.
+
+
+========================================================================
+  O QUE MUDOU NA v2.21.1
+========================================================================
+O MICROFONE NAO PRECISAVA DO NUMPY — E NUNCA PRECISOU.
+
+  O log de 16:00 tinha a contradicao que apontou o defeito:
+
+    (modo OLA TIGER LIGADO — escutando pelo microfone
+     "MacBook Air Microphone".)
+    (nao consegui abrir o microfone: No module named 'numpy'.)
+
+  Ela LEU o nome do dispositivo e falhou logo depois. Ou seja: o
+  sounddevice tinha importado e funcionava. O numpy era exigido num
+  ponto so — o sd.InputStream devolve as amostras como array do numpy.
+
+  So que este programa NUNCA usou esse array. Todo lugar que le o
+  microfone converte para bytes na hora e calcula o volume com a
+  biblioteca padrao do Python. A dependencia era paga e nao era usada.
+
+  Agora o microfone abre com sd.RawInputStream, que entrega os MESMOS
+  bytes e nao importa numpy. A documentacao da propria biblioteca diz:
+  "NumPy is not necessary for using this".
+
+  RESULTADO: o OLA TIGER e o botao do microfone voltam a funcionar SEM
+  instalar nada. Nao precisa rodar o INSTALAR_MAC.command de novo.
+
+A MENSAGEM DE ERRO PAROU DE MANDAR VOCE AO LUGAR ERRADO
+  Antes, qualquer falha ao abrir o microfone dizia "feche outros
+  programas e confira as permissoes" — e foi por isso que voce foi
+  procurar nas Permissoes do sistema por causa de um pacote do Python.
+  Agora, quando falta uma biblioteca, ela diz QUAL e o comando exato.
+  Permissao so e citada quando o erro e mesmo de permissao.
 
 
 ========================================================================

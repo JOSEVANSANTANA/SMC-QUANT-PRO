@@ -34,9 +34,12 @@ pyttsx3>=2.90
 # inteiro e o botão do microfone explica como habilitar.
 SpeechRecognition>=3.10.0
 sounddevice>=0.4.6
-# O sounddevice IMPORTA numpy assim que é carregado. Sem esta linha o pip
-# termina com sucesso e o microfone morre no primeiro uso, com
-# "No module named 'numpy'" — foi o que aconteceu no Mac na v2.19.
+# O numpy entra como REDE DE SEGURANÇA, não como obrigação. Desde a v2.21.1 o
+# microfone abre com `sd.RawInputStream`, que entrega os bytes crus e NÃO
+# importa numpy — que é o que este programa sempre usou. O numpy só é exigido
+# se cair no caminho antigo (`sd.InputStream`), que existe para versões muito
+# velhas do sounddevice. Antes disso, a falta dele matava o microfone com
+# "No module named 'numpy'" no meio do pregão.
 numpy>=1.24.0
 
 # ------------------------------------------------------------------
