@@ -20,7 +20,7 @@
 
 #define MyAppName        "SMC Quant Pro"
 #define MyAppPublisher   "TIGER INVEST VIP"
-#define MyAppVersion     "2.18.0"
+#define MyAppVersion     "2.19.0"
 #define MyAppExeName     "SMC_Quant_Pro.exe"
 #define MyAppURL         "https://smc-quant-pro.onrender.com"
 

@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.18.0 — MAC (Apple Silicon M1 / M2 / M3)
+  SMC QUANT PRO v2.19.0 — MAC (Apple Silicon M1 / M2 / M3)
   Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.
 ========================================================================
 
@@ -183,6 +183,36 @@ no meio do pregão.
 
 DEIXE A JANELA DO GRÁFICO ABERTA. Atrás de outras funciona perfeitamente
 — só não pode estar minimizada.
+
+
+========================================================================
+  !!! LEIA ISTO ANTES DE MAIS NADA — Cmd+V COLAVA DUAS VEZES !!!
+========================================================================
+Ate a v2.18 havia um defeito do Tk no macOS: o Cmd+V inseria o texto
+DUAS VEZES no campo. Estragou duas coisas:
+
+  1) A LICENCA. A chave virava
+        SMC-DDPX-XZUG-PH8GSMC-DDPX-XZUG-PH8G
+     e o servidor recusava, com razao.
+
+  2) A CHAVE DA GEMINI — e esta era INVISIVEL, porque o campo mostra
+     asteriscos. A chave dobrada e recusada pela Google com
+        401 UNAUTHENTICATED / ACCESS_TOKEN_TYPE_UNSUPPORTED
+     que NAO e cota: e credencial invalida. Por isso "tentei 10
+     modelos" falhava — nao havia chave valida nenhuma, e nenhum
+     modelo ia funcionar.
+
+Corrigido na v2.19.0. Mas a chave dobrada JA ESTA SALVA no seu Mac.
+Faca isto UMA vez:
+
+  1. Abra o programa, aba Motor
+  2. Clique no campo da chave da Gemini
+  3. Cmd+A e depois Delete (apaga tudo)
+  4. Cole a chave UMA vez (Cmd+V)
+  5. LIGAR MOTOR — e o que salva a chave
+
+Se voce colar em dobro sem querer, o programa desfaz sozinho agora.
+A mesma correcao vale para o campo da licenca.
 
 
 ========================================================================

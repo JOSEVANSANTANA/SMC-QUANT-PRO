@@ -117,7 +117,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.18.0"
+VERSAO_ATUAL = "2.19.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -174,6 +174,69 @@ def verificar_nova_versao():
     except Exception:
         pass  # sem internet ou JSON inválido: silencioso, não atrapalha o uso
     return None
+
+def limpar_chave_colada(texto, padrao=None):
+    """Conserta o texto que sai do Cmd+V no macOS.
+
+    O DEFEITO, e ele custou um pregao inteiro: no macOS o Tk tem uma ligacao
+    propria para <<Paste>> E a classe Entry tambem trata o Cmd+V. As duas
+    disparam, e o conteudo da area de transferencia entra DUAS VEZES. No campo
+    da licenca isso apareceu como
+        SMC-DDPX-XZUG-PH8GSMC-DDPX-XZUG-PH8G
+    e no campo da CHAVE DA GEMINI, invisivel (o campo mostra asteriscos), a
+    chave dobrada virava um texto que a Google recusa com
+        401 UNAUTHENTICATED / ACCESS_TOKEN_TYPE_UNSUPPORTED
+    -- que NAO e cota, e sim credencial malformada. Foi por isso que os dez
+    modelos falharam em sequencia: nao havia chave valida nenhuma.
+
+    Aqui a duplicacao e desfeita de forma conservadora: so quando o texto e
+    EXATAMENTE a mesma coisa duas vezes coladas. Nada de adivinhar.
+    """
+    t = "".join(str(texto or "").split())      # tira espacos, quebras e tabs
+    if not t:
+        return ""
+    meio = len(t) // 2
+    if len(t) % 2 == 0 and t[:meio] == t[meio:]:
+        t = t[:meio]
+    if padrao:
+        import re as _re
+        m = _re.match(padrao, t)
+        if m:
+            t = m.group(0)
+    return t
+
+
+def ligar_colar_sem_duplicar(widget):
+    """Faz o Cmd+V colar UMA vez neste campo.
+
+    So mexe no macOS -- no Windows o comportamento sempre esteve certo, e
+    trocar o que funciona seria criar defeito novo. A ligacao devolve 'break'
+    para o Tk parar ali e nao rodar a segunda insercao.
+    """
+    if not plataforma.E_MACOS:
+        return widget
+    alvo = getattr(widget, "_entry", widget)      # CTkEntry embrulha um Entry
+
+    def colar(_evento=None):
+        try:
+            try:
+                if alvo.selection_present():
+                    alvo.delete("sel.first", "sel.last")
+            except Exception:
+                pass
+            texto = "".join(str(alvo.clipboard_get() or "").split())
+            alvo.insert("insert", texto)
+        except Exception:
+            pass
+        return "break"
+
+    for atalho in ("<Command-v>", "<Command-V>", "<<Paste>>"):
+        try:
+            alvo.bind(atalho, colar)
+        except Exception:
+            pass
+    return widget
+
 
 def diretorio_da_aplicacao():
     if getattr(sys, 'frozen', False):
@@ -569,6 +632,9 @@ def carregar_api_key() -> str:
     return ""
 
 def salvar_api_key(api_key_texto: str):
+    """Ultima barreira antes do disco: a chave passa pela limpeza mesmo que
+    tenha vindo de outro caminho que nao o campo da interface."""
+    api_key_texto = limpar_chave_colada(api_key_texto)
     salvar_config({"gemini_api_key_enc": dpapi_encrypt(api_key_texto)})
 
 # --------------------------------------------------------------------
@@ -1559,6 +1625,12 @@ def classificar_erro_modelo(erro):
         return "invalido"
     if "429" in e or "RESOURCE_EXHAUSTED" in e:
         return "cota"
+    # 401 e credencial, nao cota. Tentar os outros modelos com a MESMA chave
+    # invalida so gasta tempo e ainda faz o trader pensar que e limite de uso
+    # -- foi o que aconteceu: "tentei 10 modelos" com uma chave que nao valia.
+    if ("401" in e and "UNAUTHENTICATED" in e) or "ACCESS_TOKEN_TYPE_UNSUPPORTED" in e \
+            or "API KEY NOT VALID" in e or "API_KEY_INVALID" in e:
+        return "fatal"
     transitorios = ("503", "UNAVAILABLE", "500", "INTERNAL", "504", "DEADLINE",
                     "TIMEOUT", "TIMED OUT", "OVERLOADED", "CONNECTION", "SSL",
                     "TEMPORARILY")
@@ -5076,6 +5148,9 @@ class SmcQuantApp(ctk.CTk):
         self.btn_verificar.pack(pady=4)
 
         self.api_entry = ctk.CTkEntry(master, placeholder_text="Cole sua Chave da API Gemini", width=420, show="*")
+        # O campo mostra asteriscos: uma chave colada em DOBRO passaria
+        # despercebida e so apareceria como 401 na hora do pregao.
+        ligar_colar_sem_duplicar(self.api_entry)
         self.api_entry.pack(pady=8)
 
         api_key_salva = carregar_api_key()
@@ -6264,7 +6339,7 @@ class SmcQuantApp(ctk.CTk):
                 return
             chave = ""
             try:
-                chave = (self.api_entry.get() or "").strip() or carregar_api_key()
+                chave = limpar_chave_colada(self.api_entry.get()) or carregar_api_key()
             except Exception:
                 chave = carregar_api_key()
             if not chave:
@@ -7099,6 +7174,13 @@ class SmcQuantApp(ctk.CTk):
             return ("Os modelos que eu uso não respondem para essa chave. "
                     "Confira se a API Gemini está habilitada para ela no "
                     "Google AI Studio.")
+        if "ACCESS_TOKEN_TYPE_UNSUPPORTED" in e or ("401" in e and "UNAUTHENTICATED" in e):
+            return ("A chave da Gemini foi RECUSADA — e isso não é cota, é a "
+                    "chave em si.\n\nO caso mais comum: no Mac, o Cmd+V colava "
+                    "o texto DUAS VEZES, e a chave dobrada é inválida. Como o "
+                    "campo mostra asteriscos, não dava para ver.\n\nApague o "
+                    "campo da chave na aba Motor (Cmd+A e Delete), cole de novo "
+                    "UMA vez, e ligue o motor para salvar.")
         if "500" in e or "503" in e or "INTERNAL" in e or "UNAVAILABLE" in e:
             return ("O servidor do modelo está sobrecarregado neste momento. "
                     "Me chame de novo em instantes.")
@@ -7279,7 +7361,8 @@ class SmcQuantApp(ctk.CTk):
                     + (f"Tentei {len(modelos)} modelos, um por um, antes de te "
                        f"dizer isso — {diagnostico_modelos()}. Não é desculpa: "
                        "se sobrasse um só de pé, eu teria lido.\n\n"
-                       if modelos else "")
+                       if modelos and classificar_erro_modelo(ultimo_erro) != "fatal"
+                       else "")
                     +
                     "Nada do que eu dissesse sobre esse gráfico agora seria "
                     "leitura de verdade — seria chute, e chute na mesa vira "
@@ -10144,7 +10227,7 @@ class SmcQuantApp(ctk.CTk):
         self.after(0, _restaurar_ui)
 
     def iniciar(self):
-        api_key = self.api_entry.get().strip()
+        api_key = limpar_chave_colada(self.api_entry.get())
         if not api_key:
             self.log("⚠️ Cole a chave da Gemini API primeiro.")
             return
@@ -11625,15 +11708,24 @@ def tela_de_ativacao():
         ctk.CTkLabel(janela, text="⚠️ Esta licença foi desativada. Contate o suporte.",
                      text_color="#ff6666", wraplength=400).pack(pady=(0, 4))
 
-    entrada = ctk.CTkEntry(janela, width=380, placeholder_text="Ex: TIGER-XXXX-XXXX-XXXX",
+    entrada = ctk.CTkEntry(janela, width=380, placeholder_text="Ex: SMC-XXXX-XXXX-XXXX",
                             justify="center")
     entrada.pack(pady=18)
+    # No Mac o Cmd+V colava DUAS vezes: a chave virava
+    # "SMC-DDPX-XZUG-PH8GSMC-DDPX-XZUG-PH8G" e o servidor recusava, com razao.
+    ligar_colar_sem_duplicar(entrada)
 
     lbl_status = ctk.CTkLabel(janela, text="", text_color="gray")
     lbl_status.pack()
 
     def ativar():
-        chave = entrada.get().strip()
+        # Corrige a colagem dobrada e recorta no formato da chave, para um
+        # espaco ou uma quebra de linha invisivel nao virar "chave invalida".
+        chave = limpar_chave_colada(entrada.get(),
+                                    r"[A-Z0-9]{3,6}(?:-[A-Z0-9]{2,8}){2,5}")
+        if chave and chave != (entrada.get() or "").strip():
+            entrada.delete(0, "end")
+            entrada.insert(0, chave)          # ele VE o que vai ser enviado
         if not chave:
             lbl_status.configure(text="Digite a chave de licença.", text_color="#ffcc66")
             return
