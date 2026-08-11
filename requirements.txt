@@ -1,0 +1,53 @@
+# SMC Quant Pro — dependências para WINDOWS
+#
+# Instale com o Python 3.11 ou 3.12 do python.org:
+#
+#     python -m pip install -r requirements.txt
+#
+# (A lista do Mac é outra: requirements-mac.txt. O CÓDIGO é o mesmo nos dois
+#  sistemas — o que muda é só a lista de bibliotecas nativas embaixo.)
+#
+# ------------------------------------------------------------------
+# INTERFACE
+# ------------------------------------------------------------------
+customtkinter>=5.2.0
+# tkinter NÃO se instala por pip: vem junto do Python do python.org.
+
+# ------------------------------------------------------------------
+# IMAGEM (captura do gráfico) E REDE
+# ------------------------------------------------------------------
+Pillow>=10.0.0
+requests>=2.31.0
+
+# ------------------------------------------------------------------
+# INTELIGÊNCIA (TIGER + análise do motor)
+# ------------------------------------------------------------------
+google-genai>=1.0.0
+
+# ------------------------------------------------------------------
+# VOZ
+# ------------------------------------------------------------------
+# No Windows quem FALA é o pyttsx3 (SAPI5 do próprio sistema).
+pyttsx3>=2.90
+
+# Comando por voz ("Olá Tiger"). Opcional: sem eles o programa funciona
+# inteiro e o botão do microfone explica como habilitar.
+SpeechRecognition>=3.10.0
+sounddevice>=0.4.6
+# O sounddevice IMPORTA numpy assim que é carregado. Sem esta linha o pip
+# termina com sucesso e o microfone morre no primeiro uso, com
+# "No module named 'numpy'" — foi o que aconteceu no Mac na v2.19.
+numpy>=1.24.0
+
+# ------------------------------------------------------------------
+# JANELAS DO WINDOWS  (ESTE É O ITEM QUE NÃO PODE FALTAR)
+# ------------------------------------------------------------------
+# É o equivalente do pyobjc no Mac: sem ele o programa não LISTA as janelas
+# abertas, não captura a janela do gráfico com PrintWindow e não protege a
+# chave da API com a DPAPI.
+pywin32>=306
+
+# ------------------------------------------------------------------
+# EMPACOTAR EM .EXE (só para gerar o executável; não é preciso para rodar)
+# ------------------------------------------------------------------
+# pyinstaller>=6.3.0

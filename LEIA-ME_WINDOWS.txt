@@ -1,0 +1,103 @@
+========================================================================
+  SMC QUANT PRO — WINDOWS
+  Comece por aqui.
+========================================================================
+
+O CÓDIGO É O MESMO DO MAC
+-------------------------
+Vale saber, porque muda o jeito de pensar as atualizações: main_app.py,
+plataforma.py, tradovate_auto.py e a pasta motor sao os MESMOS arquivos
+nos dois sistemas. Quem decide "PrintWindow ou screencapture", "DPAPI ou
+Chaveiro do Mac", "win32gui ou Quartz" e o plataforma.py, na hora que o
+programa roda.
+
+Consequencia pratica: toda correcao ja nasce valendo para os dois. O que
+muda de um pacote para o outro e so a casca — lista de dependencias,
+.spec do empacotador, instalador e este passo a passo.
+
+
+PASSO 1 — PYTHON
+----------------
+Instale o Python 3.11 ou 3.12 de https://www.python.org/downloads/
+Na primeira tela, MARQUE "Add python.exe to PATH".
+
+
+PASSO 2 — NODE.JS  (obrigatorio para o motor)
+---------------------------------------------
+Baixe o instalador LTS em https://nodejs.org e instale normalmente.
+Para conferir, abra o Prompt de Comando e digite:  node -v
+
+
+PASSO 3 — BIBLIOTECAS
+---------------------
+Abra o Prompt de Comando NA PASTA do programa e rode:
+
+    python -m pip install --upgrade pip
+    python -m pip install -r requirements.txt
+
+O item que NAO pode faltar e o pywin32: sem ele o programa nao lista as
+janelas abertas e nao consegue capturar o grafico.
+
+
+PASSO 4 — ABRIR
+---------------
+    python main_app.py
+
+Se preferir o executavel, veja o COMPILAR.md (secao "COMO COMPILAR").
+
+
+PASSO 5 — CHAVE DA GEMINI
+-------------------------
+Na aba Motor, cole a chave da API no campo indicado e clique em
+LIGAR MOTOR uma vez — e isso que salva a chave.
+
+A chave fica protegida pela DPAPI do Windows, presa a sua conta de
+usuario: copiar o arquivo de configuracao para outra maquina NAO leva a
+chave junto.
+
+
+COMO COMPILAR O .EXE
+--------------------
+    cd C:\\Users\\jovan\\Documents\\SMC_QUANT_PRO
+    rd /s /q build
+    rd /s /q dist
+    python -m PyInstaller SMC_Quant_Pro.spec
+
+Sai em:  dist\\SMC_Quant_Pro\\SMC_Quant_Pro.exe
+
+ATENCAO ao SMC_Quant_Pro.spec deste pacote: ele foi escrito para o
+repositorio, espelhando o .spec do Mac. Ele NAO e uma copia do .spec que
+ja existe na sua maquina — aquele nunca chegou a ser versionado. Se o seu
+build atual funciona, compare os dois antes de trocar; havendo diferenca,
+o SEU vence, e me mande o arquivo para eu guardar o original aqui.
+
+
+TESTES
+------
+    python tests\\run.py
+
+Roda a suite inteira sem abrir janela, sem tocar nos seus dados e sem
+precisar de chave de API nem internet. Vale a pena rodar antes de
+compilar: se algo quebrou, aparece aqui em segundos.
+
+
+SE ALGO NAO FUNCIONAR
+---------------------
+Lista de janelas vazia
+  → falta o pywin32. Rode o pip do Passo 3 de novo.
+
+"No module named 'numpy'" no microfone ou na fala
+  → o sounddevice importa o numpy. Rode:  python -m pip install numpy
+
+Motor nao sobe, porta 3939 ocupada
+  → a partir da v2.21.0 o proprio programa encerra o processo orfao ao
+    ligar. Se a mensagem disser que quem esta na porta NAO e o motor,
+    feche aquele programa. Para ver quem e:
+        netstat -ano | findstr :3939
+
+Grafico "congelado" a cada ciclo
+  → a janela esta minimizada. Deixe-a aberta, mesmo atras de outras.
+
+A TIGER nao fala
+  → confira o pyttsx3 na lista do Passo 3.
+========================================================================

@@ -35,6 +35,7 @@ vez de passar testando o vazio.
 | `test_mac.py` | `No module named 'numpy'` matando o microfone; mensagens mandando um usuário de Mac abrir telas do Windows. |
 | `test_motor.py` | "Motor no ar" dito sobre um processo que já tinha morrido; a porta 3939 ocupada virando tarefa do trader no Terminal; cenário morto ficando "aguardando decisão" para sempre. |
 | `test_interface.py` | A aba Motor recolhível: um widget cujo bloco pai é criado DEPOIS dele impede o app de abrir, e o pyflakes não pega isso. Também o tamanho de letra (valor absurdo no config não pode inutilizar a janela). |
+| `test_empacotamento.py` | O repositório ficou versões inteiras sabendo compilar para Mac e **não** para Windows — o `.spec` do `.exe` vivia só na máquina do trader. A simetria entre os dois sistemas virou teste. |
 
 ## Regra da casa
 

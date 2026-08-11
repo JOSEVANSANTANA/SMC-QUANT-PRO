@@ -1,22 +1,58 @@
-# Como compilar o SMC Quant Pro v2.16.0 (TIGER)
+# Como compilar o SMC Quant Pro (Windows)
 
-> **Resumo:** o processo de build **não mudou**. É o mesmo fluxo do `.spec`
-> que você já usa. Nesta versão mudaram **dois** arquivos — substitua os dois
-> e compile.
+## UM CÓDIGO, DOIS PACOTES
+
+`main_app.py`, `plataforma.py`, `tradovate_auto.py` e a pasta `motor/` são os
+**mesmos arquivos** no Windows e no Mac. Quem decide "PrintWindow ou
+`screencapture`", "DPAPI ou Chaveiro", "win32gui ou Quartz" é o
+`plataforma.py`, em tempo de execução.
+
+**Consequência:** toda correção já nasce valendo para os dois sistemas. Não
+existe "corrigir no Mac e depois portar para o Windows".
+
+O que muda entre um pacote e outro é só a casca:
+
+| | Windows | Mac |
+|---|---|---|
+| Dependências | `requirements.txt` | `requirements-mac.txt` |
+| Empacotador | `SMC_Quant_Pro.spec` | `SMC_Quant_Pro_MAC.spec` |
+| Passo a passo | `LEIA-ME_WINDOWS.txt` | `LEIA-ME_MAC.txt`, `INSTALAR_NO_MAC.md` |
+| Instalador | `instalador/SMC_Quant_Pro.iss` | `INSTALAR_MAC.command`, `CRIAR_APP.command` |
+
+Os dois pacotes saem de um comando só, do próprio repositório:
+
+```
+python empacotar.py            # gera os dois zips
+python empacotar.py windows    # só o do Windows
+python empacotar.py mac        # só o do Mac
+python empacotar.py --sem-painel   # sem o painel de licenças (para repasse)
+```
+
+O script recusa gerar um pacote incompleto: se um arquivo da lista sumir do
+repositório, ele para e diz qual, em vez de entregar um zip capenga.
 
 ---
 
-## 0. O que mudou nesta versão
+## 0. Qual versão é esta
 
-- `main_app.py` ← alterado
-- `tradovate_auto.py` ← alterado
-- `plataforma.py` ← **NOVO — precisa estar junto, senão o programa nem abre**
+A versão vigente está no `versao.json` — é de lá que o app, o verificador de
+atualização e o `empacotar.py` leem o número. Não há versão digitada em outro
+lugar que possa envelhecer em silêncio.
 
-E, só para quem for usar no Mac: `requirements-mac.txt`,
-`SMC_Quant_Pro_MAC.spec` e `INSTALAR_NO_MAC.md`.
+Arquivos que mudam com mais frequência: `main_app.py`, `plataforma.py`,
+`tradovate_auto.py`, `motor/index.js`, `versao.json`. O **motor** só precisa
+ser reinstalado (`npm install`) quando o `motor/package.json` muda — fora
+isso, reaproveite a pasta `motor\` com o `node_modules` que você já tem.
 
-O **motor NÃO mudou** — reaproveite a pasta `motor\` com o `node_modules` que
-você já tem.
+### Antes de compilar, rode a suíte
+
+```
+python tests\run.py
+```
+
+Sem janela, sem tocar nos seus dados, sem chave de API e sem internet. Se algo
+quebrou, aparece aqui em segundos — e é bem mais barato descobrir aqui do que
+depois de gerar o `.exe`.
 
 ### Novidades da 2.16.0
 

@@ -1,2 +1,9 @@
 __pycache__/
 *.pyc
+
+# Os pacotes de entrega sao GERADOS pelo empacotar.py a partir do repositorio.
+# Versionar o zip seria versionar uma copia do que ja esta versionado, e ela
+# envelheceria em silencio.
+SMC_QUANT_PRO_*_v*.zip
+build/
+dist/
