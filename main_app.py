@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.27.0"
+VERSAO_ATUAL = "2.28.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -2264,12 +2264,18 @@ def resultados_por_dia():
     Retorna lista de (data_str, resultado_do_dia) em ordem cronológica."""
     lista = posicoes_do_ciclo()
     por_dia = {}
+    cfg = carregar_config()
     for pos in lista:
         if pos.get("status") == "FECHADA" and pos.get("pnl_final") is not None:
-            dia = (pos.get("data_fechamento") or "")[:10]
+            # O DIA é o do PREGÃO, não o do calendário: com o pregão virando
+            # às 19:00, a operação da madrugada pertence ao dia anterior. Sem
+            # isso, o gráfico da curva quebrava um pregão em dois.
+            quando = _hora_do_registro(pos.get("data_fechamento"))
+            dia = (data_do_pregao(quando, cfg) if quando
+                   else (pos.get("data_fechamento") or "")[:10])
             if dia:
                 por_dia[dia] = por_dia.get(dia, 0.0) + pos["pnl_final"]
-    hoje = time.strftime('%d/%m/%Y')
+    hoje = data_do_pregao(cfg=cfg)
     # Só posições ABERTAS (executadas de verdade) têm P&L flutuante.
     aberto_hoje = sum(p.get("pnl_atual", 0) for p in lista if p.get("status") == "ABERTA")
     if aberto_hoje:
@@ -2289,13 +2295,92 @@ def _hora_do_registro(txt_data):
     except (ValueError, TypeError):
         return None
 
+# --------------------------------------------------------------------
+# O DIA DO PREGÃO NÃO É O DIA DO CALENDÁRIO
+# --------------------------------------------------------------------
+# Do log de 12/08, 19:59, ele configurou: "o início do dia para essa conta é
+# às 19hs até as 17:59". A ferramenta gravou certo e confirmou. E às 20:01,
+# com o pregão NOVO já rodando havia uma hora, o freio respondeu:
+#
+#     "🛑 você já fechou 6 operações hoje, que é o teto do seu plano (6)"
+#
+# Aquelas seis operações eram do pregão ANTERIOR. Ele reclamou três vezes
+# ("mas o dia já virou", "era para contabilizar no plano de trading", "vire o
+# ciclo do dia") e chegou a gravar como lição.
+#
+# A causa: `hoje` era `time.strftime('%d/%m/%Y')` — o dia do CALENDÁRIO. Para
+# quem opera índice americano de madrugada, meia-noite não é a virada de nada.
+# O pregão dele começa às 19:00 e atravessa a meia-noite; o dia de operação
+# vira às 19:00, não às 00:00.
+#
+# Não era um botão que faltava: era esta função.
+def data_do_pregao(quando=None, cfg=None):
+    """A data do PREGÃO a que este instante pertence, no formato dd/mm/aaaa.
+
+    Com pregão normal (09:00→17:00) é o próprio dia do calendário. Com pregão
+    que ATRAVESSA A MEIA-NOITE (19:00→17:59), tudo que acontece antes das
+    19:00 ainda pertence ao pregão que começou às 19:00 do dia anterior."""
+    agora = quando or datetime.datetime.now()
+    try:
+        c = cfg if cfg is not None else carregar_config()
+        ini = str(c.get("hora_inicio", PADRAO_CONFIG_APP["hora_inicio"]))
+        fim = str(c.get("hora_fim", PADRAO_CONFIG_APP["hora_fim"]))
+        h_ini, m_ini = (int(x) for x in ini.split(":")[:2])
+        h_fim, m_fim = (int(x) for x in fim.split(":")[:2])
+    except Exception:
+        return agora.strftime('%d/%m/%Y')
+    # Pregão que não vira o dia: o calendário serve.
+    if (h_ini, m_ini) <= (h_fim, m_fim):
+        return agora.strftime('%d/%m/%Y')
+    # Vira o dia: antes do horário de início, ainda é o pregão de ontem.
+    if (agora.hour, agora.minute) < (h_ini, m_ini):
+        return (agora - datetime.timedelta(days=1)).strftime('%d/%m/%Y')
+    return agora.strftime('%d/%m/%Y')
+
+
+def pregao_vira_o_dia(cfg=None):
+    """O pregão configurado atravessa a meia-noite?"""
+    try:
+        c = cfg if cfg is not None else carregar_config()
+        ini = [int(x) for x in str(c.get("hora_inicio",
+               PADRAO_CONFIG_APP["hora_inicio"])).split(":")[:2]]
+        fim = [int(x) for x in str(c.get("hora_fim",
+               PADRAO_CONFIG_APP["hora_fim"])).split(":")[:2]]
+        return tuple(ini) > tuple(fim)
+    except Exception:
+        return False
+
+
 def operacoes_fechadas_hoje():
-    """Operações da conta ativa fechadas HOJE, em ordem cronológica."""
-    hoje = time.strftime('%d/%m/%Y')
+    """Operações da conta ativa fechadas NESTE PREGÃO, em ordem cronológica.
+
+    'Neste pregão', não 'neste dia do calendário' — ver data_do_pregao."""
+    hoje = data_do_pregao()
+    cfg = carregar_config()
+    # VIRADA MANUAL: ele pode encerrar o dia ANTES da hora configurada, com
+    # 'vire o dia'. É um CORTE no tempo, não um rótulo de data — por isso mora
+    # aqui e não em data_do_pregao, que precisa devolver dd/mm/aaaa comparável.
+    # Vale 24h: uma virada de ontem não pode continuar mandando hoje.
+    corte = _hora_do_registro(cfg.get("virada_manual"))
+    if corte and (datetime.datetime.now() - corte) >= datetime.timedelta(hours=24):
+        corte = None
+
+    def e_deste_pregao(p):
+        # Cada operação é mapeada para O PREGÃO DELA. Comparar o texto da data
+        # com o rótulo de hoje daria errado justamente no caso que importa:
+        # uma operação fechada às 10:00 de 13/08 pertence ao pregão de 12/08
+        # quando o dia começa às 19:00 — e o texto dela diz "13/08".
+        quando = _hora_do_registro(p.get("data_fechamento"))
+        if quando is None:
+            return (p.get("data_fechamento") or "").startswith(hoje)
+        if corte and quando < corte:
+            return False          # é do dia que ele encerrou na mão
+        return data_do_pregao(quando, cfg) == hoje
+
     fechadas = [p for p in posicoes_do_ciclo()
                 if p.get("status") == "FECHADA"
                 and p.get("pnl_final") is not None
-                and (p.get("data_fechamento") or "").startswith(hoje)]
+                and e_deste_pregao(p)]
     fechadas.sort(key=lambda p: _hora_do_registro(p.get("data_fechamento"))
                   or datetime.datetime.min)
     return fechadas
@@ -3966,6 +4051,74 @@ def ler_cenario_do_topico(item, cenario):
             "tamanho da posição deve ser respeitado, não aumentado.")
     return " ".join(linhas)
 
+# "vire o ciclo do dia no painel de trading" / "o dia já virou, contabiliza"
+_RE_VIRAR_DIA = re.compile(
+    r"\b(vir(a|e|ar)|troca|troque|trocar|reinicia|recomeça|recomecar|"
+    r"comeca|come[çc]ar|abre|abrir|abra)\b[^.!?]{0,30}?"
+    r"\b(dia|ciclo do dia|pregao|preg[ãa]o|dia de opera[çc][ãa]o)\b"
+    r"|\bnovo (dia|preg[ãa]o|ciclo do dia)\b"
+    r"|\bo dia (j[áa] )?virou\b", re.I)
+
+# "em que pregão estamos?", "o dia já virou?", "que dia de operação é hoje?"
+_RE_QUAL_PREGAO = re.compile(
+    r"\b(que|qual|em que)\b[^.!?]{0,25}?\b(preg[ãa]o|dia de opera[çc][ãa]o)\b"
+    r"|\bo dia (j[áa] )?virou\s*\?"
+    r"|\bque dia (de opera[çc][ãa]o )?(e|[ée]) hoje\b", re.I)
+
+_RE_SAUDACAO = re.compile(
+    r"^\s*(oi|ola|ol[áa]|e a[íi]|eai|opa|bom dia|boa tarde|boa noite|"
+    r"tudo bem|tudo bom|como vai|como voc[êe] est[áa]|bom te ver|"
+    r"cheguei|voltei|estou aqui|to aqui)\b[\s!,.?]*$", re.I)
+
+
+def texto_do_pregao_atual(agora=None, cfg=None):
+    """Em que pregão a mesa está AGORA, e por quê. Sem API, sem internet.
+
+    Responde a pergunta que ele fez três vezes ('mas o dia já virou') com o
+    número, o horário e a regra — em vez de com uma desculpa."""
+    c = cfg if cfg is not None else carregar_config()
+    ini = c.get("hora_inicio", PADRAO_CONFIG_APP["hora_inicio"])
+    fim = c.get("hora_fim", PADRAO_CONFIG_APP["hora_fim"])
+    agora = agora or datetime.datetime.now()
+    dia = data_do_pregao(agora, c)
+    vira = pregao_vira_o_dia(c)
+    linhas = [f"📅 Pregão em curso: **{dia}** "
+              f"(agora são {agora.strftime('%H:%M de %d/%m/%Y')})."
+              , f"Horário configurado: das {ini} às {fim}."]
+    if vira:
+        linhas.append(
+            f"O seu pregão ATRAVESSA A MEIA-NOITE: começa às {ini} e vai até "
+            f"as {fim} do dia seguinte. Por isso o dia de operação vira às "
+            f"{ini} — não às 00:00. Tudo que acontece de madrugada ainda "
+            f"pertence ao pregão que começou às {ini}.")
+    else:
+        linhas.append("O seu pregão fecha no mesmo dia, então o dia de "
+                      "operação é o dia do calendário.")
+    try:
+        n = len(operacoes_fechadas_hoje())
+        linhas.append(f"Operações fechadas NESTE pregão: {n}.")
+    except Exception:
+        pass
+    return "\n".join(linhas)
+
+
+def responder_saudacao(texto, agora=None):
+    """Devolve o cumprimento — ou None se não era um.
+
+    A régua é a FRASE INTEIRA: 'bom dia' cumprimenta, 'bom dia, o que deu
+    errado no stop?' é uma pergunta com um cumprimento na frente e tem de
+    seguir para quem responde perguntas."""
+    t = _sem_acento(str(texto or "")).strip()
+    if not t or not _RE_SAUDACAO.match(t):
+        return None
+    h = (agora or datetime.datetime.now()).hour
+    parte = "Bom dia" if h < 12 else ("Boa tarde" if h < 18 else "Boa noite")
+    return (f"{parte}, Josevan. Estou aqui.\n\n"
+            "Se quiser começar pelo de sempre: 'status' para o placar da conta, "
+            "'olha o gráfico' para a leitura de agora, ou me pergunte "
+            "direto — 'compro ou vendo?'.")
+
+
 def responder_offline(pergunta, cenario=None):
     """A MELHOR resposta que dá para montar sem a API, nesta ordem:
     capacidades da ferramenta → base (SMC + macro) → cotação real → notícia
@@ -3978,6 +4131,16 @@ def responder_offline(pergunta, cenario=None):
     que nunca deveria sair do bastidor."""
     if not (pergunta or "").strip():
         return None
+    # CUMPRIMENTO. Do log de 12/08, 15:41:
+    #     ❯ BOA TARDE
+    #     ✳ "Não tenho como responder isso com segurança agora: não está na
+    #        minha base, não consegui confirmar na internet, e a API está fora"
+    # Responder "bom dia" nunca precisou de API, de internet nem de base de
+    # conhecimento. Uma ferramenta que não sabe dizer boa tarde não parece
+    # cuidadosa — parece quebrada, e contamina a confiança em tudo o mais.
+    saudacao = responder_saudacao(pergunta)
+    if saudacao:
+        return saudacao
     if pergunta_sobre_capacidades(pergunta):
         return texto_das_capacidades()
     # HISTÓRICO DE SUGESTÕES: dado que está no disco dela. Vem antes da base
@@ -4416,9 +4579,17 @@ BASE_SMC = [
           "confluência inventada: repetir o mesmo argumento com três nomes "
           "diferentes não conta como três motivos."},
     {"t": "Volume, VWAP e indicadores como apoio",
-     "k": ["vwap", "vpoc", "perfil de volume", "media movel", "média móvel",
-           "divergencia de momentum", "divergência de momentum", "rsi",
-           "indicadores como apoio", "volume confirma"],
+     # AS PALAVRAS QUE GANHARAM TOPICO PROPRIO SAIRAM DAQUI. 'vwap', 'rsi',
+     # 'media movel' e 'perfil de volume' agora tem cada um o seu verbete, com
+     # profundidade. Deixa-las aqui tambem fazia os dois topicos EMPATAREM — e
+     # a busca recusa empate de proposito, para nao chutar entre dois assuntos.
+     # Resultado pratico: "o que e vwap?" nao era respondido por NENHUM dos
+     # dois. Este verbete continua sendo o da FILOSOFIA (indicador confirma,
+     # nao manda); o especifico responde o que cada um e.
+     "k": ["indicadores como apoio", "volume confirma", "indicador confirma",
+           "indicadores mandam", "indicadores no grafico", "indicadores no gráfico",
+           "indicadores no smc", "confirmacao por indicador",
+           "confirmação por indicador", "volume no rompimento"],
      "r": "No SMC os indicadores não mandam, eles confirmam. Volume alto no "
           "rompimento apoia a leitura de deslocamento real; volume fraco sugere "
           "armadilha. VWAP e o pico de volume funcionam como ímã de preço e "
@@ -4477,6 +4648,315 @@ BASE_SMC = [
           "tempo menor, e é ela que dá o momento de entrar. O erro clássico é "
           "operar contra a externa porque a interna virou — isso é pegar faca "
           "caindo. Direção vem de cima, gatilho vem de baixo."},
+    {"t": "VWAP — o que é, como usar e onde ela ENGANA",
+     "k": ["vwap", "preco medio ponderado", "preço médio ponderado por volume",
+           "vwap ancorada", "anchored vwap", "bandas da vwap", "desvio da vwap"],
+     "r": "VWAP é o preço médio ponderado pelo VOLUME desde a abertura da "
+          "sessão. Ela responde a uma pergunta específica: quem comprou hoje "
+          "está no lucro ou no prejuízo? Preço acima da VWAP significa que o "
+          "comprador médio do dia está ganhando — e é isso que a torna ímã e "
+          "suporte dinâmico, não mágica de indicador. TRÊS USOS QUE VALEM: "
+          "(1) viés intradiário — acima dela, procure compra em recuo; abaixo, "
+          "venda em repique; (2) reversão à média — preço muito esticado da "
+          "VWAP tende a voltar, e as BANDAS de desvio padrão (1σ, 2σ) medem "
+          "esse esticamento; (3) confluência — VWAP colada num order block ou "
+          "no POC é zona de reação forte, porque duas leituras independentes "
+          "apontam o mesmo lugar. ONDE ELA ENGANA: em dia de tendência forte, "
+          "esperar a volta na VWAP faz você perder o movimento inteiro; e "
+          "perto do fim da sessão ela fica praticamente parada, porque o "
+          "volume acumulado é grande demais para o preço mover a média. "
+          "VWAP ANCORADA é a mesma conta começando num ponto que VOCÊ escolhe "
+          "(a mínima do dia, o dia do payroll, o topo histórico) — serve para "
+          "medir o preço médio de quem entrou NAQUELE evento. "
+          "REGRA DA CASA: a VWAP é confluência, nunca o motivo da entrada."},
+    {"t": "Perfil de volume — POC, VAH, VAL e nós de baixo volume",
+     "k": ["perfil de volume", "volume profile", "poc", "vpoc", "vah", "val",
+           "value area", "area de valor", "nó de baixo volume", "lvn", "hvn",
+           "naked poc", "poc virgem"],
+     "r": "O perfil de volume vira o gráfico de lado: em vez de volume por "
+          "TEMPO, mostra volume por PREÇO. Ele responde onde o negócio "
+          "realmente aconteceu. POC (Point of Control) é o preço com mais "
+          "volume — o lugar onde comprador e vendedor mais concordaram. VALUE "
+          "AREA é a faixa que concentra ~70% do volume, com VAH no topo e VAL "
+          "na base. COMO SE OPERA: dentro da área de valor o mercado é "
+          "rotacional (o certo é operar as bordas ou ficar de fora); fora "
+          "dela, é tendência. HVN (nó de ALTO volume) é área de aceitação — o "
+          "preço trava ali; LVN (nó de BAIXO volume) é área de rejeição — o "
+          "preço atravessa rápido, e por isso LVN é bom alvo e péssimo lugar "
+          "para stop. POC VIRGEM (naked POC) é um POC de sessão passada que o "
+          "preço ainda não voltou a tocar: funciona como ímã, porque ficou "
+          "negócio inacabado ali. LIGAÇÃO COM SMC: um LVN é a mesma coisa que "
+          "um FVG vista por outro ângulo — ineficiência. Quando os dois "
+          "apontam o mesmo preço, a leitura fica muito mais forte."},
+    {"t": "RSI e divergência — o que ele realmente mede",
+     "k": ["rsi", "indice de forca relativa", "índice de força relativa",
+           "sobrecomprado", "sobrevendido", "divergencia", "divergência",
+           "overbought", "oversold"],
+     "r": "RSI mede a VELOCIDADE do movimento, não a direção nem o valor "
+          "justo. É por isso que o erro mais caro do varejo é vender só "
+          "porque o RSI passou de 70: em tendência forte o RSI FICA acima de "
+          "70 por horas, e quem vendeu 'sobrecomprado' vira combustível para a "
+          "alta continuar. O uso que se sustenta é a DIVERGÊNCIA: preço faz "
+          "topo mais alto e o RSI faz topo mais baixo (divergência de baixa), "
+          "ou preço faz fundo mais baixo e o RSI faz fundo mais alto "
+          "(divergência de alta). Isso mostra que o movimento perdeu força — e "
+          "AINDA ASSIM não é entrada: é aviso. A entrada continua vindo da "
+          "estrutura (um CHoCH confirmando). Divergência sem quebra de "
+          "estrutura é o clássico 'pegar faca caindo'. E a divergência vale "
+          "muito mais quando aparece EM CIMA de um extremo de liquidez "
+          "(depois de varrer um topo ou fundo) do que solta no meio do range."},
+    {"t": "Médias móveis — o que servem e o que não servem",
+     "k": ["media movel", "média móvel", "mm", "sma", "ema", "media de 200",
+           "média de 200", "cruzamento de medias", "golden cross", "death cross",
+           "media exponencial"],
+     "r": "Média móvel é preço passado suavizado — ela ATRASA por definição, e "
+          "isso não é defeito, é a natureza dela. SMA dá peso igual a todos os "
+          "períodos; EMA dá mais peso ao recente e por isso vira mais rápido. "
+          "O QUE SERVE: (1) ler a inclinação como contexto de tendência num "
+          "olhar; (2) as médias longas (50, 200) funcionam como suporte e "
+          "resistência porque MUITA gente olha para elas — é profecia "
+          "autorrealizável, e ainda assim é real; (3) a distância do preço até "
+          "a média mede esticamento. O QUE NÃO SERVE: cruzamento de médias "
+          "como gatilho de entrada em intradiário — ele avisa depois que o "
+          "movimento já aconteceu, e em mercado lateral vira uma máquina de "
+          "prejuízo (o famoso chicote). NO SMC a média entra como CONFLUÊNCIA: "
+          "um order block que coincide com a média de 50 é mais respeitado que "
+          "um order block solto. A média nunca é o motivo da entrada."},
+    {"t": "ATR — medir volatilidade antes de escolher o stop",
+     "k": ["atr", "average true range", "volatilidade", "amplitude media",
+           "amplitude média", "stop pelo atr"],
+     "r": "ATR mede a amplitude média de uma vela num período — em outras "
+          "palavras, quanto este mercado costuma andar AGORA. Serve para uma "
+          "coisa que vale dinheiro: dimensionar o stop pelo que o mercado "
+          "está fazendo, e não pelo que você gostaria de arriscar. Um stop "
+          "menor que 1 ATR do tempo gráfico que você opera é ruído — ele será "
+          "tocado por respiração normal do preço, não por invalidação de "
+          "estrutura. Foi exatamente esse o erro que gerou o piso de ticks "
+          "desta ferramenta: um stop de 1,87 ponto no MES é ruído, e dividir "
+          "o risco por um número pequeno demais explodiu o número de "
+          "contratos. USO PRÁTICO: stop entre 1 e 2 ATR além do nível que "
+          "invalida a sua leitura; e se o alvo que sobra não paga o seu R:R "
+          "mínimo com esse stop, a operação não existe — não aperte o stop "
+          "para forçar a conta a fechar."},
+    {"t": "Conta de mesa proprietária (APEX, Topstep) — o drawdown que se move",
+     "k": ["apex", "prop firm", "mesa proprietaria", "mesa proprietária",
+           "conta de avaliacao", "conta de avaliação", "trailing drawdown",
+           "drawdown trailing", "drawdown que acompanha",
+           "drawdown movel", "drawdown móvel", "pa account", "conta pa",
+           "regra de consistencia", "regra de consistência", "topstep"],
+     "r": "Conta de mesa proprietária tem regras que MATAM a conta antes de o "
+          "mercado matar, e a maioria dos traders só descobre depois de "
+          "perder. AS TRÊS QUE MAIS QUEBRAM CONTA: (1) DRAWDOWN QUE ACOMPANHA "
+          "(trailing). O limite de perda não é fixo no saldo inicial — ele "
+          "SOBE junto com o seu maior pico de saldo, inclusive o pico "
+          "FLUTUANTE, em muitas mesas. Ou seja: você abre um lucro grande na "
+          "tela, devolve, e o limite subiu no meio do caminho. Consequência "
+          "prática: proteger lucro flutuante não é frescura, é sobrevivência. "
+          "(2) REGRA DE CONSISTÊNCIA. Um único dia responder por uma fatia "
+          "grande demais do lucro total costuma travar o saque. Um dia de "
+          "sorte pode adiar o pagamento em semanas. (3) LIMITES DE HORÁRIO E "
+          "DE NOTÍCIA — posição aberta no fechamento, ou operar em evento "
+          "proibido, pode zerar a avaliação. O QUE ISSO MUDA NA MESA: com "
+          "conta de mesa, o freio de operações por dia e o drawdown restante "
+          "valem MAIS do que a leitura do gráfico. É por isso que esta "
+          "ferramenta calcula o tamanho da posição pelo que SOBROU do "
+          "drawdown, e não pelo drawdown cheio. Confirme sempre as regras "
+          "atuais no painel da SUA mesa: elas mudam, e mudam sem aviso."},
+    {"t": "Order flow, DOM e footprint — ler quem está agredindo",
+     "k": ["order flow", "fluxo de ordens", "dom", "book", "livro de ofertas",
+           "footprint", "tape", "times and trades", "absorcao", "absorção",
+           "agressao", "agressão", "delta", "iceberg"],
+     "r": "Order flow olha a MICRO: quem está atravessando o spread (agredindo) "
+          "e quem está apenas parado ofertando (passivo). DELTA é a diferença "
+          "entre volume agredido na compra e na venda. O sinal mais útil não é "
+          "delta grande — é DELTA GRANDE SEM PREÇO ANDAR: isso é ABSORÇÃO, "
+          "alguém grande segurando o outro lado, e costuma preceder reversão. "
+          "ICEBERG é a ordem que recompõe: você vê 50 no book, come 50, e "
+          "aparecem outros 50 — é institucional escondendo tamanho. NO DOM da "
+          "Tradovate, os números da coluna são ordens LIMITE pendentes, que "
+          "podem sumir num instante (spoofing existe): livro é intenção, tape "
+          "é fato. COMO CASA COM SMC: o order block responde ONDE olhar; o "
+          "order flow responde SE naquele lugar está mesmo entrando dinheiro. "
+          "Zona SMC + absorção no tape é a confirmação mais rápida que "
+          "existe — bem antes de fechar a vela."},
+    {"t": "Correlação ES/NQ e divergência entre índices",
+     "k": ["correlacao", "correlação", "es nq", "mes mnq", "divergencia smt",
+           "indices correlacionados", "índices correlacionados", "russell",
+           "dow", "confirmacao entre indices"],
+     "r": "S&P (ES/MES) e Nasdaq (NQ/MNQ) andam quase sempre juntos porque "
+          "compartilham as mesmas empresas grandes. Por isso a DISCORDÂNCIA "
+          "entre eles carrega informação: quando o NQ faz um topo mais alto e "
+          "o ES não acompanha, um dos dois está mentindo — e normalmente é o "
+          "que fez o topo isolado, varrendo liquidez sem participação real. "
+          "Isso é a divergência SMT aplicada. LEITURA PRÁTICA: NQ liderando "
+          "para cima costuma indicar apetite por risco (tecnologia puxando); "
+          "ES firme com NQ fraco indica rotação defensiva. E o Russell (RTY/"
+          "M2K) é o mais sensível a juros — quando ele descola muito, "
+          "geralmente a história do dia é taxa, não lucro das empresas. "
+          "CUIDADO: correlação NÃO é sincronia perfeita; usar como gatilho "
+          "isolado gera muito sinal falso. Serve para CONFIRMAR ou para "
+          "DESCONFIAR de um rompimento — nunca para entrar sozinho."},
+    {"t": "Aberturas de sessão — Ásia, Londres e Nova York",
+     "k": ["sessao asiatica", "sessão asiática", "londres", "nova york",
+           "abertura de nova york", "rth", "globex", "cash open",
+           "sessao de negociacao", "horario de mercado", "overnight"],
+     "r": "O dia do índice americano tem personalidades diferentes. ÁSIA "
+          "(noite, horário de Brasília): volume baixo, faixa estreita — o "
+          "range formado ali costuma virar liquidez a ser varrida depois, e "
+          "operar dentro dele é operar ruído. LONDRES (madrugada/começo da "
+          "manhã): entra volume de verdade, e é comum a primeira manipulação "
+          "do dia — o Judas swing, que quebra o range da Ásia para o lado "
+          "errado antes de ir para o certo. NOVA YORK (abertura do pregão à "
+          "vista, 10:30 no horário de Brasília no horário padrão): é onde "
+          "está o volume real do índice; os primeiros 30 minutos costumam "
+          "definir a máxima ou a mínima do dia. O FECHAMENTO tem seu próprio "
+          "fluxo (rebalanceamento, MOC) e é traiçoeiro para posição nova. "
+          "IMPLICAÇÃO DIRETA: o mesmo setup vale coisas diferentes conforme a "
+          "hora. Um rompimento na Ásia é suspeito por padrão; o mesmo "
+          "rompimento na abertura de Nova York tem volume para se sustentar. "
+          "Confirme o horário do SEU relógio — o horário de verão americano "
+          "desloca tudo em uma hora."},
+    {"t": "Notícia e evento — por que o gráfico mente no minuto",
+     "k": ["noticia", "notícia", "payroll", "cpi", "fomc", "ata do fed",
+           "evento economico", "evento econômico", "calendario economico",
+           "calendário econômico", "dia de notícia", "volatilidade de evento"],
+     "r": "Em evento macro (CPI, payroll, decisão do Fed) o preço não está "
+          "descobrindo valor — está repreçando de uma vez só, com liquidez "
+          "muito fina no livro. Três coisas mudam e todas contra você: o "
+          "SPREAD abre, o SLIPPAGE vira regra (seu stop executa longe de onde "
+          "está), e a estrutura de SMC perde valor preditivo por alguns "
+          "minutos, porque o movimento não é fluxo institucional acumulando — "
+          "é reação a um número. A PRIMEIRA reação frequentemente é falsa: é "
+          "comum ir para um lado, varrer os stops, e ir para o outro. O QUE "
+          "FAZER: saber a agenda ANTES de abrir a posição (não depois); não "
+          "abrir posição nova nos minutos que antecedem o dado; e se já "
+          "estiver posicionado, decidir de antemão — reduzir, proteger ou "
+          "aceitar a volatilidade. Depois que o mercado assenta (geralmente "
+          "15 a 30 minutos), a estrutura volta a valer, e aí o range criado "
+          "pelo evento vira referência ótima de liquidez."},
+    {"t": "Tilt, sequência de perdas e o custo psicológico do dia",
+     "k": ["tilt", "psicologia", "emocional", "revenge trade", "vinganca",
+           "vingança", "sequencia de perdas", "sequência de perdas",
+           "overtrading", "medo", "ansiedade", "disciplina"],
+     "r": "Depois de dois stops seguidos, o problema deixa de ser técnico. O "
+          "que acontece é mensurável: o intervalo entre as operações encurta, "
+          "o tamanho da posição aumenta, e o critério de entrada afrouxa — "
+          "exatamente os três sinais do revenge trade. Nenhuma leitura de "
+          "gráfico corrige isso, porque a leitura não é o que mudou; quem "
+          "mudou foi quem está lendo. O QUE FUNCIONA, e é por isso que esta "
+          "ferramenta tem freio: limite de operações por dia, pausa "
+          "obrigatória após stops seguidos, e teto de perda diária — todos "
+          "definidos ANTES do pregão, quando você ainda está frio, e "
+          "executados por código, que não sente nada. Se o freio disparou e "
+          "você está pensando em desligar para 'recuperar', essa vontade é "
+          "exatamente o motivo pelo qual o freio existe. O melhor dia de um "
+          "trader consistente é frequentemente aquele em que ele não operou."},
+    {"t": "Diário de operações — o que anotar para melhorar de verdade",
+     "k": ["diario de trading", "diário de trading", "journaling", "anotar",
+           "registro de operacoes", "registro de operações", "estatistica",
+           "estatística", "backtest", "avaliar desempenho"],
+     "r": "Anotar só entrada, saída e resultado não melhora ninguém — isso o "
+          "extrato da corretora já faz. O que muda o jogo é registrar o "
+          "PORQUÊ e conseguir agrupar depois. O mínimo útil por operação: "
+          "hora, ativo, direção, os níveis, o SETUP que a justificou (CHoCH "
+          "em desconto? varredura de liquidez? continuação?), a killzone, se "
+          "você seguiu o plano ou improvisou, e o resultado em R (não em "
+          "dólar — R permite comparar dias de tamanhos diferentes). Com isso "
+          "você responde as perguntas que realmente importam: qual setup "
+          "meu paga? em que horário eu perco? minhas operações fora do plano "
+          "dão lucro? A resposta quase sempre incomoda, e é justamente por "
+          "isso que ela vale. Esta ferramenta grava tudo isso sozinha e usa o "
+          "resultado para ajustar a probabilidade dos cenários — mas o campo "
+          "que só você pode preencher é 'segui o plano ou não'."},
+    {"t": "Spread, slippage e custo por operação",
+     "k": ["spread", "slippage", "derrapagem", "custo por operacao",
+           "custo por operação", "corretagem", "taxa", "comissao", "comissão",
+           "tick de custo"],
+     "r": "O custo real de uma operação é corretagem + taxas de bolsa + "
+          "spread + slippage — e o trader que só olha a corretagem subestima "
+          "o total. No MES, uma ida e volta custa tipicamente algo em torno "
+          "de um tick e meio a dois ticks em custo total. Isso parece pouco "
+          "até você fazer a conta: se o seu alvo médio é 8 ticks e o custo é "
+          "2, você já entrega 25% do lucro bruto. É por isso que scalp de "
+          "alvo curto exige acerto altíssimo para sobreviver — a matemática "
+          "trabalha contra. SLIPPAGE aparece pior justamente quando dói: no "
+          "stop, em movimento rápido, com ordem a mercado. Ordem STOP vira "
+          "ordem a mercado quando toca — em evento macro ela pode executar "
+          "vários ticks além. CONCLUSÃO PRÁTICA: inclua o custo no cálculo do "
+          "R:R antes de aceitar a operação. Um R:R de 1:2 no papel que vira "
+          "1:1,4 depois do custo não é o mesmo negócio."},
+    {"t": "Projeção por desvio padrão e alvos medidos",
+     "k": ["desvio padrao", "desvio padrão", "projecao", "projeção",
+           "alvo medido", "measured move", "extensao de fibonacci",
+           "extensão de fibonacci", "range esperado do dia", "adr"],
+     "r": "Um alvo precisa vir de uma medida, não de um número redondo "
+          "bonito. Três medidas que se sustentam: (1) MOVIMENTO MEDIDO — a "
+          "perna de impulso projetada a partir do fim da correção; se a "
+          "primeira perna andou 20 pontos, a segunda tende a andar algo "
+          "próximo disso. (2) AMPLITUDE MÉDIA DO DIA (ADR) — se o mercado "
+          "costuma andar 40 pontos por dia e já andou 35, o espaço que sobra "
+          "para o seu alvo é pequeno, e isso vale mais que qualquer padrão "
+          "bonito no gráfico. (3) EXTENSÕES (1,272 / 1,618) a partir da perna "
+          "anterior, que funcionam menos por matemática e mais porque muita "
+          "gente coloca ordem ali. O ALVO MAIS CONFIÁVEL, porém, não é "
+          "nenhuma dessas: é a LIQUIDEZ VISÍVEL — o topo ou fundo óbvio onde "
+          "há stops acumulados. Preço busca dinheiro parado, e dinheiro "
+          "parado está em nível que todo mundo vê."},
+    {"t": "Timeframes — como combinar sem se confundir",
+     "k": ["tempo grafico", "tempo gráfico", "timeframe", "htf", "ltf",
+           "multi timeframe", "top down", "grafico de 5 minutos",
+           "gráfico de 5 minutos", "diario", "diário", "h4", "h1", "m15", "m5"],
+     "r": "Trabalhar com mais de um tempo gráfico não é olhar mais gráficos: "
+          "é dar um PAPEL diferente para cada um. O tempo MAIOR (diário, H4) "
+          "define o VIÉS e as zonas que importam — nele você marca order "
+          "blocks, FVGs e os pools de liquidez. O tempo MÉDIO (H1, M15) "
+          "mostra a estrutura chegando na zona. O tempo MENOR (M5, M1) serve "
+          "só para o GATILHO: o CHoCH que confirma a reação dentro da zona já "
+          "escolhida lá em cima. O ERRO CLÁSSICO é inverter: achar o setup no "
+          "M1 e depois procurar justificativa no diário. Isso não é análise, "
+          "é confirmação de uma decisão já tomada. REGRA SIMPLES: se a zona "
+          "não existe no tempo maior, o gatilho no tempo menor não vale nada. "
+          "E uma leitura do M5 nunca revoga uma estrutura do diário — ela "
+          "apenas informa o momento de entrar dentro dela."},
+    {"t": "Trailing stop e gestão da posição aberta",
+     "k": ["trailing", "trailing stop", "stop movel", "stop móvel",
+           "breakeven", "zero a zero",
+           "parcial", "realizar parcial", "gestao da posicao",
+           "gestão da posição", "proteger lucro", "mover o stop"],
+     "r": "Depois que a operação está aberta, cada mexida no stop é uma "
+          "decisão nova — e a maioria delas piora o resultado. TRÊS "
+          "ABORDAGENS QUE SE SUSTENTAM: (1) NÃO MEXER até o alvo ou o stop. É "
+          "a mais chata e frequentemente a mais lucrativa, porque respeita a "
+          "estatística do setup. (2) BREAKEVEN APÓS 1R. Reduz o estresse e o "
+          "prejuízo médio, mas AUMENTA a frequência de operações zeradas que "
+          "iriam ao alvo — o mercado respira, volta no seu preço de entrada e "
+          "só depois vai. Só faz sentido se o seu setup costuma não retornar "
+          "à entrada. (3) TRAILING PELA ESTRUTURA: mover o stop para trás do "
+          "último fundo (em compra) a cada novo topo confirmado. É o único "
+          "trailing que segue uma lógica de mercado em vez de uma distância "
+          "arbitrária em pontos. O QUE NUNCA: AFASTAR o stop porque o preço "
+          "está chegando nele. Isso transforma uma perda planejada numa perda "
+          "sem tamanho definido, e é assim que se estoura uma conta em uma "
+          "única operação. PARCIAL em 1R paga o custo psicológico, mas corta "
+          "a cauda dos ganhos grandes — que é justamente de onde vem o "
+          "resultado do mês."},
+    {"t": "Open interest e o que ele diz sobre a força do movimento",
+     "k": ["open interest", "contratos em aberto", "volume x open interest",
+           "liquidacao", "liquidação", "rolagem", "roll", "vencimento",
+           "contrato futuro"],
+     "r": "Volume conta quantos contratos trocaram de mão; OPEN INTEREST conta "
+          "quantos continuam ABERTOS. A combinação dos dois diz se o movimento "
+          "tem dinheiro novo entrando ou é só gente saindo. Preço subindo com "
+          "open interest subindo = dinheiro NOVO comprando, movimento com "
+          "sustentação. Preço subindo com open interest CAINDO = vendedor "
+          "cobrindo posição (short covering) — sobe forte e acaba rápido, "
+          "porque acaba quando os vendedores terminam de sair. O mesmo vale "
+          "invertido na queda. ROLAGEM: contratos futuros vencem, e nos dias "
+          "que antecedem o vencimento a liquidez migra para o contrato "
+          "seguinte — se você continuar operando o contrato velho, encontra "
+          "spread pior e movimentos estranhos que não têm nada a ver com "
+          "análise. O ticker traz o vencimento no nome (MESU6 = setembro de "
+          "2026): confira se está no contrato onde o volume está."},
 ]
 
 # --------------------------------------------------------------------
@@ -6545,6 +7025,18 @@ def interpretar_intencao(texto):
     if re.search(r"\b(freio|trava|pausa|cooldown|limite do dia|teto de opera)\b", t) and \
             re.search(r"\b(est[áa]|ativ|ligad|como|qual|situa)\b", t):
         return "POR_QUE_SEM_SUGESTAO"
+    # VIRAR O DIA NO PLANO DE TRADING.
+    # 20:09 de 12/08, palavras dele: "o claude precisa incluir opcao de virar
+    # o dia, porque eu falei para voce que o dia comeca as 19hs e o sistema
+    # ainda nao virou o meu ciclo diario no painel de trading". Ele pediu
+    # duas vezes e ainda gravou como licao — e as duas vezes a resposta foi o
+    # despejo generico. Agora e comando, e roda sem API.
+    if _RE_VIRAR_DIA.search(t):
+        return "VIRAR_DIA"
+    # "o dia ja virou?", "em que pregao estamos?" — pergunta de FATO, que o
+    # app responde do relogio e da configuracao, sem modelo nenhum.
+    if _RE_QUAL_PREGAO.search(t):
+        return "QUAL_PREGAO"
     if pergunta_sobre_configuracao(texto):
         return "VER_CONFIG"
     # NOTÍCIA E COTAÇÃO: buscadas na web pela PRÓPRIA ferramenta, sem chave de
@@ -6741,7 +7233,7 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
                     "LIGAR_MOTOR", "DESLIGAR_MOTOR", "ENVIAR_WHATSAPP",
                     "CONECTAR_WHATSAPP", "LISTAR_LICOES", "LISTAR_CONHECIMENTO",
                     "NOTICIAS", "COTACAO", "PESQUISAR", "VER_CONFIG",
-                    "POR_QUE_SEM_SUGESTAO",
+                    "POR_QUE_SEM_SUGESTAO", "VIRAR_DIA", "QUAL_PREGAO",
                     "VOZ_RAPIDA", "VOZ_LENTA", "CALAR"):
         return ("EXECUTAR", intencao)
     return ("IA", None)
@@ -7209,6 +7701,25 @@ class SmcQuantApp(ctk.CTk):
         self.janela_dropdown.pack(pady=4)
         ctk.CTkButton(sec_jan, text="🔄 Atualizar lista de janelas abertas", fg_color="#555555",
                       command=self._atualizar_lista_janelas).pack(pady=(0, 4))
+
+        # ---------- VER O QUE O MOTOR VÊ ----------
+        # Escolher janela por TÍTULO é adivinhação: "Chrome — janela 2" não diz
+        # nada, e foi assim que o motor passou 20 minutos analisando a janela
+        # do Claude achando que era gráfico. Aqui ele CONFERE antes: captura a
+        # janela selecionada e mostra a miniatura. Se o que aparece não é o
+        # gráfico, ele descobre em dois segundos, não em vinte minutos.
+        quadro_prev = ctk.CTkFrame(sec_jan, fg_color=COR["card"])
+        quadro_prev.pack(fill="x", padx=10, pady=(0, 6))
+        linha_prev = ctk.CTkFrame(quadro_prev, fg_color="transparent")
+        linha_prev.pack(fill="x", padx=10, pady=(8, 0))
+        ctk.CTkButton(linha_prev, text="👁 Ver o que o motor vê", width=200,
+                      command=self._previsualizar_janela).pack(side="left")
+        self.lbl_previa = ctk.CTkLabel(
+            linha_prev, text="", text_color=COR["dim"],
+            font=ctk.CTkFont(size=10), justify="left")
+        self.lbl_previa.pack(side="left", padx=10)
+        self.img_previa = ctk.CTkLabel(quadro_prev, text="")
+        self.img_previa.pack(padx=10, pady=(4, 8))
 
         # ---------- MAIS DE UM ATIVO AO MESMO TEMPO ----------
         # Um motor só percorre todas estas janelas a cada ciclo. Antes era uma
@@ -8912,6 +9423,100 @@ class SmcQuantApp(ctk.CTk):
             pass
         self._chat_feed(texto.replace("*", ""))
 
+    def _previsualizar_janela(self):
+        """Captura a janela selecionada e mostra a miniatura, com o veredito.
+
+        Roda em thread: capturar janela pode levar segundos e travar a
+        interface no meio seria pior que não ter o recurso."""
+        nome = (self.janela_var.get() or "").strip()
+        self.lbl_previa.configure(text="capturando…", text_color="#ff9f43")
+        threading.Thread(target=self._previa_worker, args=(nome,),
+                         daemon=True).start()
+
+    def _previa_worker(self, nome):
+        try:
+            if not nome or nome.startswith("("):
+                self.after(0, lambda: self.lbl_previa.configure(
+                    text="Escolha uma janela na lista acima primeiro.",
+                    text_color="#e0a458"))
+                return
+            hwnd = self._resolver_hwnd_corretora(nome)
+            imagem = (capturar_janela_em_segundo_plano(hwnd) if hwnd
+                      else plataforma.capturar_tela_inteira())
+            if imagem is None or imagem_esta_em_branco(imagem):
+                self.after(0, lambda: self.lbl_previa.configure(
+                    text="Não consegui uma imagem desta janela. Ela pode estar "
+                         "minimizada ou totalmente coberta.", text_color="#ff6b6b"))
+                return
+            # O MESMO OCR que responde 'onde está a VWAP'. Se ele acha os
+            # rótulos de um gráfico aqui, a janela é a certa — e isso é um
+            # veredito, não um palpite sobre o título.
+            achados = {}
+            try:
+                import tempfile
+                caminho = os.path.join(tempfile.gettempdir(), "smc_previa.png")
+                imagem.save(caminho)
+                achados = ler_indicadores_da_legenda(
+                    plataforma.ler_texto_da_imagem(caminho))
+            except Exception:
+                achados = {}
+            larg = 460
+            copia = imagem.copy()
+            copia.thumbnail((larg, int(larg * 0.62)))
+            foto = ctk.CTkImage(light_image=copia, dark_image=copia,
+                                size=copia.size)
+            if achados:
+                nomes = ", ".join(sorted(achados)[:6])
+                veredito = (f"✅ É um gráfico — li nesta janela: {nomes}.", "#4ade80")
+            else:
+                veredito = ("⚠️ Não achei legenda de indicador nesta janela. "
+                            "Confira se é mesmo o gráfico (e se a legenda está "
+                            "visível na tela).", "#e0a458")
+
+            def mostrar():
+                self.img_previa.configure(image=foto)
+                self.img_previa.image = foto      # sem isto o Tk descarta a imagem
+                self.lbl_previa.configure(text=veredito[0], text_color=veredito[1])
+            self.after(0, mostrar)
+        except Exception as e:
+            msg = str(e)[:110]
+            self.after(0, lambda: self.lbl_previa.configure(
+                text=f"Falha ao pré-visualizar: {msg}", text_color="#ff6b6b"))
+
+    def _chat_virar_dia(self):
+        """Vira o dia de operação AGORA — o comando que ele pediu duas vezes.
+
+        Na prática quase nunca é preciso: desde esta versão o dia vira sozinho
+        no horário configurado (data_do_pregao). Este comando existe para o
+        caso em que ele quer recomeçar a contagem ANTES da hora — encerrar o
+        dia mais cedo e zerar o freio.
+
+        NÃO apaga nada. As operações continuam no diário; o que muda é a
+        marca de onde este dia começou. Apagar histórico para destravar um
+        freio seria trocar uma trava de gestão por uma amnésia."""
+        antes = len(operacoes_fechadas_hoje())
+        agora = datetime.datetime.now()
+        salvar_config({"virada_manual": agora.strftime('%d/%m/%Y %H:%M')})
+        gravado = carregar_config().get("virada_manual")
+        if gravado != agora.strftime('%d/%m/%Y %H:%M'):
+            self._chat_responder(
+                "NÃO consegui gravar a virada do dia — o arquivo de "
+                "configuração não aceitou a mudança. Nada mudou; prefiro te "
+                "dizer isso a confirmar uma coisa que não aconteceu.")
+            return
+        depois = len(operacoes_fechadas_hoje())
+        self.log(f"📅 TIGER virou o dia de operação em {gravado} — "
+                 f"contagem do freio: {antes} → {depois} operação(ões).")
+        self.after(0, self._atualizar_dashboard)
+        self._chat_responder(
+            f"📅 Pronto: o dia de operação virou agora, às "
+            f"{agora.strftime('%H:%M')}.\n\n"
+            f"• Operações contando para o freio: era {antes}, agora é {depois}.\n"
+            f"• O seu histórico NÃO foi apagado — as {antes} operações "
+            "continuam no diário e no relatório. O que mudou foi só onde "
+            "este dia começa.\n\n"
+            + texto_do_pregao_atual())
+
     def _chat_estado_do_freio(self):
         """'Por que você não está sugerindo nada?' — responde com os números
         reais do dia, lidos do diário. Quando o FREIO está segurando as
@@ -9151,6 +9756,12 @@ class SmcQuantApp(ctk.CTk):
             return
         if acao == "POR_QUE_SEM_SUGESTAO":
             self._chat_estado_do_freio()
+            return
+        if acao == "QUAL_PREGAO":
+            self._chat_responder(texto_do_pregao_atual())
+            return
+        if acao == "VIRAR_DIA":
+            self._chat_virar_dia()
             return
         if acao == "CALAR":
             estava = parar_fala()
@@ -12367,7 +12978,7 @@ class SmcQuantApp(ctk.CTk):
 
         falta = meta - lucro_usd
         meta_diaria = (falta / dias_restantes) if dias_restantes > 0 else None
-        hoje = time.strftime('%d/%m/%Y')
+        hoje = data_do_pregao()
         resultado_hoje = dict(resultados_por_dia()).get(hoje, 0.0)
 
         return {

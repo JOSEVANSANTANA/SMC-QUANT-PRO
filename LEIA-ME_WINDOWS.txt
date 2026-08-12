@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.27.0 — WINDOWS
+  SMC QUANT PRO v2.28.0 — WINDOWS
   Comece por aqui.
 ========================================================================
 
@@ -100,6 +100,75 @@ Grafico "congelado" a cada ciclo
 
 A TIGER nao fala
   → confira o pyttsx3 na lista do Passo 3.
+
+
+========================================================================
+  O QUE MUDOU NA v2.28.0  —  O DIA DO PREGAO NAO E O DIA DO CALENDARIO
+========================================================================
+1) O FREIO QUE NAO SOLTAVA (o mais importante desta versao)
+  19:59  voce: "o dia ja virou, o inicio do dia para essa conta e as 19hs
+                ate as 17:59"
+  19:59  ela:  configurou certo e confirmou.
+  20:01  ela:  "voce ja fechou 6 operacoes hoje, que e o teto do seu
+                plano (6)"
+
+  Aquelas seis eram do pregao ANTERIOR. Voce reclamou tres vezes e ainda
+  gravou como licao pedindo "uma opcao de virar o ciclo".
+
+  NAO ERA UM BOTAO QUE FALTAVA. Era uma linha:
+      hoje = time.strftime('%d/%m/%Y')     <- o dia do CALENDARIO
+  Para quem opera indice americano de madrugada, meia-noite nao e a
+  virada de nada.
+
+  AGORA: com o pregao atravessando a meia-noite, tudo que acontece antes
+  das 19:00 ainda pertence ao pregao que comecou as 19:00 do dia
+  anterior. A operacao das 03:00 nao quebra mais o seu pregao em dois no
+  relatorio. Quem opera 09:00-17:00 nao ve diferenca nenhuma.
+
+  E O BOTAO TAMBEM EXISTE: diga "vire o dia" e ele encerra o dia ANTES
+  da hora. NAO apaga nada — apagar operacao para destravar um freio
+  seria trocar uma trava de gestao por amnesia. A virada manual expira
+  em 24h, senao o freio ficaria desligado para sempre.
+  "em que pregao estamos?" tambem responde, sem API.
+
+2) BOA TARDE
+  15:41  voce: BOA TARDE
+  15:41  ela:  "Nao tenho como responder isso com seguranca agora... a
+                API esta fora."
+
+  Cumprimentar nunca precisou de API. Agora responde — e pelo RELOGIO,
+  nao pelo que voce digitou: "bom dia" as 21h recebe "boa noite".
+  E "bom dia, o que deu errado no stop?" continua sendo PERGUNTA.
+
+3) A BASE DE CONHECIMENTO DOBROU (34 -> 51 verbetes, todos LOCAIS)
+  Entraram, com profundidade:
+      VWAP (inclusive ONDE ELA ENGANA), perfil de volume (POC, VAH, VAL,
+      LVN, POC virgem), RSI e divergencia, medias moveis, ATR, order
+      flow / DOM / footprint, correlacao ES-NQ, aberturas de sessao
+      (Asia, Londres, Nova York), evento macro e por que o grafico mente
+      no minuto, spread e slippage, projecao por desvio padrao,
+      combinacao de timeframes, trailing stop e gestao da posicao
+      aberta, open interest, tilt e sequencia de perdas, diario de
+      operacoes.
+
+  E o que faltava e mais importa para VOCE:
+      CONTA DE MESA PROPRIETARIA (APEX, Topstep) — o drawdown que
+      ACOMPANHA o seu pico, inclusive o pico FLUTUANTE. E a regra que
+      mais quebra conta de avaliacao e nao estava em lugar nenhum da
+      base. Junto com a regra de consistencia e os limites de horario.
+
+  Tudo isso responde SEM API, SEM internet e SEM cota.
+
+4) VER O QUE O MOTOR VE
+  Botao novo na aba Motor. Ele captura a janela selecionada, mostra a
+  MINIATURA e da um VEREDITO: o mesmo OCR que le a VWAP diz se aquilo e
+  um grafico ("li nesta janela: VWAP, SMA, RSI...").
+
+  Escolher janela por TITULO era adivinhacao — "Chrome — janela 2" nao
+  diz nada. Foi assim que a janela do Claude virou "grafico" por vinte
+  minutos. Agora voce confere em dois segundos.
+
+TESTES: 293 (eram 266).
 
 
 ========================================================================
