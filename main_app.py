@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.25.0"
+VERSAO_ATUAL = "2.26.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -831,6 +831,44 @@ PROVEDORES_IA = {
 
 # A ordem em que os alternativos são tentados quando a Gemini não responde.
 ORDEM_PROVEDORES = ["openai", "anthropic", "openrouter", "groq"]
+
+
+def diagnostico_de_provedor(erro, rotulo=""):
+    """Traduz a recusa do provedor para uma frase que diz O QUE FAZER.
+
+    A causa vinha ESCRITA na resposta e estava sendo trocada por um palpite.
+    No log de 12/08 a OpenAI respondeu, com todas as letras:
+        "You have no credits remaining. Add credits to continue..."
+    e o app disse ao trader que a chave "pode estar errada, sem crédito, ou o
+    modelo indisponível". Ele ficou sem saber qual das três — com a resposta
+    na mão. Função PURA: recebe o erro, devolve a frase."""
+    e = str(erro or "")
+    E = e.upper()
+    quem = f"{rotulo}: " if rotulo else ""
+    if not e:
+        return f"{quem}não veio resposta nem erro. Tente de novo em instantes."
+    if "NO CREDITS" in E or "INSUFFICIENT_QUOTA" in E or "BILLING" in E:
+        return (f"{quem}a chave é VÁLIDA, mas a conta está SEM CRÉDITO. "
+                "Não é erro de digitação nem de configuração — é saldo. "
+                "Adicione crédito no painel do provedor, ou use um provedor "
+                "com camada gratuita.")
+    if "429" in E or "RATE LIMIT" in E or "RESOURCE_EXHAUSTED" in E:
+        return (f"{quem}limite de uso atingido agora (429). A chave funciona; "
+                "espere alguns minutos e teste de novo.")
+    if any(x in E for x in ("401", "INVALID_API_KEY", "UNAUTHORIZED",
+                            "AUTHENTICATION")):
+        return (f"{quem}a chave foi RECUSADA (401). Copie de novo do painel do "
+                "provedor — sem espaços no começo ou no fim.")
+    if "403" in E or "PERMISSION" in E:
+        return (f"{quem}a chave existe mas não tem permissão para este modelo "
+                "(403). Confira o que a sua conta libera.")
+    if "404" in E or "MODEL_NOT_FOUND" in E or "DOES NOT EXIST" in E:
+        return (f"{quem}o modelo pedido não existe para esta conta (404).")
+    if any(x in E for x in ("TIMEOUT", "TIMED OUT", "CONNECTION",
+                            "NAME OR SERVICE", "SSL")):
+        return (f"{quem}não cheguei ao servidor (rede/timeout). "
+                "Confira a internet e tente de novo.")
+    return f"{quem}{e[:160]}"
 
 
 def carregar_chave_provedor(pid: str) -> str:
@@ -5725,6 +5763,13 @@ _COMANDOS_CONHECIDOS = (
     "olha", "olhar", "mostra", "mostrar", "liga", "ligar",
     "desliga", "desligar", "zera", "zerar", "manda", "mandar",
     "analisa", "analisar", "captura", "capturar",
+    # APAGAR UMA LIÇÃO. Faltavam aqui, e o custo apareceu no log: às 14:16 ele
+    # escreveu "REMORA ISSO" (um R no lugar do V — distância 1) e a lição
+    # ficou gravada; às 14:17 ela repetiu a mesma lição que ele acabara de
+    # mandar apagar. Um comando de DESFAZER que só funciona com a grafia
+    # perfeita é um comando que falha justo quando mais se precisa dele.
+    "remova", "remove", "remover", "apaga", "apague", "apagar",
+    "esquece", "esqueça", "esquecer", "deleta", "delete", "deletar",
 )
 
 def _distancia_edicao(a, b, teto=2):
@@ -5846,6 +5891,151 @@ def resposta_enrola_o_nivel(pergunta, resposta):
         if re.search(r"\d{2,}[.,]?\d*", janela):
             return False         # nome DO INDICADOR com número junto: respondeu
     return True                  # só pronome, ou número solto longe do nome
+
+
+def indicador_da_pergunta(texto):
+    """QUAL indicador ele perguntou. Devolve o trecho como ele escreveu (para
+    a segunda leitura pedir exatamente aquilo), ou None."""
+    m = re.search(_INDICADORES, str(texto or ""), re.I)
+    return m.group(0).strip() if m else None
+
+
+# --------------------------------------------------------------------
+# A EVASÃO VIROU INVENÇÃO — E INVENÇÃO É PIOR
+# --------------------------------------------------------------------
+# A guarda da 2.25.0 exigia o NÚMERO do indicador junto do nome dele. Ela
+# cumpriu o que prometia e produziu o efeito seguinte, no print de 12/08 15:43:
+#
+#     "a VWAP está exatamente em 7752.34, conforme indicado na legenda"
+#
+# A legenda da imagem diz VWAP 7769.56. Ela também disse "média móvel de 50
+# períodos em 7751.28" (a legenda tem duas SMAs: 7767.58 e 7766.04) e "você
+# está com uma posição de venda aberta em 7753.25" (a plataforma mostra
+# POSIÇÃO 0). Três números inventados numa resposta só — todos com a forma
+# certa, e por isso todos passariam pela guarda anterior.
+#
+# Exigir a FORMA de uma resposta só muda a forma da mentira. O que separa uma
+# leitura de uma invenção não é o formato: é a ESTABILIDADE. Ler duas vezes o
+# mesmo texto na mesma imagem dá o mesmo número; inventar duas vezes dá dois
+# números diferentes. É nisso que esta segunda leitura se apoia — e ela custa
+# uma chamada extra só quando a pergunta é de nível, que é raro.
+def extrair_valor_do_indicador(indicador, texto):
+    """O número que o texto atribui AO INDICADOR — não o preço do ativo.
+
+    Função PURA. Devolve float ou None. A janela é curta de propósito: em
+    "a VWAP está em 7769.56; o preço trabalha acima dela, em 7774.25" o número
+    do indicador é o primeiro, e o do ativo não pode ser confundido com ele."""
+    nome = str(indicador or "").strip()
+    if not nome:
+        return None
+    for m in re.finditer(re.escape(nome), str(texto or ""), re.I):
+        janela = str(texto)[m.end():m.end() + 45]
+        v = re.search(r"(-?\d{1,7}(?:[.,]\d{1,4})?)", janela)
+        if v:
+            try:
+                return float(v.group(1).replace(",", "."))
+            except ValueError:
+                continue
+    return None
+
+
+def numero_da_segunda_leitura(texto):
+    """A segunda leitura responde SÓ o número (ou NAO_LEGIVEL). Devolve float
+    ou None — e None aqui significa 'ela não leu', nunca 'pode seguir'."""
+    t = str(texto or "").strip()
+    if not t or re.search(r"NAO_?LEG[ÍI]VEL|N[ÃA]O_?LEG", t, re.I):
+        return None
+    v = re.search(r"(-?\d{1,7}(?:[.,]\d{1,4})?)", t)
+    if not v:
+        return None
+    try:
+        return float(v.group(1).replace(",", "."))
+    except ValueError:
+        return None
+
+
+def leituras_do_indicador_batem(a, b):
+    """Duas leituras do MESMO valor impresso na MESMA imagem.
+
+    Tolerância apertada de propósito: OCR do mesmo texto ou bate, ou erra
+    feio. Meio ponto (ou 0,02% em contrato caro) cobre o arredondamento de
+    quem lê '7769.56' e escreve '7769.5'; não cobre 7752 contra 7769."""
+    if a is None or b is None:
+        return False
+    limite = max(0.5, abs(a) * 0.0002)
+    return abs(a - b) <= limite
+
+
+_AVISO_LEITURA_INSTAVEL = (
+    "\n\n⚠️ Não vou entregar esse número. Eu li a MESMA imagem duas vezes e "
+    "saíram valores diferentes ({a} e {b}) — quando isso acontece, não é "
+    "leitura, é chute com cara de leitura, e chute na sua mesa vira prejuízo. "
+    "**Não consigo ler esse valor nesta captura.** Se o rótulo do indicador "
+    "estiver visível no gráfico, tire o print com ele à mostra que eu leio; se "
+    "não estiver, o número certo é o da sua plataforma.")
+
+
+def conferir_leitura_de_nivel(resposta, indicador, dito, confirmado):
+    """Devolve (texto, instavel). Quando as duas leituras não batem, a resposta
+    sai SEM o número, com a admissão no lugar."""
+    if leituras_do_indicador_batem(dito, confirmado):
+        return resposta, False
+    if dito is None:
+        return resposta, False        # ela não afirmou número nenhum: nada a conferir
+    corpo = str(resposta or "").rstrip()
+    aviso = _AVISO_LEITURA_INSTAVEL.format(
+        a=f"{dito:g}",
+        b=(f"{confirmado:g}" if confirmado is not None
+           else "nada legível na segunda passada"))
+    return f"{corpo}{aviso}", True
+
+
+# --------------------------------------------------------------------
+# ELA DISSE QUE ELE ESTAVA VENDIDO. ELE ESTAVA ZERADO.
+# --------------------------------------------------------------------
+# Do print de 12/08 15:43: "Note que você está com uma posição de venda aberta
+# em 7753.25". As duas janelas da Tradovate mostram POSIÇÃO 0 e ABRIR P/L
+# 0.00 USD. Não é detalhe de redação: é dizer a alguém que ele está no mercado
+# quando não está — e a recíproca, dizer que está zerado carregando posição, é
+# ainda pior. O app SABE a resposta; basta conferir antes de entregar.
+_RE_ALEGA_POSICAO = re.compile(
+    r"\bvoc[êe]\s+(est[áa]|segue|continua|permanece)\s+"
+    r"(com\s+)?(uma\s+|um\s+)?(posi[çc][ãa]o\s+)?(de\s+)?"
+    r"(compra(?:d[oa])?|venda|vendid[oa]|comprad[oa]|long|short|buy|sell)\b",
+    re.I)
+_RE_ALEGA_ZERADO = re.compile(
+    r"(\bvoc[êe]\s+(est[áa]|segue|continua)\s+(zerad[oa]|fora do mercado|flat)\b"
+    r"|\bn[ãa]o\s+(h[áa]|tem|existe|possui)\s+(nenhuma\s+)?posi[çc][ãa]o\s+"
+    r"(sua\s+)?(aberta|em aberto)\b"
+    r"|\bvoc[êe]\s+n[ãa]o\s+est[áa]\s+posicionad[oa]\b)", re.I)
+
+
+def conferir_posicao_alegada(resposta, abertas):
+    """A resposta afirma algo sobre a posição dele que o disco desmente?
+
+    Função PURA. `abertas` é a lista de posições ABERTAS conhecidas.
+    Devolve (texto, divergencia) — divergencia em {None, 'inventou', 'omitiu'}."""
+    texto = str(resposta or "")
+    if not texto.strip():
+        return texto, None
+    tem = bool(abertas)
+    if _RE_ALEGA_POSICAO.search(texto) and not tem:
+        aviso = ("\n\n⚠️ Corrigindo: eu disse que você está posicionado, e o "
+                 "registro diz que **não há nenhuma posição aberta** nesta "
+                 "conta. Não opere em cima do que eu escrevi — confira na sua "
+                 "plataforma. Dizer a alguém que ele está no mercado quando "
+                 "não está é o erro mais caro que eu poderia cometer.")
+        return f"{texto.rstrip()}{aviso}", "inventou"
+    if _RE_ALEGA_ZERADO.search(texto) and tem:
+        detalhe = ", ".join(
+            f"{p.get('direcao')} {p.get('ativo')} "
+            f"{p.get('contratos') or '?'}x @ {p.get('entry')}"
+            for p in abertas[:3])
+        aviso = (f"\n\n⚠️ Corrigindo: eu disse que você está fora do mercado, e "
+                 f"o registro tem posição ABERTA — {detalhe}. Confira na sua "
+                 "plataforma antes de qualquer coisa.")
+        return f"{texto.rstrip()}{aviso}", "omitiu"
+    return texto, None
 
 
 _AVISO_NIVEL_NAO_RESPONDIDO = (
@@ -6390,6 +6580,26 @@ def montar_persona_ia():
         "captura' — e diga o que atrapalhou (indicador não está no gráfico, "
         "legenda cortada, resolução baixa). Não saber é uma resposta legítima; "
         "enrolar com pronome não é.\n"
+        "\n"
+        "E O NÚMERO TEM DE SER LIDO, NÃO PRODUZIDO:\n"
+        "Só diga um valor de indicador se você estiver LENDO ele escrito na "
+        "imagem — na legenda de dados, no rótulo da linha, na escala. É "
+        "PROIBIDO estimar 'onde a linha parece estar', calcular de cabeça, ou "
+        "usar o preço do ativo no lugar do valor do indicador. Isso também já "
+        "aconteceu: com a legenda mostrando VWAP 7769.56, você respondeu 'a "
+        "VWAP está exatamente em 7752.34, conforme indicado na legenda' — a "
+        "palavra 'exatamente' e a citação da fonte estavam lá, o número não. "
+        "Um número inventado com cara de leitura é PIOR que 'não consigo ler', "
+        "porque ele é usado. Na dúvida entre um valor aproximado e a admissão, "
+        "a admissão vence sempre.\n"
+        "\n"
+        "A POSIÇÃO DELE NÃO SE DEDUZ DO GRÁFICO:\n"
+        "NUNCA afirme que ele está comprado, vendido ou zerado com base no que "
+        "você vê na imagem. Se ele estiver posicionado, isso vem escrito no "
+        "bloco DADOS REAIS DA MESA acima — se não estiver escrito lá, ele NÃO "
+        "está posicionado, e dizer o contrário é inventar uma operação que não "
+        "existe. Você já disse 'você está com uma posição de venda aberta em "
+        "7753.25' com a plataforma mostrando POSIÇÃO 0.\n"
         "\n"
         "REGRA NÚMERO UM — ESCREVER NÃO É FAZER:\n"
         "Você é a voz da ferramenta, não a mão dela. Quem executa ação é o "
@@ -9391,6 +9601,14 @@ class SmcQuantApp(ctk.CTk):
                         continue
                 if resposta:
                     break
+
+            # ---- SEGUNDA LEITURA DO MESMO NÚMERO ----
+            # Só quando a pergunta é de NÍVEL e há imagem: é o único caso em
+            # que uma chamada extra se paga. Ler duas vezes o mesmo rótulo dá
+            # o mesmo número; inventar duas vezes dá dois.
+            if resposta and anexo and parte_anexo is not None:
+                resposta = self._confirmar_nivel_lido(
+                    client, modelos, parte_anexo, pergunta, resposta)
         except Exception as e:
             ultimo_erro = e
 
@@ -9485,6 +9703,56 @@ class SmcQuantApp(ctk.CTk):
                     "gravo aqui mesmo, sem depender da API.")
         self._chat_entregar_resposta(resposta)
 
+    def _confirmar_nivel_lido(self, client, modelos, parte_anexo, pergunta, resposta):
+        """Lê o MESMO indicador uma segunda vez, na MESMA imagem, com um pedido
+        mínimo — e compara.
+
+        Por que uma segunda leitura e não um prompt melhor: prompt melhor muda
+        a FORMA da resposta, não a verdade dela. A 2.25.0 exigiu o número junto
+        do nome do indicador e conseguiu exatamente isso — a evasão ('acima
+        dela') virou invenção ('exatamente em 7752.34', com a legenda dizendo
+        7769.56). Número inventado não se repete igual; número lido, sim.
+
+        Falha aqui nunca piora a resposta: sem confirmação, entrega o que veio.
+        """
+        try:
+            if not pergunta_onde_esta_indicador(pergunta):
+                return resposta
+            indicador = indicador_da_pergunta(pergunta)
+            if not indicador:
+                return resposta
+            dito = extrair_valor_do_indicador(indicador, resposta)
+            if dito is None:
+                return resposta          # não afirmou número: nada a conferir
+            pedido = (
+                f"Olhe SOMENTE a legenda de dados desta imagem e responda com "
+                f"UM NÚMERO e nada mais: qual é o valor de {indicador}?\n"
+                "Se o valor não estiver escrito na imagem, responda exatamente "
+                "NAO_LEGIVEL. Não estime, não calcule, não use o preço do "
+                "ativo no lugar. Só o número que está impresso.")
+            confirmado = None
+            for modelo in (modelos or [])[:2]:
+                try:
+                    r = client.models.generate_content(
+                        model=modelo, contents=[parte_anexo, pedido],
+                        config=types.GenerateContentConfig(
+                            temperature=0.0, max_output_tokens=24))
+                    if r and r.text:
+                        confirmado = numero_da_segunda_leitura(r.text)
+                        break
+                except Exception:
+                    continue
+            texto, instavel = conferir_leitura_de_nivel(
+                resposta, indicador, dito, confirmado)
+            if instavel:
+                self.log(f"🛡️ TIGER: li '{indicador}' duas vezes na mesma "
+                         f"imagem e saíram {dito:g} e "
+                         f"{('%g' % confirmado) if confirmado is not None else 'nada'}"
+                         " — número recusado em vez de entregue.")
+            return texto
+        except Exception:
+            return resposta
+
     def _completar_resposta(self, client, modelo, config, conteudo, comeco):
         """Pede a continuação de uma resposta que bateu no teto e emenda as duas.
         Uma rodada só: se ainda assim não fechar, devolve o que tem em vez de
@@ -9526,6 +9794,20 @@ class SmcQuantApp(ctk.CTk):
         if corrigiu:
             self.log("🛡️ TIGER: a resposta não trazia o nível do indicador — "
                      "admissão anexada em vez da enrolação.")
+        # ELE ESTÁ POSICIONADO OU NÃO? O app SABE — basta conferir.
+        try:
+            abertas = [p for p in posicoes_do_ciclo()
+                       if p.get("status") == "ABERTA"]
+        except Exception:
+            abertas = None          # sem leitura confiável, não se corrige nada
+        if abertas is not None:
+            resposta, erro_pos = conferir_posicao_alegada(resposta, abertas)
+            if erro_pos == "inventou":
+                self.log("🛡️ TIGER: a resposta dizia que ele está posicionado e "
+                         "não há posição aberta — correção anexada.")
+            elif erro_pos == "omitiu":
+                self.log("🛡️ TIGER: a resposta dizia que ele está zerado e há "
+                         "posição ABERTA — correção anexada.")
         # OS NÚMEROS DA CONTA DELE, CONFERIDOS CONTRA O DISCO.
         resposta, divergencias = conferir_numeros_da_mesa(
             resposta, self._fatos_da_mesa())
@@ -9983,7 +10265,7 @@ class SmcQuantApp(ctk.CTk):
             for pid in configurados:
                 info = PROVEDORES_IA[pid]
                 chave = carregar_chave_provedor(pid)
-                ok = False
+                ok, ultimo = False, None
                 for modelo in info["modelos"]:
                     try:
                         msg = [{"role": "user",
@@ -9998,12 +10280,22 @@ class SmcQuantApp(ctk.CTk):
                             ok = True
                             break
                     except Exception as e:
+                        ultimo = e
                         self.log(f"   ⚠️ {info['rotulo']} / {modelo}: "
-                                 f"{str(e)[:150]}")
+                                 f"{diagnostico_de_provedor(e, info['rotulo'])}")
                 if not ok:
-                    self.log(f"   ❌ {info['rotulo']} NÃO respondeu. A chave "
-                             "pode estar errada, sem crédito, ou o modelo "
-                             "indisponível para a sua conta.")
+                    # A CAUSA REAL VEM NA RESPOSTA DA API — e estava sendo
+                    # trocada por um palpite triplo. No log de 12/08 a OpenAI
+                    # respondeu, com todas as letras, "You have no credits
+                    # remaining"; o app leu isso e disse ao trader que a chave
+                    # "pode estar errada, sem crédito, ou indisponível". Ele
+                    # ficou sem saber qual das três, com a resposta na mão.
+                    self.log(f"   ❌ {info['rotulo']} NÃO respondeu — "
+                             f"{diagnostico_de_provedor(ultimo, info['rotulo'])}")
+                    if pid != "groq":
+                        self.log("   💡 A Groq tem camada GRATUITA e fala o "
+                                 "mesmo protocolo: console.groq.com/keys — "
+                                 "cole a chave no campo Groq e teste de novo.")
         threading.Thread(target=testar, daemon=True).start()
 
     def _salvar_estilo_notificacao(self, rotulo=None):

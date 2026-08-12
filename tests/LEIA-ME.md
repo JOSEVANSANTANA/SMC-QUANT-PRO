@@ -57,7 +57,7 @@ vez de passar testando o vazio.
 | `test_notificacao.py` | A notificação roubando a tela no macOS (resolvida com a notificação nativa, não com truque de Tk); o microfone que abre e devolve silêncio por falta de permissão. |
 | `test_inteligencia.py` | A TIGER sendo Gemini-e-mais-nada (sem cota = sem cérebro); `satatus` e `tria um print` morrendo por uma letra; um preço virando regra permanente e não havendo como apagá-la. |
 | `test_empacotamento.py` | O repositório ficou versões inteiras sabendo compilar para Mac e **não** para Windows — o `.spec` do `.exe` vivia só na máquina do trader. A simetria entre os dois sistemas virou teste. |
-| `test_honestidade.py` | "Onde está a VWAP?" respondida três vezes com "o preço está acima dela" e o número do ATIVO; um número da conta dito errado com confiança; a janela `'Claude — Claude'` analisada por 20 minutos como se fosse gráfico; o "sim" que respondia à pergunta dela mesma e caía no despejo genérico; e o WhatsApp reconectando de 5 em 5 segundos, para sempre, com o código 500. |
+| `test_honestidade.py` | "Onde está a VWAP?" respondida três vezes com "o preço está acima dela" e o número do ATIVO; um número da conta dito errado com confiança; a janela `'Claude — Claude'` analisada por 20 minutos como se fosse gráfico; o "sim" que respondia à pergunta dela mesma e caía no despejo genérico; e o WhatsApp reconectando de 5 em 5 segundos, para sempre, com o código 500. **E a rodada seguinte:** obrigada a dizer o número, ela passou a inventá-lo (`VWAP 7752.34` com a legenda em `7769.56`), afirmou posição vendida com a plataforma em `POSIÇÃO 0`, e o "sem crédito" que a OpenAI escreveu virou um palpite de três causas. |
 
 ## Regra da casa
 

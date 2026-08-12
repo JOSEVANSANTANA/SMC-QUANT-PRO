@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.25.0 — WINDOWS
+  SMC QUANT PRO v2.26.0 — WINDOWS
   Comece por aqui.
 ========================================================================
 
@@ -100,6 +100,77 @@ Grafico "congelado" a cada ciclo
 
 A TIGER nao fala
   → confira o pyttsx3 na lista do Passo 3.
+
+
+========================================================================
+  O QUE MUDOU NA v2.26.0  —  EXIGIR A FORMA SO MUDA A FORMA DA MENTIRA
+========================================================================
+A 2.25.0 obrigou a IA a dizer o NUMERO do indicador em vez do pronome.
+Ela obedeceu. E passou a inventar o numero — o que e PIOR, porque um
+numero inventado com cara de leitura e usado.
+
+O QUE A LEGENDA DO SEU PRINT DE 12/08 15:45 MOSTRA (candle de 13:25):
+      VWAP 7769.56 · SMA 7767.58 · SMA 7766.04 · PSAR 7764.20
+      RSI 55 · OPEN 7770.25 · HIGH 7771.25 · LOW 7768.50
+      POSICAO 0 (nas DUAS janelas) · ABRIR P/L 0.00 USD
+
+O QUE ELA RESPONDEU AS 15:43:
+      "a VWAP esta exatamente em 7752.34, conforme indicado na legenda"
+      "a media movel de 50 periodos que esta em 7751.28"
+      "voce esta com uma posicao de venda aberta em 7753.25"
+
+Tres numeros que nao existem naquela tela. Todos com a FORMA de uma
+resposta correta — e e por isso que exigir forma nao bastou.
+
+1) A SEGUNDA LEITURA
+  O que separa leitura de invencao nao e o formato: e a ESTABILIDADE.
+  Ler duas vezes o mesmo rotulo na mesma imagem da o mesmo numero;
+  inventar duas vezes da dois.
+
+  AGORA: quando voce pergunta onde esta um indicador, o programa le a
+  MESMA imagem uma SEGUNDA vez, com temperatura zero e um pedido minimo
+  ("responda so o numero, ou NAO_LEGIVEL"), e compara com o que ela
+  tinha dito. Divergiu mais de meio ponto? O numero e RECUSADO — e voce
+  ve os DOIS valores, para conferir voce mesmo.
+
+  Nao conseguir confirmar tambem reprova. Ausencia de prova nunca
+  autoriza entregar o numero.
+
+  Custa uma chamada de API extra so em pergunta de nivel, que e rara.
+
+2) A SUA POSICAO NAO SE DEDUZ DO GRAFICO
+  Dizer a alguem que ele esta vendido quando esta zerado e grave. Dizer
+  que esta zerado quando ele carrega posicao e pior — ele relaxa com
+  risco na mesa. Os DOIS sentidos passam a ser conferidos contra o
+  registro antes de a resposta sair.
+
+  Frase condicional ("se voce estiver comprado, proteja o stop")
+  continua passando: e hipotese, nao alegacao de fato.
+
+3) O ERRO DO PROVEDOR PARA DE SER ADIVINHACAO
+  A OpenAI respondeu, com todas as letras:
+      "You have no credits remaining. Add credits to continue..."
+  e o app te disse que a chave "pode estar errada, sem credito, ou o
+  modelo indisponivel" — tres possibilidades, com a resposta na mao.
+
+  AGORA: sem credito e dito como SEM CREDITO, e a chave e declarada
+  VALIDA (voce nao perde tempo trocando uma chave que esta boa). 401 e
+  chave recusada. 429 de limite temporario nao vira mais "troque a
+  chave" — ele some sozinho. Falha de rede nao vira problema de chave.
+
+  E quando um provedor PAGO falha, o app aponta a alternativa: a Groq
+  tem camada GRATUITA e fala o mesmo protocolo — console.groq.com/keys.
+  Sem isso voce fica sem cerebro reserva justamente quando precisa.
+
+4) UM R NO LUGAR DO V
+  14:16  voce: REMORA ISSO
+  14:17  ela:  [repetiu a licao que voce mandou apagar]
+
+  Os verbos de APAGAR (remova, apaga, esquece, deleta) entraram na
+  correcao de digitacao. Um comando de DESFAZER que so funciona com a
+  grafia perfeita falha justo quando mais se precisa dele.
+
+TESTES: 241 (eram 213).
 
 
 ========================================================================

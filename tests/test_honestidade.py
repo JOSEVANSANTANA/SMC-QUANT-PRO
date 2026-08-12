@@ -390,3 +390,275 @@ class TestContextoQueChegaAoModelo(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestLeituraInstavelDoIndicador(unittest.TestCase):
+    """A guarda da 2.25.0 exigiu o número. Ela conseguiu o número — inventado.
+
+    Print da Tradovate de 12/08 15:45, legenda do candle de 13:25:
+        PSAR 7764.20 · SMA 7767.58 · SMA 7766.04 · RSI 55
+        VWAP 7769.56 · OPEN 7770.25 · HIGH 7771.25 · LOW 7768.50
+        CLOSE 7769.00 · VOLUME 3943 · marcador de preço 7770.24
+        POSIÇÃO 0 (nas duas janelas) · ABRIR P/L 0.00 USD
+
+    O que ela respondeu às 15:43:
+        "a VWAP está exatamente em 7752.34, conforme indicado na legenda"
+        "a média móvel de 50 períodos que está em 7751.28"
+        "você está com uma posição de venda aberta em 7753.25"
+
+    Três números que não existem em lugar nenhum daquela tela. Todos com a
+    FORMA de uma resposta correta — e é por isso que exigir forma não basta.
+    O que separa leitura de invenção é ESTABILIDADE: ler duas vezes o mesmo
+    rótulo dá o mesmo número; inventar duas vezes dá dois.
+    """
+
+    def _ns(self):
+        return carregar(
+            ["_sem_acento", "_norm_busca", "_INDICADORES", "_RE_ONDE_INDICADOR",
+             "pergunta_onde_esta_indicador", "indicador_da_pergunta",
+             "extrair_valor_do_indicador", "numero_da_segunda_leitura",
+             "leituras_do_indicador_batem", "_AVISO_LEITURA_INSTAVEL",
+             "conferir_leitura_de_nivel"])
+
+    RESPOSTA_1543 = (
+        "Olá Josevan. Na captura de agora, a VWAP está exatamente em 7752.34, "
+        "conforme indicado na legenda de dados do gráfico. O preço atual está "
+        "em 7770.24, trabalhando bem acima dela.")
+
+    def test_sabe_qual_indicador_foi_perguntado(self):
+        ns = self._ns()
+        self.assertEqual(
+            ns["indicador_da_pergunta"]("TIRA UM PRINT, ONDE ESTA A VWAP AGORA?").upper(),
+            "VWAP")
+        self.assertEqual(ns["indicador_da_pergunta"]("qual o suporte?"), "suporte")
+        self.assertIsNone(ns["indicador_da_pergunta"]("compro ou vendo?"))
+
+    def test_pega_o_numero_do_indicador_e_nao_o_do_ativo(self):
+        """Na frase real de 15:43 há DOIS números: 7752.34 (dito da VWAP) e
+        7770.24 (do preço). Confundir os dois seria repetir o engano original."""
+        ns = self._ns()
+        self.assertEqual(
+            ns["extrair_valor_do_indicador"]("VWAP", self.RESPOSTA_1543), 7752.34)
+
+    def test_duas_leituras_iguais_passam(self):
+        """Arredondar 7769.56 para 7769.5 é a mesma leitura."""
+        ns = self._ns()
+        self.assertTrue(ns["leituras_do_indicador_batem"](7769.56, 7769.5))
+        self.assertTrue(ns["leituras_do_indicador_batem"](7769.56, 7769.56))
+        self.assertTrue(ns["leituras_do_indicador_batem"](21500.0, 21500.25))
+
+    def test_o_caso_real_nao_passa(self):
+        """7752.34 contra os 7769.56 da legenda: 17 pontos. Não é leitura."""
+        ns = self._ns()
+        self.assertFalse(ns["leituras_do_indicador_batem"](7752.34, 7769.56))
+
+    def test_segunda_leitura_ilegivel_tambem_reprova(self):
+        """Não conseguir confirmar não é confirmar. Ausência de prova nunca
+        autoriza entregar o número."""
+        ns = self._ns()
+        self.assertFalse(ns["leituras_do_indicador_batem"](7769.56, None))
+
+    def test_le_a_resposta_curta_nos_dois_formatos(self):
+        ns = self._ns()
+        self.assertEqual(ns["numero_da_segunda_leitura"]("7769.56"), 7769.56)
+        self.assertEqual(ns["numero_da_segunda_leitura"](" 7769,56 "), 7769.56)
+        self.assertEqual(ns["numero_da_segunda_leitura"]("VWAP: 7769.56"), 7769.56)
+
+    def test_nao_legivel_nao_vira_numero(self):
+        ns = self._ns()
+        for t in ("NAO_LEGIVEL", "não legível", "", None):
+            self.assertIsNone(ns["numero_da_segunda_leitura"](t), repr(t))
+
+    def test_o_numero_instavel_e_recusado_com_os_dois_valores_a_mostra(self):
+        """Ele precisa VER que saíram dois valores — é o que torna a recusa
+        verificável em vez de mais uma desculpa."""
+        ns = self._ns()
+        texto, instavel = ns["conferir_leitura_de_nivel"](
+            self.RESPOSTA_1543, "VWAP", 7752.34, 7769.56)
+        self.assertTrue(instavel)
+        self.assertIn("7752.34", texto)
+        self.assertIn("7769.56", texto)
+        self.assertIn("não consigo ler esse valor nesta captura", texto.lower())
+
+    def test_leitura_estavel_sai_intacta(self):
+        ns = self._ns()
+        boa = "A VWAP está em 7769.56."
+        texto, instavel = ns["conferir_leitura_de_nivel"](boa, "VWAP", 7769.56, 7769.5)
+        self.assertFalse(instavel)
+        self.assertEqual(texto, boa)
+
+    def test_sem_numero_afirmado_nao_ha_o_que_conferir(self):
+        """Se ela não afirmou valor nenhum, a guarda anterior é que trata —
+        esta não pode inventar um problema."""
+        ns = self._ns()
+        texto = "Não consigo ler esse valor nesta captura."
+        saida, instavel = ns["conferir_leitura_de_nivel"](texto, "VWAP", None, None)
+        self.assertFalse(instavel)
+        self.assertEqual(saida, texto)
+
+    def test_a_segunda_leitura_esta_ligada_no_caminho_da_imagem(self):
+        """Função pura que ninguém chama é decoração."""
+        fonte = fonte_do_arquivo()
+        self.assertIn("_confirmar_nivel_lido", fonte)
+        self.assertIn("self._confirmar_nivel_lido(", fonte)
+        self.assertIn("temperature=0.0", fonte)
+
+
+class TestPosicaoAlegada(unittest.TestCase):
+    """Ela disse que ele estava vendido. As duas janelas mostravam POSIÇÃO 0."""
+
+    def _ns(self):
+        return carregar(["_RE_ALEGA_POSICAO", "_RE_ALEGA_ZERADO",
+                         "conferir_posicao_alegada"])
+
+    ABERTA = [{"direcao": "SELL", "ativo": "MESU6", "contratos": 2,
+               "entry": 7767.75}]
+
+    def test_a_frase_real_de_1543_e_pega(self):
+        ns = self._ns()
+        _t, d = ns["conferir_posicao_alegada"](
+            "Note que você está com uma posição de venda aberta em 7753.25, e "
+            "o preço está subindo contra você.", [])
+        self.assertEqual(d, "inventou")
+
+    def test_a_mesma_frase_com_posicao_de_verdade_passa(self):
+        ns = self._ns()
+        _t, d = ns["conferir_posicao_alegada"](
+            "Note que você está com uma posição de venda aberta.", self.ABERTA)
+        self.assertIsNone(d)
+
+    def test_dizer_que_esta_zerado_carregando_posicao_tambem_e_erro(self):
+        """A recíproca é pior: ele relaxa com risco na mesa."""
+        ns = self._ns()
+        for t in ("Você está zerado agora.",
+                  "Não há nenhuma posição aberta no momento.",
+                  "Você não está posicionado."):
+            _s, d = ns["conferir_posicao_alegada"](t, self.ABERTA)
+            self.assertEqual(d, "omitiu", t)
+
+    def test_a_correcao_diz_qual_posicao_e(self):
+        ns = self._ns()
+        texto, _d = ns["conferir_posicao_alegada"]("Você está zerado agora.",
+                                                   self.ABERTA)
+        self.assertIn("SELL", texto)
+        self.assertIn("MESU6", texto)
+        self.assertIn("7767.75", texto)
+
+    def test_condicional_nao_e_afirmacao(self):
+        """'Se você estiver comprado' é hipótese, não alegação de fato."""
+        ns = self._ns()
+        for t in ("Se você estiver com uma posição de venda, proteja o stop.",
+                  "Caso você esteja comprado, considere reduzir.",
+                  "Quem estiver vendido deve observar o suporte."):
+            _s, d = ns["conferir_posicao_alegada"](t, [])
+            self.assertIsNone(d, t)
+
+    def test_conversa_normal_nao_e_tocada(self):
+        ns = self._ns()
+        texto = "O viés é comprador e a estrutura de alta segue intacta."
+        saida, d = ns["conferir_posicao_alegada"](texto, [])
+        self.assertIsNone(d)
+        self.assertEqual(saida, texto)
+
+    def test_a_guarda_esta_ligada_onde_toda_resposta_passa(self):
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _chat_entregar_resposta")
+        bloco = fonte[i:i + 3000]
+        self.assertIn("conferir_posicao_alegada", bloco)
+
+
+class TestDiagnosticoDeProvedor(unittest.TestCase):
+    """A OpenAI disse 'no credits remaining'. O app disse 'pode ser uma de três'."""
+
+    def _ns(self):
+        return carregar(["diagnostico_de_provedor"])
+
+    ERRO_REAL = ('HTTP 429: {"error": {"message": "You have no credits '
+                 'remaining. Add credits to continue using the API at '
+                 'https://platform.openai.com/settings"}}')
+
+    def test_sem_credito_e_dito_como_sem_credito(self):
+        """Ele passou o dia achando que tinha errado a chave. A chave estava
+        certa: a conta é que estava zerada — e a API disse isso."""
+        ns = self._ns()
+        d = ns["diagnostico_de_provedor"](self.ERRO_REAL, "OpenAI (ChatGPT)")
+        self.assertIn("SEM CRÉDITO", d)
+        self.assertIn("VÁLIDA", d)
+
+    def test_chave_recusada_e_outra_coisa(self):
+        ns = self._ns()
+        d = ns["diagnostico_de_provedor"]("HTTP 401 invalid_api_key", "Groq")
+        self.assertIn("401", d)
+        self.assertIn("RECUSADA", d)
+
+    def test_limite_temporario_nao_vira_chave_errada(self):
+        """Um 429 de rate limit some sozinho; um 429 de saldo, não. Tratar os
+        dois igual mandava o trader trocar uma chave que estava boa."""
+        ns = self._ns()
+        d = ns["diagnostico_de_provedor"]("HTTP 429 Rate limit reached", "Groq")
+        self.assertIn("limite de uso", d)
+        self.assertNotIn("SEM CRÉDITO", d)
+
+    def test_rede_fora_nao_vira_problema_de_chave(self):
+        ns = self._ns()
+        d = ns["diagnostico_de_provedor"]("Connection timed out", "OpenAI")
+        self.assertIn("rede", d.lower())
+
+    def test_erro_desconhecido_mostra_o_texto_original(self):
+        """Não conhecer a causa não autoriza esconder a mensagem do provedor."""
+        ns = self._ns()
+        d = ns["diagnostico_de_provedor"]("Erro esquisito 987", "X")
+        self.assertIn("987", d)
+
+    def test_o_app_usa_o_diagnostico_em_vez_do_palpite_triplo(self):
+        fonte = fonte_do_arquivo()
+        self.assertIn("diagnostico_de_provedor(", fonte)
+        self.assertNotIn("pode estar errada, sem crédito, ou o modelo", fonte)
+
+    def test_aponta_a_alternativa_gratuita(self):
+        """Sem crédito na OpenAI, mandar 'adicione crédito' e parar aí deixa o
+        trader sem cérebro reserva. A Groq tem camada gratuita."""
+        fonte = fonte_do_arquivo()
+        self.assertIn("console.groq.com/keys", fonte)
+
+
+class TestApagarLicaoComErroDeDigitacao(unittest.TestCase):
+    """14:16 'REMORA ISSO' → nada apagado. 14:17 ela repetiu a lição."""
+
+    def _ns(self):
+        return carregar(
+            ["_sem_acento", "_norm_busca", "_RE_QUAL_LADO", "pergunta_qual_lado",
+             "_RE_DEFINIR_NIVEL", "interpretar_niveis_da_posicao",
+             "_RE_NIVEL", "_RE_NIVEL_TEORIA", "pergunta_pede_nivel",
+             "_RE_POSTMORTEM", "pergunta_postmortem",
+             "_MOTOR_SUBSTANTIVOS", "_MOTOR_ARTIGO", "_MOTOR_NEGADO",
+             "_MOTOR_DESLIGAR", "_MOTOR_PARA", "_MOTOR_LIGAR",
+             "_PRINT_SOZINHO", "_PRINT_COM_AGORA",
+             "_RE_ESQUECER", "pedido_de_esquecer",
+             "_COMANDOS_CONHECIDOS", "_distancia_edicao", "corrigir_digitacao",
+             "interpretar_intencao", "processar_turno_chat"],
+            stubs={"extrair_licao": lambda t: None,
+                   "interpretar_configuracao": lambda t: None,
+                   "pergunta_sobre_configuracao": lambda t: False,
+                   "simbolo_do_texto": lambda t: None,
+                   "unicodedata": __import__("unicodedata")})
+
+    def test_remora_isso_apaga(self):
+        """Um R no lugar do V. Um comando de DESFAZER que só funciona com a
+        grafia perfeita falha justo quando mais se precisa dele."""
+        ns = self._ns()
+        self.assertEqual(ns["processar_turno_chat"]("REMORA ISSO"),
+                         ("ESQUECER", ""))
+
+    def test_o_comando_certo_continua_funcionando(self):
+        ns = self._ns()
+        self.assertEqual(ns["processar_turno_chat"]("REMOVA ISSO"),
+                         ("ESQUECER", ""))
+        self.assertEqual(ns["processar_turno_chat"]("apaga a 2"),
+                         ("ESQUECER", "2"))
+
+    def test_ensinar_nao_vira_apagar_por_causa_da_correcao(self):
+        """A correção de digitação não pode transformar uma intenção em outra."""
+        ns = self._ns()
+        for t in ("aprenda isso", "sim", "nao", "status"):
+            self.assertNotEqual(ns["processar_turno_chat"](t)[0], "ESQUECER", t)
