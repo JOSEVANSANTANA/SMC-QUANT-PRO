@@ -91,13 +91,74 @@ let conectando = false;        // true enquanto um socket está sendo criado
 let timerReconexao = null;     // timer único de reconexão pendente
 let versaoWA = null;           // versão do protocolo WA, buscada UMA vez e cacheada
 
+// --------------------------------------------------------------------
+// O CICLO DE QUEDA E VOLTA — POR QUE ISTO MUDOU
+// --------------------------------------------------------------------
+// Do log do pregão de 12/08, a cada ~10 minutos, a tarde inteira:
+//     ⚠️ Conexão fechada (código 500). Logout: false
+//     🕒 Reconexão agendada em 5s (código 500).
+//     ⚠️ Conexão fechada (código 428). Logout: false
+//     🕒 Reconexão agendada em 5s (código 428).
+//
+// Três coisas estavam erradas, e nenhuma era o WhatsApp:
+//
+// 1) ESPERA FIXA DE 5s. Toda queda voltava com o mesmo 5s, para sempre. Se o
+//    servidor está recusando, bater na porta no mesmo ritmo é o jeito mais
+//    rápido de continuar recusado. Agora a espera DOBRA a cada tentativa
+//    (5s, 10s, 20s, 40s, 60s, teto de 60s) e ZERA quando a conexão abre.
+//
+// 2) O 500 É `badSession`, NÃO É "tente de novo". No Baileys,
+//    DisconnectReason.badSession === 500 significa credencial corrompida:
+//    reconectar com a MESMA credencial nunca vai funcionar — foi por isso que
+//    o ciclo durou a tarde toda sem nunca se resolver sozinho. Depois de três
+//    500 seguidos, o motor limpa a sessão e gera um QR novo, como já fazia
+//    para o logout.
+//
+// 3) NINGUÉM CONTAVA. Sem contador, "caiu de novo" e "caiu quarenta vezes"
+//    apareciam igual no log. Agora o histórico fica em /status, e o app pode
+//    dizer ao trader que a ponte do WhatsApp está instável em vez de deixá-lo
+//    achando que o relatório não saiu por outro motivo.
+const ESPERA_BASE_MS = 5000;
+const ESPERA_TETO_MS = 60000;
+const QUEDAS_500_PARA_REPAREAR = 3;
+
+let tentativasReconexao = 0;   // seguidas, sem nenhuma conexão aberta no meio
+let quedas500Seguidas = 0;     // badSession consecutivos
+let historicoQuedas = [];      // últimas quedas, para /status
+
+function esperaDaProximaTentativa() {
+    // 5s · 10s · 20s · 40s · 60s · 60s… O jitter de até 1s evita que o motor
+    // e o celular voltem exatamente no mesmo instante a cada rodada.
+    const base = Math.min(ESPERA_BASE_MS * Math.pow(2, tentativasReconexao),
+                          ESPERA_TETO_MS);
+    return Math.round(base + Math.random() * 1000);
+}
+
+function registrarQueda(codigo, motivo) {
+    historicoQuedas.push({ quando: new Date().toISOString(), codigo, motivo });
+    if (historicoQuedas.length > 20) historicoQuedas = historicoQuedas.slice(-20);
+}
+
 function agendarReconexao(delayMs, motivo) {
     if (timerReconexao) return;          // já há uma reconexão agendada: não empilha
-    console.log(`🕒 Reconexão agendada em ${Math.round(delayMs / 1000)}s (${motivo}).`);
+    tentativasReconexao++;
+    console.log(`🕒 Reconexão agendada em ${Math.round(delayMs / 1000)}s `
+        + `(${motivo}) — tentativa ${tentativasReconexao} seguida.`);
     timerReconexao = setTimeout(() => {
         timerReconexao = null;
         connectToWhatsApp();
     }, delayMs);
+}
+
+function limparSessao(porque) {
+    console.log(`🔄 ${porque} — limpando credenciais antigas e gerando novo QR automaticamente...`);
+    try {
+        fs.rmSync(path.join(__dirname, 'auth_smc'), { recursive: true, force: true });
+    } catch (e) {
+        console.log(`⚠️ Falha ao limpar pasta de sessão antiga: ${e}`);
+    }
+    quedas500Seguidas = 0;
+    tentativasReconexao = 0;
 }
 
 // Fila de comandos vindos do WhatsApp (ex: ACATAR) que o app (main_app.py)
@@ -212,6 +273,13 @@ async function connectToWhatsApp() {
         if (connection === 'open') {
             statusConexao = 'CONECTADO';
             ultimoQrBase64 = null;
+            // A escada de espera só zera aqui, com a conexão REALMENTE aberta.
+            // Zerar no 'connecting' era o que fazia o backoff nunca subir.
+            if (tentativasReconexao) {
+                console.log(`✅ Conexão restabelecida após ${tentativasReconexao} tentativa(s).`);
+            }
+            tentativasReconexao = 0;
+            quedas500Seguidas = 0;
             console.log('✅ CONECTADO: WhatsApp pareado com sucesso!');
             console.log(`   (isNewLogin=${update.isNewLogin}, `
                 + `receivedPendingNotifications=${update.receivedPendingNotifications})`);
@@ -224,7 +292,10 @@ async function connectToWhatsApp() {
             statusConexao = 'DESCONECTADO';
             const codigoErro = lastDisconnect?.error?.output?.statusCode;
             const foiLogout = codigoErro === DisconnectReason.loggedOut;
+            const foiSessaoRuim = codigoErro === DisconnectReason.badSession;   // 500
             console.log(`⚠️ Conexão fechada (código ${codigoErro}). Logout: ${foiLogout}`);
+            registrarQueda(codigoErro, foiLogout ? 'logout'
+                                     : foiSessaoRuim ? 'sessão corrompida' : 'queda');
 
             if (foiLogout) {
                 // Sessão foi invalidada pelo WhatsApp (ex: removida nos
@@ -232,18 +303,32 @@ async function connectToWhatsApp() {
                 // mesmas credenciais nunca vai funcionar — é preciso parear
                 // do zero. Em vez de exigir que o cliente apague pastas na
                 // mão, o motor faz isso sozinho e já gera um QR novo.
-                console.log('🔄 Sessão inválida — limpando credenciais antigas e gerando novo QR automaticamente...');
-                try {
-                    fs.rmSync(path.join(__dirname, 'auth_smc'), { recursive: true, force: true });
-                } catch (e) {
-                    console.log(`⚠️ Falha ao limpar pasta de sessão antiga: ${e}`);
-                }
+                limparSessao('Sessão inválida');
                 agendarReconexao(2000, 'logout');
-            } else {
-                // 515 (restart required, NORMAL logo após parear), 428, etc.:
-                // apenas reconectar (sem apagar credenciais).
-                agendarReconexao(5000, `código ${codigoErro}`);
+                return;
             }
+
+            if (foiSessaoRuim) {
+                quedas500Seguidas++;
+                if (quedas500Seguidas >= QUEDAS_500_PARA_REPAREAR) {
+                    // Três 500 seguidos não são turbulência de rede: é a
+                    // credencial corrompida. Insistir com ela é o loop que
+                    // durou a tarde inteira do dia 12/08.
+                    limparSessao(
+                        `Código 500 (sessão corrompida) ${QUEDAS_500_PARA_REPAREAR}x seguidas`);
+                    console.log('📷 Escaneie o novo QR em http://localhost:3939/qrcode '
+                        + 'para religar o WhatsApp.');
+                    agendarReconexao(2000, 'sessão corrompida');
+                    return;
+                }
+            } else {
+                quedas500Seguidas = 0;
+            }
+
+            // 515 (restart required, NORMAL logo após parear), 428
+            // (connectionClosed), 408 (timeout), etc.: reconectar sem apagar
+            // credencial — mas com a espera DOBRANDO, não com 5s fixo.
+            agendarReconexao(esperaDaProximaTentativa(), `código ${codigoErro}`);
         }
     });
 
@@ -404,7 +489,8 @@ async function connectToWhatsApp() {
         console.log(`🎧 Listener de comandos (START/STOP/ACATAR) instalado. Build: ${MOTOR_BUILD}`);
     } catch (e) {
         console.log(`❌ Falha ao iniciar a conexão do WhatsApp: ${e}`);
-        agendarReconexao(5000, 'erro ao conectar');
+        registrarQueda(null, 'erro ao criar o socket');
+        agendarReconexao(esperaDaProximaTentativa(), 'erro ao conectar');
     } finally {
         // Libera a trava: o socket já foi criado e os listeners registrados.
         conectando = false;
@@ -419,7 +505,16 @@ app.get('/qrcode', (req, res) => {
 });
 
 app.get('/status', (req, res) => {
-    res.json({ status: statusConexao, inscritos: lerInscritos().length });
+    // O histórico de quedas vai junto: sem ele, o app não tinha como
+    // distinguir "o relatório não saiu porque a ponte caiu 12 vezes" de
+    // "o relatório não saiu por outro motivo". Instabilidade que ninguém
+    // consegue ver vira suspeita contra a ferramenta inteira.
+    res.json({
+        status: statusConexao,
+        inscritos: lerInscritos().length,
+        tentativas_reconexao: tentativasReconexao,
+        quedas_recentes: historicoQuedas.slice(-10),
+    });
 });
 
 // Lista os inscritos atuais (para o app mostrar/gerenciar).

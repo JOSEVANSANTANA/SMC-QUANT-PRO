@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO — WINDOWS
+  SMC QUANT PRO v2.25.0 — WINDOWS
   Comece por aqui.
 ========================================================================
 
@@ -100,4 +100,60 @@ Grafico "congelado" a cada ciclo
 
 A TIGER nao fala
   → confira o pyttsx3 na lista do Passo 3.
+
+
+========================================================================
+  O QUE MUDOU NA v2.25.0  —  TRES GUARDAS ENTRE O MODELO E VOCE
+========================================================================
+Vale identico no Mac: o codigo e o mesmo arquivo nos dois sistemas.
+
+A RAIZ DE TUDO O QUE DEU ERRADO NO PREGAO DE 12/08:
+  o modelo escreve algo plausivel e o app entrega sem conferir.
+  Prompt e PEDIDO, nao garantia. Onde o SEU dinheiro esta em jogo, quem
+  confere agora e o programa — deterministico, e testado.
+
+1) O PRONOME NAO RESPONDE "ONDE"
+  14:14  voce: TIRA UM PRINT, ONDE ESTA A VWAP?
+  14:14  ela:  "O preco agora trabalha ACIMA DELA, em 7774.25"
+  14:16  voce: MAS A PORRA DO VWAP ESTA EM 7769,78
+
+  O numero citado era o do ATIVO, nunca o da VWAP. AGORA o programa
+  procura o nome do indicador na resposta e exige um NUMERO junto; sem
+  isso, cola a admissao "nao consigo ler esse valor nesta captura".
+
+2) O NUMERO DA SUA CONTA TEM DONO, E O DONO E O DISCO
+  Margem, meta, drawdown, resultado de hoje e do ciclo sao conferidos
+  contra o que esta gravado antes de a resposta sair. Divergencia acima
+  de US$1 vira correcao anexada com o valor real.
+  Meta DIARIA e drawdown RESTANTE ficam de fora de proposito: sao outros
+  numeros, e corrigir um contra o outro seria inventar erro onde nao ha.
+
+3) ISSO NAO E UM GRAFICO
+  A janela monitorada era 'Claude — Claude  [outra area de trabalho]' e
+  o motor passou VINTE MINUTOS analisando uma conversa como se fosse
+  mercado. AGORA: grafico de futuro tem PRECO e TICKER DE CONTRATO;
+  faltando qualquer um, o ciclo e recusado, e no segundo ciclo seguido
+  voce e avisado no chat e no WhatsApp com o motivo. A contagem e POR
+  JANELA — uma janela errada nao cala o alerta da outra.
+
+O "SIM" AGORA TEM DONO
+  Ela perguntou "quer revisar o que deu errado nesse cenario?", voce
+  respondeu "sim" e ela disse que nao sabia — com a resposta INTEIRA no
+  disco. Agora ela guarda a pergunta que fez, entende o "sim" e monta a
+  autopsia (plano, execucao, leitura, diagnostico) sem API e sem cota.
+
+O WHATSAPP PAROU DE CAIR EM CICLO
+  Codigos 428 e 500 a cada ~10 minutos. A espera era FIXA em 5s, o
+  codigo 500 (credencial corrompida) era tratado como "tente de novo", e
+  ninguem contava as quedas. AGORA a espera DOBRA (5s, 10s, 20s, 40s,
+  teto de 60s) e so zera com a conexao aberta; tres codigos 500 seguidos
+  geram QR novo automaticamente; e a instabilidade aparece no Registro
+  em vez de morrer dentro do log do motor.
+
+CONTEXTO QUE EXISTE PRECISA CHEGAR
+  Com varios graficos monitorados, so a ULTIMA leitura ia para a IA.
+  Agora vai a leitura mais recente de CADA ativo, com a janela de origem
+  em cada linha — nunca misturadas.
+
+TESTES: 213 (eram 174).
 ========================================================================

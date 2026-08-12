@@ -7,3 +7,6 @@ __pycache__/
 SMC_QUANT_PRO_*_v*.zip
 build/
 dist/
+
+# Ambiente virtual do teste de fumaca da interface (gerado, nunca versionado).
+.venv-gui/

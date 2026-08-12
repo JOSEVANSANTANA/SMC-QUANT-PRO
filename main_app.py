@@ -45,19 +45,29 @@ WINSOUND_DISPONIVEL = True      # o bipe existe nos dois; plataforma.bipe() deci
 try:
     import speech_recognition as sr
     VOZ_SR = True
-except ImportError:
+except Exception:
+    # Mesmo motivo do sounddevice logo abaixo: recurso opcional que falha no
+    # import não pode impedir o programa de abrir.
     VOZ_SR = False
 try:
     import sounddevice as _sd
     VOZ_SD = True
     VOZ_SD_ERRO = ""
-except ImportError as _e_sd:
-    VOZ_SD = False
+except Exception as _e_sd:
+    # `except Exception`, NÃO `except ImportError`. O sounddevice instalado
+    # sem a biblioteca nativa do PortAudio levanta
+    #     OSError: PortAudio library not found
+    # já no import — que passava direto por um `except ImportError` e MATAVA O
+    # PROGRAMA NA PARTIDA, com um traceback, antes de a janela existir. Um
+    # recurso opcional (o microfone) não pode derrubar o app inteiro.
+    # Descoberto pelo teste de fumaça da interface, não pelo pregão.
+    #
     # O TEXTO DO ERRO IMPORTA. No Mac o pip instalava o sounddevice sem
     # problema e o import falhava mesmo assim, com "No module named 'numpy'" —
     # porque o sounddevice importa numpy e o numpy não vinha junto. O app
     # engolia a mensagem e mandava "rode: pip install sounddevice", que era
     # justamente o que o trader já tinha feito. Agora ele lê a causa real.
+    VOZ_SD = False
     VOZ_SD_ERRO = str(_e_sd)
 VOZ_DISPONIVEL = VOZ_SR  # STT precisa do SpeechRecognition; captura tem fallback
 
@@ -209,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.24.0"
+VERSAO_ATUAL = "2.25.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1239,6 +1249,78 @@ def avaliar_distancia_da_entrada(entry, stop, preco, max_r=MAX_DISTANCIA_ENTRADA
     if limite <= 0:
         return True, round(dist_r, 2)
     return dist_r <= limite, round(dist_r, 2)
+
+
+# --------------------------------------------------------------------
+# ISSO NÃO É UM GRÁFICO
+# --------------------------------------------------------------------
+# Do log de 12/08. A janela escolhida no seletor era:
+#     'Claude — Claude  [outra área de trabalho]'
+# e o motor passou VINTE MINUTOS capturando e mandando para o modelo uma
+# JANELA DE CONVERSA, ciclo após ciclo, queimando cota e produzindo leitura de
+# mercado a partir de texto. Ninguém avisou o trader.
+#
+# A trava é deterministicamente simples porque a evidência é simples: gráfico
+# de futuro tem PREÇO e tem TICKER. Faltando qualquer um dos dois, não há o que
+# analisar — e "não há" é dito com essas palavras, nunca convertido em cenário.
+#
+# O TICKER TAMBÉM PRECISA SER CONHECIDO. Não é preciosismo: `valor_por_ponto_do_ativo`
+# cai em VALOR_POR_PONTO_PADRAO (5,0) quando não reconhece o símbolo. Dimensionar
+# em cima desse 5,0 chutado é inventar número com cara de cálculo — exatamente o
+# que esta ferramenta não pode fazer.
+_TICKER_VAZIO = {"", "DESCONHECIDO", "DESCONHECIDA", "N/A", "NA", "NONE",
+                 "NULL", "NAO IDENTIFICADO", "NÃO IDENTIFICADO", "INDEFINIDO",
+                 "-", "?", "--", "TICKER", "SYMBOL", "ATIVO"}
+
+# Códigos de MÊS de contrato futuro (padrão CME, não é convenção nossa):
+# F=jan G=fev H=mar J=abr K=mai M=jun N=jul Q=ago U=set V=out X=nov Z=dez.
+# Só depois de exigir isto a trava ficou de pé: 'CLAUDE' começa com 'CL' —
+# petróleo WTI — e passava por um `startswith` ingênuo. Foi o teste que pegou.
+_MESES_FUTUROS = "FGHJKMNQUVXZ"
+
+
+def _e_contrato_conhecido(simbolo):
+    """O símbolo é uma RAIZ da tabela, sozinha ou seguida do vencimento?
+
+    Aceita MES, MESU6, MESU25, MESU2026 e MES1! (contínuo do TradingView).
+    Recusa CLAUDE, CHAT e qualquer palavra que só por acaso comece com uma
+    raiz de contrato."""
+    s = str(simbolo or "").strip().upper()
+    for raiz in sorted(VALOR_POR_PONTO, key=len, reverse=True):
+        if not s.startswith(raiz):
+            continue
+        resto = s[len(raiz):]
+        if resto == "":
+            return True
+        if re.fullmatch(rf"[{_MESES_FUTUROS}]\d{{1,4}}", resto):
+            return True
+        if re.fullmatch(r"\d{1,2}!", resto):      # MES1! / ES1!
+            return True
+    return False
+
+
+def leitura_e_de_grafico(ativo, preco):
+    """A imagem analisada era mesmo um gráfico? Função PURA.
+
+    Devolve (é_grafico, motivo). `motivo` é None quando é gráfico, e uma frase
+    pronta para o log/chat quando não é."""
+    simbolo = str(ativo or "").strip().upper()
+    p = _num(preco)
+
+    if simbolo in _TICKER_VAZIO:
+        return False, ("a leitura voltou SEM ticker — não dá para saber qual "
+                       "instrumento está na tela")
+    if not re.fullmatch(r"[A-Z0-9!]{2,9}", simbolo):
+        return False, (f"o que veio no lugar do ticker ('{ativo}') não é "
+                       "símbolo de contrato nenhum")
+    if p is None or p <= 0:
+        return False, (f"a leitura voltou SEM preço para {simbolo} — gráfico "
+                       "de futuro sempre tem preço")
+    if not _e_contrato_conhecido(simbolo):
+        return False, (f"'{simbolo}' não está na tabela de contratos, então eu "
+                       "não sei quanto vale um ponto dele — e sem isso qualquer "
+                       "dimensionamento meu seria chute")
+    return True, None
 
 
 def avisos_do_plano(plano):
@@ -5696,6 +5778,307 @@ def corrigir_digitacao(texto):
     return " ".join(saida), mudou
 
 
+# --------------------------------------------------------------------
+# POST-MORTEM: "o que deu errado nessa sugestão?"
+# --------------------------------------------------------------------
+# Do log de 12/08:
+#     11:31 ✳ "Operação encerrada no STOP: BUY MESU6, US$-135,00.
+#              Quer revisar o que deu errado nesse cenário?"
+#     11:32 ❯ sim
+#     11:32 ✳ "Não tenho como responder isso com segurança agora..."
+#     11:35 ❯ o que deu errado na sugestão que você havia me passado
+#     11:35 ✳ [o mesmo parágrafo]
+#
+# ELA PERGUNTOU e não soube responder o próprio convite. E o pior: a resposta
+# estava INTEIRA no disco — entrada, stop, alvo, contratos, confluências,
+# resultado, e a leitura que o motor fez enquanto a operação corria. Nada disso
+# precisa de modelo, de cota ou de internet. É aritmética sobre o diário.
+_RE_POSTMORTEM = re.compile(
+    r"\b(o que|por ?que|porqu[êe]|pq|como)\b[^?]{0,60}?"
+    r"\b(deu errado|errou|falhou|n[ãa]o deu certo|perdi|tomei stop|stopou|"
+    r"foi stopad\w+|deu ruim|furou)\b"
+    r"|\b(revis\w+|analis\w+|explic\w+|entend\w+)\b[^?]{0,40}?"
+    r"\b(cen[áa]rio|sugest[ãa]o|opera[çc][ãa]o|trade|stop|perda)\b"
+    r"|\bpost.?mortem\b", re.I)
+
+# O PRONOME NÃO RESPONDE "ONDE".
+#
+# 12/08, três vezes seguidas:
+#   14:14 ❯ TIRA UM PRINT, ONDE ESTA A VWAP?
+#   14:14 ✳ "O preço agora trabalha acima dela, em 7774.25"
+#   14:15 ❯ TIRA UM PRINT, CONSEGUE ME FALAR ONDE ESTA A VWAP?
+#   14:15 ✳ "O preço atual está trabalhando acima dela, em 7773.50"
+#   14:16 ❯ MAS A PORRA DO VWAP ESTA EM 7769,78
+#
+# Ela citou o preço (que ele já via na tela) e NUNCA disse onde estava a VWAP.
+# "acima dela" não responde "onde está ela". O número que ela deu era o do
+# ativo, não o do indicador — e é por isso que ele achou que ela estava
+# respondendo, quando não estava.
+_INDICADORES = (r"vwap|m[ée]dia m[óo]vel|\bmm\d*\b|\bema\d*\b|\bsma\d*\b|"
+                r"bollinger|fibonacci|\brsi\b|order block|\bob\b|\bfvg\b|"
+                r"suporte|resist[êe]ncia|pivot|poc|va[hl]\b")
+_RE_ONDE_INDICADOR = re.compile(
+    r"\b(onde|qual|quanto|em que (n[íi]vel|pre[çc]o)|que valor)\b[^?]{0,40}?"
+    r"(" + _INDICADORES + r")", re.I)
+
+def pergunta_onde_esta_indicador(texto):
+    t = _norm_busca(texto or "")
+    return bool(t and _RE_ONDE_INDICADOR.search(t))
+
+def resposta_enrola_o_nivel(pergunta, resposta):
+    """True quando ele perguntou ONDE está um indicador e a resposta não traz
+    NENHUM número junto do nome dele — só pronome.
+
+    A régua é deliberadamente simples: procura o nome do indicador no texto da
+    resposta e exige um número a até 60 caracteres dele. Citar o preço do ativo
+    em outro trecho não conta: foi exatamente esse o engano."""
+    if not pergunta_onde_esta_indicador(pergunta):
+        return False
+    r = str(resposta or "")
+    if not r.strip():
+        return False
+    # Ela já admitiu que não consegue ler? Então não está enrolando.
+    if re.search(r"n[ãa]o (consigo|consegui|d[áa] para) (ler|identificar|ver)",
+                 r, re.I):
+        return False
+    for m in re.finditer(_INDICADORES, r, re.I):
+        janela = r[m.start():m.end() + 60]
+        if re.search(r"\d{2,}[.,]?\d*", janela):
+            return False         # nome DO INDICADOR com número junto: respondeu
+    return True                  # só pronome, ou número solto longe do nome
+
+
+_AVISO_NIVEL_NAO_RESPONDIDO = (
+    "\n\n⚠️ Corrigindo a mim mesma: você perguntou ONDE está o indicador e eu "
+    "não disse o número dele — falei do preço do ativo, que é outra coisa. "
+    "Não vou fingir que respondi: **não consigo ler esse valor nesta "
+    "captura**. Se o indicador estiver com o rótulo visível no gráfico, tire "
+    "o print com ele à mostra que eu leio; se não estiver, o número certo é o "
+    "da sua plataforma, não o meu chute.")
+
+
+# --------------------------------------------------------------------
+# A TERCEIRA GUARDA: O NÚMERO DA MESA TEM DONO, E O DONO É O DISCO
+# --------------------------------------------------------------------
+# As duas guardas anteriores pegam a MENTIRA DE AÇÃO ("já enviei") e a EVASÃO
+# DE NÍVEL ("acima dela"). Falta a terceira, que é a que mais custa dinheiro:
+# o número ERRADO dito com confiança sobre a conta dele.
+#
+# O modelo recebe os números certos no contexto e mesmo assim, de vez em
+# quando, devolve outro — arredonda, soma errado, mistura o resultado do dia
+# com o do ciclo. Pedir no prompt para "não errar" não é engenharia: prompt é
+# pedido. Aqui o app CONFERE, e onde a conferência bate de frente com o disco,
+# o disco ganha.
+#
+# Deliberadamente ESTREITO: só entram os fatos que têm UMA fonte inequívoca no
+# disco e um rótulo que ninguém usa por acaso numa frase. Vale mais deixar
+# passar um erro do que corrigir uma frase certa — corretor que grita errado é
+# desligado no segundo dia, e aí não corrige mais nada.
+_ROTULOS_DE_FATO = {
+    "margem":    r"(?:margem|banca|capital da conta)",
+    # "meta diária" e "quanto falta para a meta" são OUTROS números, calculados
+    # a partir deste. Corrigir a meta diária contra a meta total seria inventar
+    # um erro onde não há — daí as exclusões explícitas.
+    "meta":      r"(?:meta(?!\s+(?:di[áa]ria|do dia|de hoje|por dia))"
+                 r"(?:\s+de\s+lucro|\s+total|\s+do ciclo)?|objetivo da conta)",
+    # Idem: "drawdown restante hoje" é o que sobrou, não o do plano.
+    "drawdown":  r"(?:drawdown(?!\s+(?:restante|dispon[íi]vel|de hoje|do dia))"
+                 r"(?:\s+m[áa]ximo|\s+total)?|perda m[áa]xima)",
+    "hoje":      r"(?:resultado (?:de )?hoje|hoje (?:voc[êe] )?(?:est[áa]|fez)|"
+                 r"resultado do dia|no dia de hoje)",
+    "ciclo":     r"(?:resultado do ciclo|acumulado do ciclo|no ciclo)",
+}
+# Tolerância em dólares. Abaixo disso é arredondamento, não erro.
+TOLERANCIA_FATO_USD = 1.0
+
+
+def _valor_perto_do_rotulo(texto, padrao_rotulo, alcance=70):
+    """O primeiro valor em dinheiro que aparece logo depois do rótulo.
+    Devolve (valor, trecho) ou (None, None)."""
+    for m in re.finditer(padrao_rotulo, texto, re.I):
+        janela = texto[m.end():m.end() + alcance]
+        v = re.search(r"(?:US\$|R\$|\$)\s*(-?[\d.,]+)", janela)
+        if not v:
+            continue
+        bruto = v.group(1).strip().rstrip(".,")
+        # 1.400,50 (pt-BR) e 1,400.50 (en-US) na mesma frase acontecem — o
+        # separador DECIMAL é o último que aparecer com 1 ou 2 dígitos depois.
+        if re.search(r"[.,]\d{1,2}$", bruto):
+            corpo, _, dec = bruto[:-3], bruto[-3], bruto[-2:]
+            numero = corpo.replace(".", "").replace(",", "") + "." + dec
+        else:
+            numero = bruto.replace(".", "").replace(",", "")
+        try:
+            return float(numero), texto[m.start():m.end() + alcance]
+        except ValueError:
+            continue
+    return None, None
+
+
+def conferir_numeros_da_mesa(resposta, fatos):
+    """Confere os números da CONTA DELE citados na resposta contra o disco.
+
+    Função PURA. `fatos` é {chave: valor_real} com as chaves de _ROTULOS_DE_FATO.
+    Devolve (texto, divergencias) — `divergencias` é a lista de
+    (chave, dito, real). Quando não há divergência, o texto volta intacto."""
+    texto = str(resposta or "")
+    if not texto.strip() or not fatos:
+        return texto, []
+    divergencias = []
+    for chave, padrao in _ROTULOS_DE_FATO.items():
+        real = fatos.get(chave)
+        if real is None:
+            continue
+        dito, _trecho = _valor_perto_do_rotulo(texto, padrao)
+        if dito is None:
+            continue
+        # Comparação por VALOR ABSOLUTO: "hoje você está em US$ 135 negativo"
+        # e "US$ -135" são a mesma frase, e o sinal costuma vir por extenso.
+        if abs(abs(dito) - abs(float(real))) > TOLERANCIA_FATO_USD:
+            divergencias.append((chave, dito, float(real)))
+    if not divergencias:
+        return texto, []
+
+    nomes = {"margem": "a margem", "meta": "a meta",
+             "drawdown": "o drawdown máximo", "hoje": "o resultado de hoje",
+             "ciclo": "o resultado do ciclo"}
+    linhas = [f"• {nomes.get(k, k)}: eu disse US$ {d:,.2f}; o registrado é "
+              f"US$ {r:,.2f}" for k, d, r in divergencias]
+    aviso = ("\n\n⚠️ Conferindo o que eu mesma escrevi contra o que está "
+             "gravado, dois números não batem — e quem manda é o registro:\n"
+             + "\n".join(linhas)
+             + "\nUse os do registro. Errar um número da SUA conta é o tipo de "
+               "erro que eu não posso deixar passar como se fosse detalhe.")
+    if len(divergencias) == 1:
+        aviso = aviso.replace("dois números não batem", "um número não bate")
+    return f"{texto.rstrip()}{aviso}", divergencias
+
+
+def corrigir_enrolacao_de_nivel(pergunta, resposta):
+    """Devolve (texto, corrigiu). Quando ela enrolou o nível, a resposta segue
+    — mas com a admissão colada no fim. Apagar o parágrafo inteiro tiraria a
+    leitura de contexto, que costuma estar certa; o que não pode é a evasão
+    passar como se fosse resposta."""
+    if not resposta_enrola_o_nivel(pergunta, resposta):
+        return resposta, False
+    return f"{str(resposta).rstrip()}{_AVISO_NIVEL_NAO_RESPONDIDO}", True
+
+
+def pergunta_postmortem(texto):
+    t = _norm_busca(texto or "")
+    return bool(t and _RE_POSTMORTEM.search(t))
+
+def montar_postmortem(pos=None):
+    """A autópsia da última operação FECHADA, feita só com o que está gravado.
+
+    Sem API, sem internet, sem modelo. Devolve None quando não há operação
+    fechada — e "não há" é dito com essas palavras, nunca convertido em
+    "não sei responder"."""
+    try:
+        fechadas = [p for p in posicoes_do_ciclo()
+                    if p.get("status") == "FECHADA"
+                    and p.get("pnl_final") is not None]
+    except Exception:
+        return None
+    alvo = pos or (fechadas[-1] if fechadas else None)
+    if not alvo:
+        return ("Não há operação encerrada nesta conta para eu revisar. Assim "
+                "que uma fechar — no stop, no alvo ou na mão — eu monto a "
+                "autópsia com os números reais dela.")
+
+    e, s = _num(alvo.get("entry")), _num(alvo.get("stop"))
+    t1, t2 = _num(alvo.get("tp1")), _num(alvo.get("tp2"))
+    pnl = _num(alvo.get("pnl_final")) or 0.0
+    ctr = int(alvo.get("contratos") or 1)
+    ativo = alvo.get("ativo", "?")
+    direcao = alvo.get("direcao", "?")
+    vpp = alvo.get("vpp") or valor_por_ponto_do_ativo(ativo)
+    ganhou = pnl > 0
+
+    linhas = [
+        f"AUTÓPSIA — {direcao} {ativo}, encerrada em "
+        f"{alvo.get('data_fechamento', '—')} com US${pnl:+,.2f} ({ctr} ctr).",
+        ""]
+
+    # 1. O QUE ESTAVA PLANEJADO
+    risco_pts = abs(e - s) if (e is not None and s is not None) else None
+    alvo_pts = abs((t1 or t2) - e) if (e is not None and (t1 or t2)) else None
+    linhas.append("O QUE ESTAVA NO PLANO:")
+    linhas.append(f"• Entrada {e if e is not None else '—'} · "
+                  f"stop {s if s is not None else '—'} · "
+                  f"alvo {t1 if t1 is not None else '—'}")
+    if risco_pts:
+        linhas.append(
+            f"• Risco planejado: {risco_pts:g} ponto(s) = "
+            f"US${risco_pts * vpp * ctr:,.2f} com {ctr} contrato(s)")
+        tick = tick_do_ativo(ativo)
+        if tick:
+            linhas.append(f"• Isso é {risco_pts / tick:.0f} tick(s) de stop")
+    if risco_pts and alvo_pts:
+        linhas.append(f"• R:R planejado: 1:{alvo_pts / risco_pts:.2f}")
+
+    # 2. O QUE ACONTECEU DE FATO
+    linhas.append("")
+    linhas.append("O QUE ACONTECEU:")
+    if alvo.get("entry_planejado") and _num(alvo["entry_planejado"]) != e:
+        linhas.append(
+            f"• A entrada SAIU DIFERENTE do sugerido: planejado "
+            f"{alvo['entry_planejado']}, executado {e}. Todo o R:R foi "
+            "calculado a partir do número planejado.")
+    if alvo.get("contratos_planejados") and \
+            int(alvo["contratos_planejados"]) != ctr:
+        linhas.append(
+            f"• A QUANTIDADE saiu diferente: o plano dimensionou "
+            f"{alvo['contratos_planejados']} contrato(s), foram executados "
+            f"{ctr}. O risco real foi "
+            f"{ctr / int(alvo['contratos_planejados']):.1f}× o autorizado.")
+    if risco_pts and pnl < 0:
+        perda_planejada = risco_pts * vpp * ctr
+        if abs(pnl) > perda_planejada * 1.15:
+            linhas.append(
+                f"• A perda ({abs(pnl):,.2f}) foi MAIOR que o risco planejado "
+                f"(US${perda_planejada:,.2f}). Isso significa que o stop não "
+                "segurou no nível — houve deslizamento, ou ele não estava na "
+                "plataforma.")
+        else:
+            linhas.append(
+                f"• A perda ficou dentro do risco planejado "
+                f"(US${perda_planejada:,.2f}). O stop fez o trabalho dele: "
+                "limitou o prejuízo ao que o plano previa.")
+    if ganhou:
+        linhas.append(f"• Resultado positivo de US${pnl:,.2f}.")
+
+    # 3. O QUE O MOTOR VIU ENQUANTO A OPERAÇÃO CORRIA
+    confl = alvo.get("confluencias") or []
+    if confl:
+        linhas.append("")
+        linhas.append("A LEITURA QUE JUSTIFICOU A ENTRADA:")
+        for c in confl[:8]:
+            linhas.append(f"• {c}")
+
+    # 4. A LIÇÃO — sem moral da história inventada
+    linhas.append("")
+    if pnl < 0 and risco_pts:
+        tick = tick_do_ativo(ativo)
+        curto = tick and (risco_pts / tick) < MIN_TICKS_STOP_PADRAO
+        if curto:
+            linhas.append(
+                f"O QUE EU VEJO: o stop tinha {risco_pts / tick:.0f} tick(s) — "
+                "abaixo do piso da casa. Stop desse tamanho é ruído de mercado, "
+                "não invalidação de estrutura: ele é acionado por oscilação "
+                "normal, mesmo com a leitura certa.")
+        else:
+            linhas.append(
+                "O QUE EU VEJO: o stop tinha tamanho adequado e foi respeitado. "
+                "Um trade com stop correto que perde não é erro de execução — é "
+                "o custo estatístico da estratégia. O que importa é a série, "
+                "não este trade.")
+    linhas.append("")
+    linhas.append("(Isto vem do diário gravado no seu computador — não depende "
+                  "de cota, de internet nem de modelo.)")
+    return "\n".join(linhas)
+
+
 def interpretar_intencao(texto):
     """Detecta comandos em LINGUAGEM NATURAL, sem depender da IA (dinheiro e
     controle do motor não passam por modelo — o modelo ALUCINA "motor ligado"
@@ -5869,6 +6252,11 @@ def interpretar_intencao(texto):
             not t.rstrip().endswith("?") and \
             interpretar_niveis_da_posicao(texto) is not None:
         return ("DEFINIR_NIVEIS", texto)
+    # POST-MORTEM: respondido do DIÁRIO, sem cota nenhuma. Vem antes da
+    # pergunta de nível porque "o que deu errado no stop" cita 'stop' e cairia
+    # em VER_GRAFICO, gastando cota para responder algo que já está no disco.
+    if pergunta_postmortem(t):
+        return "POSTMORTEM"
     if pergunta_pede_nivel(t):
         return "VER_GRAFICO"
     # "COMPRO OU VENDO?" — pergunta de LADO. Igual à pergunta de nível: não dá
@@ -5962,6 +6350,7 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
     if intencao in ("VER_GRAFICO", "PRINT_AGORA"):
         return (intencao, None)
     if intencao in ("DISPENSAR", "CANCELAR", "STATUS", "AJUDA", "MOSTRAR_PRINT",
+                    "POSTMORTEM",
                     "LIGAR_MOTOR", "DESLIGAR_MOTOR", "ENVIAR_WHATSAPP",
                     "CONECTAR_WHATSAPP", "LISTAR_LICOES", "LISTAR_CONHECIMENTO",
                     "NOTICIAS", "COTACAO", "PESQUISAR", "VER_CONFIG",
@@ -5987,6 +6376,20 @@ def montar_persona_ia():
         "raciocínio dentro da resposta. É melhor uma resposta curta e COMPLETA "
         "do que uma longa cortada no meio — nunca deixe uma conta ou uma frase "
         "pela metade.\n"
+        "\n"
+        "PERGUNTA DE NÍVEL EXIGE O NÚMERO — NUNCA O PRONOME:\n"
+        "Quando ele perguntar ONDE está alguma coisa no gráfico (VWAP, média, "
+        "suporte, resistência, order block, FVG, um topo, um fundo), a resposta "
+        "TEM DE CONTER O VALOR. É PROIBIDO responder com pronome sem o número: "
+        "'o preço está acima dela', 'ela está sendo respeitada', 'o preço testou "
+        "essa região' — nada disso responde 'onde está?'. Isso aconteceu de "
+        "verdade: ele perguntou onde estava a VWAP três vezes seguidas e recebeu "
+        "três vezes 'o preço está acima dela', sem nunca saber onde 'ela' "
+        "estava. Se você CONSEGUE ler o número na imagem, diga o número. Se NÃO "
+        "consegue ler, diga exatamente isto: 'não consigo ler esse valor nesta "
+        "captura' — e diga o que atrapalhou (indicador não está no gráfico, "
+        "legenda cortada, resolução baixa). Não saber é uma resposta legítima; "
+        "enrolar com pronome não é.\n"
         "\n"
         "REGRA NÚMERO UM — ESCREVER NÃO É FAZER:\n"
         "Você é a voz da ferramenta, não a mão dela. Quem executa ação é o "
@@ -7285,6 +7688,11 @@ class SmcQuantApp(ctk.CTk):
         return "break"
 
     def _chat_processar(self, texto, anexo=None):
+        # Guarda a fala deste turno ANTES de qualquer desvio: as ações de web
+        # precisam do texto para saber o que pesquisar, e a guarda de nível
+        # precisa dele para saber o que foi perguntado — inclusive no turno
+        # com arquivo anexado, que também pode perguntar "onde está a VWAP?".
+        self._ultimo_pedido = texto
         # Com arquivo junto, o turno é sempre conversa com o modelo (não faz
         # sentido interpretar 'acatar/status' num envio de vídeo/print).
         if anexo:
@@ -7297,11 +7705,33 @@ class SmcQuantApp(ctk.CTk):
             threading.Thread(target=self._chat_worker, args=(texto, anexo),
                              daemon=True).start()
             return
-        # Guarda a fala deste turno: as ações de web precisam do texto original
-        # para saber o que pesquisar.
-        self._ultimo_pedido = texto
-        tipo, dado = processar_turno_chat(texto, self._chat_conf)
-        self._chat_conf = None
+
+        # "SIM" RESPONDENDO A UMA PERGUNTA QUE ELA FEZ.
+        # Quando ela oferece ("Quer revisar o que deu errado?"), a resposta do
+        # trader tem um dono. Sem este bloco, o "sim" chegava solto ao modelo —
+        # que estava sem cota — e virava a desculpa genérica. Uma IA que
+        # pergunta e não entende a resposta não é uma IA, é um formulário.
+        pendente = getattr(self, "_topico_pendente", None)
+        if pendente and interpretar_intencao(texto) == "SIM":
+            self._topico_pendente = None
+            acao, ref = pendente
+            if acao == "POSTMORTEM":
+                alvo = next((p for p in posicoes_do_ciclo()
+                             if p.get("id") == ref), None)
+                self._chat_responder(montar_postmortem(alvo))
+                return
+            if acao == "VER_GRAFICO":
+                tipo, dado = "VER_GRAFICO", None
+                self._chat_conf = None
+            else:
+                tipo, dado = "EXECUTAR", acao
+                self._chat_conf = None
+        else:
+            # Qualquer outra coisa encerra o tópico: ele mudou de assunto.
+            if pendente:
+                self._topico_pendente = None
+            tipo, dado = processar_turno_chat(texto, self._chat_conf)
+            self._chat_conf = None
 
         if tipo == "PEDIR_CONFIRMACAO":
             self._chat_conf = dado
@@ -8407,6 +8837,9 @@ class SmcQuantApp(ctk.CTk):
                 "internet, discuta o plano — por texto, pelo 🎤 ou dizendo "
                 "'Olá Tiger'.")
             return
+        if acao == "POSTMORTEM":
+            self._chat_responder(montar_postmortem())
+            return
         if acao == "MOSTRAR_PRINT":
             info = getattr(self, "_ultimo_print", None)
             idade = idade_do_ultimo_print(info)
@@ -8462,6 +8895,32 @@ class SmcQuantApp(ctk.CTk):
                 f"{alvo.get('ativo')} @ {alvo.get('entry')} — e encerrei o "
                 "acompanhamento do cenário junto.")
             return
+
+    def _fatos_da_mesa(self):
+        """Os números da conta que TÊM fonte única no disco, para a conferência.
+
+        Só entra aqui o que é inequívoco. Um fato que eu não consiga ler com
+        certeza fica de fora: conferir contra um valor duvidoso seria trocar um
+        erro por outro."""
+        fatos = {}
+        try:
+            p = plano_da_conta_ativa()
+            for chave, campo in (("margem", "margem"), ("meta", "meta_alvo"),
+                                 ("drawdown", "drawdown_maximo")):
+                v = _num(p.get(campo))
+                if v is not None and v > 0:
+                    fatos[chave] = v
+        except Exception:
+            pass
+        try:
+            s = self._computar_stats_plano()
+            for chave, campo in (("hoje", "resultado_hoje"), ("ciclo", "lucro_usd")):
+                v = _num(s.get(campo))
+                if v is not None:
+                    fatos[chave] = v
+        except Exception:
+            pass
+        return fatos
 
     def _chat_status_texto(self):
         try:
@@ -8612,6 +9071,23 @@ class SmcQuantApp(ctk.CTk):
                           f"({ua.get('hora')}):\n{ua.get('analise')}")
             if ua.get("confluencias"):
                 partes.append("Confluências vistas: " + "; ".join(ua["confluencias"]))
+        # AS OUTRAS JANELAS TAMBÉM FORAM LIDAS. Com dois ou três gráficos
+        # monitorados, só a ÚLTIMA leitura chegava aqui — perguntar "e o NQ?"
+        # logo depois de o motor ler o MES devolvia a leitura do MES com o nome
+        # errado, ou um "não tenho isso". A leitura de cada ativo já estava
+        # guardada em memória; faltava entregá-la. Contexto que existe e não
+        # chega ao modelo é a forma mais barata de burrice.
+        outras = getattr(self, "_analises_por_ativo", None) or {}
+        linhas_outras = [
+            f"• {sym}: {a.get('acao')} @ {a.get('preco')} · probabilidade "
+            f"{a.get('probabilidade', 0):.0f}% · lido às {a.get('hora', '—')} "
+            f"(janela {a.get('janela', '—')})"
+            for sym, a in outras.items()
+            if sym != str(ua.get("ativo", "")).upper()]
+        if linhas_outras:
+            partes.append("\nLEITURA MAIS RECENTE DOS OUTROS ATIVOS MONITORADOS "
+                          "(cada uma da SUA janela, nunca misturadas):\n"
+                          + "\n".join(linhas_outras))
         try:
             partes.append(compilar_memoria_prompt())
         except Exception:
@@ -9041,6 +9517,21 @@ class SmcQuantApp(ctk.CTk):
         if censurou:
             self.log("🛡️ TIGER: removida uma alegação de ação não executada "
                      "da resposta do modelo.")
+        # A EVASÃO DE NÍVEL. "Onde está a VWAP?" → "o preço está acima dela".
+        # O prompt já proíbe, mas prompt é pedido, não garantia: aqui é o app
+        # que confere se o número do indicador saiu, e cola a admissão quando
+        # não saiu. Vale para qualquer provedor — Gemini, OpenAI, o que for.
+        resposta, corrigiu = corrigir_enrolacao_de_nivel(
+            getattr(self, "_ultimo_pedido", ""), resposta)
+        if corrigiu:
+            self.log("🛡️ TIGER: a resposta não trazia o nível do indicador — "
+                     "admissão anexada em vez da enrolação.")
+        # OS NÚMEROS DA CONTA DELE, CONFERIDOS CONTRA O DISCO.
+        resposta, divergencias = conferir_numeros_da_mesa(
+            resposta, self._fatos_da_mesa())
+        for chave, dito, real in divergencias:
+            self.log(f"🛡️ TIGER: '{chave}' saiu como US$ {dito:,.2f} e o "
+                     f"registrado é US$ {real:,.2f} — correção anexada.")
         registrar_msg_chat("ia", resposta)
         self._ia_falar(resposta, forcar=bool(getattr(self, "_chat_por_voz", False)))
         self.after(0, lambda: self._chat_digitar(resposta))
@@ -9857,6 +10348,12 @@ class SmcQuantApp(ctk.CTk):
                 f"{pos['ativo']}, resultado US${pos['pnl_final']:+.2f}. "
                 + ("Quer revisar o que deu errado nesse cenário?" if tipo == "STOP"
                    else "Parabéns pela execução — quer que eu analise o próximo?"))
+            # ELA PERGUNTOU — então ela tem de saber a que o "sim" responde.
+            # Sem isto, o "sim" do trader chegava sem dono e caía no modelo, que
+            # estava sem cota, e virava o despejo de "não tenho como responder".
+            # Ela fazia uma pergunta e não sabia responder o próprio convite.
+            self._topico_pendente = ("POSTMORTEM", pos.get("id")) \
+                if tipo == "STOP" else ("VER_GRAFICO", None)
 
     def _plataforma_confirma_fills(self):
         """True quando a leitura de posições da corretora está LIGADA e funcionou
@@ -10933,7 +11430,15 @@ class SmcQuantApp(ctk.CTk):
                 subs = r.json().get("subscribers", []) if r.status_code == 200 else None
             except Exception:
                 subs = None
-            self.after(0, lambda: self._render_inscritos(subs))
+            try:
+                self.after(0, lambda: self._render_inscritos(subs))
+            except RuntimeError:
+                # A janela foi fechada enquanto esta consulta estava no ar:
+                # `after` de uma thread depois do fim do loop do Tk levanta
+                # "main thread is not in main loop". Não é erro do trader nem
+                # do motor — é o app terminando. Encontrado pelo teste de
+                # fumaça da interface, no encerramento.
+                pass
         threading.Thread(target=tarefa, daemon=True).start()
 
     def _render_inscritos(self, subs):
@@ -12106,12 +12611,53 @@ class SmcQuantApp(ctk.CTk):
             return ("Não há cenário aguardando decisão agora. Assim que sair "
                     "uma sugestão nova, é só dizer 'acatar'.")
 
+    def _conferir_saude_do_whatsapp(self):
+        """Pergunta ao motor como está a ponte e AVISA quando ela está caindo.
+
+        Só avisa na virada de estado — nunca a cada minuto. Aviso repetido vira
+        ruído, e ruído é ignorado exatamente quando importa."""
+        try:
+            r = requests.get(f"{BAILEYS_URL}/status", timeout=3)
+            if r.status_code != 200:
+                return
+            dados = r.json()
+        except Exception:
+            return
+        tentativas = int(dados.get("tentativas_reconexao") or 0)
+        instavel = tentativas >= 3
+        antes = getattr(self, "_wpp_instavel", False)
+        self._wpp_instavel = instavel
+        if instavel and not antes:
+            quedas = dados.get("quedas_recentes") or []
+            codigos = [str(q.get("codigo")) for q in quedas[-5:] if q.get("codigo")]
+            detalhe = f" Últimos códigos: {', '.join(codigos)}." if codigos else ""
+            self.log(f"📵 A ponte do WhatsApp está INSTÁVEL: {tentativas} tentativas "
+                     f"de reconexão seguidas sem conseguir abrir.{detalhe} "
+                     "As análises continuam normalmente aqui na tela; o que pode "
+                     "atrasar é o relatório no celular.")
+            self._chat_feed(
+                f"📵 O WhatsApp está caindo e voltando ({tentativas} tentativas "
+                "seguidas). Não é o motor: a análise segue rodando e aparecendo "
+                "aqui. Se o código 500 se repetir, eu gero um QR novo sozinha — "
+                "aí é só escanear de novo pela aba Motor.")
+        elif antes and not instavel:
+            self.log("✅ A ponte do WhatsApp voltou a ficar estável.")
+
     def _poller_comandos_whatsapp(self):
         """Lê a fila de comandos do motor (GET /comandos) e aplica ACATAR/
         DISPENSAR ao último cenário pendente — o mesmo efeito dos botões do
         dashboard, mas acionado pela mensagem no WhatsApp."""
+        voltas = 0
         while True:
             time.sleep(4)
+            voltas += 1
+            # A PONTE INSTÁVEL PRECISA APARECER. No pregão de 12/08 o WhatsApp
+            # caiu e voltou a tarde toda (códigos 428 e 500) e isso só existia
+            # dentro do log do motor. Quem esperava relatório concluía que a
+            # ferramenta tinha parado — sem saber de quê. Uma vez por minuto o
+            # app pergunta ao motor como anda a ponte, e fala quando não vai bem.
+            if voltas % 15 == 0:
+                self._conferir_saude_do_whatsapp()
             try:
                 r = requests.get(f"{BAILEYS_URL}/comandos", timeout=3)
                 if r.status_code != 200:
@@ -12674,6 +13220,10 @@ class SmcQuantApp(ctk.CTk):
                 "capturas_congeladas": 0,
                 "preco_anterior_lido": None,
                 "ciclos_preco_igual": 0,
+                # Quantos ciclos seguidos esta janela devolveu algo que não é
+                # gráfico. Por janela, nunca global: uma janela errada não pode
+                # calar o alerta da outra, que pode estar certa.
+                "ciclos_sem_grafico": 0,
             }
 
         estados_janela = {}
@@ -12774,6 +13324,7 @@ class SmcQuantApp(ctk.CTk):
                     capturas_congeladas = est["capturas_congeladas"]
                     preco_anterior_lido = est["preco_anterior_lido"]
                     ciclos_preco_igual = est["ciclos_preco_igual"]
+                    ciclos_sem_grafico = est["ciclos_sem_grafico"]
                     ledger_text_memory = est["ledger_text_memory"]
                     try:
                         hora_atual = time.strftime('%H:%M:%S')
@@ -13165,6 +13716,42 @@ class SmcQuantApp(ctk.CTk):
                         probabilidade = sinal.get("probabilidade", 0)
                         confluencias = sinal.get("confluence_factors", []) or []
                         ativo = sinal.get("asset_symbol", "DESCONHECIDO")
+
+                        # ---- ISSO NÃO É UM GRÁFICO ----
+                        # A janela 'Claude — Claude' ficou 20 minutos sendo
+                        # analisada como se fosse mercado. Nada do que vem
+                        # daqui pode seguir adiante: nem leitura, nem posição,
+                        # nem sugestão. E o trader precisa SABER, senão vai
+                        # continuar esperando um sinal que nunca vem.
+                        e_grafico, motivo_nao_grafico = leitura_e_de_grafico(ativo, preco)
+                        if not e_grafico:
+                            ciclos_sem_grafico += 1
+                            onde = nome_janela or "tela inteira"
+                            self.log(
+                                f"🚫 '{onde}' NÃO é um gráfico: {motivo_nao_grafico}. "
+                                f"Nenhuma análise feita ({ciclos_sem_grafico}º ciclo "
+                                "seguido). Escolha a janela do gráfico na aba Motor.")
+                            if ciclos_sem_grafico == 2:
+                                self._chat_feed(
+                                    f"🚫 Estou olhando para '{onde}' e ali não há "
+                                    f"gráfico nenhum — {motivo_nao_grafico}. Não vou "
+                                    "fingir leitura de mercado em cima disso. Troque a "
+                                    "janela monitorada na aba Motor que eu volto a "
+                                    "analisar no ciclo seguinte.")
+                                enviar_relatorio_whatsapp(
+                                    f"🚫 *Janela errada — {time.strftime('%d/%m/%Y %H:%M:%S')}*\n"
+                                    f"A janela monitorada é '{onde}', e ali não há "
+                                    f"gráfico: {motivo_nao_grafico}.\n"
+                                    "Nenhuma sugestão será gerada até a janela certa "
+                                    "ser escolhida.", None, self.log)
+                                falar("Atenção. A janela monitorada não é um gráfico. "
+                                      "Análises suspensas.")
+                            continue
+                        if ciclos_sem_grafico:
+                            self.log(f"✅ '{nome_janela or 'tela inteira'}' voltou a "
+                                     f"entregar gráfico ({ativo}) — análises retomadas.")
+                            ciclos_sem_grafico = 0
+
                         # Guardado para a detecção de posições associar a leitura do campo
                         # POSIÇÃO quando o painel não mostra o ticker ao lado.
                         # SÓ da janela PRINCIPAL: é a única ligada à corretora.
@@ -13807,6 +14394,7 @@ class SmcQuantApp(ctk.CTk):
                         est["capturas_congeladas"] = capturas_congeladas
                         est["preco_anterior_lido"] = preco_anterior_lido
                         est["ciclos_preco_igual"] = ciclos_preco_igual
+                        est["ciclos_sem_grafico"] = ciclos_sem_grafico
                         est["ledger_text_memory"] = ledger_text_memory
             except Exception as e:
                 self.log(f"⚠️ Erro no ciclo de análise: {e}")

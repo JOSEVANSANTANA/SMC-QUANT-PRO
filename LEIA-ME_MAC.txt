@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.24.0 — MAC (Apple Silicon M1 / M2 / M3)
+  SMC QUANT PRO v2.25.0 — MAC (Apple Silicon M1 / M2 / M3)
   Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.
 ========================================================================
 
@@ -183,6 +183,87 @@ no meio do pregão.
 
 DEIXE A JANELA DO GRÁFICO ABERTA. Atrás de outras funciona perfeitamente
 — só não pode estar minimizada.
+
+
+========================================================================
+  O QUE MUDOU NA v2.25.0  —  TRES GUARDAS ENTRE O MODELO E VOCE
+========================================================================
+A RAIZ DE TUDO O QUE DEU ERRADO NO PREGAO DE 12/08:
+  o modelo escreve algo plausivel e o app entrega sem conferir.
+  Prompt e PEDIDO, nao garantia. Onde o SEU dinheiro esta em jogo, quem
+  confere agora e o programa — deterministico, e testado.
+
+1) O PRONOME NAO RESPONDE "ONDE"
+  14:14  voce: TIRA UM PRINT, ONDE ESTA A VWAP?
+  14:14  ela:  "O preco agora trabalha ACIMA DELA, em 7774.25"
+  14:15  voce: CONSEGUE ME FALAR ONDE ESTA A VWAP?
+  14:15  ela:  "O preco atual esta trabalhando ACIMA DELA, em 7773.50"
+  14:16  voce: MAS A PORRA DO VWAP ESTA EM 7769,78
+
+  Tres respostas, nenhuma dizendo onde estava a VWAP. O numero citado
+  era o do ATIVO — por isso pareceu resposta, e por isso enganou.
+
+  AGORA: quando voce pergunta onde esta um indicador (VWAP, media,
+  suporte, resistencia, order block, FVG, RSI, POC...), o programa
+  procura o nome dele na resposta e exige um NUMERO junto. Se nao tiver,
+  cola a admissao: "nao consigo ler esse valor nesta captura". Nunca
+  mais uma evasao vai sair com cara de resposta.
+
+2) O NUMERO DA SUA CONTA TEM DONO, E O DONO E O DISCO
+  Margem, meta, drawdown, resultado de hoje e resultado do ciclo passam
+  por conferencia contra o que esta GRAVADO antes de a resposta sair.
+  Divergiu mais de US$1? A resposta sai com a correcao anexada e o valor
+  real do registro.
+
+  Meta DIARIA e drawdown RESTANTE ficam de fora de proposito: sao outros
+  numeros, calculados a partir destes. Corrigir um contra o outro seria
+  inventar erro onde nao ha.
+
+3) ISSO NAO E UM GRAFICO
+  A janela monitorada era 'Claude — Claude  [outra area de trabalho]' e
+  o motor passou VINTE MINUTOS analisando uma conversa como se fosse
+  mercado. Queimou cota, gerou leitura de texto e nao avisou ninguem.
+
+  AGORA: grafico de futuro tem PRECO e tem TICKER DE CONTRATO. Faltando
+  qualquer um dos dois, o ciclo e recusado na hora; no segundo ciclo
+  seguido voce e avisado no chat e no WhatsApp, com o motivo.
+  A contagem e POR JANELA — uma janela errada nao cala o alerta da
+  outra, que pode estar certa.
+
+O "SIM" AGORA TEM DONO
+  11:31  ela:  "Operacao encerrada no STOP. Quer revisar o que deu
+                errado nesse cenario?"
+  11:32  voce: sim
+  11:32  ela:  "Nao tenho como responder isso com seguranca agora..."
+
+  Ela perguntou e nao entendeu a propria resposta — e o pior: a resposta
+  estava INTEIRA no disco. Agora ela guarda a pergunta que fez, entende
+  o "sim" e monta a autopsia (o que estava no plano, o que aconteceu, a
+  leitura que justificou a entrada, o que ela ve) SEM API, sem internet
+  e sem cota. Mudar de assunto encerra o topico — um "sim" de outra
+  conversa nao dispara a autopsia de uma operacao que voce ja esqueceu.
+
+O WHATSAPP PAROU DE CAIR EM CICLO
+  Codigos 428 e 500 a cada ~10 minutos, a tarde toda. Tres causas, e
+  nenhuma delas era o WhatsApp:
+    - a espera era FIXA em 5s a cada queda, para sempre;
+    - o codigo 500 e "badSession" (credencial corrompida) e estava sendo
+      tratado como "tente de novo" — reconectar com a MESMA credencial
+      nunca ia funcionar;
+    - ninguem contava as quedas, entao "caiu de novo" e "caiu quarenta
+      vezes" apareciam igual no log.
+  AGORA: a espera DOBRA (5s, 10s, 20s, 40s, teto de 60s) e so zera com a
+  conexao realmente aberta; tres codigos 500 seguidos geram um QR novo
+  automaticamente; e a instabilidade aparece PARA VOCE, no Registro e no
+  chat, em vez de morrer dentro do log do motor.
+
+CONTEXTO QUE EXISTE PRECISA CHEGAR
+  Com varios graficos monitorados, so a ULTIMA leitura ia para a IA.
+  Perguntar "e o NQ?" logo depois de ela ler o MES devolvia a leitura
+  errada. Agora vai a leitura mais recente de CADA ativo, com a janela
+  de origem escrita em cada linha — nunca misturadas.
+
+TESTES: 213 (eram 174).
 
 
 ========================================================================

@@ -27,6 +27,7 @@ def _ns_intencao():
         ["_sem_acento", "_norm_busca", "_RE_QUAL_LADO", "pergunta_qual_lado",
          "_RE_DEFINIR_NIVEL", "interpretar_niveis_da_posicao",
          "_RE_NIVEL", "_RE_NIVEL_TEORIA", "pergunta_pede_nivel",
+         "_RE_POSTMORTEM", "pergunta_postmortem",
          "_MOTOR_SUBSTANTIVOS", "_MOTOR_ARTIGO", "_MOTOR_NEGADO",
          "_MOTOR_DESLIGAR", "_MOTOR_PARA", "_MOTOR_LIGAR",
          "_PRINT_SOZINHO", "_PRINT_COM_AGORA",
