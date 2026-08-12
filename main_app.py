@@ -209,7 +209,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.23.0"
+VERSAO_ATUAL = "2.24.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -527,9 +527,13 @@ def carregar_config():
     # profunda para ninguém alterar o cache por referência.
     return copy.deepcopy(dados)
 
-def salvar_config(dados: dict):
-    atual = carregar_config()
-    atual.update(dados)
+def salvar_config(dados: dict, substituir: bool = False):
+    """`substituir=True` grava o dicionário INTEIRO, em vez de mesclar. É o
+    único jeito de REMOVER uma chave do config (apagar a chave de um provedor,
+    por exemplo) — com o merge, uma chave apagada voltaria na próxima leitura."""
+    atual = dict(dados) if substituir else carregar_config()
+    if not substituir:
+        atual.update(dados)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(atual, f, ensure_ascii=False, indent=2)
     _cache_json.pop(CONFIG_FILE, None)   # força releitura na próxima consulta
@@ -740,6 +744,181 @@ def salvar_api_key(api_key_texto: str):
     tenha vindo de outro caminho que nao o campo da interface."""
     api_key_texto = limpar_chave_colada(api_key_texto)
     salvar_config({"gemini_api_key_enc": dpapi_encrypt(api_key_texto)})
+
+
+# ====================================================================
+# SEGUNDA (E TERCEIRA) INTELIGÊNCIA — quando a Gemini cai, alguém responde
+# ====================================================================
+# O DIAGNÓSTICO, com as frases do log de 12/08:
+#
+#   10:23 ❯ satatus
+#   10:23 ✳ "Não tenho como responder isso com segurança agora: não está na
+#            minha base, não consegui confirmar na internet, e a API está fora"
+#   11:32 ❯ sim            (respondendo à pergunta QUE ELA MESMA fez)
+#   11:32 ✳ [o mesmo despejo]
+#   11:35 ❯ o que deu errado na sugestão que você havia me passado
+#   11:35 ✳ [o mesmo despejo]
+#   11:36 ❯ era para você saber responder perguntas de modo geral, você não é
+#            uma IA?
+#   11:36 ✳ [o mesmo despejo]
+#
+# Ele tem razão, e a causa é de ARQUITETURA, não de prompt: a TIGER era
+# Gemini-e-mais-nada. Estourada a cota do plano gratuito — que estoura todo
+# dia, com o motor analisando de 5 em 5 minutos —, não sobrava NINGUÉM para
+# pensar. Tudo caía no roteador local, que só cobre o que tem regra escrita.
+#
+# A correção é ter mais de um cérebro. Aqui está a camada de provedores: a
+# mesma pergunta pode ser respondida pela Gemini, pela OpenAI, pela Anthropic
+# ou por qualquer serviço compatível com a API da OpenAI (Groq, OpenRouter,
+# DeepSeek, Together, xAI). Basta o trader colar UMA chave a mais na aba
+# Motor — e a partir daí a queda de um não cala a ferramenta.
+#
+# Duas decisões de projeto que NÃO mudam:
+#   • Nada disso toca dinheiro. Dimensionamento, piso de qualidade, freio e
+#     execução continuam sendo código determinístico. Trocar de modelo não
+#     pode mudar quantos contratos entram.
+#   • A regra anti-invenção vale para todos: se ninguém responder, ela diz que
+#     não sabe. Ter cinco provedores não autoriza chutar.
+#
+# Nenhuma biblioteca nova: OpenAI e Anthropic falam HTTP/JSON, e o `requests`
+# já é dependência do programa desde a primeira versão.
+PROVEDORES_IA = {
+    "gemini": {
+        "rotulo": "Google Gemini",
+        "formato": "gemini",          # tratado pelo SDK próprio, já existente
+        "onde_pegar": "https://aistudio.google.com/apikey",
+        "modelos": [],                # descobertos na própria API
+    },
+    "openai": {
+        "rotulo": "OpenAI (ChatGPT)",
+        "formato": "openai",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "onde_pegar": "https://platform.openai.com/api-keys",
+        "modelos": ["gpt-4o-mini", "gpt-4o"],
+    },
+    "anthropic": {
+        "rotulo": "Anthropic (Claude)",
+        "formato": "anthropic",
+        "url": "https://api.anthropic.com/v1/messages",
+        "onde_pegar": "https://console.anthropic.com/settings/keys",
+        "modelos": ["claude-sonnet-4-5", "claude-haiku-4-5"],
+    },
+    "openrouter": {
+        "rotulo": "OpenRouter (vários modelos numa chave só)",
+        "formato": "openai",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "onde_pegar": "https://openrouter.ai/keys",
+        "modelos": ["openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet"],
+    },
+    "groq": {
+        "rotulo": "Groq (rápido e com camada gratuita)",
+        "formato": "openai",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "onde_pegar": "https://console.groq.com/keys",
+        "modelos": ["llama-3.3-70b-versatile"],
+    },
+}
+
+# A ordem em que os alternativos são tentados quando a Gemini não responde.
+ORDEM_PROVEDORES = ["openai", "anthropic", "openrouter", "groq"]
+
+
+def carregar_chave_provedor(pid: str) -> str:
+    """A chave de um provedor alternativo, do cofre do sistema (Chaveiro no
+    Mac, DPAPI no Windows) — o mesmo tratamento da chave da Gemini."""
+    if pid == "gemini":
+        return carregar_api_key()
+    cifrado = carregar_config().get(f"chave_{pid}_enc")
+    return dpapi_decrypt(cifrado) if cifrado else ""
+
+
+def salvar_chave_provedor(pid: str, chave: str):
+    if pid == "gemini":
+        return salvar_api_key(chave)
+    chave = limpar_chave_colada(chave)
+    if chave:
+        salvar_config({f"chave_{pid}_enc": dpapi_encrypt(chave)})
+    else:
+        # Campo apagado = remover a chave. Guardar cifra de string vazia
+        # deixaria o provedor "configurado" e ele entraria na fila para falhar.
+        cfg = carregar_config()
+        cfg.pop(f"chave_{pid}_enc", None)
+        salvar_config(cfg, substituir=True)
+
+
+def provedores_configurados():
+    """Quais alternativos TÊM chave agora. Lista vazia = só a Gemini."""
+    return [p for p in ORDEM_PROVEDORES if carregar_chave_provedor(p)]
+
+
+def _pedir_openai(url, chave, modelo, mensagens, timeout=45):
+    """Formato da OpenAI — o mesmo da Groq, OpenRouter, DeepSeek, Together,
+    xAI e de praticamente todo serviço compatível. Uma implementação serve
+    para todos."""
+    r = requests.post(
+        url,
+        headers={"Authorization": f"Bearer {chave}",
+                 "Content-Type": "application/json"},
+        json={"model": modelo, "messages": mensagens, "max_tokens": 1200},
+        timeout=timeout)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:220]}")
+    dados = r.json()
+    return (dados.get("choices") or [{}])[0].get("message", {}).get("content", "")
+
+
+def _pedir_anthropic(url, chave, modelo, mensagens, timeout=45):
+    """A Anthropic separa o `system` do resto e usa cabeçalho próprio."""
+    sistema = "\n".join(m["content"] for m in mensagens if m["role"] == "system")
+    conversa = [m for m in mensagens if m["role"] != "system"] or \
+               [{"role": "user", "content": "."}]
+    corpo = {"model": modelo, "max_tokens": 1200, "messages": conversa}
+    if sistema:
+        corpo["system"] = sistema
+    r = requests.post(
+        url,
+        headers={"x-api-key": chave, "anthropic-version": "2023-06-01",
+                 "Content-Type": "application/json"},
+        json=corpo, timeout=timeout)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:220]}")
+    partes = r.json().get("content") or []
+    return "".join(p.get("text", "") for p in partes if p.get("type") == "text")
+
+
+def responder_por_provedor_alternativo(mensagens, log=None):
+    """Tenta os provedores alternativos, em ordem, até um responder.
+
+    Devolve (texto, nome_do_provedor) ou (None, motivo). NUNCA levanta: a
+    queda de um provedor não pode derrubar o chat.
+
+    `mensagens` é a lista no formato da OpenAI ([{role, content}]) — é o
+    denominador comum; a Anthropic é adaptada dentro de `_pedir_anthropic`.
+    """
+    tentados = []
+    for pid in ORDEM_PROVEDORES:
+        chave = carregar_chave_provedor(pid)
+        if not chave:
+            continue
+        info = PROVEDORES_IA[pid]
+        for modelo in info["modelos"]:
+            try:
+                if info["formato"] == "anthropic":
+                    txt = _pedir_anthropic(info["url"], chave, modelo, mensagens)
+                else:
+                    txt = _pedir_openai(info["url"], chave, modelo, mensagens)
+                if txt and txt.strip():
+                    if log:
+                        log(f"🧠 Respondido por {info['rotulo']} ({modelo}) — "
+                            "a Gemini não estava disponível.")
+                    return txt.strip(), info["rotulo"]
+                tentados.append(f"{info['rotulo']}/{modelo}: resposta vazia")
+            except Exception as e:
+                tentados.append(f"{info['rotulo']}/{modelo}: {str(e)[:90]}")
+                continue
+    if not tentados:
+        return None, "nenhum provedor alternativo configurado"
+    return None, " · ".join(tentados[:4])
 
 # --------------------------------------------------------------------
 # MÓDULO DE APRENDIZADO (FEEDBACK LOOP) — agora com R-múltiplo
@@ -2972,7 +3151,54 @@ def licao_pede_invencao(texto):
         return True, (
             "ler gráfico é a única coisa que depende da visão da API — sem ela "
             "não existe leitura offline, existe chute")
+    if _e_fato_efemero(texto):
+        return True, (
+            "isso é um NÚMERO DE AGORA, não uma regra. Uma lição vale para "
+            "sempre: se eu gravar um preço, vou repetir esse mesmo preço "
+            "daqui a um mês, com o mercado em outro lugar — e aí eu estaria "
+            "inventando, que é exatamente o que você não quer")
     return False, ""
+
+
+# UM PREÇO NÃO É UMA REGRA.
+#
+# O caso real (12/08, 14:16). Ele escreveu, irritado:
+#     "MAS A PORRA DO VWAP ESTA EM 7769,78. ERA PARA VOCE SABER ISSO,
+#      APRENDA ISSO! APRENDA IDENTIFICAR INDICADORES NO GRAFICO"
+# e a ferramenta respondeu:
+#     "Anotado e aprendido: 'MAS A PORRA DO VWAP ESTA EM 7769,78. ERA PARA
+#      VOCE SABER ISSO'. Passa a valer em TODAS as análises daqui pra frente."
+#
+# Ela gravou um VALOR DE UM INSTANTE como verdade permanente. Um minuto depois
+# a VWAP já era outra — e aquele número ficaria na memória para sempre, sendo
+# repetido como fato em toda conversa futura. É a regra "nunca invente número"
+# funcionando ao contrário: em vez de recusar um número inventado, ela adotou
+# um número vencido.
+#
+# O que ele QUERIA ensinar estava na segunda linha: "aprenda a identificar
+# indicadores no gráfico". Isso sim é regra. O número era só o exemplo raivoso.
+_RE_FATO_EFEMERO = re.compile(
+    r"\b(vwap|pre[çc]o|cota[çc][ãa]o|stop|alvo|entrada|topo|fundo|suporte|"
+    r"resist[êe]ncia|m[íi]nima|m[áa]xima|abertura|fechamento)\b"
+    r"[^.;\n]{0,40}"
+    r"(\b(esta|est[áa]|e|é|em|foi|era|vale|marca|bateu|ficou)\b[^.;\n]{0,15})?"
+    r"\d{2,}[.,]?\d*", re.IGNORECASE)
+
+def _e_fato_efemero(texto):
+    """True quando a 'lição' é um dado de UM MOMENTO (um preço, um nível de
+    agora) em vez de uma regra que vale sempre.
+
+    A régua: cita um conceito de PREÇO e traz um NÚMERO grande junto. Regras
+    legítimas com número — 'nunca arrisque mais de 2% por operação', 'não opere
+    depois das 15h', 'exija R:R de 1:2' — falam de percentual, hora ou razão,
+    não de nível de preço, e passam sem problema."""
+    t = str(texto or "")
+    if not t.strip():
+        return False
+    # Percentual, horário e R:R são REGRAS, mesmo tendo número.
+    if re.search(r"\d+\s*%|\bas?\s*\d{1,2}\s*(h|:\d{2})|\b1\s*[:x]\s*\d", t, re.I):
+        return False
+    return bool(_RE_FATO_EFEMERO.search(t))
 
 def adicionar_licao(texto):
     """Uma LIÇÃO é conhecimento que VOCÊ dá ao robô ('aprenda: não opere contra
@@ -2989,6 +3215,75 @@ def adicionar_licao(texto):
         json.dump(licoes[-40:], f, ensure_ascii=False, indent=1)
     _cache_json.pop(LICOES_FILE, None)
     return True
+
+def remover_licao(alvo):
+    """Apaga UMA lição. `alvo` pode ser o número dela na lista (1, 2, 3...) ou
+    um trecho do texto.
+
+    POR QUE ISTO FALTAVA: em 12/08 às 14:16 ela gravou um preço como regra
+    permanente. Às 14:16 ele escreveu "REMOVA ISSO" e às 14:17 ela respondeu
+    repetindo a lição gravada. Não havia como desfazer — só apagar TUDO, o que
+    levaria junto as lições boas. Memória em que não se pode mexer não é
+    memória, é entulho.
+
+    Devolve o texto removido, ou None."""
+    licoes = carregar_licoes()
+    if not licoes:
+        return None
+    alvo = str(alvo or "").strip()
+    indice = None
+    if re.fullmatch(r"\d{1,2}", alvo):
+        n = int(alvo)
+        if 1 <= n <= len(licoes):
+            indice = n - 1
+    if indice is None and alvo:
+        chave = _norm_busca(alvo)
+        if chave:
+            # Casamento pelo TRECHO: ele nunca vai redigitar a lição inteira.
+            indice = next((i for i, l in enumerate(licoes)
+                           if chave in _norm_busca(l)), None)
+    if indice is None and not alvo:
+        indice = len(licoes) - 1        # "esquece isso" = a última gravada
+    if indice is None:
+        return None
+    removida = licoes.pop(indice)
+    with open(LICOES_FILE, "w", encoding="utf-8") as f:
+        json.dump(licoes, f, ensure_ascii=False, indent=1)
+    _cache_json.pop(LICOES_FILE, None)
+    return removida
+
+
+# "REMOVA ISSO", "ESQUECE ESSA LIÇÃO", "APAGA A 3".
+_RE_ESQUECER = re.compile(
+    r"\b(remov\w+|apag\w+|esquec\w+|delet\w+|tir\w+|desfa[czç]\w*|cancel\w+)\b"
+    r"[^.;\n]{0,30}?"
+    r"\b(isso|isto|essa|esse|aquela|aquele|li[çc][ãa]o|li[çc][õo]es|"
+    r"aprendizado|regra|mem[óo]ria|[uú]ltim\w+|\d{1,2}|que fala|que diz)\b",
+    re.IGNORECASE)
+
+def pedido_de_esquecer(texto):
+    """Devolve (True, alvo) quando ele está mandando APAGAR uma lição.
+    `alvo` é o número ou o trecho citado — string vazia significa 'a última'."""
+    t = _norm_busca(texto or "")
+    if not t or not _RE_ESQUECER.search(t):
+        return False, ""
+    # "aprenda isso" com "esquece" na mesma frase é ordem de apagar, não de
+    # gravar: quem diz as duas coisas está corrigindo o que foi gravado.
+    # "apaga a LIÇÃO 2" e também "apaga a 2" — ele não vai escrever a palavra
+    # 'lição' toda vez. Sem este segundo padrão, "apaga a 2" caía no alvo vazio
+    # e apagaria a ÚLTIMA, que é a lição errada.
+    m = re.search(r"\b(li[çc][ãa]o|regra)\s*(n[úu]mero\s*)?(\d{1,2})\b", t)
+    if m:
+        return True, m.group(3)
+    m = re.search(r"\b(remov\w+|apag\w+|esquec\w+|delet\w+|tir\w+)\b"
+                  r"[^\d\n]{0,12}(\d{1,2})\b", t)
+    if m:
+        return True, m.group(2)
+    m = re.search(r"\b(sobre|que fala de|do|da)\s+(.{3,40})$", t)
+    if m:
+        return True, m.group(2).strip()
+    return True, ""
+
 
 def apagar_licoes():
     with open(LICOES_FILE, "w", encoding="utf-8") as f:
@@ -5321,6 +5616,86 @@ def interpretar_niveis_da_posicao(texto, ativos_conhecidos=None):
             break
     return {"ativo": ativo, "stop": stop, "tp1": tp1}
 
+# --------------------------------------------------------------------
+# ERRO DE DIGITAÇÃO NÃO É PERGUNTA NOVA
+# --------------------------------------------------------------------
+# Do log de 12/08:
+#     10:22 ❯ status      → o placar da conta, certinho
+#     10:23 ❯ satatus     → o despejo de "não tenho como responder isso"
+#     10:31 ❯ tria um print → o mesmo despejo
+#     10:31 ❯ tira um print → funcionou
+#
+# Uma letra trocada e o comando some. Pior: a resposta ao erro de digitação é
+# a mesma resposta que ela dá quando não sabe nada — o trader lê aquilo e
+# conclui que a ferramenta é burra, quando ela só não reconheceu "satatus".
+#
+# A correção é comparação por DISTÂNCIA DE EDIÇÃO, com a régua apertada: só
+# corrige quando a palavra digitada está a UM erro de distância de um comando
+# conhecido E tem tamanho parecido. "satatus"→"status" (1 inserção) corrige;
+# "sim" nunca vira "status". Nenhuma correção mexe em dinheiro: o ACATAR
+# continua exigindo confirmação depois de corrigido.
+_COMANDOS_CONHECIDOS = (
+    # substantivos
+    "status", "print", "grafico", "gráfico", "motor", "whatsapp",
+    "sugestao", "sugestão", "ajuda", "tela", "captura",
+    # verbos — é neles que o dedo escorrega ("tria um print")
+    "acatar", "dispensar", "cancelar", "tira", "tire", "tirar",
+    "olha", "olhar", "mostra", "mostrar", "liga", "ligar",
+    "desliga", "desligar", "zera", "zerar", "manda", "mandar",
+    "analisa", "analisar", "captura", "capturar",
+)
+
+def _distancia_edicao(a, b, teto=2):
+    """Distância de Damerau-Levenshtein: conta inserção, remoção, troca de
+    letra E TRANSPOSIÇÃO de duas letras vizinhas.
+
+    A transposição é o que separa este código de um Levenshtein comum, e não é
+    detalhe: 'stauts' por 'status' é o erro de digitação mais frequente que
+    existe (dedo trocando a ordem), e no Levenshtein puro ele custa 2 — cairia
+    fora de um teto de 1 e o comando continuaria perdido.
+
+    Desiste cedo: devolve `teto+1` quando passa do teto, porque não interessa
+    o valor exato, só se cabe."""
+    if abs(len(a) - len(b)) > teto:
+        return teto + 1
+    anteanterior = None
+    anterior = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        atual = [i]
+        for j, cb in enumerate(b, 1):
+            custo = min(anterior[j] + 1,          # remoção
+                        atual[j - 1] + 1,          # inserção
+                        anterior[j - 1] + (ca != cb))   # troca
+            if (i > 1 and j > 1 and ca == b[j - 2] and a[i - 2] == cb):
+                custo = min(custo, anteanterior[j - 2] + 1)   # transposição
+            atual.append(custo)
+        if min(atual) > teto:
+            return teto + 1
+        anteanterior, anterior = anterior, atual
+    return anterior[-1]
+
+def corrigir_digitacao(texto):
+    """Troca palavras que estão a UM erro de um comando conhecido. Devolve
+    (texto_corrigido, houve_correcao). Palavras curtas (até 3 letras) NUNCA
+    são corrigidas: 'sim', 'nao' e 'tp' são palavras inteiras, e mexer nelas
+    trocaria a intenção do trader em vez de consertar um deslize."""
+    palavras = str(texto or "").split()
+    saida, mudou = [], False
+    for p in palavras:
+        nu = re.sub(r"[^\wáàâãéêíóôõúç]", "", p.lower())
+        if len(nu) <= 3 or nu in _COMANDOS_CONHECIDOS:
+            saida.append(p)
+            continue
+        alvo = next((c for c in _COMANDOS_CONHECIDOS
+                     if _distancia_edicao(nu, c, 1) == 1), None)
+        if alvo:
+            saida.append(alvo)
+            mudou = True
+        else:
+            saida.append(p)
+    return " ".join(saida), mudou
+
+
 def interpretar_intencao(texto):
     """Detecta comandos em LINGUAGEM NATURAL, sem depender da IA (dinheiro e
     controle do motor não passam por modelo — o modelo ALUCINA "motor ligado"
@@ -5333,6 +5708,12 @@ def interpretar_intencao(texto):
     t = (texto or "").strip().lower()
     if not t:
         return None
+    # APAGAR vem ANTES de gravar. "REMOVA ISSO, APRENDA QUE ..." tem as duas
+    # palavras na mesma frase, e quem escreve isso está CORRIGINDO o que foi
+    # gravado — não pedindo para gravar de novo. Foi o caso de 12/08 14:16.
+    esquecer, alvo = pedido_de_esquecer(texto)
+    if esquecer:
+        return ("ESQUECER", alvo)
     licao = extrair_licao(texto)
     if licao is not None:
         return ("APRENDER", licao)
@@ -5528,6 +5909,15 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
     determinísticos disparam.
     """
     intencao = interpretar_intencao(texto)
+    # NADA RECONHECIDO? Pode ser só um erro de digitação. "satatus" e "tria um
+    # print" caíam no despejo de "não tenho como responder", que é a mesma
+    # resposta de quando ela realmente não sabe — e é isso que faz a ferramenta
+    # parecer burra. Só tenta a correção quando a frase original não virou
+    # comando nenhum: assim nenhuma intenção legítima é reescrita.
+    if intencao is None:
+        corrigido, mudou = corrigir_digitacao(texto)
+        if mudou:
+            intencao = interpretar_intencao(corrigido)
     if confirmacao_pendente:
         if intencao == "SIM":
             return ("EXECUTAR", confirmacao_pendente)
@@ -5551,6 +5941,8 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
         # qualquer outra coisa derruba a confirmação e segue o fluxo normal
     if isinstance(intencao, tuple) and intencao[0] == "APRENDER":
         return ("APRENDER", intencao[1])
+    if isinstance(intencao, tuple) and intencao[0] == "ESQUECER":
+        return ("ESQUECER", intencao[1])
     # CONFIGURAR não pede confirmação de propósito: ele deu autonomia explícita
     # para a IA configurar a ferramenta. A trava é outra — ela mostra o valor
     # de ANTES e o de DEPOIS, relidos do disco, para ele conferir e desfazer.
@@ -5939,6 +6331,61 @@ class SmcQuantApp(ctk.CTk):
         api_key_salva = carregar_api_key()
         if api_key_salva:
             self.api_entry.insert(0, api_key_salva)
+
+        # ---------- SEGUNDA INTELIGÊNCIA (chaves alternativas) ----------
+        sec_alt = self._secao(
+            master, "🧠  SEGUNDA INTELIGÊNCIA — quando a Gemini fica sem cota",
+            "motor_provedores", aberta_padrao=False)
+        ctk.CTkLabel(
+            sec_alt, justify="left", text_color=COR["texto"],
+            font=ctk.CTkFont(size=11), wraplength=580,
+            text="A cota gratuita da Gemini estoura todo dia com o motor "
+                 "analisando de 5 em 5 minutos. Quando isso acontecia, a TIGER "
+                 "ficava SEM CÉREBRO — qualquer pergunta virava “não tenho como "
+                 "responder isso com segurança agora”.\n\n"
+                 "Cole aqui a chave de QUALQUER um destes. Basta um. Quando a "
+                 "Gemini cair, a mesma pergunta vai para o próximo da fila e "
+                 "você recebe uma resposta de verdade."
+        ).pack(anchor="w", padx=12, pady=(8, 6))
+        self._campos_provedor = {}
+        for pid in ORDEM_PROVEDORES:
+            info = PROVEDORES_IA[pid]
+            linha = ctk.CTkFrame(sec_alt, fg_color="transparent")
+            linha.pack(fill="x", padx=12, pady=2)
+            ctk.CTkLabel(linha, text=info["rotulo"], width=250, anchor="w",
+                         text_color=COR["texto"],
+                         font=ctk.CTkFont(size=11)).pack(side="left")
+            campo = ctk.CTkEntry(linha, width=260, show="*",
+                                 placeholder_text="cole a chave (opcional)",
+                                 fg_color=COR["input"], border_color=COR["borda"])
+            # Mesma proteção do campo da Gemini: no macOS o Cmd+V colava duas
+            # vezes e a chave dobrada era recusada com 401 — sem aparecer nada,
+            # porque o campo mostra asteriscos.
+            ligar_colar_sem_duplicar(campo)
+            campo.pack(side="left", padx=6)
+            salva = carregar_chave_provedor(pid)
+            if salva:
+                campo.insert(0, salva)
+            ctk.CTkButton(linha, text="🔑 obter", width=70,
+                          fg_color=COR["borda"], hover_color=COR["input"],
+                          command=lambda u=info["onde_pegar"]: webbrowser.open(u)
+                          ).pack(side="left", padx=2)
+            self._campos_provedor[pid] = campo
+        ctk.CTkButton(sec_alt, text="💾 Salvar chaves e testar agora", width=280,
+                      fg_color=COR["verde_esc"], hover_color=COR["verde"],
+                      command=self._salvar_e_testar_provedores
+                      ).pack(anchor="w", padx=12, pady=(8, 4))
+        ctk.CTkLabel(
+            sec_alt, justify="left", text_color=COR["dim"],
+            font=ctk.CTkFont(size=10), wraplength=580,
+            text="As chaves ficam no cofre do sistema (Chaveiro no Mac, DPAPI no "
+                 "Windows), igual à da Gemini — copiar o arquivo de configuração "
+                 "para outra máquina NÃO leva a chave junto. Nada disso toca em "
+                 "dinheiro: dimensionamento, piso de qualidade, freio e execução "
+                 "continuam sendo cálculo do programa, não do modelo. E a regra "
+                 "vale para todos os provedores: sem dado, ela diz que não sabe — "
+                 "ter cinco cérebros não autoriza chutar um número."
+        ).pack(anchor="w", padx=12, pady=(0, 10))
 
         sec_jan = self._secao(master, "🪟  JANELAS DO GRÁFICO E PLATAFORMA",
                               "motor_janelas", aberta_padrao=True)
@@ -6886,6 +7333,21 @@ class SmcQuantApp(ctk.CTk):
             return
         if tipo == "CONF_CANCELADA":
             self._chat_responder("Certo, deixei como estava — nada foi feito.")
+            return
+        if tipo == "ESQUECER":
+            removida = remover_licao(dado)
+            if removida:
+                restantes = carregar_licoes()
+                self._chat_responder(
+                    f"Apaguei da memória: “{removida[:180]}”.\n\n"
+                    + (f"Ainda tenho {len(restantes)} lição(ões) gravada(s) — "
+                       "peça 'liste o que você aprendeu' para conferir."
+                       if restantes else
+                       "Não sobrou nenhuma lição gravada."))
+            else:
+                self._chat_responder(
+                    "Não achei essa lição para apagar. Peça 'liste o que você "
+                    "aprendeu' — elas saem numeradas, e aí você diz 'apaga a 2'.")
             return
         if tipo == "CONFIGURAR":
             self._chat_configurar(dado, texto)
@@ -8279,6 +8741,63 @@ class SmcQuantApp(ctk.CTk):
         except Exception:
             pass          # sem a lista da conta, segue com a padrão
 
+    def _mensagens_para_provedor(self, pergunta):
+        """Monta a conversa no formato da OpenAI para o provedor alternativo.
+
+        Leva a MESMA persona e os MESMOS números da mesa que a Gemini recebe —
+        senão a resposta de reserva sairia genérica, sem saber de que conta,
+        de que posição e de que plano se está falando. E leva a regra da casa
+        junto: trocar de provedor não autoriza inventar número."""
+        cenario = ""
+        try:
+            c = self._cenario_da_mesa(pergunta) or {}
+            partes = []
+            if c.get("ativo_nome"):
+                partes.append(f"Ativo em análise: {c['ativo_nome']}")
+            ua = getattr(self, "_ultima_analise", None) or {}
+            if ua.get("ativo"):
+                partes.append(
+                    f"Última leitura do motor ({ua.get('hora','—')}): "
+                    f"{ua.get('acao')} {ua.get('ativo')} @ {ua.get('preco')}, "
+                    f"probabilidade {ua.get('probabilidade','—')}%")
+            for p in posicoes_do_ciclo():
+                if p.get("status") in ("ABERTA", "PENDENTE"):
+                    partes.append(
+                        f"Posição {p.get('status')}: {p.get('direcao')} "
+                        f"{p.get('ativo')} {p.get('contratos')} ctr @ "
+                        f"{p.get('entry')} · stop {p.get('stop')} · "
+                        f"alvo {p.get('tp1')}")
+            cenario = "\n".join(partes)
+        except Exception:
+            cenario = ""
+
+        sistema = (
+            "Você é a TIGER, a IA de mesa do SMC Quant Pro, falando com um "
+            "trader profissional de futuros (Micro E-mini). Responda em "
+            "português do Brasil, direto, sem enrolação, como um mentor de "
+            "mesa experiente em Smart Money Concepts.\n\n"
+            "REGRA INEGOCIÁVEL: NUNCA invente número. Preço, stop, alvo, "
+            "resultado, VWAP — se você não tem o dado, diga que não tem. "
+            "Ausência de dado não é conclusão. Um número inventado numa mesa "
+            "vira prejuízo.\n\n"
+            "Você NÃO executa nada escrevendo: quem liga o motor, tira print, "
+            "acata ordem ou envia WhatsApp é o programa, por comando. Nunca "
+            "diga que fez algo — diga qual comando faz.\n"
+            + (f"\nSITUAÇÃO ATUAL DA MESA:\n{cenario}" if cenario else ""))
+
+        mensagens = [{"role": "system", "content": sistema}]
+        for m in carregar_chat()[-10:]:
+            if not m.get("texto"):
+                continue
+            mensagens.append({
+                "role": "user" if m.get("papel") == "voce" else "assistant",
+                "content": str(m["texto"])[:1500]})
+        # A pergunta do turno pode já estar no histórico (ela é registrada
+        # antes de o worker rodar). Só acrescenta se não for a última.
+        if not mensagens[-1:] or mensagens[-1].get("content") != pergunta:
+            mensagens.append({"role": "user", "content": pergunta})
+        return mensagens
+
     def _chat_worker(self, pergunta, anexo=None):
         resposta = None
         ultimo_erro = None
@@ -8398,6 +8917,23 @@ class SmcQuantApp(ctk.CTk):
                     break
         except Exception as e:
             ultimo_erro = e
+
+        # ---- SEGUNDA INTELIGÊNCIA: a Gemini caiu, mas o pensamento não ----
+        # Este é o bloco que responde à queixa "você não é uma IA?". Antes,
+        # com a cota estourada, a TIGER só tinha o roteador local — e tudo que
+        # não tivesse regra escrita virava o mesmo parágrafo de desculpa.
+        # Agora, se houver OUTRA chave configurada (OpenAI, Anthropic,
+        # OpenRouter, Groq), a MESMA pergunta vai para lá.
+        if not resposta and not anexo:
+            try:
+                mensagens = self._mensagens_para_provedor(pergunta)
+                alt, quem = responder_por_provedor_alternativo(mensagens, self.log)
+                if alt:
+                    resposta = alt
+                    self._provedor_da_resposta = quem
+            except Exception as e:
+                self.log(f"(provedor alternativo falhou: {str(e)[:120]})")
+
         if not resposta:
             # A API caiu (cota, chave ou rede). Antes disso virar uma resposta
             # vazia, tenta o CONHECIMENTO LOCAL: se a pergunta for de
@@ -8930,6 +9466,55 @@ class SmcQuantApp(ctk.CTk):
     # ------------------------------------------------------------------
     # NOTIFICAÇÃO NO COMPUTADOR (independente do WhatsApp)
     # ------------------------------------------------------------------
+    def _salvar_e_testar_provedores(self):
+        """Grava as chaves, RELÊ DO DISCO e TESTA de verdade — uma pergunta real
+        para cada provedor configurado. Dizer 'salvo' sem testar seria repetir o
+        erro da chave dobrada: o trader só descobriria que não funciona no meio
+        do pregão."""
+        for pid, campo in getattr(self, "_campos_provedor", {}).items():
+            try:
+                salvar_chave_provedor(pid, campo.get().strip())
+            except Exception as e:
+                self.log(f"⚠️ Não consegui gravar a chave de "
+                         f"{PROVEDORES_IA[pid]['rotulo']}: {e}")
+        configurados = provedores_configurados()   # releitura do disco
+        if not configurados:
+            self.log("ℹ️ Nenhuma chave alternativa configurada. Quando a cota da "
+                     "Gemini estourar, a TIGER continua respondendo só o que dá "
+                     "para responder sem modelo (status, plano, histórico, "
+                     "cotação e notícia).")
+            return
+        self.log(f"💾 Chaves gravadas no cofre do sistema: "
+                 + ", ".join(PROVEDORES_IA[p]["rotulo"] for p in configurados))
+        self.log("🧪 Testando cada uma com uma pergunta real...")
+
+        def testar():
+            for pid in configurados:
+                info = PROVEDORES_IA[pid]
+                chave = carregar_chave_provedor(pid)
+                ok = False
+                for modelo in info["modelos"]:
+                    try:
+                        msg = [{"role": "user",
+                                "content": "Responda apenas: OK"}]
+                        if info["formato"] == "anthropic":
+                            t = _pedir_anthropic(info["url"], chave, modelo, msg, 25)
+                        else:
+                            t = _pedir_openai(info["url"], chave, modelo, msg, 25)
+                        if t and t.strip():
+                            self.log(f"   ✅ {info['rotulo']} respondeu "
+                                     f"({modelo}).")
+                            ok = True
+                            break
+                    except Exception as e:
+                        self.log(f"   ⚠️ {info['rotulo']} / {modelo}: "
+                                 f"{str(e)[:150]}")
+                if not ok:
+                    self.log(f"   ❌ {info['rotulo']} NÃO respondeu. A chave "
+                             "pode estar errada, sem crédito, ou o modelo "
+                             "indisponível para a sua conta.")
+        threading.Thread(target=testar, daemon=True).start()
+
     def _salvar_estilo_notificacao(self, rotulo=None):
         """Grava a escolha, RELÊ DO DISCO e confirma com o que ficou gravado."""
         escolha = next((k for k, v in self.ESTILOS_NOTIFICACAO.items()

@@ -30,6 +30,8 @@ def _ns_intencao():
          "_MOTOR_SUBSTANTIVOS", "_MOTOR_ARTIGO", "_MOTOR_NEGADO",
          "_MOTOR_DESLIGAR", "_MOTOR_PARA", "_MOTOR_LIGAR",
          "_PRINT_SOZINHO", "_PRINT_COM_AGORA",
+         "_RE_ESQUECER", "pedido_de_esquecer",
+         "_COMANDOS_CONHECIDOS", "_distancia_edicao", "corrigir_digitacao",
          "interpretar_intencao", "processar_turno_chat"],
         stubs={"extrair_licao": lambda t: None,
                "interpretar_configuracao": lambda t: None,

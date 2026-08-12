@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.23.0 — MAC (Apple Silicon M1 / M2 / M3)
+  SMC QUANT PRO v2.24.0 — MAC (Apple Silicon M1 / M2 / M3)
   Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.
 ========================================================================
 
@@ -183,6 +183,57 @@ no meio do pregão.
 
 DEIXE A JANELA DO GRÁFICO ABERTA. Atrás de outras funciona perfeitamente
 — só não pode estar minimizada.
+
+
+========================================================================
+  O QUE MUDOU NA v2.24.0  —  A TIGER GANHOU UM SEGUNDO CEREBRO
+========================================================================
+O PROBLEMA ERA DE ARQUITETURA, NAO DE PROMPT.
+  A TIGER era Gemini-e-mais-nada. Com a cota do plano gratuito estourada
+  — o que acontece TODO DIA com o motor analisando de 5 em 5 minutos —
+  nao sobrava ninguem para pensar, e QUALQUER pergunta virava
+  "nao tenho como responder isso com seguranca agora".
+
+  Foi o que aconteceu com 'satatus', com 'sim' (respondendo a pergunta
+  que ELA mesma fez), com 'o que deu errado na sugestao' e ate com
+  'voce nao e uma IA?'.
+
+O QUE FAZER (leva 2 minutos):
+  Aba Motor -> secao "SEGUNDA INTELIGENCIA".
+  Cole a chave de UM destes — basta um:
+      OpenAI (ChatGPT) . . . platform.openai.com/api-keys
+      Anthropic (Claude) . . console.anthropic.com/settings/keys
+      OpenRouter . . . . . . openrouter.ai/keys      (varios modelos, 1 chave)
+      Groq . . . . . . . . . console.groq.com/keys   (tem camada gratuita)
+  Clique em "Salvar chaves e testar agora". Ela TESTA cada uma na hora,
+  com uma pergunta real, e diz qual respondeu.
+
+  A partir dai, quando a Gemini cair, a MESMA pergunta vai para o
+  proximo da fila — com a mesma persona e os mesmos numeros da sua mesa.
+
+  As chaves ficam no Chaveiro do macOS, igual a da Gemini.
+
+O QUE NAO MUDA:
+  Dinheiro continua FORA do modelo. Dimensionamento, piso de qualidade,
+  freio de perda e execucao seguem sendo calculo do programa. Trocar de
+  IA nao muda quantos contratos entram.
+  E a regra anti-invencao vale para todos: sem dado, ela diz que nao
+  sabe. Ter cinco cerebros nao autoriza chutar um numero.
+
+UMA LETRA NAO DERRUBA MAIS UM COMANDO
+  'satatus', 'stauts', 'tria um print', 'liag o motor' — todos
+  entendidos agora. Palavras de ate 3 letras ('sim', 'nao') nunca sao
+  corrigidas, para nao trocar a sua intencao.
+
+UM PRECO NAO E UMA REGRA
+  As 14:16 ela gravou "A PORRA DO VWAP ESTA EM 7769,78" como licao
+  PERMANENTE — um valor de um instante que passaria a ser repetido como
+  verdade para sempre. Agora isso e RECUSADO, com explicacao. Regra de
+  verdade com numero ('nunca arrisque mais de 2%', 'nao opere depois das
+  15h', 'exija R:R 1:2') continua sendo aceita.
+
+  E DA PARA APAGAR: "remova isso", "apaga a 2", "apaga a que fala de
+  vwap". Antes nao havia como desfazer.
 
 
 ========================================================================

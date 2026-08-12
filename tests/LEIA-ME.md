@@ -55,6 +55,7 @@ vez de passar testando o vazio.
 | `test_qualidade_leitura.py` | Preço congelado por 13 ciclos com o motor sugerindo em cima; entrada a 8,6 R do preço; tema escuro não fixado (rótulos invisíveis em sistema no modo claro). |
 | `test_duplicidade.py` | A MESMA operação virando dois registros no diário e o resultado sendo contado em dobro; a notificação roubando a tela no macOS. |
 | `test_notificacao.py` | A notificação roubando a tela no macOS (resolvida com a notificação nativa, não com truque de Tk); o microfone que abre e devolve silêncio por falta de permissão. |
+| `test_inteligencia.py` | A TIGER sendo Gemini-e-mais-nada (sem cota = sem cérebro); `satatus` e `tria um print` morrendo por uma letra; um preço virando regra permanente e não havendo como apagá-la. |
 | `test_empacotamento.py` | O repositório ficou versões inteiras sabendo compilar para Mac e **não** para Windows — o `.spec` do `.exe` vivia só na máquina do trader. A simetria entre os dois sistemas virou teste. |
 
 ## Regra da casa
