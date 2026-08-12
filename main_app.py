@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.28.0"
+VERSAO_ATUAL = "2.29.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -912,6 +912,67 @@ def salvar_chave_provedor(pid: str, chave: str):
         cfg = carregar_config()
         cfg.pop(f"chave_{pid}_enc", None)
         salvar_config(cfg, substituir=True)
+
+
+# O modelo padrão da IA local. Escolhido por CABER: ~4,7 GB, roda em Mac de
+# 8 GB de RAM, fala português bem e segue instrução. Um modelo maior responde
+# melhor e não abre numa máquina modesta — e a ferramenta que não abre na
+# máquina do cliente não serve para nada.
+MODELO_LOCAL_PADRAO = "qwen2.5:7b"
+# Para máquina apertada. Metade do tamanho, resposta mais curta e mais crua.
+MODELO_LOCAL_LEVE = "qwen2.5:3b"
+
+
+def _num_gb_de_ram():
+    """RAM total em GB, ou None. Serve para escolher o modelo sem chutar."""
+    try:
+        if hasattr(os, "sysconf") and "SC_PAGE_SIZE" in os.sysconf_names:
+            return (os.sysconf("SC_PAGE_SIZE") *
+                    os.sysconf("SC_PHYS_PAGES")) / (1024 ** 3)
+    except Exception:
+        pass
+    try:
+        import ctypes as _c
+
+        class _MS(_c.Structure):
+            _fields_ = [("dwLength", _c.c_ulong), ("dwMemoryLoad", _c.c_ulong),
+                        ("ullTotalPhys", _c.c_ulonglong),
+                        ("ullAvailPhys", _c.c_ulonglong),
+                        ("ullTotalPageFile", _c.c_ulonglong),
+                        ("ullAvailPageFile", _c.c_ulonglong),
+                        ("ullTotalVirtual", _c.c_ulonglong),
+                        ("ullAvailVirtual", _c.c_ulonglong),
+                        ("ullAvailExtendedVirtual", _c.c_ulonglong)]
+        st = _MS()
+        st.dwLength = _c.sizeof(_MS)
+        _c.windll.kernel32.GlobalMemoryStatusEx(_c.byref(st))
+        return st.ullTotalPhys / (1024 ** 3)
+    except Exception:
+        return None
+
+
+_RAM_NAO_INFORMADA = object()
+
+
+def modelo_local_recomendado(ram_gb=_RAM_NAO_INFORMADA):
+    """Qual modelo cabe NESTA máquina. Devolve (modelo, motivo).
+
+    Um modelo que não cabe não é 'mais lento': ele estoura a memória e o
+    sistema começa a usar disco como RAM, o que trava a máquina inteira no
+    meio do pregão. Melhor um modelo menor de pé que um grande que derruba."""
+    # SENTINELA, não None. Sem ela não havia como dizer "não consegui medir":
+    # passar None caía na leitura da máquina e devolvia um número — ou seja, a
+    # função não sabia expressar a própria ignorância. Foi o teste que pegou.
+    ram = _num_gb_de_ram() if ram_gb is _RAM_NAO_INFORMADA else ram_gb
+    if ram is None:
+        return MODELO_LOCAL_PADRAO, ("não consegui ler a memória desta máquina; "
+                                     "indo pelo padrão")
+    if ram < 9:
+        return MODELO_LOCAL_LEVE, (f"esta máquina tem ~{ram:.0f} GB de RAM — o "
+                                   "modelo leve cabe com folga; o padrão "
+                                   "brigaria por memória com a corretora")
+    return MODELO_LOCAL_PADRAO, (f"esta máquina tem ~{ram:.0f} GB de RAM, "
+                                 "espaço de sobra para o modelo padrão")
 
 
 def ia_local_no_ar(timeout=1.5):
@@ -7649,8 +7710,40 @@ class SmcQuantApp(ctk.CTk):
                  "Gemini cair, a mesma pergunta vai para o próximo da fila e "
                  "você recebe uma resposta de verdade."
         ).pack(anchor="w", padx=12, pady=(8, 6))
+        # ---------- A IA QUE NÃO PEDE CHAVE ----------
+        # Vem ANTES dos campos de chave de propósito: é a única opção que não
+        # depende de conta em lugar nenhum nem de saldo para acabar — e foi
+        # saldo que derrubou a segunda inteligência no dia 12/08.
+        quadro_local = ctk.CTkFrame(sec_alt, fg_color=COR["card"])
+        quadro_local.pack(fill="x", padx=12, pady=(4, 10))
+        ctk.CTkLabel(quadro_local, text="🖥  IA LOCAL — roda na SUA máquina",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=COR["texto"]).pack(anchor="w", padx=10, pady=(8, 0))
+        ctk.CTkLabel(
+            quadro_local, justify="left", text_color=COR["dim"],
+            font=ctk.CTkFont(size=10), wraplength=560,
+            text="Sem chave, sem conta, sem cota e sem saldo para acabar. Um "
+                 "clique aqui e EU faço tudo: baixo o instalador certo para "
+                 "este sistema, instalo, subo o serviço, trago o modelo que "
+                 "cabe nesta máquina e TESTO com uma pergunta real.\n"
+                 "Precisa de internet só NESTA vez, e de alguns GB de disco. "
+                 "Depois disso ela funciona offline, para sempre."
+        ).pack(anchor="w", padx=10, pady=(2, 6))
+        linha_local = ctk.CTkFrame(quadro_local, fg_color="transparent")
+        linha_local.pack(anchor="w", padx=10, pady=(0, 10))
+        self.btn_instalar_ia = ctk.CTkButton(
+            linha_local, text="⬇️ Instalar a IA LOCAL (sem chave)", width=280,
+            fg_color=COR["verde_esc"], hover_color=COR["verde"],
+            command=self._instalar_ia_local)
+        self.btn_instalar_ia.pack(side="left")
+        ctk.CTkButton(linha_local, text="🔎 Verificar", width=110,
+                      fg_color=COR["borda"], hover_color=COR["input"],
+                      command=self._verificar_ia_local).pack(side="left", padx=6)
+
         self._campos_provedor = {}
         for pid in ORDEM_PROVEDORES:
+            if PROVEDORES_IA[pid].get("sem_chave"):
+                continue          # a IA local não tem campo de chave a preencher
             info = PROVEDORES_IA[pid]
             linha = ctk.CTkFrame(sec_alt, fg_color="transparent")
             linha.pack(fill="x", padx=12, pady=2)
@@ -11087,6 +11180,146 @@ class SmcQuantApp(ctk.CTk):
     # ------------------------------------------------------------------
     # NOTIFICAÇÃO NO COMPUTADOR (independente do WhatsApp)
     # ------------------------------------------------------------------
+    # ---------------- INSTALAÇÃO ASSISTIDA DA IA LOCAL ----------------
+    def _instalar_ia_local(self):
+        """Um botão: baixa, instala, sobe o serviço e traz o modelo.
+
+        POR QUE ISTO EXISTE: "baixe em ollama.com, instale, abra o Terminal e
+        rode `ollama pull qwen2.5:7b`" é um roteiro que o Josevan executa uma
+        vez. O CLIENTE dele não executa — ele erra o instalador, não abre
+        Terminal nenhum, e a conclusão vira "o programa não funciona".
+
+        Cada passo é reportado no Registro. Instalação silenciosa que falha
+        calada é pior que instrução escrita, porque ninguém sabe onde parou."""
+        if getattr(self, "_instalando_ia", False):
+            self.log("⏭️ A instalação da IA local já está em andamento.")
+            return
+        self._instalando_ia = True
+        self.btn_instalar_ia.configure(state="disabled", text="⏳ instalando…")
+        threading.Thread(target=self._instalar_ia_worker, daemon=True).start()
+
+    def _instalar_ia_worker(self):
+        import tempfile
+        try:
+            self.log("━━━ INSTALAÇÃO DA IA LOCAL ━━━")
+            # PASSO 0 — já está pronto? Reinstalar o que funciona é desperdício
+            # de 5 GB e de paciência.
+            instalados = ia_local_no_ar(timeout=3)
+            if instalados:
+                self.log(f"✅ A IA local JÁ está no ar. Modelos: "
+                         f"{', '.join(instalados)}. Nada a fazer.")
+                return
+            exe = plataforma.onde_esta("ollama")
+            # PASSO 1 — baixar e instalar, se ainda não existe.
+            if not exe:
+                url, nome = plataforma.url_do_instalador("ollama")
+                if not url:
+                    self.log(f"⛔ {nome}")
+                    return
+                destino = os.path.join(tempfile.gettempdir(), nome)
+                self.log(f"⬇️ Baixando o instalador ({nome})… "
+                         "são cerca de 1 GB, pode levar alguns minutos.")
+                ultimo = [0]
+
+                def progresso(baixado, total):
+                    pct = int(baixado * 100 / total) if total else 0
+                    if pct >= ultimo[0] + 10:
+                        ultimo[0] = pct
+                        self.log(f"   ⬇️ {pct}% ({baixado/1e6:.0f} MB"
+                                 + (f" de {total/1e6:.0f} MB)" if total else ")"))
+                ok, msg = plataforma._baixar_arquivo(url, destino, progresso)
+                if not ok:
+                    self.log(f"⛔ Não consegui baixar: {msg}\n"
+                             "   Confira a internet e tente de novo. Se estiver "
+                             "atrás de firewall corporativo, baixe manualmente "
+                             "em https://ollama.com/download")
+                    return
+                self.log("📦 Baixado. Instalando…")
+                ok, msg = plataforma.instalar_pacote("ollama", destino, self.log)
+                if not ok:
+                    self.log(f"⛔ A instalação falhou: {msg}")
+                    return
+                exe = plataforma.onde_esta("ollama")
+                self.log(f"✅ Instalado: {msg}")
+
+            # PASSO 2 — subir o serviço. Instalado não é o mesmo que rodando,
+            # e confundir os dois foi o erro do "motor no ar" na v2.19.
+            if not ia_local_no_ar(timeout=3):
+                self.log("🚀 Subindo o serviço da IA local…")
+                plataforma.subir_servico_ia_local(exe)
+                for _ in range(20):                 # até ~40 s
+                    time.sleep(2)
+                    if ia_local_no_ar(timeout=2) is not None and \
+                            plataforma.porta_responde(11434):
+                        break
+                if not plataforma.porta_responde(11434):
+                    self.log("⛔ O serviço não subiu. No Mac, abra o aplicativo "
+                             "Ollama uma vez pelo Finder (ele pede permissão na "
+                             "primeira execução) e clique aqui de novo.")
+                    return
+                self.log("✅ Serviço no ar (localhost:11434).")
+
+            # PASSO 3 — o modelo. Sem ele, o serviço sobe e não pensa.
+            modelo, motivo = modelo_local_recomendado()
+            ja = ia_local_no_ar(timeout=3) or []
+            if any(m.startswith(modelo.split(":")[0]) for m in ja):
+                self.log(f"✅ Modelo já presente: {', '.join(ja)}")
+            else:
+                self.log(f"🧠 Baixando o modelo {modelo} — {motivo}.\n"
+                         "   São alguns GB; é a parte demorada, e acontece "
+                         "UMA vez só.")
+                ok, msg = plataforma.baixar_modelo_ia_local(exe, modelo, self.log)
+                if not ok:
+                    self.log(f"⛔ Não consegui trazer o modelo: {msg}")
+                    return
+
+            # PASSO 4 — CONFERIR DE VERDADE, com uma pergunta real. Dizer
+            # "instalado" sem testar seria repetir o erro da chave dobrada.
+            self.log("🧪 Testando com uma pergunta real…")
+            mensagens = [{"role": "user", "content": "Responda apenas: OK"}]
+            try:
+                texto = _pedir_openai(PROVEDORES_IA["local"]["url"], "local",
+                                      modelo, mensagens, timeout=120)
+            except Exception as e:
+                texto = None
+                self.log(f"   (falha no teste: {str(e)[:140]})")
+            if texto and texto.strip():
+                self.log("━━━ ✅ PRONTO. A IA LOCAL RESPONDEU. ━━━\n"
+                         "   A partir de agora, quando a Gemini ficar sem cota, "
+                         "a pergunta vai para o modelo que roda AQUI — sem "
+                         "chave, sem internet e sem saldo para acabar.")
+                self._chat_feed("🧠 IA local instalada e respondendo. Não "
+                                "dependo mais de cota para conversar.")
+            else:
+                self.log("⚠️ Instalei tudo, mas o teste não voltou resposta. "
+                         "Reabra o SMC Quant Pro e clique em 'Verificar' — "
+                         "prefiro te dizer isso a cravar que está pronto.")
+        except Exception as e:
+            self.log(f"⛔ Erro na instalação da IA local: {str(e)[:200]}")
+        finally:
+            self._instalando_ia = False
+            self.after(0, lambda: self.btn_instalar_ia.configure(
+                state="normal", text="⬇️ Instalar a IA LOCAL (sem chave)"))
+
+    def _verificar_ia_local(self):
+        """Diz o estado REAL, com o que está de pé — nunca um palpite."""
+        exe = plataforma.onde_esta("ollama")
+        modelos = ia_local_no_ar(timeout=3)
+        if modelos:
+            self.log(f"✅ IA LOCAL no ar. Modelos: {', '.join(modelos)}. "
+                     "Ela entra sozinha quando a Gemini falhar.")
+        elif exe:
+            self.log(f"⚠️ O Ollama está instalado ({exe}) mas o serviço NÃO "
+                     "está respondendo em localhost:11434. Clique em "
+                     "'Instalar a IA LOCAL' que eu subo o serviço.")
+        else:
+            ram = _num_gb_de_ram()
+            modelo, motivo = modelo_local_recomendado(ram)
+            self.log("ℹ️ IA local ainda não instalada. Clicando no botão eu "
+                     f"baixo e configuro tudo — {motivo}, então o modelo "
+                     f"escolhido seria o {modelo}. Precisa de internet só "
+                     "nesta vez, e de alguns GB de disco.")
+
     def _salvar_e_testar_provedores(self):
         """Grava as chaves, RELÊ DO DISCO e TESTA de verdade — uma pergunta real
         para cada provedor configurado. Dizer 'salvo' sem testar seria repetir o

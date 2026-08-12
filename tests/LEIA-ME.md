@@ -61,6 +61,9 @@ vez de passar testando o vazio.
 
 | `test_autonomia.py` | O diagnóstico que levou três versões: **um LLM não lê pixel, ele prevê o texto mais provável** — por isso nunca diz "não sei", ele completa. Aqui a legenda vira número por OCR (que lê, e é grátis, local e offline), testada contra a legenda real do print de 12/08: `VWAP 7769.56`, as duas SMAs, e `OVERBOUGHT 70` **não** virando nível de preço. Mais a IA local (Ollama) entrando na fila sem chave — o único cérebro que não some por falta de saldo. |
 
+| `test_pregao.py` | O freio que não soltava: pregão configurado para 19:00→17:59 e `hoje = time.strftime('%d/%m/%Y')` contando pelo calendário — às 20:01, com o pregão novo rodando, o app ainda somava as 6 operações do pregão anterior. Mais "BOA TARDE" virando despejo de "a API está fora", e a base de conhecimento local de 51 verbetes. |
+| `test_instalacao_assistida.py` | "Baixe, instale, abra o Terminal e rode isto" é um roteiro que o cliente não executa. O app passa a instalar sozinho — instalador certo para a arquitetura, progresso visível, serviço conferido pela porta, modelo escolhido pela RAM, e teste com pergunta real antes de dizer pronto. |
+
 ## Regra da casa
 
 Todo defeito que chegar pelo log do trader vira um teste **antes** de virar

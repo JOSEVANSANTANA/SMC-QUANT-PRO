@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.28.0 — MAC (Apple Silicon M1 / M2 / M3)
+  SMC QUANT PRO v2.29.0 — MAC (Apple Silicon M1 / M2 / M3)
   Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.
 ========================================================================
 
@@ -183,6 +183,64 @@ no meio do pregão.
 
 DEIXE A JANELA DO GRÁFICO ABERTA. Atrás de outras funciona perfeitamente
 — só não pode estar minimizada.
+
+
+========================================================================
+  O QUE MUDOU NA v2.29.0  —  UM BOTAO INSTALA A IA LOCAL
+========================================================================
+ATE AQUI, LIGAR A IA LOCAL EXIGIA UM ROTEIRO:
+  "baixe em ollama.com, escolha o instalador certo, instale, abra o
+   Terminal, rode ollama pull qwen2.5:7b, feche e abra o programa."
+
+Voce executa isso uma vez. Seu CLIENTE nao executa. Ele erra o
+instalador, baixa o x86 num Apple Silicon, nao abre Terminal nenhum — e
+a conclusao vira "o programa nao funciona".
+
+Ja tinha acontecido com o Node: o app dizia "Node.js nao encontrado" com
+o Node instalado e funcionando no Terminal, porque aberto pelo Finder o
+PATH do macOS nao traz /opt/homebrew/bin.
+
+AGORA E UM BOTAO
+  Aba Motor -> secao "SEGUNDA INTELIGENCIA" -> quadro "IA LOCAL":
+      [ ⬇️ Instalar a IA LOCAL (sem chave) ]   [ 🔎 Verificar ]
+
+  Clicou, o app faz TUDO e conta cada passo no Registro:
+
+  1. CONFERE se ja esta pronto. Rebaixar 5 GB a toa gasta o tempo e a
+     franquia de internet do cliente.
+  2. ESCOLHE O INSTALADOR CERTO para este sistema E esta arquitetura —
+     .zip no macOS, .exe no Windows, ARM64 ou x64 conforme a maquina.
+     Baixar o x86 num Apple Silicon instala e funciona MAL, que e pior
+     que nao instalar, porque ninguem desconfia.
+  3. BAIXA MOSTRANDO PROGRESSO (10 em 10%). 1 GB baixando em silencio e
+     indistinguivel de um programa travado, e ai o trader fecha o app no
+     meio e corrompe o download.
+  4. INSTALA. No Mac o sistema pede a sua senha de administrador — e
+     isso e o instalador oficial, e normal.
+  5. SOBE O SERVICO e CONFERE A PORTA. Instalado nao e o mesmo que
+     rodando; foi essa confusao que gerou o "Motor no ar" sobre um
+     processo ja morto.
+  6. ESCOLHE O MODELO QUE CABE, lendo a RAM da sua maquina. Abaixo de
+     9 GB vai o modelo leve. Um modelo que nao cabe nao fica "mais
+     lento": ele estoura a memoria, o sistema passa a usar disco como
+     RAM, e a maquina inteira trava no meio do pregao.
+  7. BAIXA O MODELO reportando o andamento sem inundar o Registro.
+  8. TESTA com uma pergunta real antes de dizer que esta pronto. Dizer
+     "instalado" sem testar seria repetir o erro da chave dobrada, que
+     so apareceu como 401 no meio do pregao. Se o teste nao voltar,
+     ela NAO crava que esta pronto — ela te diz.
+
+O BOTAO "VERIFICAR" distingue os TRES estados que pedem acoes
+diferentes: nao instalado / instalado mas com o servico parado / no ar.
+Juntar os tres num "nao encontrado" foi o que fez o trader reinstalar um
+Node que ja estava la.
+
+NADA E INSTALADO SEM VOCE MANDAR. O botao e seu.
+
+DEPOIS DISSO: sem chave, sem conta, sem cota e sem saldo para acabar.
+Internet so nessa primeira vez.
+
+TESTES: 315 (eram 293).
 
 
 ========================================================================

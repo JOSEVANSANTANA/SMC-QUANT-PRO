@@ -1481,6 +1481,197 @@ def comando_npm():
     return shutil.which("npm") or "npm"
 
 
+# ====================================================================
+# INSTALAÇÃO ASSISTIDA — o app instala, em vez de mandar o trader instalar
+# ====================================================================
+# POR QUE ISTO EXISTE: "baixe em nodejs.org, escolha o instalador ARM64, rode,
+# feche e abra o programa" é um passo a passo que o trader executa uma vez, com
+# você por perto. O cliente dele executa sozinho, erra o instalador, baixa o
+# x86 num Apple Silicon, e a conclusão vira "o programa não funciona".
+#
+# Aqui o app faz o trabalho: descobre o instalador CERTO para esta máquina,
+# baixa, roda e CONFERE se ficou de pé. Cada passo é reportado — instalação
+# silenciosa que falha calada é pior que instrução escrita.
+#
+# UMA COISA NÃO MUDA: nada é instalado sem o trader mandar. O botão é dele.
+_ARM = (PLATAFORMA_MAQUINA := __import__("platform").machine().lower()) in (
+    "arm64", "aarch64")
+
+
+def _baixar_arquivo(url, destino, ao_progredir=None, timeout=60):
+    """Baixa mostrando progresso. Devolve (ok, mensagem).
+
+    Sem barra de progresso, um download de 1 GB parece um programa travado — e
+    o trader fecha o app no meio."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resposta:
+            total = int(resposta.headers.get("Content-Length") or 0)
+            baixado = 0
+            with open(destino, "wb") as f:
+                while True:
+                    pedaco = resposta.read(1024 * 256)
+                    if not pedaco:
+                        break
+                    f.write(pedaco)
+                    baixado += len(pedaco)
+                    if ao_progredir:
+                        ao_progredir(baixado, total)
+        if os.path.getsize(destino) < 1024:
+            return False, "o arquivo baixado veio vazio ou truncado"
+        return True, destino
+    except Exception as e:
+        return False, str(e)
+
+
+def onde_esta(programa):
+    """Caminho completo do executável, procurando ALÉM do PATH herdado.
+
+    No macOS, aberto pelo Finder, o PATH não traz /opt/homebrew/bin nem
+    /usr/local/bin — e o app dizia 'não encontrado' com o programa instalado e
+    funcionando no Terminal. Este era o defeito do Node; a IA local herda a
+    solução em vez de repetir o erro."""
+    import shutil
+    achado = shutil.which(programa)
+    if achado:
+        return achado
+    extras = (["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin",
+               os.path.expanduser("~/.ollama/bin"),
+               "/Applications/Ollama.app/Contents/Resources"]
+              if not E_WINDOWS else
+              [os.path.expandvars(r"%LOCALAPPDATA%\Programs\Ollama"),
+               os.path.expandvars(r"%ProgramFiles%\Ollama"),
+               os.path.expandvars(r"%ProgramFiles%\nodejs")])
+    nomes = [programa] + ([programa + ".exe"] if E_WINDOWS else [])
+    for pasta in extras:
+        for nome in nomes:
+            caminho = os.path.join(pasta, nome)
+            if os.path.exists(caminho):
+                return caminho
+    return None
+
+
+def url_do_instalador(qual):
+    """O instalador CERTO para ESTA máquina. Devolve (url, nome) ou (None, motivo).
+
+    Escolher o instalador é onde o cliente erra sozinho: baixar o x86 num
+    Apple Silicon instala e funciona MAL, o que é pior que não instalar."""
+    if qual == "ollama":
+        if E_MACOS:
+            return ("https://ollama.com/download/Ollama-darwin.zip",
+                    "Ollama-darwin.zip")
+        if E_WINDOWS:
+            return ("https://ollama.com/download/OllamaSetup.exe",
+                    "OllamaSetup.exe")
+        return (None, "Linux: use  curl -fsSL https://ollama.com/install.sh | sh")
+    if qual == "node":
+        # A versão LTS muda; este endereço redireciona sempre para a atual.
+        if E_MACOS:
+            arq = "node-lts.pkg"
+            return (f"https://nodejs.org/dist/latest-v22.x/node-v22.14.0-{'arm64' if _ARM else 'x64'}.pkg",
+                    arq)
+        if E_WINDOWS:
+            return ("https://nodejs.org/dist/latest-v22.x/node-v22.14.0-x64.msi",
+                    "node-lts.msi")
+        return (None, "Linux: instale o Node pelo gerenciador da sua distribuição")
+    return (None, f"não sei instalar '{qual}'")
+
+
+def instalar_pacote(qual, arquivo, log=print):
+    """Roda o instalador baixado. Devolve (ok, mensagem).
+
+    NÃO instala em silêncio absoluto: no macOS o .pkg pede a senha de
+    administrador, e é isso que o trader espera ver. Esconder o pedido de
+    senha para 'ficar bonito' faria a instalação falhar sem explicação."""
+    if E_MACOS:
+        if arquivo.endswith(".zip"):
+            # O Ollama do Mac vem como .app dentro de um zip: descompacta em
+            # /Applications, que é onde o macOS espera encontrar aplicativo.
+            ok, saida = _rodar(["ditto", "-x", "-k", arquivo, "/Applications"],
+                               timeout=300)
+            if not ok:
+                return False, f"não consegui descompactar: {saida[:200]}"
+            return True, "/Applications/Ollama.app"
+        if arquivo.endswith(".pkg"):
+            log("🔐 O macOS vai pedir a sua senha de administrador — é o "
+                "instalador oficial, e é normal.")
+            ok, saida = _rodar(
+                ["osascript", "-e",
+                 f'do shell script "installer -pkg {arquivo} -target /" '
+                 'with administrator privileges'], timeout=600)
+            return ok, (saida[:200] or "instalado")
+    if E_WINDOWS:
+        if arquivo.endswith(".exe"):
+            ok, saida = _rodar([arquivo, "/SILENT"], timeout=900)
+            return ok, (saida[:200] or "instalado")
+        if arquivo.endswith(".msi"):
+            ok, saida = _rodar(["msiexec", "/i", arquivo, "/qb"], timeout=900)
+            return ok, (saida[:200] or "instalado")
+    return False, f"não sei instalar o arquivo '{os.path.basename(arquivo)}'"
+
+
+def porta_responde(porta, host="127.0.0.1", timeout=1.0):
+    """Alguém está ouvindo nesta porta? É o teste mais barato de 'está no ar'."""
+    import socket
+    try:
+        with socket.create_connection((host, porta), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def subir_servico_ia_local(exe=None):
+    """Sobe o servidor da IA local em segundo plano. Devolve (ok, mensagem).
+
+    INSTALADO NÃO É O MESMO QUE RODANDO — foi essa confusão que produziu o
+    'Motor no ar' sobre um processo já morto na v2.19. Aqui a função só
+    DISPARA; quem confere se subiu é quem chamou, olhando a porta."""
+    exe = exe or onde_esta("ollama")
+    if not exe:
+        return False, "não achei o executável da IA local"
+    try:
+        if E_MACOS and exe.endswith(".app"):
+            return _rodar(["open", "-a", exe], timeout=20)
+        subprocess.Popen([exe, "serve"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         **_sem_console())
+        return True, "serviço disparado"
+    except Exception as e:
+        return False, str(e)
+
+
+def baixar_modelo_ia_local(exe, modelo, log=print, timeout=3600):
+    """Traz o modelo para a máquina, reportando o progresso linha a linha.
+
+    Um download de vários GB sem nenhum sinal de vida é indistinguível de um
+    programa travado — e o trader fecha o app no meio, corrompendo o download.
+    """
+    exe = exe or onde_esta("ollama")
+    if not exe:
+        return False, "não achei o executável da IA local"
+    if E_MACOS and exe.endswith(".app"):
+        interno = os.path.join(exe, "Contents", "Resources", "ollama")
+        exe = interno if os.path.exists(interno) else "ollama"
+    try:
+        p = subprocess.Popen([exe, "pull", modelo],
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, bufsize=1, **_sem_console())
+        ultimo = ""
+        for linha in p.stdout:
+            linha = linha.strip()
+            # O `pull` reescreve a mesma linha de porcentagem centenas de
+            # vezes. Só o que MUDA vira log — senão o Registro fica ilegível.
+            marca = linha[:24]
+            if linha and marca != ultimo:
+                ultimo = marca
+                log(f"   {linha[:110]}")
+        p.wait(timeout=timeout)
+        return (p.returncode == 0), ("modelo pronto" if p.returncode == 0
+                                     else f"o download terminou com erro {p.returncode}")
+    except Exception as e:
+        return False, str(e)
+
+
 def como_instalar_node():
     """Instrução certa para ESTE sistema — nada de mandar o usuário do Mac
     baixar um .exe."""
