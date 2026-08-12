@@ -29,7 +29,7 @@ def _ns():
     return carregar(
         ["PROVEDORES_IA", "ORDEM_PROVEDORES", "_pedir_openai", "_pedir_anthropic",
          "responder_por_provedor_alternativo", "carregar_chave_provedor",
-         "provedores_configurados"],
+         "ia_local_no_ar", "provedores_configurados"],
         stubs={"carregar_config": lambda: {},
                "carregar_api_key": lambda: "",
                "dpapi_decrypt": lambda x: x,

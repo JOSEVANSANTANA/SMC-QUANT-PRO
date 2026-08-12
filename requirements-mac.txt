@@ -56,6 +56,16 @@ pyobjc-framework-Quartz>=10.0
 pyobjc-framework-Cocoa>=10.0
 
 # ------------------------------------------------------------------
+# LEITURA EXATA DOS INDICADORES  (OCR local — sem chave, sem internet)
+# ------------------------------------------------------------------
+# É o que faz "onde está a VWAP?" ser respondido LENDO o texto da legenda em
+# vez de perguntar a um modelo. Um LLM não lê pixel, ele prevê o texto mais
+# provável — foi assim que 7769.56 virou 7752.34. OCR lê.
+# O motor é o Vision, que já vem no macOS: isto aqui é só a ponte do Python
+# para ele. Não baixa modelo, não usa rede, não tem cota.
+pyobjc-framework-Vision>=10.0
+
+# ------------------------------------------------------------------
 # EMPACOTAR EM .app (só para gerar o aplicativo; não é preciso para rodar)
 # ------------------------------------------------------------------
 # pyinstaller>=6.3.0

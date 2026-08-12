@@ -1149,6 +1149,141 @@ def capturar_tela_inteira():
 
 
 # ====================================================================
+# 3b. LER O TEXTO QUE ESTÁ NA IMAGEM  (OCR — 100% local, sem chave, sem rede)
+# ====================================================================
+# POR QUE ISTO EXISTE, E POR QUE É A CORREÇÃO CERTA:
+#
+# A legenda de dados de um gráfico é TEXTO IMPRESSO — "VWAP 7769.56", em pixels
+# nítidos, fonte digital, alto contraste. Ler isso é trabalho de OCR, e OCR
+# resolve com precisão perto de 100%. Foi por não existir esta camada que o
+# trabalho caiu num modelo de linguagem, que leu 7752.34 onde estava escrito
+# 7769.56 — porque um LLM não LÊ o pixel, ele PREVÊ o texto mais provável. Ele
+# nunca vai dizer "não sei"; ele vai completar. Era a ferramenta errada.
+#
+# E OCR não precisa de chave, de internet nem de cota. Os dois sistemas já
+# trazem um motor de OCR embutido, de graça:
+#   • macOS  → framework Vision (VNRecognizeTextRequest), desde o Catalina.
+#   • Windows→ Windows.Media.Ocr, desde o Windows 10.
+# O Tesseract entra só como terceira opção, para quem já o tiver instalado.
+VISION_DISPONIVEL = False
+try:                                    # macOS: Vision + Quartz de imagem
+    if E_MACOS:
+        import Vision as _Vision
+        import Quartz as _QuartzImg
+        VISION_DISPONIVEL = True
+except Exception:
+    VISION_DISPONIVEL = False
+
+
+def motor_de_ocr():
+    """Qual motor de OCR está de pé nesta máquina, para o app poder DIZER.
+
+    Devolve (nome, disponivel). Um recurso que falha calado é pior que um
+    recurso ausente: o trader precisa saber se a leitura exata está ligada."""
+    if E_MACOS and VISION_DISPONIVEL:
+        return ("Vision (nativo do macOS)", True)
+    if E_WINDOWS:
+        try:
+            import winrt.windows.media.ocr  # noqa: F401
+            return ("Windows.Media.Ocr (nativo do Windows)", True)
+        except Exception:
+            pass
+    try:
+        import pytesseract                  # noqa: F401
+        import shutil
+        if shutil.which("tesseract"):
+            return ("Tesseract", True)
+    except Exception:
+        pass
+    faltando = ("pyobjc-framework-Vision" if E_MACOS else
+                "winrt-Windows.Media.Ocr" if E_WINDOWS else "pytesseract")
+    return (f"nenhum (instale {faltando})", False)
+
+
+def _ocr_macos(caminho):
+    """Vision do macOS. Preciso e rápido — e não sai da máquina."""
+    url = _QuartzImg.CFURLCreateFromFileSystemRepresentation(
+        None, caminho.encode("utf-8"), len(caminho.encode("utf-8")), False)
+    fonte = _QuartzImg.CGImageSourceCreateWithURL(url, None)
+    if not fonte:
+        return ""
+    imagem = _QuartzImg.CGImageSourceCreateImageAtIndex(fonte, 0, None)
+    if not imagem:
+        return ""
+    linhas = []
+
+    def recolher(requisicao, erro):
+        if erro:
+            return
+        for obs in (requisicao.results() or []):
+            candidatos = obs.topCandidates_(1)
+            if candidatos and len(candidatos):
+                linhas.append(str(candidatos[0].string()))
+
+    pedido = _Vision.VNRecognizeTextRequest.alloc().initWithCompletionHandler_(
+        recolher)
+    # ACCURATE, não FAST: o que se lê aqui vira decisão de dinheiro, e a
+    # diferença de tempo entre os dois é de milissegundos numa legenda.
+    try:
+        pedido.setRecognitionLevel_(_Vision.VNRequestTextRecognitionLevelAccurate)
+        pedido.setUsesLanguageCorrection_(False)   # 7769.56 não é palavra
+    except Exception:
+        pass
+    manipulador = _Vision.VNImageRequestHandler.alloc()\
+        .initWithCGImage_options_(imagem, None)
+    manipulador.performRequests_error_([pedido], None)
+    return "\n".join(linhas)
+
+
+def _ocr_windows(caminho):
+    """Windows.Media.Ocr — o motor que já vem no sistema."""
+    import asyncio
+    from winrt.windows.media.ocr import OcrEngine
+    from winrt.windows.graphics.imaging import BitmapDecoder
+    from winrt.windows.storage import StorageFile, FileAccessMode
+
+    async def ler():
+        arquivo = await StorageFile.get_file_from_path_async(caminho)
+        fluxo = await arquivo.open_async(FileAccessMode.READ)
+        decodificador = await BitmapDecoder.create_async(fluxo)
+        bitmap = await decodificador.get_software_bitmap_async()
+        motor = OcrEngine.try_create_from_user_profile_languages()
+        if motor is None:
+            return ""
+        resultado = await motor.recognize_async(bitmap)
+        return "\n".join(l.text for l in resultado.lines)
+
+    return asyncio.run(ler())
+
+
+def ler_texto_da_imagem(caminho):
+    """TODO o texto visível na imagem, uma linha por linha reconhecida.
+
+    Devolve "" quando não há motor de OCR ou a leitura falha — e "" aqui
+    significa 'não li', nunca 'não tem nada escrito'. Quem chama precisa
+    tratar os dois casos como coisas diferentes, que é a regra anti-invenção
+    aplicada a este nível."""
+    if not caminho or not os.path.exists(caminho):
+        return ""
+    try:
+        if E_MACOS and VISION_DISPONIVEL:
+            return _ocr_macos(caminho)
+    except Exception:
+        pass
+    try:
+        if E_WINDOWS:
+            return _ocr_windows(caminho)
+    except Exception:
+        pass
+    try:
+        import pytesseract
+        from PIL import Image as _Img
+        return pytesseract.image_to_string(_Img.open(caminho))
+    except Exception:
+        return ""
+
+
+# ====================================================================
 # 4. SOM DO ALERTA
 # ====================================================================
 _SONS_MACOS = ("/System/Library/Sounds/Ping.aiff",

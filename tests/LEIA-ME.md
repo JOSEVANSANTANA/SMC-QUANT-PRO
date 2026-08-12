@@ -59,6 +59,8 @@ vez de passar testando o vazio.
 | `test_empacotamento.py` | O repositório ficou versões inteiras sabendo compilar para Mac e **não** para Windows — o `.spec` do `.exe` vivia só na máquina do trader. A simetria entre os dois sistemas virou teste. |
 | `test_honestidade.py` | "Onde está a VWAP?" respondida três vezes com "o preço está acima dela" e o número do ATIVO; um número da conta dito errado com confiança; a janela `'Claude — Claude'` analisada por 20 minutos como se fosse gráfico; o "sim" que respondia à pergunta dela mesma e caía no despejo genérico; e o WhatsApp reconectando de 5 em 5 segundos, para sempre, com o código 500. **E a rodada seguinte:** obrigada a dizer o número, ela passou a inventá-lo (`VWAP 7752.34` com a legenda em `7769.56`), afirmou posição vendida com a plataforma em `POSIÇÃO 0`, e o "sem crédito" que a OpenAI escreveu virou um palpite de três causas. |
 
+| `test_autonomia.py` | O diagnóstico que levou três versões: **um LLM não lê pixel, ele prevê o texto mais provável** — por isso nunca diz "não sei", ele completa. Aqui a legenda vira número por OCR (que lê, e é grátis, local e offline), testada contra a legenda real do print de 12/08: `VWAP 7769.56`, as duas SMAs, e `OVERBOUGHT 70` **não** virando nível de preço. Mais a IA local (Ollama) entrando na fila sem chave — o único cérebro que não some por falta de saldo. |
+
 ## Regra da casa
 
 Todo defeito que chegar pelo log do trader vira um teste **antes** de virar

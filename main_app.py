@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.26.0"
+VERSAO_ATUAL = "2.27.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -827,10 +827,30 @@ PROVEDORES_IA = {
         "onde_pegar": "https://console.groq.com/keys",
         "modelos": ["llama-3.3-70b-versatile"],
     },
+    # A IA QUE RODA NA SUA MÁQUINA. Sem chave, sem internet, sem cota e sem
+    # conta em lugar nenhum: o Ollama sobe um modelo local e expõe o MESMO
+    # protocolo da OpenAI em localhost:11434 — por isso ele entra aqui sem
+    # uma linha de código novo de rede.
+    #
+    # É o único provedor que não pode ficar sem responder por motivo de
+    # dinheiro, que foi o que derrubou a segunda inteligência no dia 12/08
+    # ("You have no credits remaining"). Em troca, o modelo é menor: serve
+    # para CONVERSA e metodologia, não para ler número de gráfico — e não
+    # precisa servir, porque quem lê número agora é o OCR.
+    "local": {
+        "rotulo": "IA LOCAL (Ollama — sem chave, sem internet)",
+        "formato": "openai",
+        "url": "http://localhost:11434/v1/chat/completions",
+        "onde_pegar": "https://ollama.com/download",
+        "sem_chave": True,
+        "modelos": ["qwen2.5:7b", "llama3.1:8b", "gemma2:9b", "mistral:7b"],
+    },
 }
 
 # A ordem em que os alternativos são tentados quando a Gemini não responde.
-ORDEM_PROVEDORES = ["openai", "anthropic", "openrouter", "groq"]
+# A LOCAL vem por último de propósito: quando há um modelo grande disponível,
+# ele responde melhor. Mas ela é a que NUNCA falta — é o chão da escada.
+ORDEM_PROVEDORES = ["openai", "anthropic", "openrouter", "groq", "local"]
 
 
 def diagnostico_de_provedor(erro, rotulo=""):
@@ -894,9 +914,34 @@ def salvar_chave_provedor(pid: str, chave: str):
         salvar_config(cfg, substituir=True)
 
 
+def ia_local_no_ar(timeout=1.5):
+    """O Ollama está rodando nesta máquina AGORA? Pergunta a ele, não adivinha.
+
+    Sem esta checagem, a IA local entraria na fila e daria timeout em toda
+    queda da Gemini — atrasando a resposta em vez de salvá-la."""
+    try:
+        r = requests.get("http://localhost:11434/api/tags", timeout=timeout)
+        if r.status_code != 200:
+            return []
+        return [m.get("name", "") for m in (r.json().get("models") or [])]
+    except Exception:
+        return []
+
+
 def provedores_configurados():
-    """Quais alternativos TÊM chave agora. Lista vazia = só a Gemini."""
-    return [p for p in ORDEM_PROVEDORES if carregar_chave_provedor(p)]
+    """Quais alternativos estão USÁVEIS agora. Lista vazia = só a Gemini.
+
+    A IA local não tem chave para conferir — o que vale para ela é se o
+    Ollama está de pé. Colocá-la na lista sem checar faria a fila esperar um
+    servidor que não existe justamente quando a Gemini caiu."""
+    prontos = []
+    for p in ORDEM_PROVEDORES:
+        if PROVEDORES_IA.get(p, {}).get("sem_chave"):
+            if ia_local_no_ar():
+                prontos.append(p)
+        elif carregar_chave_provedor(p):
+            prontos.append(p)
+    return prontos
 
 
 def _pedir_openai(url, chave, modelo, mensagens, timeout=45):
@@ -945,11 +990,24 @@ def responder_por_provedor_alternativo(mensagens, log=None):
     """
     tentados = []
     for pid in ORDEM_PROVEDORES:
-        chave = carregar_chave_provedor(pid)
-        if not chave:
-            continue
         info = PROVEDORES_IA[pid]
-        for modelo in info["modelos"]:
+        # A IA LOCAL NÃO TEM CHAVE — o que ela tem é o Ollama de pé. E os
+        # modelos dela são os que estão BAIXADOS nesta máquina, não uma lista
+        # fixa: tentar 'qwen2.5:7b' num computador que só tem 'llama3.1:8b'
+        # falharia quatro vezes antes de acertar por acaso.
+        if info.get("sem_chave"):
+            instalados = ia_local_no_ar()
+            if not instalados:
+                continue
+            chave = "local"          # o Ollama ignora o Bearer; precisa existir
+            modelos = ([m for m in info["modelos"] if m in instalados]
+                       or instalados[:2])
+        else:
+            chave = carregar_chave_provedor(pid)
+            if not chave:
+                continue
+            modelos = info["modelos"]
+        for modelo in modelos:
             try:
                 if info["formato"] == "anthropic":
                     txt = _pedir_anthropic(info["url"], chave, modelo, mensagens)
@@ -5893,6 +5951,145 @@ def resposta_enrola_o_nivel(pergunta, resposta):
     return True                  # só pronome, ou número solto longe do nome
 
 
+# --------------------------------------------------------------------
+# LER O NÚMERO EM VEZ DE PERGUNTAR O NÚMERO
+# --------------------------------------------------------------------
+# A raiz do caso da VWAP não era o prompt, nem a falta de guarda: era estar
+# usando a ferramenta ERRADA. "VWAP 7769.56" na legenda é TEXTO IMPRESSO. Um
+# LLM não lê pixel, ele PREVÊ o texto mais provável — e por isso nunca diz
+# "não sei", ele completa. Foi assim que 7769.56 virou 7752.34.
+#
+# OCR lê. E OCR não precisa de chave, de internet nem de cota: os dois
+# sistemas trazem um motor embutido (Vision no macOS, Windows.Media.Ocr no
+# Windows). Aqui a leitura vira número, deterministicamente.
+#
+# Os rótulos são os que aparecem de fato na legenda das plataformas que ele
+# usa. Cada um mapeia para o nome que o trader fala.
+_ROTULOS_LEGENDA = {
+    "VWAP": r"VWAP",
+    "SMA": r"SMA|MA|M[ÉE]DIA M[ÓO]VEL",
+    "EMA": r"EMA",
+    "RSI": r"RSI",
+    "PSAR": r"PSAR|SAR PARAB[ÓO]LICO",
+    "ABERTURA": r"OPEN|ABERTURA",
+    "MAXIMA": r"HIGH|M[ÁA]XIMA",
+    "MINIMA": r"LOW|M[ÍI]NIMA",
+    "FECHAMENTO": r"CLOSE|FECHAMENTO",
+    "VOLUME": r"VOL(?:UME)?",
+    "BOLLINGER": r"BOLL(?:INGER)?|BB",
+    "POC": r"\bPOC\b|VPOC",
+}
+# Rótulos que NÃO são leitura de mercado: são a configuração do indicador,
+# impressa junto dele. Ler "OVERBOUGHT 70" como se fosse um nível de preço é
+# o tipo de erro que passaria despercebido — 70 é um parâmetro, não um preço.
+_ROTULOS_IGNORADOS = r"^(MIDDLE|OVERBOU\w*|OVERSOL\w*|UPPER|LOWER|LENGTH|PER[ÍI]ODO)$"
+
+
+def _numero_da_legenda(bruto):
+    """'7.769,56' e '7,769.56' e '7769.56' viram 7769.56. None se não for número."""
+    b = str(bruto or "").strip().replace(" ", "")
+    if not re.fullmatch(r"-?[\d.,]+", b) or not re.search(r"\d", b):
+        return None
+    # O separador DECIMAL é o ÚLTIMO ponto ou vírgula, quando sobram 1 ou 2
+    # dígitos depois dele. Fatiar posição fixa (b[:-3]) presumia SEMPRE dois
+    # decimais e quebrava em '-12,5' — e o tick do M2K é 0,1. Foi o teste que
+    # pegou; num pregão isso viraria um número errado com cara de certo.
+    m = re.search(r"[.,](\d{1,2})$", b)
+    if m:
+        b = b[:m.start()].replace(".", "").replace(",", "") + "." + m.group(1)
+    else:
+        b = b.replace(".", "").replace(",", "")
+    try:
+        return float(b)
+    except ValueError:
+        return None
+
+
+def ler_indicadores_da_legenda(texto_ocr):
+    """Transforma o texto lido pelo OCR nos VALORES dos indicadores.
+
+    Função PURA — é o coração desta camada e por isso é a parte testada.
+    Devolve {'VWAP': 7769.56, 'SMA': [7767.58, 7766.04], ...}. Rótulo repetido
+    (duas SMAs no mesmo gráfico) vira LISTA: dizer que a média é 7767.58
+    quando há duas seria escolher uma às escondidas.
+
+    Dicionário vazio significa 'não li nada' — nunca 'não há nada'."""
+    achados = {}
+    for linha in str(texto_ocr or "").splitlines():
+        linha = linha.strip()
+        if not linha:
+            continue
+        # A legenda vem como "RÓTULO valor" na mesma linha. Aceita ':' e '=' no
+        # meio, que algumas plataformas usam.
+        m = re.match(r"^([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ \-\.]{0,24}?)\s*[:=]?\s+"
+                     r"(-?[\d.,]+)\s*$", linha)
+        if not m:
+            continue
+        rotulo, bruto = m.group(1).strip().upper(), m.group(2)
+        if re.match(_ROTULOS_IGNORADOS, rotulo):
+            continue
+        valor = _numero_da_legenda(bruto)
+        if valor is None:
+            continue
+        for chave, padrao in _ROTULOS_LEGENDA.items():
+            if re.fullmatch(padrao, rotulo, re.I):
+                if chave in achados:
+                    if not isinstance(achados[chave], list):
+                        achados[chave] = [achados[chave]]
+                    achados[chave].append(valor)
+                else:
+                    achados[chave] = valor
+                break
+    return achados
+
+
+# Como o trader chama cada coisa → a chave da legenda.
+_APELIDOS_INDICADOR = {
+    "VWAP": "VWAP",
+    "MEDIA MOVEL": "SMA", "MEDIA": "SMA", "MM": "SMA", "SMA": "SMA",
+    "EMA": "EMA", "RSI": "RSI", "PSAR": "PSAR", "SAR": "PSAR",
+    "VOLUME": "VOLUME", "POC": "POC", "BOLLINGER": "BOLLINGER",
+    "ABERTURA": "ABERTURA", "MAXIMA": "MAXIMA", "MINIMA": "MINIMA",
+    "FECHAMENTO": "FECHAMENTO",
+}
+
+
+def chave_do_indicador(nome):
+    """'a média móvel' / 'VWAP' / 'o RSI' → a chave da legenda, ou None."""
+    n = _sem_acento(str(nome or "")).upper().strip()
+    n = re.sub(r"\b(DE|DA|DO|A|O)\b", " ", n)
+    n = re.sub(r"\d+", " ", n)                 # "média móvel de 50" → "média móvel"
+    n = re.sub(r"\s+", " ", n).strip()
+    for apelido, chave in _APELIDOS_INDICADOR.items():
+        if _sem_acento(apelido).upper() == n:
+            return chave
+    for apelido, chave in _APELIDOS_INDICADOR.items():
+        if _sem_acento(apelido).upper() in n:
+            return chave
+    return None
+
+
+def resposta_do_indicador_lido(nome, valores):
+    """A resposta PRONTA, montada só com o que o OCR leu — sem modelo nenhum.
+
+    Devolve None quando não deu para ler: aí o caminho normal segue. Ausência
+    de leitura nunca vira conclusão."""
+    chave = chave_do_indicador(nome)
+    if not chave or not valores or chave not in valores:
+        return None
+    v = valores[chave]
+    if isinstance(v, list):
+        lista = ", ".join(f"{x:g}" for x in v)
+        return (f"Li direto da legenda do gráfico: há {len(v)} {nome} na tela, "
+                f"em {lista}. Não vou escolher uma por você — se quiser saber "
+                "de qual delas estou falando, me diga o período.")
+    return (f"Li direto da legenda do gráfico: **{nome} = {v:g}**.\n\n"
+            "Este número não passou por modelo nenhum — foi lido do texto da "
+            "imagem aqui na sua máquina, sem API e sem internet. Se estiver "
+            "diferente do que você vê na tela, a captura está velha: peça "
+            "'tira um print' que eu leio de novo.")
+
+
 def indicador_da_pergunta(texto):
     """QUAL indicador ele perguntou. Devolve o trecho como ele escreveu (para
     a segunda leitura pedir exatamente aquilo), ou None."""
@@ -8085,6 +8282,15 @@ class SmcQuantApp(ctk.CTk):
                 if info:
                     self._ultimo_print = info
             caminho = (info or {}).get("caminho")
+            # ---- O OCR RESPONDE ANTES DO MODELO ----
+            # Pergunta de NÍVEL não é pergunta de interpretação: é leitura de
+            # texto impresso. Aqui ela é respondida sem chave, sem internet e
+            # sem cota — e sem o risco que fez 7769.56 virar 7752.34.
+            if caminho and pergunta_onde_esta_indicador(texto):
+                lido = self._ler_nivel_por_ocr(caminho, texto)
+                if lido:
+                    self._chat_responder(lido)
+                    return
             if caminho and os.path.exists(caminho):
                 if self._chat_ocupada:
                     self._chat_escrever("sistema", "(aguarde — ainda estou "
@@ -9702,6 +9908,37 @@ class SmcQuantApp(ctk.CTk):
                     "configurado o risco do plano da conta 1'), que eu leio e "
                     "gravo aqui mesmo, sem depender da API.")
         self._chat_entregar_resposta(resposta)
+
+    def _ler_nivel_por_ocr(self, caminho, pergunta):
+        """A resposta da pergunta de nível, lida do PIXEL — ou None.
+
+        None aqui NUNCA significa 'não tem'. Significa 'não li', e o caminho
+        normal (modelo + segunda leitura + guardas) continua valendo. Esta
+        camada só ADICIONA certeza; ela não pode tirar resposta de ninguém."""
+        try:
+            if not os.path.exists(caminho):
+                return None
+            nome = indicador_da_pergunta(pergunta)
+            if not nome:
+                return None
+            texto = plataforma.ler_texto_da_imagem(caminho)
+            if not texto.strip():
+                motor, ok = plataforma.motor_de_ocr()
+                if not ok and not getattr(self, "_avisou_sem_ocr", False):
+                    self._avisou_sem_ocr = True
+                    self.log(f"ℹ️ Leitura exata de indicadores DESLIGADA: {motor}. "
+                             "Sem ela, o número do indicador depende do modelo "
+                             "— que erra e não avisa.")
+                return None
+            valores = ler_indicadores_da_legenda(texto)
+            resposta = resposta_do_indicador_lido(nome, valores)
+            if resposta:
+                self.log(f"🔍 OCR local leu '{nome}' na legenda — resposta "
+                         "montada sem API, sem internet e sem cota.")
+            return resposta
+        except Exception as e:
+            self.log(f"(OCR não conseguiu ler a imagem: {str(e)[:100]})")
+            return None
 
     def _confirmar_nivel_lido(self, client, modelos, parte_anexo, pergunta, resposta):
         """Lê o MESMO indicador uma segunda vez, na MESMA imagem, com um pedido

@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.26.0 — MAC (Apple Silicon M1 / M2 / M3)
+  SMC QUANT PRO v2.27.0 — MAC (Apple Silicon M1 / M2 / M3)
   Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.
 ========================================================================
 
@@ -183,6 +183,82 @@ no meio do pregão.
 
 DEIXE A JANELA DO GRÁFICO ABERTA. Atrás de outras funciona perfeitamente
 — só não pode estar minimizada.
+
+
+========================================================================
+  O QUE MUDOU NA v2.27.0  —  A IA QUE NAO PRECISA DE NINGUEM
+========================================================================
+VOCE PEDIU AUTONOMIA TOTAL. Para o problema que mais te queimou, tirar a
+API nao e perda: e GANHO. Eis por que.
+
+O DIAGNOSTICO QUE EU DEMOREI TRES VERSOES PARA ENXERGAR
+  Eu tratei a VWAP inventada como problema de PROMPT (2.25.0) e depois
+  como problema de GUARDA (2.26.0). Era problema de ARQUITETURA:
+
+      UM LLM NAO LE PIXEL. ELE PREVE O TEXTO MAIS PROVAVEL.
+
+  Por isso ele nunca diz "nao sei" — ele COMPLETA. Com a legenda
+  mostrando VWAP 7769.56, ele escreveu "a VWAP esta exatamente em
+  7752.34, conforme indicado na legenda". Eu estava usando a ferramenta
+  errada para o trabalho.
+
+1) QUEM LE O NUMERO AGORA E O OCR
+  "VWAP 7769.56" e TEXTO IMPRESSO: pixels nitidos, fonte digital, alto
+  contraste. Isso e trabalho de OCR — que le com precisao perto de 100%
+  e NAO completa o que nao viu.
+
+  E OCR nao precisa de chave, de internet nem de cota: os dois sistemas
+  ja trazem um motor embutido e de graca.
+      macOS   -> framework Vision (desde o Catalina)
+      Windows -> Windows.Media.Ocr (desde o Windows 10)
+
+  Quando voce pergunta onde esta um indicador, a resposta e montada
+  LENDO a legenda da captura, na sua maquina, ANTES de qualquer modelo
+  entrar na conversa. Ela vem assinada: "este numero nao passou por
+  modelo nenhum".
+
+  TESTADO CONTRA A LEGENDA REAL DO SEU PRINT DE 12/08 15:45. Le VWAP,
+  as DUAS SMAs (7767.58 e 7766.04 — e MOSTRA as duas, em vez de escolher
+  uma escondido, que foi como ele errou), PSAR, RSI, abertura, maxima,
+  minima, fechamento e volume.
+
+  E IGNORA de proposito MIDDLE 50, OVERBOUGHT 70 e OVERSOLD 30: sao a
+  CONFIGURACAO do RSI, nao niveis de preco. Ler 70 como se fosse um
+  nivel passaria despercebido e contaminaria a analise inteira.
+
+2) A IA LOCAL — SEM CHAVE, SEM INTERNET, SEM SALDO
+  Em 12/08 a OpenAI respondeu "You have no credits remaining". Um
+  cerebro que depende de saldo some justamente no dia em que o saldo
+  acaba.
+
+  O Ollama sobe um modelo na SUA maquina e expoe o MESMO protocolo da
+  OpenAI em localhost:11434 — por isso ele entrou na fila de provedores
+  sem uma linha de codigo novo de rede.
+
+  COMO LIGAR (uma vez, 10 minutos):
+      1. Baixe em https://ollama.com/download e instale.
+      2. No Terminal:  ollama pull qwen2.5:7b
+      3. Pronto. O app detecta sozinho — nao ha campo para preencher.
+
+  Ela e a ULTIMA da fila de proposito: quando ha um modelo grande de pe,
+  ele responde melhor. A local e o CHAO da escada — a que nunca falta.
+
+  O app confere se o Ollama esta no ar ANTES de tentar (senao a fila
+  esperaria um timeout justo quando ja esta lenta) e usa os modelos que
+  estao BAIXADOS na sua maquina, nao uma lista fixa.
+
+O QUE ISSO SIGNIFICA NA PRATICA
+  SEM NADA INSTALADO alem do app, ja funcionam offline: todo o calculo
+  de dinheiro (dimensionamento, piso de qualidade, drawdown, freio),
+  o diario, o dashboard, a autopsia da operacao, a metodologia SMC, os
+  comandos — e agora a LEITURA EXATA dos indicadores pelo OCR.
+  COM O OLLAMA, tambem a conversa livre.
+  A Gemini passa a ser opcional, nao o coracao.
+
+NADA DISSO TIROU AS GUARDAS. As quatro conferencias das versoes
+anteriores continuam valendo para tudo que vier de modelo.
+
+TESTES: 266 (eram 241).
 
 
 ========================================================================
