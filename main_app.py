@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.31.0"
+VERSAO_ATUAL = "2.32.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -15002,6 +15002,9 @@ class SmcQuantApp(ctk.CTk):
                 # gráfico. Por janela, nunca global: uma janela errada não pode
                 # calar o alerta da outra, que pode estar certa.
                 "ciclos_sem_grafico": 0,
+                # Ciclos seguidos perdidos por falha do modelo. Por janela: uma
+                # janela com problema não pode disparar aviso pela outra.
+                "ciclos_perdidos": 0,
             }
 
         estados_janela = {}
@@ -15406,62 +15409,86 @@ class SmcQuantApp(ctk.CTk):
                             self.log("⏳ Todos os modelos estão em cooldown de cota/sobrecarga — "
                                       "tentando mesmo assim. (Considere aumentar o intervalo ou usar chave paga.)")
 
-                        for modelo_atual in candidatos:
-                            try:
-                                resposta = client.models.generate_content(
-                                    model=modelo_atual,
-                                    contents=[PROMPT_FINAL, screenshot],
-                                    config=types.GenerateContentConfig(
-                                        system_instruction=INSTRUCAO_SISTEMA,
-                                        response_mime_type="application/json",
-                                        response_schema=SIGNAL_SCHEMA,
+                        # UMA SEGUNDA PASSADA, PORQUE 503 SIGNIFICA "TENTE DE NOVO".
+                        # Log de 13/08, 10:35 e 10:40: dois ciclos seguidos
+                        # perdidos inteiros com 503 UNAVAILABLE ("high demand,
+                        # spikes are usually temporary") e 504 DEADLINE.
+                        # A palavra do próprio Google é TEMPORÁRIO — e a
+                        # ferramenta respondia a isso jogando fora CINCO
+                        # MINUTOS de mercado e esperando o ciclo seguinte.
+                        # Vinte segundos de espera custam quase nada e
+                        # recuperam a maioria desses casos. Uma passada extra
+                        # só, e só para erro transitório: com cota estourada
+                        # ou chave inválida, insistir é desperdício.
+                        for tentativa in (1, 2):
+                            for modelo_atual in candidatos:
+                                try:
+                                    resposta = client.models.generate_content(
+                                        model=modelo_atual,
+                                        contents=[PROMPT_FINAL, screenshot],
+                                        config=types.GenerateContentConfig(
+                                            system_instruction=INSTRUCAO_SISTEMA,
+                                            response_mime_type="application/json",
+                                            response_schema=SIGNAL_SCHEMA,
+                                        )
                                     )
-                                )
-                                modelo_vencedor = modelo_atual
-                                # Respondeu: sai do cooldown E passa a liderar a
-                                # fila também no chat — a TIGER começa pelo que
-                                # acabou de funcionar, em vez de descobrir sozinha.
-                                registrar_sucesso_modelo(modelo_atual)
-                                if modelo_atual != candidatos[0]:
-                                    self.log(f"ℹ️ Análise concluída usando modelo de reserva: {modelo_atual}")
-                                break
-                            except Exception as e:
-                                ultimo_erro = e
-                                erro_str = str(e).upper()
+                                    modelo_vencedor = modelo_atual
+                                    # Respondeu: sai do cooldown E passa a liderar a
+                                    # fila também no chat — a TIGER começa pelo que
+                                    # acabou de funcionar, em vez de descobrir sozinha.
+                                    registrar_sucesso_modelo(modelo_atual)
+                                    if modelo_atual != candidatos[0]:
+                                        self.log(f"ℹ️ Análise concluída usando modelo de reserva: {modelo_atual}")
+                                    break
+                                except Exception as e:
+                                    ultimo_erro = e
+                                    erro_str = str(e).upper()
 
-                                # 404 / NOT_FOUND = o modelo NÃO EXISTE mais para esta
-                                # conta (foi descontinuado). Não adianta tentar de novo
-                                # nos próximos ciclos: removemos da lista de vez.
-                                if ("404" in erro_str or "NOT_FOUND" in erro_str
-                                        or "NO LONGER AVAILABLE" in erro_str):
-                                    self.log(f"🚫 {modelo_atual} foi descontinuado — removendo da lista permanentemente.")
-                                    modelos_invalidos.add(modelo_atual)
-                                    continue
+                                    # 404 / NOT_FOUND = o modelo NÃO EXISTE mais para esta
+                                    # conta (foi descontinuado). Não adianta tentar de novo
+                                    # nos próximos ciclos: removemos da lista de vez.
+                                    if ("404" in erro_str or "NOT_FOUND" in erro_str
+                                            or "NO LONGER AVAILABLE" in erro_str):
+                                        self.log(f"🚫 {modelo_atual} foi descontinuado — removendo da lista permanentemente.")
+                                        modelos_invalidos.add(modelo_atual)
+                                        continue
 
-                                # Erros TRANSITÓRIOS ou de cota: vale tentar o próximo
-                                # modelo em vez de derrubar o ciclo inteiro.
-                                #   429 / RESOURCE_EXHAUSTED -> cota esgotada
-                                #   503 / UNAVAILABLE        -> modelo sobrecarregado (alta demanda)
-                                #   500 / INTERNAL           -> falha temporária do servidor
-                                #   504 / DEADLINE / TIMED OUT -> timeout de rede
-                                # ATENÇÃO: a mensagem real do SDK é "The read operation
-                                # timed out" (com espaço). Procurar só por "TIMEOUT"
-                                # deixava esse erro passar como fatal e matava o ciclo.
-                                transitorios = ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE",
-                                                 "500", "INTERNAL", "504", "DEADLINE", "TIMEOUT",
-                                                 "TIMED OUT", "OVERLOADED", "CONNECTION", "SSL",
-                                                 "TEMPORARILY")
-                                if any(t in erro_str for t in transitorios):
-                                    eh_cota = ("429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str)
-                                    # Estaciona o modelo para não desperdiçar rede nos
-                                    # próximos ciclos: cota -> 15 min, sobrecarga -> 2 min.
-                                    cooldown_modelos[modelo_atual] = time.time() + (
-                                        COOLDOWN_COTA if eh_cota else COOLDOWN_SOBRECARGA)
-                                    motivo = "cota esgotada (pausado 15min)" if eh_cota \
-                                              else "sobrecarregado (pausado 2min)"
-                                    self.log(f"⚠️ {modelo_atual} {motivo} — próximo modelo...")
-                                    continue  # sem sleep: o próximo modelo já é uma nova requisição
-                                raise  # erro real (ex: chave inválida): sobe pro tratamento do ciclo
+                                    # Erros TRANSITÓRIOS ou de cota: vale tentar o próximo
+                                    # modelo em vez de derrubar o ciclo inteiro.
+                                    #   429 / RESOURCE_EXHAUSTED -> cota esgotada
+                                    #   503 / UNAVAILABLE        -> modelo sobrecarregado (alta demanda)
+                                    #   500 / INTERNAL           -> falha temporária do servidor
+                                    #   504 / DEADLINE / TIMED OUT -> timeout de rede
+                                    # ATENÇÃO: a mensagem real do SDK é "The read operation
+                                    # timed out" (com espaço). Procurar só por "TIMEOUT"
+                                    # deixava esse erro passar como fatal e matava o ciclo.
+                                    transitorios = ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE",
+                                                     "500", "INTERNAL", "504", "DEADLINE", "TIMEOUT",
+                                                     "TIMED OUT", "OVERLOADED", "CONNECTION", "SSL",
+                                                     "TEMPORARILY")
+                                    if any(t in erro_str for t in transitorios):
+                                        eh_cota = ("429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str)
+                                        # Estaciona o modelo para não desperdiçar rede nos
+                                        # próximos ciclos: cota -> 15 min, sobrecarga -> 2 min.
+                                        cooldown_modelos[modelo_atual] = time.time() + (
+                                            COOLDOWN_COTA if eh_cota else COOLDOWN_SOBRECARGA)
+                                        motivo = "cota esgotada (pausado 15min)" if eh_cota \
+                                                  else "sobrecarregado (pausado 2min)"
+                                        self.log(f"⚠️ {modelo_atual} {motivo} — próximo modelo...")
+                                        continue  # sem sleep: o próximo modelo já é uma nova requisição
+                                    raise  # erro real (ex: chave inválida): sobe pro tratamento do ciclo
+
+                            if resposta is not None:
+                                break            # respondeu: nada a repetir
+                            if tentativa == 1 and \
+                                    classificar_erro_modelo(ultimo_erro) == "transitorio":
+                                self.log("⏳ Todos os modelos deram erro TEMPORÁRIO "
+                                         "(o próprio Google chama de 'pico de demanda'). "
+                                         "Esperando 20s e tentando de novo — jogar o "
+                                         "ciclo fora custaria 5 minutos de mercado.")
+                                time.sleep(20)
+                                continue
+                            break                # cota, chave ou erro real: não insiste
 
                         # Expurga de vez os modelos descontinuados, para não perder
                         # tempo tentando-os em todos os ciclos seguintes.
@@ -16191,6 +16218,38 @@ class SmcQuantApp(ctk.CTk):
                         # um ativo, e um erro de captura no MES não pode impedir
                         # a análise do NQ no mesmo ciclo.
                         self.log(f"⚠️ Erro ao analisar '{nome_janela or 'tela cheia'}': {e}")
+                        # CICLO PERDIDO PRECISA APARECER PARA ELE.
+                        # Em 13/08 dois ciclos seguidos morreram em 503/504 e
+                        # isso existiu só dentro do Registro. Quem esperava
+                        # sugestão no celular concluiu que a ferramenta tinha
+                        # parado — de novo. Silêncio nunca explica silêncio.
+                        est["ciclos_perdidos"] = est.get("ciclos_perdidos", 0) + 1
+                        if est["ciclos_perdidos"] == 2:
+                            motivo = ("os modelos da Gemini estão sobrecarregados "
+                                      "ou sem cota agora"
+                                      if classificar_erro_modelo(e) in
+                                      ("transitorio", "cota")
+                                      else f"{str(e)[:120]}")
+                            self._chat_feed(
+                                f"⚠️ Perdi as 2 últimas análises de "
+                                f"'{nome_janela or 'tela cheia'}': {motivo}. "
+                                "A captura funciona; o que falhou foi a leitura. "
+                                "Sigo tentando a cada ciclo e aviso quando "
+                                "voltar — não estou parada, estou sem quem leia "
+                                "o gráfico.")
+                            try:
+                                enviar_relatorio_whatsapp(
+                                    f"⚠️ *Análises falhando — "
+                                    f"{time.strftime('%d/%m/%Y %H:%M')}*\n"
+                                    f"Perdi as 2 últimas leituras: {motivo}.\n"
+                                    "O motor continua tentando. Nenhuma "
+                                    "sugestão sai enquanto isso — prefiro te "
+                                    "avisar a te deixar esperando.", None,
+                                    self.log)
+                            except Exception:
+                                pass
+                    else:
+                        est["ciclos_perdidos"] = 0
                     finally:
                         est["sinal_ativo"] = sinal_ativo
                         est["hash_captura_anterior"] = hash_captura_anterior

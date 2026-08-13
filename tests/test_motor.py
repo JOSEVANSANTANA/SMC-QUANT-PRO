@@ -22,7 +22,7 @@ Duas causas, dois grupos de teste aqui:
 import ast
 import unittest
 
-from harness import ARQUIVO, fonte_do_arquivo
+from harness import ARQUIVO, carregar, fonte_do_arquivo
 
 FONTE = fonte_do_arquivo(ARQUIVO)
 
@@ -183,3 +183,89 @@ class TestCenarioMortoNaoFicaAguardandoDecisao(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestCicloPerdidoPorErroTemporario(unittest.TestCase):
+    """Log de 13/08, 10:35 e 10:40 — dois ciclos seguidos perdidos inteiros:
+
+        ⚠️ Erro ao analisar '...': 503 UNAVAILABLE. {'message': 'This model is
+           currently experiencing high demand. Spikes in demand are usually
+           temporary. Please try again later.'}
+        ⚠️ Erro ao analisar '...': 504 DEADLINE_EXCEEDED
+
+    A própria mensagem do Google diz TEMPORÁRIO e "tente de novo mais tarde".
+    A ferramenta respondia a isso jogando fora CINCO MINUTOS de mercado e
+    esperando o ciclo seguinte. E o trader, longe da mesa, não ficava sabendo
+    de nada: o fato existia só dentro do Registro.
+    """
+
+    def _ns(self):
+        return carregar(["classificar_erro_modelo"])
+
+    def test_503_e_504_sao_temporarios_e_nao_fatais(self):
+        ns = self._ns()
+        for erro in ("503 UNAVAILABLE. This model is currently experiencing "
+                     "high demand.",
+                     "504 DEADLINE_EXCEEDED. Deadline expired.",
+                     "500 INTERNAL", "The read operation timed out"):
+            self.assertEqual(ns["classificar_erro_modelo"](erro), "transitorio",
+                             erro[:40])
+
+    def test_cota_e_chave_NAO_sao_temporarios(self):
+        """Insistir com cota estourada ou chave inválida é desperdício — o
+        retry só pode valer para o que realmente passa sozinho."""
+        ns = self._ns()
+        self.assertEqual(ns["classificar_erro_modelo"]("429 RESOURCE_EXHAUSTED"),
+                         "cota")
+        self.assertEqual(
+            ns["classificar_erro_modelo"]("401 UNAUTHENTICATED API_KEY_INVALID"),
+            "fatal")
+
+    def test_o_motor_tenta_uma_segunda_passada(self):
+        """Vinte segundos custam quase nada; cinco minutos de mercado, não."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("for tentativa in (1, 2):")
+        bloco = fonte[i:i + 6000]
+        self.assertIn("time.sleep(20)", bloco)
+        self.assertIn('classificar_erro_modelo(ultimo_erro) == "transitorio"',
+                      bloco)
+
+    def test_a_segunda_passada_e_SO_para_erro_temporario(self):
+        fonte = fonte_do_arquivo()
+        i = fonte.index("for tentativa in (1, 2):")
+        bloco = fonte[i:i + 6000]
+        self.assertIn("if tentativa == 1", bloco)
+        self.assertIn("não insiste", bloco)
+
+    def test_resposta_boa_nao_dispara_segunda_passada(self):
+        fonte = fonte_do_arquivo()
+        i = fonte.index("for tentativa in (1, 2):")
+        bloco = fonte[i:i + 6000]
+        self.assertIn("if resposta is not None:", bloco)
+
+    def test_ciclo_perdido_chega_ao_trader(self):
+        """Silêncio nunca explica silêncio. Quem espera sugestão no celular
+        conclui que a ferramenta parou."""
+        fonte = fonte_do_arquivo()
+        self.assertIn("ciclos_perdidos", fonte)
+        i = fonte.index('est["ciclos_perdidos"] = est.get("ciclos_perdidos", 0) + 1')
+        bloco = fonte[i:i + 1800]
+        self.assertIn("_chat_feed", bloco)
+        self.assertIn("enviar_relatorio_whatsapp", bloco)
+        self.assertIn("não estou parada", bloco)
+
+    def test_o_aviso_nao_se_repete_a_cada_ciclo(self):
+        """Aviso repetido vira ruído, e ruído é ignorado quando importa."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index('est["ciclos_perdidos"] = est.get("ciclos_perdidos", 0) + 1')
+        self.assertIn('est["ciclos_perdidos"] == 2', fonte[i:i + 500])
+
+    def test_a_contagem_zera_quando_volta_a_funcionar(self):
+        fonte = fonte_do_arquivo()
+        self.assertIn('est["ciclos_perdidos"] = 0', fonte)
+
+    def test_a_contagem_e_por_janela(self):
+        """Uma janela com problema não pode disparar aviso pela outra — é a
+        mesma regra de 'nunca confundir uma análise com a outra'."""
+        fonte = fonte_do_arquivo()
+        self.assertIn('"ciclos_perdidos": 0,', fonte)

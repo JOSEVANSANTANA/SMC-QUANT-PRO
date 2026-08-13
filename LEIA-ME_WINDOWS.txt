@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.31.0 — WINDOWS
+  SMC QUANT PRO v2.32.0 — WINDOWS
   Comece por aqui.
 ========================================================================
 
@@ -100,6 +100,45 @@ Grafico "congelado" a cada ciclo
 
 A TIGER nao fala
   → confira o pyttsx3 na lista do Passo 3.
+
+
+========================================================================
+  O QUE MUDOU NA v2.32.0  —  503 SIGNIFICA "TENTE DE NOVO"
+========================================================================
+13/08, 10:35 e 10:40. Dois ciclos seguidos morreram inteiros:
+
+    ⚠️ Erro ao analisar: 503 UNAVAILABLE — "This model is currently
+       experiencing high demand. Spikes in demand are usually TEMPORARY.
+       Please try again later."
+    ⚠️ Erro ao analisar: 504 DEADLINE_EXCEEDED
+
+A propria mensagem do Google diz TEMPORARIO e manda TENTAR DE NOVO. A
+resposta da ferramenta era jogar fora CINCO MINUTOS de mercado e esperar
+o proximo ciclo.
+
+AGORA: quando TODOS os modelos falham por erro temporario, o motor
+espera 20 segundos e tenta a lista mais uma vez. Uma passada extra so —
+e SO para erro transitorio. Com cota estourada ou chave invalida,
+insistir e desperdicio, e ai ele nao insiste.
+
+Vinte segundos custam quase nada. Cinco minutos de mercado, nao.
+
+E O CICLO PERDIDO PASSA A APARECER PARA VOCE
+  Aqueles dois ciclos existiram so dentro do Registro do computador.
+  Quem esperava sugestao no celular concluiu — de novo — que a
+  ferramenta tinha parado.
+
+  Agora, na SEGUNDA falha seguida, voce recebe aviso no chat e no
+  WhatsApp: o que falhou (a captura funciona; o que falhou foi a
+  LEITURA), e que o motor continua tentando.
+
+  O aviso sai UMA vez por sequencia. Aviso repetido vira ruido, e ruido
+  e ignorado justo quando importa. E a contagem e POR JANELA: uma janela
+  com problema nao dispara aviso pela outra.
+
+  Silencio nunca explica silencio.
+
+TESTES: 366 (eram 357).
 
 
 ========================================================================
