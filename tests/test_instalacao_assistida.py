@@ -121,9 +121,14 @@ class TestOsPassosDaInstalacao(unittest.TestCase):
         tempo e a franquia de internet do cliente."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def _instalar_ia_worker")
-        bloco = fonte[i:i + 900]
+        bloco = fonte[i:i + 2400]
         self.assertIn("ia_local_no_ar", bloco)
         self.assertIn("Nada a fazer", bloco)
+        # Mas "já está pronto" passou a significar TEXTO **E** VISÃO. Com só o
+        # qwen2.5:3b (cego) instalado, esta saída antecipada respondia "nada a
+        # fazer" e retornava antes de baixar o modelo que enxerga — e o motor
+        # ficava sem reserva quando a Gemini caía. Ver test_visao_local.py.
+        self.assertIn("tem_modelo_de_visao(instalados)", bloco)
 
     def test_instalado_nao_e_o_mesmo_que_rodando(self):
         """Foi essa confusão que produziu o 'Motor no ar' sobre um processo já
@@ -141,7 +146,7 @@ class TestOsPassosDaInstalacao(unittest.TestCase):
         """Serviço no ar sem modelo sobe e não pensa."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def _instalar_ia_worker")
-        self.assertIn("baixar_modelo_ia_local", fonte[i:i + 4000])
+        self.assertIn("baixar_modelo_ia_local", fonte[i:i + 6000])
 
     def test_termina_TESTANDO_com_pergunta_real(self):
         """Dizer 'instalado' sem testar seria repetir o erro da chave dobrada,

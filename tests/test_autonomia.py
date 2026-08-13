@@ -427,7 +427,7 @@ class TestIALocalComVisao(unittest.TestCase):
         """Ela entra depois que TODOS os modelos da Gemini falharam — não no
         lugar deles. Lê pior; entra porque nenhuma leitura é pior ainda."""
         fonte = fonte_do_arquivo()
-        i = fonte.index("analisar_grafico_local(screenshot, PROMPT_FINAL)")
+        i = fonte.index("analisar_grafico_local(screenshot,")
         antes = fonte[i - 2500:i]
         self.assertIn("if resposta is None:", antes)
 
@@ -435,7 +435,7 @@ class TestIALocalComVisao(unittest.TestCase):
         """Não pode parecer leitura da Gemini. Quem lê o log precisa saber de
         onde veio o número."""
         fonte = fonte_do_arquivo()
-        i = fonte.index("analisar_grafico_local(screenshot, PROMPT_FINAL)")
+        i = fonte.index("analisar_grafico_local(screenshot,")
         bloco = fonte[i:i + 1200]
         self.assertIn("IA LOCAL", bloco)
         self.assertIn("reserva", bloco)
@@ -443,9 +443,12 @@ class TestIALocalComVisao(unittest.TestCase):
     def test_resposta_fora_do_formato_e_descartada(self):
         """JSON quebrado do modelo pequeno não pode virar cenário."""
         fonte = fonte_do_arquivo()
-        i = fonte.index("analisar_grafico_local(screenshot, PROMPT_FINAL)")
+        i = fonte.index("analisar_grafico_local(screenshot,")
         bloco = fonte[i:i + 1200]
-        self.assertIn("json.loads(bruto)", bloco)
+        # NÃO é mais só `json.loads`: JSON válido com as chaves erradas
+        # ("trend", "price") passava no loads e matava o ciclo logo depois,
+        # lendo `current_price` que não existia. Ver test_visao_local.py.
+        self.assertIn("analise_local_valida(bruto)", bloco)
         self.assertIn("descartado", bloco)
 
     def test_a_reserva_nunca_derruba_o_ciclo(self):

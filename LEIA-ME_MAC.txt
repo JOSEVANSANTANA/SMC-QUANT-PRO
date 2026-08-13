@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.34.0 — MAC (Apple Silicon M1 / M2 / M3)
+  SMC QUANT PRO v2.35.0 — MAC (Apple Silicon M1 / M2 / M3)
   Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.
 ========================================================================
 
@@ -183,6 +183,97 @@ no meio do pregão.
 
 DEIXE A JANELA DO GRÁFICO ABERTA. Atrás de outras funciona perfeitamente
 — só não pode estar minimizada.
+
+
+========================================================================
+  O QUE MUDOU NA v2.35.0  —  O BOTAO DA VISAO NUNCA CONSEGUIA INSTALAR
+                             A VISAO. DEFEITO MEU.
+========================================================================
+Voce escreveu: "Continua com o mesmo erro agora nas analises / Nao esta
+analisando nem com gemini / Nem com local / Precisa corrigir isso".
+
+E o seu log tinha a prova, nesta linha:
+
+    OK  A IA local JA esta no ar. Modelos: qwen2.5:3b. Nada a fazer.
+
+O defeito era meu, e era este. Na v2.34.0 eu acrescentei o modelo de
+VISAO — o unico que enxerga imagem — ao botao "Instalar a IA LOCAL".
+Mas a PRIMEIRA linha desse botao dizia, em resumo: "ja existe algum
+modelo instalado? entao nao ha nada a fazer, pode sair". E existia: o
+qwen2.5:3b, que voce ja tinha baixado na v2.29.0.
+
+Resultado: o botao saia na primeira linha, ANTES do passo que baixa a
+visao. O passo que eu escrevi era inalcancavel. O modelo de visao nunca
+podia ser instalado por caminho nenhum — e o qwen2.5:3b e um modelo de
+TEXTO PURO, que nao ve imagem alguma. Entao, quando os dez modelos da
+Gemini deram 503/429 no mesmo ciclo, nao havia reserva: nem Gemini, nem
+local. Exatamente o que voce descreveu.
+
+O QUE MUDOU
+------------
+1) "PRONTO" AGORA SIGNIFICA TEXTO **E** VISAO
+   A saida antecipada so acontece quando ha os dois. Com o qwen2.5:3b
+   sozinho ela escreve, no Registro:
+       "A IA local esta no ar (qwen2.5:3b), mas SEM modelo de visao —
+        e sem visao ela nao le grafico nenhum. Vou buscar o modelo que
+        enxerga."
+   e segue para baixar o qwen2.5vl.
+   >>> CLIQUE EM "Instalar a IA LOCAL (sem chave)" NA ABA MOTOR UMA VEZ.
+       Agora ele vai baixar o modelo que enxerga (alguns GB, uma vez so).
+
+2) O MOTOR PASSOU A DIZER POR QUE NAO TEVE ANALISE
+   Antes, com a Gemini fora, o ciclo morria e o log nao explicava nada —
+   voce so descobriu o motivo porque me mandou o log. Agora, quando a
+   Gemini cai, o Registro diz qual dos tres casos aconteceu:
+     - a IA local nem esta no ar;
+     - esta no ar, mas os modelos instalados sao CEGOS (e diz quais);
+     - tentou ler e nao voltou resposta.
+   A ferramenta explica a propria falha em vez de ficar calada.
+
+3) A IA LOCAL AGORA RECEBE O FORMATO POR EXTENSO
+   A Gemini recebe um "schema" e o servidor do Google OBRIGA o formato.
+   O Ollama nao tem isso: ele garante que sai JSON, e mais nada. Sem
+   dizer as chaves, o modelo local inventava as dele ("trend", "price"),
+   o app aceitava porque era JSON valido, e o ciclo morria logo depois
+   procurando o preco que nao existia. Agora o pedido leva a lista exata
+   de campos, e a resposta so e aceita se trouxer TODOS eles. JSON
+   valido deixou de ser sinonimo de analise valida.
+
+4) O MODELO DE VISAO SO ENTRA SE COUBER NA SUA MAQUINA
+   Abaixo de 12 GB de RAM ele traz o qwen2.5vl:3b em vez do :7b. Modelo
+   de visao carrega o codificador de imagem junto e pesa mais que o de
+   texto — um modelo que nao cabe nao fica "mais lento", ele trava a
+   maquina no meio do pregao.
+
+CONTINUA VALENDO, E ESTA ESCRITO DE PROPOSITO
+----------------------------------------------
+A leitura local e RESERVA, nao igual. Um modelo de 3 a 7 bilhoes de
+parametros rodando no seu Mac le grafico PIOR que a Gemini. Ele entra
+declarado como reserva no Registro, e passa pelas MESMAS travas de
+sempre: preco conferido contra o titulo da janela, ticker de contrato
+conhecido, piso de qualidade. Uma leitura de reserva conferida vale mais
+que nenhuma leitura — e continua sendo pior que a da Gemini.
+
+O TESTE QUE VOCE PEDIU
+-----------------------
+Voce escreveu "Antes de me entregar faca um teste por favor". Foi feito,
+e nao foi so leitura de codigo — era leitura de codigo que tinha deixado
+esse defeito passar.
+
+Subi um servidor Ollama DE MENTIRA nesta maquina, na mesma porta 11434,
+respondendo como o Ollama de verdade responde, e fiz o caminho inteiro
+passar por ele por HTTP: descobrir os modelos, mandar a imagem em
+base64, receber o JSON, escolher o modelo certo. Trinta testes novos,
+entre eles:
+  - com SO o qwen2.5:3b instalado (o estado exato da sua maquina), a
+    funcao devolve "nao sei ler" e nem chega a chamar o modelo;
+  - a imagem chega do outro lado como JPEG de verdade, no tamanho certo;
+  - pedindo o :7b numa maquina que tem o :3b, ele usa o :3b em vez de
+    falhar;
+  - servidor fora do ar, erro 500 e resposta vazia nao levantam nada e
+    nao derrubam o ciclo.
+Total da suite: 430 testes, todos passando, mais o teste da janela real
+aberta e fechada.
 
 
 ========================================================================

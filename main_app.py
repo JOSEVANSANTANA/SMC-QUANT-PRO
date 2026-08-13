@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.34.0"
+VERSAO_ATUAL = "2.35.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -947,6 +947,88 @@ def _b64_da_imagem(imagem_pil):
     return base64.b64encode(saida.getvalue()).decode("utf-8")
 
 
+# Como se reconhece um modelo que ENXERGA, pelo nome. É a convenção do
+# Ollama: os modelos de visão trazem vl / vision / llava / moondream / gemma3
+# no nome. Uma lista de nomes exatos envelheceria em uma semana.
+_MARCAS_DE_VISAO = ("vl", "vision", "llava", "moondream", "bakllava",
+                    "minicpm-v", "gemma3")
+
+
+def tem_modelo_de_visao(instalados):
+    """Existe, entre os modelos baixados, algum que enxerga imagem?
+
+    Função PURA. Foi a falta dela que produziu o defeito: o app tratava
+    'tem algum modelo' como 'está pronto', e com um modelo de TEXTO puro
+    instalado ele dizia 'nada a fazer' e nunca baixava a visão."""
+    for m in (instalados or []):
+        n = str(m).lower()
+        if any(marca in n for marca in _MARCAS_DE_VISAO):
+            return True
+    return False
+
+
+def modelo_de_visao_instalado(instalados):
+    """O NOME do modelo de visão baixado, ou None."""
+    for m in (instalados or []):
+        n = str(m).lower()
+        if any(marca in n for marca in _MARCAS_DE_VISAO):
+            return m
+    return None
+
+
+# AS CHAVES QUE A ANÁLISE PRECISA TER PARA VALER ALGUMA COISA.
+# A Gemini recebe um `response_schema` e o servidor do Google OBRIGA o
+# formato. O Ollama não tem nada disso: `format="json"` garante que sai JSON
+# e mais nada. Sem dizer as chaves por extenso, o modelo local inventa as
+# dele — "signal", "price", "trend" — o `json.loads` passa, e o ciclo morre
+# logo depois lendo `current_price` que não existe. Reserva que nunca entrega
+# é o mesmo que reserva nenhuma.
+CHAVES_DA_ANALISE = ("asset_symbol", "current_price", "market_analysis",
+                     "confluence_factors", "confidence_score",
+                     "probabilidade", "action")
+
+_CONTRATO_JSON_LOCAL = """
+
+FORMATO DA RESPOSTA — OBRIGATÓRIO. Responda SOMENTE com um objeto JSON, sem
+texto antes nem depois, sem ``` , com EXATAMENTE estas chaves:
+{"asset_symbol": "o ticker lido no gráfico, ex MESU6; se não conseguir ler, DESCONHECIDO",
+ "current_price": número do último preço,
+ "market_analysis": "texto em português",
+ "confluence_factors": ["lista", "de", "textos"],
+ "confidence_score": número de 0 a 100,
+ "probabilidade": número de 0 a 100,
+ "action": "BUY" ou "SELL" ou "HOLD",
+ "entry_price": número, "stop_loss": número,
+ "take_profit_1": número, "take_profit_2": número,
+ "ledger_update": "texto em português"}
+Se não conseguir LER um preço no gráfico, use 0 — nunca invente um número."""
+
+
+def prompt_para_visao_local(prompt):
+    """O mesmo prompt da Gemini, com o contrato de saída escrito por extenso.
+
+    Função PURA, para poder ser conferida sem subir modelo nenhum."""
+    return (prompt or "") + _CONTRATO_JSON_LOCAL
+
+
+def analise_local_valida(bruto):
+    """O texto cru do modelo local vira dict — ou None, sem meio-termo.
+
+    JSON válido NÃO é resposta válida: `{"trend": "alta"}` passa no
+    `json.loads` e não tem uma única informação que o motor use. Aqui só
+    passa o que traz TODAS as chaves obrigatórias."""
+    try:
+        dados = json.loads(bruto)
+    except Exception:
+        return None
+    if not isinstance(dados, dict):
+        return None
+    for chave in CHAVES_DA_ANALISE:
+        if chave not in dados:
+            return None
+    return dados
+
+
 def analisar_grafico_local(imagem_pil, prompt, modelo=None, timeout=180):
     """Lê o gráfico com o modelo de VISÃO que roda nesta máquina.
 
@@ -969,15 +1051,13 @@ def analisar_grafico_local(imagem_pil, prompt, modelo=None, timeout=180):
         if not instalados:
             return None
         if modelo not in instalados:
-            candidato = next((m for m in instalados if "vl" in m.lower()
-                              or "vision" in m.lower() or "llava" in m.lower()
-                              or "moondream" in m.lower()), None)
+            candidato = modelo_de_visao_instalado(instalados)
             if not candidato:
                 return None          # nenhum modelo com visão baixado
             modelo = candidato
         r = requests.post(
             "http://localhost:11434/api/generate",
-            json={"model": modelo, "prompt": prompt,
+            json={"model": modelo, "prompt": prompt_para_visao_local(prompt),
                   "images": [_b64_da_imagem(imagem_pil)],
                   "stream": False, "format": "json",
                   "options": {"temperature": 0.1}},
@@ -11794,11 +11874,25 @@ class SmcQuantApp(ctk.CTk):
             self.log("━━━ INSTALAÇÃO DA IA LOCAL ━━━")
             # PASSO 0 — já está pronto? Reinstalar o que funciona é desperdício
             # de 5 GB e de paciência.
+            #
+            # DEFEITO MEU, CORRIGIDO AQUI. Esta saída antecipada só olhava se
+            # havia ALGUM modelo. Com o qwen2.5:3b (texto puro) instalado, ela
+            # respondia "Nada a fazer" e retornava — ANTES do passo que baixa o
+            # modelo de VISÃO. Ou seja: o botão que eu criei para instalar a
+            # visão nunca conseguia instalá-la, e no log dele ficou exatamente
+            # isto: "A IA local JÁ está no ar. Modelos: qwen2.5:3b. Nada a
+            # fazer." — com o motor logo depois sem ninguém para ler o gráfico.
+            #
+            # "Pronto" agora significa TEXTO E VISÃO. Faltando a visão, segue.
             instalados = ia_local_no_ar(timeout=3)
-            if instalados:
-                self.log(f"✅ A IA local JÁ está no ar. Modelos: "
+            if instalados and tem_modelo_de_visao(instalados):
+                self.log(f"✅ A IA local JÁ está completa. Modelos: "
                          f"{', '.join(instalados)}. Nada a fazer.")
                 return
+            if instalados:
+                self.log(f"ℹ️ A IA local está no ar ({', '.join(instalados)}), "
+                         "mas SEM modelo de visão — e sem visão ela não lê "
+                         "gráfico nenhum. Vou buscar o modelo que enxerga.")
             exe = plataforma.onde_esta("ollama")
             # PASSO 1 — baixar e instalar, se ainda não existe.
             if not exe:
@@ -11869,8 +11963,7 @@ class SmcQuantApp(ctk.CTk):
             # a IA local instalada e no ar.
             visao = modelo_visao_recomendado()
             ja = ia_local_no_ar(timeout=3) or []
-            if not any(("vl" in m.lower() or "vision" in m.lower()
-                        or "llava" in m.lower()) for m in ja):
+            if not tem_modelo_de_visao(ja):
                 self.log(f"👁 Baixando o modelo de VISÃO {visao} — é ele que "
                          "permite ler o gráfico quando a Gemini estiver fora. "
                          "Mais alguns GB, também uma vez só.")
@@ -11880,8 +11973,8 @@ class SmcQuantApp(ctk.CTk):
                              "A IA local ainda responde por texto; a leitura de "
                              "gráfico continua dependendo da Gemini.")
             else:
-                self.log(f"✅ Modelo de visão já presente: "
-                         f"{', '.join(m for m in ja if 'vl' in m.lower() or 'vision' in m.lower() or 'llava' in m.lower())}")
+                self.log("✅ Modelo de visão já presente: "
+                         f"{modelo_de_visao_instalado(ja)}")
 
             # PASSO 4 — CONFERIR DE VERDADE, com uma pergunta real. Dizer
             # "instalado" sem testar seria repetir o erro da chave dobrada.
@@ -15841,19 +15934,36 @@ class SmcQuantApp(ctk.CTk):
                         # nenhuma leitura. E ela é declarada como reserva no
                         # log — não vou deixar parecer leitura da Gemini.
                         if resposta is None:
-                            bruto = analisar_grafico_local(screenshot, PROMPT_FINAL)
-                            if bruto:
-                                try:
-                                    json.loads(bruto)
+                            instalados_local = ia_local_no_ar(timeout=3) or []
+                            if not instalados_local:
+                                self.log("🖥️ A IA local não está no ar — não há "
+                                         "reserva para assumir. Ligue-a na aba "
+                                         "Motor ('Instalar a IA LOCAL').")
+                            elif not tem_modelo_de_visao(instalados_local):
+                                self.log(
+                                    "🖥️ A IA local está no ar "
+                                    f"({', '.join(instalados_local)}), mas "
+                                    "NENHUM desses modelos enxerga imagem — "
+                                    "são de texto puro. Sem modelo de visão "
+                                    "ela não lê gráfico nenhum. Clique em "
+                                    "'Instalar a IA LOCAL' na aba Motor que "
+                                    "eu trago o modelo que enxerga.")
+                            else:
+                                bruto = analisar_grafico_local(screenshot,
+                                                                PROMPT_FINAL)
+                                if analise_local_valida(bruto):
                                     self.log("🖥️ Gemini fora — análise feita "
                                              "pela IA LOCAL com visão. É "
                                              "reserva: lê pior, e passa pelas "
                                              "mesmas travas.")
                                     resposta = type("R", (), {"text": bruto})()
                                     modelo_vencedor = "IA local (visão)"
-                                except Exception:
+                                elif bruto:
                                     self.log("🖥️ A IA local respondeu, mas fora "
                                              "do formato esperado — descartado.")
+                                else:
+                                    self.log("🖥️ A IA local com visão não "
+                                             "devolveu resposta neste ciclo.")
                         if resposta is None:
                             raise RuntimeError(
                                 f"Todos os modelos disponíveis falharam. Último erro: {ultimo_erro}"
