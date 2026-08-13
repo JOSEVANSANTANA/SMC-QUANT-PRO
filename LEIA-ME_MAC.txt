@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.36.0 — MAC (Apple Silicon M1 / M2 / M3)
+  SMC QUANT PRO v2.37.0 — MAC (Apple Silicon M1 / M2 / M3)
   Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.
 ========================================================================
 
@@ -183,6 +183,124 @@ no meio do pregão.
 
 DEIXE A JANELA DO GRÁFICO ABERTA. Atrás de outras funciona perfeitamente
 — só não pode estar minimizada.
+
+
+========================================================================
+  O QUE MUDOU NA v2.37.0  —  ELA TINHA TODOS OS DADOS E RESPONDEU
+                             "NAO TENHO DADOS SUFICIENTES"
+========================================================================
+Voce escreveu: "ela nao esta mais tao inteligente, nao consegue se
+conversar com o motor e nem com o plano de trading, nao responde
+perguntas rapido, esta demorando muito pensando".
+
+Sao TRES defeitos diferentes, e os tres eram meus. O log deixou os tres
+visiveis.
+
+1) A PERGUNTA DA META NUNCA CHEGAVA NO CODIGO QUE SABIA RESPONDER
+   As 16:01 voce perguntou:
+     "O DIA ENCERRA AS 17:59, como estamos de probabilidade de bater a
+      meta de hoje ate la?"
+   e recebeu "nao tenho dados suficientes para prever com precisao".
+   As 16:05 voce perguntou de novo e recebeu a mesma coisa.
+
+   Mas a meta estava no Plano de Trading. O resultado do dia estava no
+   diario. O horario de fechamento estava na configuracao. Quem nao
+   tinha os dados era o MODELO — a pergunta ia direto para ele, e nunca
+   passava pelo codigo que tem acesso aos arquivos.
+
+   Voce tentou consertar do jeito que dava: "olha no plano de trading e
+   o motor para responder essa pergunta - aprenda isso". E preciso eu
+   dizer com clareza por que isso nunca poderia funcionar: uma licao
+   vira TEXTO dentro do pedido ao modelo. Ela nao vira acesso ao
+   diario. Nenhuma frase gravada faz um modelo abrir um arquivo. Voce
+   estava certo no diagnostico e a ferramenta nao te deu o caminho.
+
+   AGORA A META E UMA PERGUNTA COM RESPOSTA PROPRIA, feita por
+   aritmetica, antes de qualquer modelo — e por isso instantanea. Ela
+   responde, por exemplo:
+
+     META DE HOJE — conta 'CONTA 25K LEGACY'
+     • Meta do dia: US$ 175.00 (ritmo exigido para fechar o ciclo em 2 dias)
+     • Feito ate agora hoje: US$ +50.00 em 2 operacoes fechadas
+     • Falta hoje: US$ 125.00
+     • Tempo ate o fechamento: 2h59
+     • No seu ritmo de hoje ainda cabem ~2 operacoes (teto do plano: 10/dia)
+     • Hoje: acerto 50%, ganho medio US$ 100.00, perda media US$ 50.00
+
+     ➡️ CHANCE: 25% — precisa de 2 acertos nas 2 operacoes que ainda cabem.
+
+   A porcentagem NAO e chute. E a conta binomial exata sobre os SEUS
+   numeros do dia: sua taxa de acerto, seu ganho medio, sua perda media,
+   e quantas operacoes ainda cabem no tempo que resta (medido pela sua
+   propria cadencia de hoje e limitado pelo teto do seu plano). A
+   resposta vem sempre com a premissa escrita junto: e aritmetica sobre
+   o que ja aconteceu, nao previsao de mercado — supoe que as proximas
+   operacoes se parecam com as de hoje, e o mercado nao assinou esse
+   contrato.
+
+   E quando NAO da para calcular, ela diz isso em vez de inventar: sem
+   operacao fechada nao ha taxa de acerto medida, e sem taxa de acerto
+   qualquer porcentagem seria invencao. Sem meta configurada ela diz
+   "voce ainda nao configurou uma meta" — nao diz "meta batida".
+   (Esse ultimo caso apareceu no teste, e era exatamente o tipo de
+   afirmacao falsa e simpatica que e a pior de todas.)
+
+   Pergunte de qualquer jeito: "da pra bater a meta hoje?", "qual a
+   chance de batermos a meta?", "quanto falta para a meta de hoje?",
+   "vou conseguir bater a meta?".
+
+2) "ESTA DEMORANDO MUITO PENSANDO" — A FILA NAO TINHA FIM
+   A conta era esta: onze modelos da Gemini, cada um com ate quatro
+   configuracoes diferentes, cada chamada com prazo de 60 segundos. Com
+   a cota estourada, isso podia passar de DEZ MINUTOS antes de ela
+   chegar na base propria — que responde na hora, do disco, sem cota
+   nenhuma. Voce ficava olhando "✳ pensando…" com a resposta pronta e
+   presa atras de uma fila que nao ia dar em nada.
+
+   Agora existe um TETO DE 45 SEGUNDOS para a conversa inteira. Estourou,
+   ela para a fila e vai responder com o que tem aqui — e escreve no
+   Registro que fez isso. O corte e no TOTAL, nao na chamada: baixar o
+   prazo individual repetiria um erro antigo (os 15s originais
+   estouravam antes de a resposta com busca na internet chegar, e
+   produziam "estou sem acesso a rede" com a rede funcionando).
+   Anexo continua sem teto: ler um video demora mesmo.
+
+3) LICOES QUE NAO ENSINAVAM NADA, ENTRANDO EM TODA ANALISE
+   As 12:40 a sua lista de licoes tinha SEIS itens, e o de numero 6 era:
+     "o que aconteceu com HAPV3 HOJE?"
+   Uma pergunta. Ela foi gravada antes de a trava de pergunta existir, e
+   continuava entrando em TODA analise e TODA conversa como se fosse
+   regra — porque as licoes vao INTEIRAS para dentro do pedido ao
+   modelo. Isso gasta espaco e empurra o modelo para responder a coisa
+   errada. E parte da resposta a "ela nao esta mais tao inteligente".
+
+   AGORA HA UMA FAXINA NA ABERTURA: as licoes ja gravadas passam pelas
+   mesmas travas de hoje, e as que nao ensinam nada saem. E ela DIZ no
+   Registro o que apagou e por que — memoria mexida em silencio e pior
+   que memoria suja, voce precisa poder discordar. Se alguma fizer
+   falta, e so ensinar de novo em forma de regra.
+
+   Alem disso: quando a licao e uma PERGUNTA seguida de uma REGRA
+   ("qual a probabilidade de batermos a meta hoje? olha no plano de
+   trading para responder essa pergunta - aprenda isso"), agora fica so
+   a REGRA. A pergunta era o exemplo, nao a licao.
+
+OS TESTES
+----------
+505 no total, todos passando. Os novos, so desta versao:
+  - a conta da chance conferida contra a binomial feita a mao (falta
+    100, ganho 100, perda 100, 3 operacoes: precisa de 2 acertos, e com
+    50% de acerto isso da exatamente 50%);
+  - o caso em que nem acertando TUDO da: a resposta e 0%, nao "baixa";
+  - a frase EXATA que voce digitou as 16:01, conferindo que ela vira
+    conta em vez de ir para o modelo;
+  - "o dia encerra as 17:59" as 16:01 = 118 minutos, e o pregao que
+    vira o dia contado ate o dia seguinte;
+  - a sua lista REAL de seis licoes, limpa na medida certa: sai a
+    pergunta, ficam as cinco regras.
+E o teste de janela aberta agora grava duas operacoes no diario, abre o
+pregao, e confere que a conta da meta SAI de ponta a ponta — foi ele
+que pegou o "meta batida" sem meta configurada.
 
 
 ========================================================================

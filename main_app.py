@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.36.0"
+VERSAO_ATUAL = "2.37.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -2657,6 +2657,122 @@ def data_do_pregao(quando=None, cfg=None):
     return agora.strftime('%d/%m/%Y')
 
 
+def minutos_ate_o_fim_do_pregao(quando=None, cfg=None):
+    """Quantos minutos faltam até a hora de encerramento configurada.
+
+    Devolve 0 quando o pregão já fechou, e None quando não deu para ler o
+    horário — nunca um palpite. Lida com o pregão que ATRAVESSA A MEIA-NOITE
+    (19:00→17:59): às 22h de terça, o fim é às 17:59 de quarta."""
+    agora = quando or datetime.datetime.now()
+    try:
+        c = cfg if cfg is not None else carregar_config()
+        ini = str(c.get("hora_inicio", PADRAO_CONFIG_APP["hora_inicio"]))
+        fim = str(c.get("hora_fim", PADRAO_CONFIG_APP["hora_fim"]))
+        h_ini, m_ini = (int(x) for x in ini.split(":")[:2])
+        h_fim, m_fim = (int(x) for x in fim.split(":")[:2])
+    except Exception:
+        return None
+    fecha = agora.replace(hour=h_fim, minute=m_fim, second=0, microsecond=0)
+    if (h_ini, m_ini) > (h_fim, m_fim) and \
+            (agora.hour, agora.minute) >= (h_ini, m_ini):
+        # Pregão noturno já iniciado: o fechamento é no dia seguinte.
+        fecha += datetime.timedelta(days=1)
+    return max(0, int((fecha - agora).total_seconds() // 60))
+
+
+def _combinacoes(n, k):
+    """C(n,k) sem depender do math.comb (Python antigo do cliente)."""
+    if k < 0 or k > n:
+        return 0
+    r = 1
+    for i in range(k):
+        r = r * (n - i) // (i + 1)
+    return r
+
+
+def chance_de_bater_a_meta(falta, operacoes, taxa_acerto, ganho_medio,
+                           perda_media):
+    """A chance de somar `falta` em `operacoes` restantes. Binomial EXATA.
+
+    POR QUE ISTO É CÓDIGO E NÃO PROMPT. Em 13/08 às 16:01 ele perguntou
+    "o dia encerra às 17:59, como estamos de probabilidade de bater a meta de
+    hoje até lá?" e recebeu "não tenho dados suficientes para prever". A
+    ferramenta tinha TODOS os dados: a meta está no plano, o resultado do dia
+    está no diário, o horário de fechamento está na configuração. Quem não
+    tinha os dados era o modelo — e ele tentou consertar isso ensinando uma
+    lição, o que nunca funcionaria: lição vira texto no prompt, não vira
+    acesso ao diário.
+
+    O QUE ESTE NÚMERO É, E O QUE ELE NÃO É. É a probabilidade de, em N
+    operações do MESMO tamanho médio das de hoje, sair um número de acertos
+    suficiente — dada a taxa de acerto DELE hoje. Nada aqui é estimado: os
+    quatro números entram de fora, medidos. O que é SUPOSIÇÃO, e precisa ser
+    dita junto do resultado, é que as próximas operações se pareçam com as de
+    hoje e sejam independentes entre si. O mercado não assinou esse contrato.
+
+    Devolve (probabilidade_0a100, acertos_necessarios, operacoes) ou None
+    quando falta número para fazer a conta. None é resposta legítima; um
+    número inventado não é."""
+    try:
+        falta = float(falta)
+        n = int(operacoes)
+        p = float(taxa_acerto)
+        g = float(ganho_medio)
+        perda = abs(float(perda_media))
+    except (TypeError, ValueError):
+        return None
+    if n < 0 or not (0.0 <= p <= 1.0) or g <= 0:
+        return None
+    if falta <= 0:
+        return (100.0, 0, n)
+    if n == 0:
+        return (0.0, None, 0)
+    # k acertos e (n-k) perdas somam k*g - (n-k)*perda. Isso >= falta em
+    # k >= (falta + n*perda) / (g + perda).
+    denominador = g + perda
+    if denominador <= 0:
+        return None
+    exato = (falta + n * perda) / denominador
+    k_min = int(exato)
+    if k_min < exato:
+        k_min += 1                      # teto, sem depender do math.ceil
+    if k_min > n:
+        return (0.0, k_min, n)          # nem acertando tudo dá
+    if k_min <= 0:
+        return (100.0, 0, n)
+    prob = 0.0
+    for k in range(k_min, n + 1):
+        prob += _combinacoes(n, k) * (p ** k) * ((1 - p) ** (n - k))
+    return (round(min(100.0, max(0.0, prob * 100)), 1), k_min, n)
+
+
+def operacoes_que_ainda_cabem(minutos_restantes, operacoes_feitas,
+                              minutos_decorridos, teto_do_dia=None):
+    """Quantas operações ainda cabem, no RITMO REAL de hoje.
+
+    Não é chute: sai da cadência que ele mesmo imprimiu (minutos decorridos ÷
+    operações feitas) e respeita o teto de operações do plano. Devolve None
+    quando ainda não há operação nenhuma para medir a cadência — sem uma
+    operação fechada não existe ritmo, e inventar um seria inventar a conta
+    inteira que vem depois."""
+    try:
+        minutos_restantes = max(0, int(minutos_restantes))
+        operacoes_feitas = int(operacoes_feitas)
+        minutos_decorridos = max(0, int(minutos_decorridos))
+    except (TypeError, ValueError):
+        return None
+    if operacoes_feitas <= 0 or minutos_decorridos <= 0:
+        return None
+    cadencia = minutos_decorridos / float(operacoes_feitas)
+    cabem = int(minutos_restantes // cadencia)
+    if teto_do_dia:
+        try:
+            cabem = min(cabem, max(0, int(teto_do_dia) - operacoes_feitas))
+        except (TypeError, ValueError):
+            pass
+    return max(0, cabem)
+
+
 def pregao_vira_o_dia(cfg=None):
     """O pregão configurado atravessa a meia-noite?"""
     try:
@@ -2834,6 +2950,25 @@ _MODELOS_PREFERENCIA = [
 ]
 COOLDOWN_COTA_SEG = 900        # 429 (cota esgotada): estaciona por 15 min
 COOLDOWN_SOBRECARGA_SEG = 120  # 503/timeout: estaciona por 2 min
+
+# QUANTO TEMPO A CONVERSA PODE FICAR ESPERANDO A GEMINI.
+# "não responde perguntas rápido, está demorando muito pensando" — 14/08.
+# A conta antiga: onze modelos × até quatro configurações × 60 s de prazo.
+# Com a cota estourada, isso passava de dez minutos ANTES de ela chegar na
+# base própria — que responde na hora, do disco, sem cota. Ele ficava olhando
+# "✳ pensando…" com a resposta pronta e presa atrás de uma fila.
+#
+# O CORTE É NO TOTAL, NÃO NA CHAMADA. Baixar o prazo individual seria repetir
+# um erro já cometido: os 15 s originais estouravam ANTES de a resposta com
+# busca na internet chegar, e produziam "estou sem acesso à rede" com a rede
+# funcionando. Por isso a chamada continua com prazo largo (30 s, o dobro
+# daquele) e quem limita é o RELÓGIO DE PAREDE do turno inteiro.
+#
+# 45 s no total dá para a primeira tentativa com busca ir até o fim e ainda
+# sobra para uma segunda. Não vale para anexo: ler um vídeo demora mesmo, e
+# ali a espera é o serviço.
+ORCAMENTO_CHAT_SEG = 45
+TIMEOUT_CHAT_MS = 30_000
 
 _MODELOS = {
     "lista": list(_MODELOS_PREFERENCIA),
@@ -3785,6 +3920,40 @@ def carregar_licoes():
         return [str(x)[:300] for x in dados if str(x).strip()]
     return []
 
+
+def licoes_que_nao_ensinam(licoes):
+    """Separa as lições GRAVADAS que não instruem nada. (boas, ruins).
+
+    Isto é faxina retroativa, e existe porque as travas chegaram depois do
+    estrago. A lista dele, em 13/08 às 12:40, tinha SEIS lições, e a de número
+    6 era:
+        "o que aconteceu com HAPV3 HOJE?"
+    Uma pergunta. Ela foi gravada antes de a trava de pergunta existir, e
+    continuava entrando em TODA análise e TODA conversa como se fosse regra —
+    porque as lições vão inteiras para dentro do prompt.
+
+    Isso não é decoração: cada linha de lixo ali dentro gasta contexto e
+    empurra o modelo para responder a coisa errada. É parte da resposta a
+    'ela não está mais tão inteligente'.
+
+    Função PURA: recebe a lista, devolve duas. Quem apaga é quem chamou, e
+    depois de dizer o que vai apagar."""
+    boas, ruins = [], []
+    for licao in (licoes or []):
+        texto = str(licao).strip()
+        if not texto:
+            continue
+        motivo = ""
+        if _e_pergunta(texto):
+            motivo = "é uma pergunta, e pergunta não instrui nada"
+        else:
+            impossivel, porque = licao_pede_invencao(texto)
+            if impossivel:
+                motivo = porque
+        (ruins if motivo else boas).append(
+            (texto, motivo) if motivo else texto)
+    return boas, ruins
+
 # LIÇÕES QUE NÃO PODEM SER ACEITAS.
 #
 # Caso real (06/08 15:33): com a cota da API fora, ele ensinou
@@ -3883,6 +4052,32 @@ def _e_pergunta(texto):
     return bool(re.match(r"^(o que|oque|qual|quais|quando|quanto|quantos|"
                          r"como|onde|por que|porque|porqu[êe]|pq|quem|"
                          r"sera que|tem |teve |houve |voce |vc )", n))
+
+
+def separar_pergunta_da_regra(texto):
+    """Quando a 'lição' é UMA PERGUNTA seguida de uma REGRA, fica só a regra.
+
+    Log de 13/08, 16:03. Ele escreveu, numa mensagem só:
+        'o dia encerrar "tal horario", qual a probabilidade de matermos a meta
+         de hoje?olha no plano de trading e o motor para responder essa
+         pergunta - aprenda isso'
+    A regra é "olha no plano de trading e o motor". A pergunta é o EXEMPLO que
+    motivou a regra. O que ficou gravado foi a frase inteira, exemplo e tudo —
+    e aquilo passava a entrar em toda análise, para sempre.
+
+    `_e_pergunta` não pegava porque exige que o texto TERMINE em '?', e aqui a
+    interrogação está no meio. Devolve (regra, pergunta_descartada); quando não
+    há esse formato, devolve (texto, "") e nada muda."""
+    t = str(texto or "").strip()
+    if "?" not in t or t.endswith("?"):
+        return t, ""
+    antes, _sep, depois = t.partition("?")
+    depois = depois.strip(" -–—,.:;")
+    if len(depois.split()) < 3:
+        return t, ""            # o que sobra não é regra nenhuma
+    if not _e_pergunta(antes.strip() + "?"):
+        return t, ""            # o pedaço da frente não era pergunta
+    return depois, antes.strip() + "?"
 
 
 def _e_fato_efemero(texto):
@@ -7697,6 +7892,30 @@ def interpretar_intencao(texto):
                       r"confer(e|ir|indo)|l[êe]|ler|mostra|checa|checar|"
                       r"o que|como est[áa]|qual)\b", t):
         return "VER_GRAFICO"
+    # A META DO DIA É CONTA, NÃO É CONVERSA.
+    # 13/08, 16:01 e 16:05. Ele perguntou duas vezes "o dia encerra às 17:59,
+    # como estamos de probabilidade de bater a meta de hoje até lá?" e recebeu
+    # as duas vezes: "não tenho dados suficientes para prever com precisão".
+    # A ferramenta tinha TODOS os dados — a meta está no plano, o resultado do
+    # dia está no diário, o horário de fechamento está na configuração. Quem
+    # não tinha os dados era o modelo, porque a pergunta nunca chegou até o
+    # código que sabe respondê-la.
+    #
+    # Ele tentou consertar ensinando: "olha no plano de trading e o motor para
+    # responder essa pergunta - aprenda isso". Isso nunca poderia funcionar, e
+    # é importante dizer por quê: lição vira TEXTO no prompt, não vira acesso
+    # ao diário. Nenhuma frase gravada faz um modelo ler um arquivo.
+    #
+    # Agora é intenção própria, respondida por aritmética, antes de qualquer
+    # modelo — e por isso instantânea.
+    _sem_ac = _sem_acento(t)
+    if re.search(r"\bmeta\b|\bobjetivo do dia\b", _sem_ac) and \
+            re.search(r"\bbater\b|\bbatermos\b|\balcancar\b|\batingir\b|"
+                      r"\bchance\b|\bprobabilidade\b|\bconsigo\b|\bda tempo\b|"
+                      r"\bvou conseguir\b|\bcomo estamos\b|\bfalta\b|"
+                      r"\bda para\b|\bdah para\b", _sem_ac):
+        return "META"
+
     # STATUS é o CARD determinístico. Só para pedido literal e curto: perguntas
     # conversacionais ("como está a situação?", "como estamos?") merecem a
     # resposta pensada da IA, que recebe estes mesmos números no contexto.
@@ -7776,8 +7995,8 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
         return ("PEDIR_CONFIRMACAO", "ZERAR_CICLO")
     if intencao in ("VER_GRAFICO", "PRINT_AGORA"):
         return (intencao, None)
-    if intencao in ("DISPENSAR", "CANCELAR", "STATUS", "AJUDA", "MOSTRAR_PRINT",
-                    "POSTMORTEM",
+    if intencao in ("DISPENSAR", "CANCELAR", "STATUS", "META", "AJUDA",
+                    "MOSTRAR_PRINT", "POSTMORTEM",
                     "LIGAR_MOTOR", "DESLIGAR_MOTOR", "ENVIAR_WHATSAPP",
                     "CONECTAR_WHATSAPP", "LISTAR_LICOES", "LISTAR_CONHECIMENTO",
                     "NOTICIAS", "COTACAO", "PESQUISAR", "VER_CONFIG",
@@ -8142,6 +8361,12 @@ class SmcQuantApp(ctk.CTk):
                     "qual das duas passou a responder.")
         except Exception as e:
             self.log(f"⚠️ Não consegui montar o diagnóstico do sistema: {e}")
+
+        # FAXINA DAS LIÇÕES GRAVADAS ANTES DAS TRAVAS EXISTIREM.
+        # A lista dele tinha uma pergunta gravada como regra ("o que aconteceu
+        # com HAPV3 HOJE?"), e ela entrava em toda análise e toda conversa,
+        # porque as lições vão inteiras para dentro do prompt.
+        self._faxina_de_licoes()
 
         self.verificar_node()
         self.after(3000, self._loop_atualizar_dashboard)
@@ -9473,6 +9698,16 @@ class SmcQuantApp(ctk.CTk):
                             "\n\nMe diga qual delas virar regra — ou repita a "
                             "regra na mesma frase, que é como eu gravo com "
                             "certeza: '<a regra>, aprenda isso'.")
+            # A PERGUNTA É O EXEMPLO; A REGRA É O QUE VEM DEPOIS DELA.
+            # 13/08, 16:03: 'qual a probabilidade de batermos a meta de hoje?
+            # olha no plano de trading e o motor para responder essa pergunta —
+            # aprenda isso'. Gravar a frase inteira guardava o exemplo junto
+            # com a regra, e o exemplo passava a entrar em toda análise.
+            dado, pergunta_fora = separar_pergunta_da_regra(dado)
+            if pergunta_fora:
+                self.log(f"✂️ Da lição, tirei a pergunta que era só o exemplo: "
+                         f"“{pergunta_fora[:120]}”. Gravo a regra.")
+
             # UMA LIÇÃO NÃO REVOGA A REGRA DA CASA. Se o que ele está pedindo é
             # que ela produza dado que NÃO TEM, gravar isso seria transformar
             # "nunca invente número" em "invente quando faltar" — e para sempre,
@@ -10497,6 +10732,11 @@ class SmcQuantApp(ctk.CTk):
 
     # ---------------- Ações locais (determinísticas) ----------------
     def _chat_executar_acao(self, acao):
+        if acao == "META":
+            self._chat_responder(self._texto_da_meta_de_hoje(),
+                                  falar_tb=False,
+                                  texto_voz=self._meta_falada())
+            return
         if acao == "STATUS":
             # Na tela vai o card completo; na VOZ vai a frase falada (ler
             # bullet por bullet em voz alta é insuportável).
@@ -10760,6 +11000,271 @@ class SmcQuantApp(ctk.CTk):
                           f"{pend.get('ativo','')} entrada {pend.get('entry')} — "
                           "diga 'acatar' ou 'dispensar'.")
         return "\n".join(partes)
+
+    def _faxina_de_licoes(self):
+        """Tira da memória permanente as lições que não ensinam nada.
+
+        Roda na abertura, uma vez. Não é cosmético: cada lição vai INTEIRA
+        para dentro do prompt de toda análise e toda conversa, então uma
+        pergunta gravada como regra gasta contexto e empurra o modelo para
+        responder a coisa errada. Faz parte da resposta a 'ela não está mais
+        tão inteligente'.
+
+        E ela DIZ o que apagou. Memória mexida em silêncio é pior que memória
+        suja — ele precisa poder discordar."""
+        try:
+            boas, ruins = licoes_que_nao_ensinam(carregar_licoes())
+            if not ruins:
+                return
+            with open(LICOES_FILE, "w", encoding="utf-8") as f:
+                json.dump(boas[-40:], f, ensure_ascii=False, indent=1)
+            _cache_json.pop(LICOES_FILE, None)
+            linhas = [f"   • “{t[:150]}” — {m}" for t, m in ruins]
+            self.log(f"🧹 Tirei {len(ruins)} lição(ões) da memória permanente "
+                     "porque elas não ensinavam nada e entravam em toda "
+                     "análise:\n" + "\n".join(linhas) +
+                     f"\n   Sobraram {len(boas)} lição(ões) de verdade. "
+                     "Se alguma dessas fazia falta, é só me ensinar de novo "
+                     "em forma de regra.")
+        except Exception as e:
+            self.log(f"(faxina de lições não rodou: {str(e)[:120]})")
+
+    def _numeros_da_meta_de_hoje(self):
+        """Todos os números da pergunta "dá para bater a meta hoje?".
+
+        Sai do PLANO (meta e ritmo exigido), do DIÁRIO (o que ele fez hoje,
+        operação por operação) e da CONFIGURAÇÃO (hora de fechamento). Nada
+        aqui é estimado; o que não dá para medir volta como None e a resposta
+        diz isso com todas as letras."""
+        d = {}
+        stats = self._computar_stats_plano()
+        # META ZERO É "NÃO CONFIGURADA", NÃO "JÁ BATIDA".
+        # O teste de fumaça pegou: numa instalação nova, meta=0 fazia
+        # falta=0, e a resposta saía "a meta do ciclo já foi batida 🎯" —
+        # uma afirmação FALSA e simpática, que é o pior tipo. Quem nunca
+        # configurou meta não bateu meta nenhuma.
+        d["meta_configurada"] = bool(stats.get("meta"))
+        d["ritmo_dia"] = stats.get("meta_diaria")
+        d["falta_ciclo"] = stats.get("falta")
+        d["resultado_hoje"] = stats.get("resultado_hoje") or 0.0
+        d["dias_restantes"] = stats.get("dias_restantes")
+        # A META DE HOJE é o ritmo diário exigido, e o que falta para ela é o
+        # ritmo menos o que ele já fez hoje. Confundir isso com o que falta no
+        # CICLO inteiro daria uma conta impossível e um veredito errado.
+        d["meta_hoje"] = d["ritmo_dia"]
+        d["falta_hoje"] = (None if d["ritmo_dia"] is None
+                           else d["ritmo_dia"] - d["resultado_hoje"])
+        d["minutos_restantes"] = minutos_ate_o_fim_do_pregao()
+
+        fechadas = [p for p in operacoes_fechadas_hoje()
+                    if p.get("pnl_final") is not None]
+        ganhos = [p["pnl_final"] for p in fechadas if p["pnl_final"] > 0]
+        perdas = [-p["pnl_final"] for p in fechadas if p["pnl_final"] <= 0]
+        d["fechadas_hoje"] = len(fechadas)
+        d["ganho_medio"] = (sum(ganhos) / len(ganhos)) if ganhos else None
+        d["perda_media"] = (sum(perdas) / len(perdas)) if perdas else 0.0
+        d["taxa_acerto"] = (len(ganhos) / len(fechadas)) if fechadas else None
+
+        # A CADÊNCIA REAL DO DIA, para saber quantas operações ainda cabem.
+        # Sai dos carimbos que o diário JÁ grava ('dd/mm/aaaa HH:MM'): da
+        # abertura da primeira operação do pregão até agora. Nada de campo
+        # inventado — se o carimbo não estiver lá, a cadência volta None e a
+        # resposta diz que não dá para projetar.
+        minutos_decorridos = None
+        try:
+            marcos = [_hora_do_registro(p.get("data_abertura"))
+                      or _hora_do_registro(p.get("data_fechamento"))
+                      for p in fechadas]
+            marcos = sorted(m for m in marcos if m)
+            if marcos:
+                minutos_decorridos = int(
+                    (datetime.datetime.now() - marcos[0]).total_seconds() // 60)
+        except Exception:
+            minutos_decorridos = None
+        d["minutos_decorridos"] = minutos_decorridos
+        try:
+            teto = int(float(self.plano.get("max_operacoes_dia") or 0)) or None
+        except (TypeError, ValueError):
+            teto = None
+        d["teto_do_dia"] = teto
+        d["cabem"] = operacoes_que_ainda_cabem(
+            d["minutos_restantes"] or 0, d["fechadas_hoje"],
+            minutos_decorridos or 0, teto)
+        return d
+
+    def _texto_da_meta_de_hoje(self):
+        """A resposta que faltava em 13/08 às 16:01.
+
+        Ele perguntou "o dia encerra às 17:59, como estamos de probabilidade de
+        bater a meta de hoje até lá?" e recebeu "não tenho dados suficientes
+        para prever com precisão" — com a meta no plano, o resultado no diário
+        e o horário na configuração. O que faltava não era dado: era esta
+        função."""
+        try:
+            d = self._numeros_da_meta_de_hoje()
+        except Exception as e:
+            return ("Não consegui montar a conta da meta agora "
+                    f"({type(e).__name__}). Confira se o Plano de Trading tem "
+                    "meta e prazo preenchidos — sem isso não há o que calcular, "
+                    "e eu não vou estimar por cima.")
+
+        if not d.get("meta_configurada"):
+            return ("Você ainda não configurou uma META nesta conta, então não "
+                    "há o que eu conferir — e eu não vou dizer 'meta batida' "
+                    "sobre uma meta que não existe.\nAbra 📊 Plano de Trading, "
+                    "preencha 'Meta (US$)' e o prazo em dias, e me pergunte de "
+                    "novo: a partir daí eu faço a conta a qualquer hora do "
+                    "pregão.")
+        if not d.get("meta_hoje"):
+            return ("Não há meta para hoje que eu possa conferir: "
+                    + ("o prazo da meta já venceu — reinicie o ciclo no Plano "
+                       "de Trading para um novo prazo."
+                       if (d.get("falta_ciclo") or 0) > 0 else
+                       "a meta do ciclo já foi batida. 🎯"))
+
+        linhas = [f"META DE HOJE — conta '{nome_conta_ativa()}'"]
+        linhas.append(f"• Meta do dia: US$ {d['meta_hoje']:,.2f} "
+                      f"(ritmo exigido para fechar o ciclo em "
+                      f"{d['dias_restantes']} dia(s))")
+        linhas.append(f"• Feito até agora hoje: US$ {d['resultado_hoje']:+,.2f} "
+                      f"em {d['fechadas_hoje']} operação(ões) fechada(s)")
+
+        if d["falta_hoje"] <= 0:
+            linhas.append("• 🎯 A meta de HOJE já está batida. O que vier agora "
+                          "é acima do plano — e é exatamente aqui que se "
+                          "devolve o dia inteiro. Seu plano permite parar.")
+            return "\n".join(linhas)
+
+        linhas.append(f"• Falta hoje: US$ {d['falta_hoje']:,.2f}")
+
+        mins = d["minutos_restantes"]
+        if mins is None:
+            linhas.append("• Não consegui ler a hora de fechamento do pregão "
+                          "na configuração — sem ela não dá para dizer quanto "
+                          "tempo resta.")
+        else:
+            linhas.append(f"• Tempo até o fechamento: {mins // 60}h{mins % 60:02d}")
+            if mins == 0:
+                linhas.append("• O pregão configurado já fechou. A meta de hoje "
+                              "não será batida hoje — e isso é informação, não "
+                              "julgamento.")
+                return "\n".join(linhas)
+
+        # A PARTE QUE ELE PEDIU: a probabilidade. Só sai se os quatro números
+        # existirem de verdade. Sem histórico do dia não há taxa de acerto, e
+        # sem taxa de acerto qualquer porcentagem seria invenção.
+        if not d["fechadas_hoje"] or d["ganho_medio"] is None or \
+                d["taxa_acerto"] is None:
+            linhas.append(
+                "\nNÃO vou te dar uma porcentagem: hoje ainda não há operação "
+                "fechada com ganho para medir a sua taxa de acerto e o seu "
+                "ganho médio do dia. Sem esses dois números, qualquer "
+                "probabilidade que eu dissesse seria inventada — e é justamente "
+                "isso que você me pediu para nunca fazer.\n"
+                f"O que dá para afirmar: faltam US$ {d['falta_hoje']:,.2f}"
+                + (f" e restam {mins // 60}h{mins % 60:02d} de pregão."
+                   if mins else "."))
+            return "\n".join(linhas)
+        if d["cabem"] is None:
+            # Sem cadência medida não dá para projetar quantas operações
+            # cabem — e sem isso não há conta. Dizer o motivo CERTO importa:
+            # mandar ele procurar taxa de acerto quando o que falta é ritmo
+            # é mandá-lo olhar para o lugar errado.
+            linhas.append(
+                "\nNÃO vou te dar uma porcentagem: não consegui medir o seu "
+                "ritmo de hoje (os carimbos de hora das operações não estão "
+                "legíveis), e sem ritmo não dá para saber quantas operações "
+                "ainda cabem até o fechamento.")
+            return "\n".join(linhas)
+
+        linhas.append(
+            f"• No seu ritmo de hoje ainda cabem ~{d['cabem']} operação(ões) "
+            + (f"(teto do plano: {d['teto_do_dia']}/dia)"
+               if d["teto_do_dia"] else "até o fechamento"))
+        linhas.append(f"• Hoje: acerto {d['taxa_acerto'] * 100:.0f}%, ganho "
+                      f"médio US$ {d['ganho_medio']:,.2f}, perda média "
+                      f"US$ {d['perda_media']:,.2f}")
+
+        conta = chance_de_bater_a_meta(d["falta_hoje"], d["cabem"],
+                                       d["taxa_acerto"], d["ganho_medio"],
+                                       d["perda_media"])
+        if conta is None:
+            linhas.append("\nNão consegui fechar a conta com esses números.")
+            return "\n".join(linhas)
+        prob, precisa, n = conta
+        if precisa is not None and n and precisa > n:
+            linhas.append(
+                f"\n➡️ CHANCE: 0%. Precisaria de {precisa} acerto(s) e só cabem "
+                f"{n} operação(ões) até o fechamento. Acertando TODAS ainda não "
+                "chega. A meta de hoje não sai hoje — o que resta é não "
+                "estragar o que já está feito.")
+        elif n == 0:
+            linhas.append("\n➡️ CHANCE: 0%. Não cabe mais operação nenhuma até o "
+                          "fechamento, seja por tempo ou pelo teto do plano.")
+        else:
+            linhas.append(
+                f"\n➡️ CHANCE: {prob:.0f}% — precisa de {precisa} acerto(s) nas "
+                f"{n} operação(ões) que ainda cabem.")
+            if prob < 20:
+                linhas.append("   Baixa. Correr atrás disso é o caminho mais "
+                              "curto para transformar um dia ruim num dia caro.")
+            elif prob < 55:
+                linhas.append("   Dá, mas depende de o mercado colaborar. "
+                              "Forçar setup para chegar lá é o oposto do plano.")
+            else:
+                linhas.append("   Está ao alcance no seu ritmo. Nada aqui "
+                              "autoriza baixar o piso de qualidade.")
+
+        # O QUE ESTE NÚMERO NÃO É. Sem isto, uma conta vira uma promessa.
+        linhas.append(
+            "\n(Como eu cheguei nisso: são as SUAS operações de hoje — taxa de "
+            "acerto, ganho e perda médios — projetadas nas operações que ainda "
+            "cabem no tempo que resta. É aritmética sobre o que já aconteceu, "
+            "não previsão de mercado: supõe que as próximas se pareçam com as "
+            "de hoje. O mercado não assinou esse contrato.)")
+        return "\n".join(linhas)
+
+    def _meta_falada(self):
+        """A mesma conta em uma frase — bullet lido em voz alta é ruído."""
+        try:
+            d = self._numeros_da_meta_de_hoje()
+        except Exception:
+            return "Não consegui montar a conta da meta agora."
+        if not d.get("meta_configurada"):
+            return ("Você ainda não configurou uma meta nesta conta. Preencha "
+                    "no Plano de Trading e me pergunte de novo.")
+        if not d.get("meta_hoje"):
+            return "Não há meta de hoje configurada para eu conferir."
+        if d["falta_hoje"] <= 0:
+            return "A meta de hoje já está batida. Seu plano permite parar."
+        mins = d["minutos_restantes"]
+        frase = (f"Faltam {d['falta_hoje']:,.0f} dólares para a meta de hoje")
+        if mins:
+            frase += f", e restam {mins // 60} horas e {mins % 60} minutos"
+        frase += ". "
+        # O MOTIVO CERTO PARA CADA CASO. Dizer "não há operação fechada
+        # suficiente" quando o problema real é falta de TEMPO é uma mentira
+        # por descuido — e manda ele olhar para o lugar errado.
+        if not d["fechadas_hoje"] or d["ganho_medio"] is None or \
+                d["taxa_acerto"] is None:
+            frase += ("Não vou dar porcentagem: ainda não há operação fechada "
+                      "suficiente hoje para medir a sua taxa de acerto sem "
+                      "inventar.")
+            return frase
+        if not d["cabem"]:
+            frase += ("A chance é zero: não cabe mais operação nenhuma até o "
+                      "fechamento, seja por tempo ou pelo teto do plano.")
+            return frase
+        conta = chance_de_bater_a_meta(d["falta_hoje"], d["cabem"],
+                                       d["taxa_acerto"], d["ganho_medio"],
+                                       d["perda_media"])
+        if conta:
+            prob, precisa, n = conta
+            frase += (f"A chance é de {prob:.0f} por cento: precisa de "
+                      f"{precisa} acertos nas {n} operações que ainda cabem.")
+        else:
+            frase += "Não consegui fechar a conta com os números de hoje."
+        return frase
 
     def _status_falado(self):
         """O mesmo status, em UMA frase natural — é isso que sai pelo alto-falante
@@ -11100,7 +11605,7 @@ class SmcQuantApp(ctk.CTk):
             client = genai.Client(
                 api_key=carregar_api_key(),
                 http_options=types.HttpOptions(
-                    timeout=300_000 if anexo else 60_000))
+                    timeout=300_000 if anexo else TIMEOUT_CHAT_MS))
             historico = carregar_chat()[-12:]
             corpo = "\n".join(
                 f"{'TRADER' if m['papel'] == 'voce' else 'IA'}: {m['texto']}"
@@ -11170,8 +11675,31 @@ class SmcQuantApp(ctk.CTk):
                 excluir=excluir, preferido=getattr(self, "_chat_modelo_bom", None))
             if not modelos:
                 modelos = list(_MODELOS_PREFERENCIA)
+            # ORÇAMENTO DE ESPERA. "não responde perguntas rápido, está
+            # demorando muito pensando" — 14/08.
+            #
+            # A conta era esta: onze modelos, cada um com até quatro
+            # configurações, cada chamada com prazo de 60 s. Com a cota
+            # estourada isso podia passar de dez minutos ANTES de ela chegar
+            # na base própria, que responderia na hora e sem cota nenhuma.
+            # Ele ficava olhando "✳ pensando…" enquanto a resposta estava
+            # pronta no disco, esperando a fila terminar.
+            #
+            # Agora existe um teto de tempo de parede. Estourou, o turno
+            # segue para a base e para a IA local em vez de continuar batendo
+            # numa porta que não abre. O teto NÃO se aplica quando há anexo:
+            # ler um vídeo demora mesmo, e ali a espera é o serviço.
+            inicio_espera = time.time()
+            orcamento = None if anexo else ORCAMENTO_CHAT_SEG
+            estourou = False
             for modelo in modelos:
+                if orcamento and (time.time() - inicio_espera) > orcamento:
+                    estourou = True
+                    break
                 for config in self._chat_configs(modelo, teto, com_busca=not anexo):
+                    if orcamento and (time.time() - inicio_espera) > orcamento:
+                        estourou = True
+                        break
                     try:
                         r = client.models.generate_content(
                             model=modelo, contents=conteudo, config=config)
@@ -11200,8 +11728,13 @@ class SmcQuantApp(ctk.CTk):
                         if tipo_falha in ("cota", "invalido"):
                             break      # não adianta tentar outra config do mesmo
                         continue
-                if resposta:
+                if resposta or estourou:
                     break
+            if estourou and not resposta:
+                self.log(f"⏱️ Passei de {ORCAMENTO_CHAT_SEG}s tentando a Gemini "
+                         "sem resposta — parei a fila e fui responder com o que "
+                         "tenho aqui. Esperar mais não deixaria a resposta "
+                         "melhor, só mais tarde.")
 
             # ---- SEGUNDA LEITURA DO MESMO NÚMERO ----
             # Só quando a pergunta é de NÍVEL e há imagem: é o único caso em

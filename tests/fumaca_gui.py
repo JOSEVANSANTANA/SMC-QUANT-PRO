@@ -84,10 +84,33 @@ def main():
             f"modo de aparência é '{modo}', não 'Dark' — os rótulos que não "
             "declaram cor de texto ficam invisíveis sobre o fundo escuro do app")
 
+    # LIÇÕES ENVENENADAS, gravadas ANTES de a janela abrir — é assim que elas
+    # existem na máquina dele. A lista real de 13/08 tinha uma PERGUNTA na
+    # posição 6 ("o que aconteceu com HAPV3 HOJE?"), gravada antes de a trava
+    # existir, e ela entrava em toda análise porque as lições vão inteiras
+    # para dentro do prompt.
+    import json as _json
+    with open(mod.LICOES_FILE, "w", encoding="utf-8") as f:
+        _json.dump(["nunca invente numeros, nunca alucine",
+                    "o que aconteceu com HAPV3 HOJE?"], f, ensure_ascii=False)
+
     app = mod.SmcQuantApp()
     app.update_idletasks()
     app.update()
     print(f"janela criada — {app.winfo_geometry()}")
+
+    print("\n[faxina das lições que não ensinam nada]")
+    restantes = mod.carregar_licoes()
+    print(f"       sobraram: {restantes}")
+    if any("HAPV3" in l for l in restantes):
+        falhas.append("faxina: a pergunta gravada como lição continua lá, "
+                      "entrando em toda análise")
+        print("  FALHA a pergunta continua gravada como lição")
+    elif len(restantes) != 1:
+        falhas.append(f"faxina: levou lição boa junto — sobrou {restantes}")
+        print("  FALHA levou lição boa junto")
+    else:
+        print("  OK   tirou a pergunta e manteve a regra")
 
     print("\n[widgets que a refatoração da aba Motor precisa ter criado]")
     for attr in ("btn_ligar", "api_entry", "janela_dropdown", "console",
@@ -173,6 +196,88 @@ def main():
     print("\n[plano de trading e dashboard]")
     passo(app, "salvar plano", app.salvar_plano_trading)
     passo(app, "atualizar dashboard", app._atualizar_dashboard)
+
+    # A CONTA DA META, COM O APP DE VERDADE ABERTO.
+    # 13/08, 16:01: "o dia encerra às 17:59, como estamos de probabilidade de
+    # bater a meta de hoje até lá?" → "não tenho dados suficientes para
+    # prever". Tinha todos os dados. Aqui o caminho inteiro é percorrido —
+    # plano, diário e horário do pregão — para provar que ele responde em vez
+    # de estourar ou devolver vazio.
+    print("\n[a conta da meta de hoje]")
+    # SEM META CONFIGURADA ele não pode dizer "meta batida". Foi este passo
+    # que pegou a afirmação falsa e simpática numa instalação nova.
+    sem_meta = app._texto_da_meta_de_hoje()
+    if "batida" in sem_meta.lower() and "não configurou" not in sem_meta:
+        falhas.append("meta: sem meta configurada, ele disse que a meta foi "
+                      f"batida — {sem_meta[:120]}")
+        print("  FALHA disse 'meta batida' sem meta configurada")
+    else:
+        print("  OK   sem meta configurada, ele diz isso em vez de inventar")
+
+    # AGORA COM META E COM DIÁRIO. Aqui a aritmética é exercitada de verdade:
+    # meta de US$400 em 2 dias (US$200/dia), duas operações fechadas hoje —
+    # uma de +100 e uma de -50 — e o pregão ainda aberto.
+    app.plano["meta_alvo"] = 400.0
+    app.plano["dias_meta"] = 2
+    app.plano["data_inicio"] = mod.datetime.date.today().isoformat()
+    app.plano["max_operacoes_dia"] = 10
+    # PREGÃO ABERTO DE PROPÓSITO. Com o horário padrão, este teste rodaria de
+    # madrugada com o pregão fechado e nunca exercitaria a conta da chance —
+    # passaria verde sem ter testado a parte que importa.
+    agora = mod.datetime.datetime.now()
+    fecha = (agora + mod.datetime.timedelta(hours=3)).strftime("%H:%M")
+    mod.salvar_config({"hora_inicio": "00:01", "hora_fim": fecha})
+    print(f"       pregão do teste: 00:01 → {fecha} (aberto agora)")
+    carimbo = (agora - mod.datetime.timedelta(hours=2)).strftime('%d/%m/%Y %H:%M')
+    fim = agora.strftime('%d/%m/%Y %H:%M')
+    # conta_id e data_criacao são obrigatórios: sem eles a posição não passa
+    # pelos filtros de conta e de ciclo, e o diário sairia vazio — o teste
+    # passaria sem ter testado nada.
+    conta = mod.conta_ativa_id()
+    posicoes = [
+        {"id": 901, "conta_id": conta, "status": "FECHADA", "direcao": "BUY",
+         "ativo": "MESU6", "contratos": 2, "entry": 7800.0, "pnl_final": 100.0,
+         "data_criacao": carimbo, "data_abertura": carimbo,
+         "data_fechamento": fim},
+        {"id": 902, "conta_id": conta, "status": "FECHADA", "direcao": "SELL",
+         "ativo": "MESU6", "contratos": 2, "entry": 7810.0, "pnl_final": -50.0,
+         "data_criacao": carimbo, "data_abertura": carimbo,
+         "data_fechamento": fim},
+    ]
+    passo(app, "gravar duas operações fechadas no diário",
+          lambda: mod.salvar_posicoes(posicoes))
+    fechadas_hoje = len(mod.operacoes_fechadas_hoje())
+    print(f"       o diário enxergou {fechadas_hoje} operação(ões) de hoje")
+    if fechadas_hoje != 2:
+        falhas.append("meta: o diário não enxergou as duas operações gravadas "
+                      f"({fechadas_hoje}) — a conta seria feita sobre o vazio")
+
+    texto_meta = app._texto_da_meta_de_hoje()
+    if "CHANCE:" not in texto_meta:
+        falhas.append("meta: com pregão aberto, meta configurada e duas "
+                      "operações fechadas, a conta da chance NÃO saiu — "
+                      f"veio: {texto_meta[:200]}")
+        print("  FALHA a conta da chance não saiu")
+    else:
+        print("  OK   a conta da chance saiu")
+
+    for nome, fn in (("texto na tela", app._texto_da_meta_de_hoje),
+                     ("versão falada", app._meta_falada),
+                     ("números crus", app._numeros_da_meta_de_hoje)):
+        try:
+            saida = fn()
+            if not saida:
+                falhas.append(f"meta: {nome} veio vazio")
+                print(f"  FALHA {nome} veio vazio")
+            else:
+                print(f"  OK   {nome}")
+                if isinstance(saida, str):
+                    for linha in saida.splitlines():
+                        print(f"       {linha}")
+        except Exception as e:
+            falhas.append(f"meta ({nome}): {type(e).__name__}: {e}")
+            print(f"  FALHA {nome}: {type(e).__name__}: {e}")
+            traceback.print_exc()
 
     destino = os.path.join(tempfile.gettempdir(), "smc_fumaca.png")
     try:
