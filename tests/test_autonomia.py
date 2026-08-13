@@ -276,3 +276,120 @@ class TestIALocalSemChave(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestOModeloPequenoNaoPodeSequestrarABase(unittest.TestCase):
+    """O teste real de 12/08, 21:18 — com a IA local instalada:
+
+        ❯ O QUE É SMC?
+        ✳ "SMC, no contexto do mercado financeiro in which we're discussing
+           futures trading e altamente volátil como o forex (minúcias como
+           E-mini), é a sigla para Smart Money Concepts..."
+
+    Inglês no meio da frase, "minúcias" no lugar de "micro", e E-mini de ÍNDICE
+    chamado de forex. A base própria responde essa pergunta com precisão, sem
+    cota e sem internet — e não foi consultada.
+
+    A causa foi arquitetural e minha: `responder_offline` só era tentado depois
+    que TODOS os modelos falhavam. Enquanto o último da fila era a Gemini, isso
+    funcionava. Com a IA local, o último da fila nunca falha — e a base deixou
+    de existir na prática.
+    """
+
+    def test_a_base_responde_o_que_e_smc(self):
+        """Se este teste falhar, a pergunta volta a cair no modelo pequeno."""
+        ns = carregar(
+            ["_sem_acento", "_norm_busca", "_parecido", "BASE_SMC", "BASE_MACRO",
+             "_todos_os_topicos", "_nota_base_smc", "buscar_base_smc"],
+            stubs={"unicodedata": __import__("unicodedata")})
+        for pergunta in ("o que é smc?", "o que é vwap?", "o que é order block?",
+                         "o que é choch?", "o que é liquidez?"):
+            self.assertIsNotNone(ns["buscar_base_smc"](pergunta), pergunta)
+
+    def test_o_prompt_do_provedor_diz_o_que_o_MES_e(self):
+        """O modelo pequeno chamou o Micro E-mini de forex e inventou o valor
+        por ponto. Isso não se conserta com guarda depois — se conserta
+        dizendo, no prompt, o que o contrato é."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _mensagens_para_provedor")
+        corpo = fonte[i:i + 4000]
+        self.assertIn("NÃO é forex", corpo)
+        self.assertIn("US$ 5 por ponto", corpo)
+        self.assertIn("PORTUGUÊS DO BRASIL", corpo)
+
+    def test_a_temperatura_dos_provedores_e_baixa(self):
+        """Criatividade numa mesa é defeito: é o que faz um modelo pequeno
+        completar um multiplicador que não sabe."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _pedir_openai")
+        self.assertIn('"temperature": 0.2', fonte[i:i + 900])
+
+
+class TestMentiraNaVozPassiva(unittest.TestCase):
+    """12/08, 21:35 — o modelo local respondeu a 'DEIXE ISSO SALVO' com:
+
+        "Claro, ficou salvo:
+         PENÚLTIMA LEITURA DO MOTOR (21:30): BUY MESU6 @ 7769.25..."
+
+    Nada foi salvo, e o conteúdo listado como salvo tinha acabado de ser
+    inventado. A guarda anti-mentira olhava só a primeira pessoa ('gravei',
+    'salvei') e a forma passiva passava inteira.
+    """
+
+    def _ns(self):
+        return carregar(["_ALEGACOES_FALSAS", "_RE_ALEGACOES",
+                         "_AVISO_ALEGACAO", "censurar_alegacao_falsa"])
+
+    def test_a_frase_real_e_censurada(self):
+        ns = self._ns()
+        _t, censurou = ns["censurar_alegacao_falsa"](
+            "Claro, ficou salvo:\n\nPENÚLTIMA LEITURA DO MOTOR (21:30): "
+            "BUY MESU6 @ 7769.25, probabilidade 72.0%")
+        self.assertTrue(censurou)
+
+    def test_outras_formas_passivas_tambem(self):
+        ns = self._ns()
+        for t in ("Está gravado na minha memória.",
+                  "Foi registrado com sucesso.",
+                  "Pronto, já salvei na memória."):
+            self.assertTrue(ns["censurar_alegacao_falsa"](t)[1], t)
+
+    def test_ensinar_o_comando_nao_e_mentira(self):
+        """Explicar COMO salvar é o comportamento correto — censurar isso
+        deixaria a ferramenta sem como orientar."""
+        ns = self._ns()
+        for t in ("Para salvar isso, diga 'aprenda isso' no fim da frase.",
+                  "Se quiser que fique gravado, termine com 'aprenda isso'."):
+            self.assertFalse(ns["censurar_alegacao_falsa"](t)[1], t)
+
+    def test_conversa_normal_passa(self):
+        ns = self._ns()
+        for t in ("A VWAP está em 7769.56.",
+                  "O viés é comprador e a estrutura de alta segue intacta."):
+            self.assertFalse(ns["censurar_alegacao_falsa"](t)[1], t)
+
+
+class TestBuscaQueNaoViraDespejo(unittest.TestCase):
+    """12/08, 21:38. Ele escreveu uma frase SOBRE ela:
+
+        "VOCE CONSEGUE SIM, VOCE TEM CAPACIDADE PARA ISSO... É SÓ VOCE
+         PESQUISAR E APRENDER"
+
+    A palavra 'pesquisar' bastou para virar consulta. A busca não achou nada, e
+    ela despejou o resultado da Lotofácil e o balanço da Copasa.
+    """
+
+    def test_frase_dirigida_a_ela_nao_vira_consulta(self):
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _chat_web_pesquisa")
+        bloco = fonte[i:i + 2600]
+        self.assertIn("Isso soou como uma frase para mim", bloco)
+        self.assertIn("len(consulta.split()) > 12", bloco)
+
+    def test_manchete_sem_relacao_nao_entra(self):
+        """Manchete que não casa com a pergunta não é resposta parcial: é
+        ruído com cara de resposta."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _chat_web_pesquisa")
+        bloco = fonte[i:i + 3200]
+        self.assertIn("termos & set(", bloco)

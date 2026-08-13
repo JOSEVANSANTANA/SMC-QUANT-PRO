@@ -95,12 +95,41 @@ class TestSegundaInteligencia(unittest.TestCase):
         self.assertIn("Ausência de dado não é conclusão", corpo)
 
     def test_o_alternativo_e_tentado_ANTES_do_despejo_generico(self):
+        """A ordem certa tem TRÊS degraus, e cada um existe por um motivo:
+
+            1. a BASE, quando há verbete para a pergunta
+            2. o provedor alternativo (inclusive a IA local)
+            3. o despejo genérico de "não tenho como responder"
+
+        O degrau 1 nasceu do teste real de 12/08: com a IA local instalada, o
+        último da fila nunca falha, então o degrau 3 deixou de ser alcançado —
+        e junto com ele a base. "O QUE É SMC?" foi parar num modelo de 7B, que
+        respondeu que E-mini de índice é forex. Verbete curado ganha de
+        geração plausível.
+
+        O degrau 3 continua vindo por último: se o despejo viesse antes, a
+        segunda IA nunca seria usada — que era o defeito da 2.23."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def _chat_worker")
-        corpo = fonte[i:i + 12000]
-        self.assertLess(corpo.index("responder_por_provedor_alternativo"),
-                        corpo.index("responder_offline"),
+        corpo = fonte[i:i + 14000]
+        i_base = corpo.index("da_base = responder_offline(")
+        i_alt = corpo.index("responder_por_provedor_alternativo")
+        i_generico = corpo.index("local = responder_offline(")
+        self.assertLess(i_base, i_alt,
+                        "com a IA local sempre de pé, a base nunca seria "
+                        "alcançada se viesse depois dela")
+        self.assertLess(i_alt, i_generico,
                         "se o despejo vier primeiro, a segunda IA nunca é usada")
+
+    def test_a_base_so_ganha_QUANDO_TEM_VERBETE(self):
+        """A base não pode sequestrar toda pergunta: sem verbete, quem responde
+        é o modelo. Por isso o degrau 1 é guardado por buscar_base_smc."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _chat_worker")
+        corpo = fonte[i:i + 14000]
+        i_guarda = corpo.index("if buscar_base_smc(pergunta):")
+        i_base = corpo.index("da_base = responder_offline(")
+        self.assertLess(i_guarda, i_base)
 
     def test_dinheiro_continua_fora_do_modelo(self):
         """A camada de provedores é só CONVERSA. Dimensionamento e piso de

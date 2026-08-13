@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.29.0"
+VERSAO_ATUAL = "2.30.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1013,7 +1013,12 @@ def _pedir_openai(url, chave, modelo, mensagens, timeout=45):
         url,
         headers={"Authorization": f"Bearer {chave}",
                  "Content-Type": "application/json"},
-        json={"model": modelo, "messages": mensagens, "max_tokens": 1200},
+        # TEMPERATURA BAIXA, DE PROPÓSITO. Numa mesa, criatividade é o defeito:
+        # ela é o que faz um modelo pequeno "completar" um valor por ponto que
+        # não sabe, ou escorregar de idioma no meio da frase. 0,2 mantém a
+        # resposta natural e reduz muito a invenção.
+        json={"model": modelo, "messages": mensagens, "max_tokens": 1200,
+              "temperature": 0.2},
         timeout=timeout)
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code}: {r.text[:220]}")
@@ -4358,6 +4363,42 @@ def bloco_web_para_prompt(texto):
 # Os textos são escritos para serem LIDOS EM VOZ ALTA: nada de asterisco, sigla
 # solta ou lista picotada.
 BASE_SMC = [
+    # O VERBETE MAIS BÁSICO DE TODOS — E ELE NÃO EXISTIA.
+    # A base tinha 51 verbetes SOBRE conceitos de SMC e nenhum sobre o que SMC
+    # É. Resultado: "O QUE É SMC?" não achava verbete, ia para o modelo, e o
+    # modelo pequeno respondeu (12/08, 21:18) que Micro E-mini de índice é
+    # "forex". Foi um teste do trader que encontrou o buraco.
+    {"t": "SMC — o que é, de onde vem e o que ele afirma",
+     "k": ["smc", "smart money concepts", "dinheiro inteligente",
+           "o que e smc", "metodologia smc", "ict", "conceito de smart money"],
+     "r": "SMC (Smart Money Concepts) é uma forma de LER O GRÁFICO partindo de "
+          "uma premissa: o preço não passeia, ele é levado até onde há ordem "
+          "parada. Quem move volume grande — mesa institucional, formador de "
+          "mercado — não consegue comprar tudo o que quer num preço só; "
+          "precisa de alguém do outro lado. Esse alguém está onde o varejo "
+          "deixa stop: acima de topos óbvios e abaixo de fundos óbvios. Daí a "
+          "leitura: o mercado sobe para BUSCAR os stops de venda, e desce para "
+          "buscar os de compra.\n\n"
+          "O QUE ISSO MUDA NA PRÁTICA: em vez de comprar rompimento, você "
+          "espera o rompimento FALHAR (a varredura de liquidez), a estrutura "
+          "virar (CHoCH), e entra na volta ao ponto de origem do movimento "
+          "(order block) ou na ineficiência que ele deixou (FVG). Você compra "
+          "em desconto e vende em prêmio, não o contrário.\n\n"
+          "AS PEÇAS: estrutura (CHoCH, BOS, MSS), liquidez (BSL, SSL, topos e "
+          "fundos iguais, inducement), zonas (order block, breaker, FVG) e "
+          "contexto (premium/discount, killzones, Power of 3).\n\n"
+          "O QUE SMC NÃO É: não é indicador, não é sistema automático e não é "
+          "garantia. É um jeito de organizar o que se vê — e uma leitura "
+          "errada continua sendo uma leitura errada, por mais bonito que seja "
+          "o nome do padrão. Por isso, aqui na mesa, quem decide TAMANHO de "
+          "posição e limite de perda não é a leitura: é o plano, em cálculo "
+          "determinístico.\n\n"
+          "ONDE SE APLICA: o SMC nasceu no mercado de câmbio e foi levado para "
+          "índices, ações e cripto. O que você opera — MES/MESU6, o Micro "
+          "E-mini S&P 500 — é um contrato FUTURO DE ÍNDICE de ações da CME, "
+          "não é câmbio nem cripto. Vale US$ 5 por ponto, com tick de 0,25 "
+          "ponto (US$ 1,25)."},
+
     {"t": "CHoCH (mudança de caráter)",
      "k": ["choch", "change of character", "mudanca de carater", "mudança de caráter",
            "virada de estrutura", "troca de carater",
@@ -5463,6 +5504,15 @@ _ALEGACOES_FALSAS = [
     r"\b(aprendi|registrei|memorizei|gravei|salvei|processei)\b[^.!?]{0,40}?"
     r"\b(li[çc][ãa]o|regra|isso|comando|mem[óo]ria|sistema|ordem)",
     r"\bli[çc][ãa]o\s+(aprendida|registrada|memorizada|gravada|salva)",
+    # "Claro, ficou salvo:" — o modelo LOCAL escreveu isto em 12/08 21:35,
+    # respondendo a "DEIXE ISSO SALVO", e listou como salvo um resumo que ele
+    # tinha acabado de inventar. A forma PASSIVA ("ficou salvo", "está
+    # gravado") escapava de todos os padrões, que só olhavam a primeira
+    # pessoa ("gravei", "salvei"). Mentira na voz passiva continua mentira.
+    r"\b(ficou|fica|est[áa]|foi|j[áa] est[áa])\s+"
+    r"(salv[oa]|gravad[oa]|registrad[oa]|memorizad[oa]|anotad[oa])\b",
+    r"^\s*(pronto|claro|feito)[,.:]?\s*(j[áa]\s+)?"
+    r"(salvei|gravei|registrei|anotei|ficou salvo|est[áa] salvo)\b",
     r"\bcomando\s+(interno\s+)?(executado|processado|enviado|realizado)",
     r"\b(liguei|desliguei|ativei|desativei)\b[^.!?]{0,40}?"
     r"\b(motor|rob[ôo]|an[áa]lise)",
@@ -9126,13 +9176,36 @@ class SmcQuantApp(ctk.CTk):
                                           "por exemplo: 'pesquisa na internet "
                                           "sobre a decisão do Fed de hoje'.")
             return
+        # NÃO É TODA FRASE COM "PESQUISAR" QUE É UM PEDIDO DE PESQUISA.
+        # Log de 12/08, 21:38. Ele escreveu:
+        #     "VOCE CONSEGUE SIM, VOCE TEM CAPACIDADE PARA ISSO... É SÓ VOCE
+        #      PESQUISAR E APRENDER"
+        # Aquilo era uma OPINIÃO sobre ela, não um assunto para buscar. A
+        # palavra 'pesquisar' bastou para virar consulta — e a resposta foi
+        # uma lista de resultados da Lotofácil e balanços de empresas.
+        # Frase DIRIGIDA A ELA não é termo de busca.
+        if re.search(r"\bvoc[êe]s?\b|\bte\b|\bti\b", consulta, re.I) or \
+                len(consulta.split()) > 12:
+            self._chat_entregar_resposta(
+                "Isso soou como uma frase para mim, não como um assunto para "
+                "eu pesquisar — e eu não quero jogar manchete aleatória na sua "
+                "tela. Se for para buscar, me diga o TERMO: 'pesquisa a "
+                "decisão do Fed de hoje', por exemplo.")
+            return
         achados = buscar_na_web(consulta)
         if not achados:
-            # Notícia é a fonte que quase sempre responde quando a busca falha.
-            noticias = noticias_do_mercado(maximo=5, termo=consulta)
+            # ANTES, quando a busca falhava, ela despejava as manchetes do dia
+            # — que não tinham NADA a ver com o que foi perguntado. Foi assim
+            # que "é só você pesquisar e aprender" devolveu o resultado da
+            # Lotofácil e o balanço da Copasa. Manchete sem relação com a
+            # pergunta não é resposta parcial: é ruído com cara de resposta.
+            # Agora só entram as que casam com alguma palavra da consulta.
+            termos = {p.lower() for p in re.findall(r"\w{4,}", consulta)}
+            noticias = [n for n in (noticias_do_mercado(maximo=8, termo=consulta) or [])
+                        if termos & set(re.findall(r"\w{4,}", n["titulo"].lower()))]
             if noticias:
                 linhas = "\n".join(f"• [{n['fonte']} · {_idade_texto(n['quando'])}] "
-                                   f"{n['titulo']}" for n in noticias)
+                                   f"{n['titulo']}" for n in noticias[:5])
                 self._chat_entregar_resposta(
                     f"A busca aberta não respondeu agora, mas achei isso nas "
                     f"fontes de mercado sobre “{consulta}”:\n{linhas}")
@@ -10378,7 +10451,27 @@ class SmcQuantApp(ctk.CTk):
             "vira prejuízo.\n\n"
             "Você NÃO executa nada escrevendo: quem liga o motor, tira print, "
             "acata ordem ou envia WhatsApp é o programa, por comando. Nunca "
-            "diga que fez algo — diga qual comando faz.\n"
+            "diga que fez algo — diga qual comando faz. Isso inclui a voz "
+            "PASSIVA: é proibido escrever 'ficou salvo', 'está gravado' ou "
+            "'foi registrado'.\n\n"
+            # AS TRÊS REGRAS ABAIXO NASCERAM DO TESTE DE 12/08 COM O MODELO
+            # LOCAL, que é menor e escorrega em coisas que o modelo grande não
+            # erra. Elas custam nada para um modelo bom e salvam o pequeno.
+            "PORTUGUÊS DO BRASIL, E SÓ. Nada de palavra em inglês solta no "
+            "meio da frase, nada de outro alfabeto. Se a palavra técnica for "
+            "em inglês (order block, FVG, sweep), escreva-a normalmente — mas "
+            "o resto da frase é português.\n\n"
+            "O QUE ELE OPERA: MES/MESU6 é o MICRO E-MINI S&P 500, um contrato "
+            "futuro de ÍNDICE de ações negociado na CME. NÃO é forex, NÃO é "
+            "câmbio, NÃO é cripto. O MES vale US$ 5 por ponto e o tick é 0,25 "
+            "ponto (US$ 1,25). Nunca escreva outro valor por ponto: se você "
+            "não tem certeza do multiplicador de um contrato, diga que não "
+            "tem — não estime.\n\n"
+            "SEJA CURTO. Três a seis frases resolvem quase tudo. Encher "
+            "linguiça com lista genérica ('verifique sua conexão', 'consulte "
+            "o suporte') não é resposta — é ruído, e numa mesa ruído custa "
+            "atenção na hora errada. Se não souber, uma frase dizendo isso "
+            "vale mais que vinte enrolando.\n"
             + (f"\nSITUAÇÃO ATUAL DA MESA:\n{cenario}" if cenario else ""))
 
         mensagens = [{"role": "system", "content": sistema}]
@@ -10528,6 +10621,36 @@ class SmcQuantApp(ctk.CTk):
         # não tivesse regra escrita virava o mesmo parágrafo de desculpa.
         # Agora, se houver OUTRA chave configurada (OpenAI, Anthropic,
         # OpenRouter, Groq), a MESMA pergunta vai para lá.
+        # ---- A BASE VEM ANTES DO MODELO DE RESERVA ----
+        # REGRESSÃO QUE EU MESMO CRIEI NA 2.27.0, E QUE O TESTE DELE EXPÔS.
+        # A base própria (51 verbetes escritos e revisados) só era tentada
+        # DEPOIS que todos os modelos falhavam. Enquanto o último da fila era
+        # a Gemini, isso funcionava: sem cota, a base respondia.
+        #
+        # Com a IA LOCAL instalada, o último da fila NUNCA falha. Resultado: a
+        # base deixou de ser alcançada, e "O QUE É SMC?" — que ela responde
+        # com precisão e sem cota — foi parar num modelo de 7B, que devolveu
+        # (log de 12/08, 21:18):
+        #     "SMC ... in which we're discussing futures trading e altamente
+        #      volátil como o forex (minúcias como E-mini)"
+        # E-mini de índice não é forex. A base nunca escreveria isso.
+        #
+        # A regra certa: quando existe verbete, o VERBETE ganha do modelo
+        # pequeno. Conhecimento curado vale mais que geração plausível.
+        if not resposta and not anexo:
+            try:
+                if buscar_base_smc(pergunta):
+                    da_base = responder_offline(pergunta,
+                                                self._cenario_da_mesa(pergunta))
+                    if da_base and da_base != getattr(
+                            self, "_ultima_resposta_local", None):
+                        self._ultima_resposta_local = da_base
+                        resposta = da_base
+                        self.log("📚 Respondido pela BASE PRÓPRIA — o verbete "
+                                 "ganha do modelo pequeno.")
+            except Exception:
+                pass
+
         if not resposta and not anexo:
             try:
                 mensagens = self._mensagens_para_provedor(pergunta)

@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.29.0 — MAC (Apple Silicon M1 / M2 / M3)
+  SMC QUANT PRO v2.30.0 — MAC (Apple Silicon M1 / M2 / M3)
   Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.
 ========================================================================
 
@@ -183,6 +183,79 @@ no meio do pregão.
 
 DEIXE A JANELA DO GRÁFICO ABERTA. Atrás de outras funciona perfeitamente
 — só não pode estar minimizada.
+
+
+========================================================================
+  O QUE MUDOU NA v2.30.0  —  A REGRESSAO QUE O SEU TESTE ENCONTROU
+========================================================================
+1) A BASE TINHA DEIXADO DE EXISTIR (e a culpa era minha)
+  Com a IA local instalada, voce perguntou:
+
+      voce: O QUE E SMC?
+      ela:  "SMC, no contexto do mercado financeiro in which we're
+             discussing futures trading e altamente volatil como o forex
+             (minucias como E-mini)..."
+
+  Ingles no meio da frase, e o Micro E-mini de INDICE chamado de forex.
+  A base propria responde essa pergunta com precisao, sem cota e sem
+  internet — e nao foi consultada.
+
+  CAUSA, ARQUITETURAL E MINHA: desde a 2.27.0 a base so era tentada
+  DEPOIS que todos os modelos falhavam. Enquanto o ultimo da fila era a
+  Gemini, isso funcionava (sem cota, a base respondia). Com a IA local,
+  o ultimo da fila NUNCA falha — e a base sumiu na pratica.
+
+  AGORA sao TRES degraus, nesta ordem:
+      1. a BASE, quando ha verbete para a pergunta
+      2. o provedor alternativo (inclusive a IA local)
+      3. o despejo generico de "nao tenho como responder"
+  Verbete curado ganha de geracao plausivel.
+
+2) FALTAVA O VERBETE MAIS BASICO DE TODOS
+  A base tinha 51 verbetes SOBRE conceitos de SMC e NENHUM sobre o que
+  SMC E. Agora tem — e ele diz, com todas as letras, que MES/MESU6 e um
+  contrato FUTURO DE INDICE da CME, vale US$ 5 por ponto, tick de 0,25
+  (US$ 1,25), e NAO e forex nem cripto.
+
+3) MENTIRA NA VOZ PASSIVA
+      voce: DEIXE ISSO SALVO
+      ela:  "Claro, ficou salvo: PENULTIMA LEITURA DO MOTOR (21:30)..."
+
+  Nada foi salvo, e o conteudo listado como salvo tinha acabado de ser
+  inventado. A guarda anti-mentira olhava so a primeira pessoa
+  ("gravei", "salvei"); a forma PASSIVA passava inteira. Agora "ficou
+  salvo", "esta gravado" e "foi registrado" sao pegos.
+  Explicar COMO salvar continua passando — senao ela nao poderia
+  orientar voce.
+
+4) O MODELO PEQUENO GANHOU REGRAS QUE O GRANDE NAO PRECISA
+  • Portugues do Brasil, e so. Nada de palavra solta em ingles nem de
+    outro alfabeto no meio da frase.
+  • O QUE O MES E: futuro de indice, US$ 5 por ponto, tick 0,25. E
+    PROIBIDO estimar multiplicador de contrato — sem certeza, diz que
+    nao sabe.
+  • Resposta CURTA. Lista generica do tipo "verifique sua conexao,
+    consulte o suporte" nao e resposta, e ruido — e numa mesa ruido
+    custa atencao na hora errada.
+  • Temperatura 0,2: criatividade numa mesa e defeito. E ela que faz um
+    modelo pequeno "completar" um valor por ponto que nao sabe.
+
+5) A BUSCA QUE VIRAVA DESPEJO
+      voce: "...E SO VOCE PESQUISAR E APRENDER"
+      ela:  [resultado da Lotofacil, balanco da Copasa, Braskem...]
+
+  Era uma frase SOBRE ela, e a palavra "pesquisar" bastou para virar
+  consulta. A busca falhou e ela despejou as manchetes do dia.
+  AGORA: frase dirigida a ela nao vira consulta, e manchete que nao casa
+  com a pergunta nao entra. Ruido com cara de resposta e pior que
+  silencio.
+
+O QUE JA ESTAVA CERTO NO SEU TESTE, e continua: "QUE DIA E HOJE",
+"STATUS", "O QUE VOCE PODE FAZER", "O QUE VOCE APRENDEU", "REMOVA 1" e
+"LIGA O MOTOR" responderam certo e sem modelo nenhum. Sao os caminhos
+deterministicos — os que nao dependem de cota, de saldo nem de sorte.
+
+TESTES: 325 (eram 315).
 
 
 ========================================================================
