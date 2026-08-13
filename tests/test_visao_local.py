@@ -140,12 +140,24 @@ class BaseComOllamaFalso(unittest.TestCase):
         import requests
         return carregar(
             ["_RAM_NAO_INFORMADA", "MODELO_VISAO_LOCAL", "MODELO_VISAO_LOCAL_LEVE",
-             "modelo_visao_recomendado", "_b64_da_imagem", "_MARCAS_DE_VISAO",
+             "modelo_visao_recomendado", "LADO_MAX_VISAO_LOCAL",
+             "_b64_da_imagem", "_MARCAS_DE_VISAO",
              "tem_modelo_de_visao", "modelo_de_visao_instalado",
              "CHAVES_DA_ANALISE", "_CONTRATO_JSON_LOCAL",
              "prompt_para_visao_local", "analise_local_valida",
              "analisar_grafico_local", "_num_gb_de_ram", "ia_local_no_ar"],
-            stubs={"requests": requests, "base64": base64, "BytesIO": BytesIO})
+            stubs={"requests": requests, "base64": base64, "BytesIO": BytesIO,
+                   "Image": _Image()})
+
+
+def _Image():
+    """O Pillow de verdade quando existe; senão um objeto que só precisa ter
+    o atributo LANCZOS (a redução vive dentro de um try)."""
+    try:
+        from PIL import Image
+        return Image
+    except Exception:
+        return type("Image", (), {"LANCZOS": 1})
 
 
 class TestOCaminhoInteiroPorHTTP(BaseComOllamaFalso):
@@ -154,9 +166,11 @@ class TestOCaminhoInteiroPorHTTP(BaseComOllamaFalso):
     def test_le_o_grafico_e_devolve_o_json(self):
         ns = self._ns()
         img, _real = _imagem_de_teste()
-        bruto = ns["analisar_grafico_local"](img, "leia este gráfico", timeout=10)
-        self.assertIsNotNone(bruto, "a IA local não devolveu nada")
+        bruto, porque = ns["analisar_grafico_local"](img, "leia este gráfico",
+                                                     timeout=10)
+        self.assertIsNotNone(bruto, f"a IA local não devolveu nada: {porque}")
         self.assertEqual(json.loads(bruto)["asset_symbol"], "MESU6")
+        self.assertEqual(porque, "", "deu certo e ainda assim veio motivo")
 
     def test_a_imagem_chega_do_outro_lado_em_base64(self):
         """Se o base64 estivesse errado, o modelo receberia lixo e responderia
@@ -216,21 +230,27 @@ class TestQuandoDaErrado(BaseComOllamaFalso):
         _Ollama.modelos = ["qwen2.5:3b"]
         ns = self._ns()
         img, _ = _imagem_de_teste()
-        self.assertIsNone(ns["analisar_grafico_local"](img, "leia", timeout=10))
+        texto, porque = ns["analisar_grafico_local"](img, "leia", timeout=10)
+        self.assertIsNone(texto)
+        self.assertIn("texto puro", porque)
         self.assertEqual(_Ollama.recebido, {},
                          "não pode nem ter chamado o /api/generate")
 
-    def test_erro_HTTP_devolve_None_sem_levantar(self):
+    def test_erro_HTTP_devolve_None_COM_o_motivo(self):
         _Ollama.status_generate = 500
         ns = self._ns()
         img, _ = _imagem_de_teste()
-        self.assertIsNone(ns["analisar_grafico_local"](img, "leia", timeout=10))
+        texto, porque = ns["analisar_grafico_local"](img, "leia", timeout=10)
+        self.assertIsNone(texto)
+        self.assertIn("500", porque)
 
-    def test_resposta_vazia_devolve_None(self):
+    def test_resposta_vazia_devolve_None_COM_o_motivo(self):
         _Ollama.resposta = "   "
         ns = self._ns()
         img, _ = _imagem_de_teste()
-        self.assertIsNone(ns["analisar_grafico_local"](img, "leia", timeout=10))
+        texto, porque = ns["analisar_grafico_local"](img, "leia", timeout=10)
+        self.assertIsNone(texto)
+        self.assertIn("vazio", porque)
 
     def test_servidor_fora_do_ar_devolve_None(self):
         """Sem Ollama nenhum, a função sai calada — não levanta no meio do
@@ -239,8 +259,9 @@ class TestQuandoDaErrado(BaseComOllamaFalso):
         try:
             ns = self._ns()
             img, _ = _imagem_de_teste()
-            self.assertIsNone(ns["analisar_grafico_local"](img, "leia",
-                                                            timeout=3))
+            texto, porque = ns["analisar_grafico_local"](img, "leia", timeout=3)
+            self.assertIsNone(texto)
+            self.assertIn("fora do ar", porque)
         finally:
             self.__class__.thread = threading.Thread(
                 target=self.servidor.serve_forever, daemon=True)
@@ -412,3 +433,129 @@ class TestOMotorExplicaPorQueNaoTeveAnalise(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestACOLADEMODELOS(unittest.TestCase):
+    """O DEFEITO QUE MATOU AS ANÁLISES DO DIA 13, E O RELATÓRIO DO WHATSAPP.
+
+    Log das 14:45: onze modelos na lista, e o motor escreveu "Todos os
+    modelos disponíveis falharam. Último erro: 404 ... gemini-2.5-flash-lite"
+    — que era o SEGUNDO da fila. Os outros nove nem apareceram no registro.
+
+    Motivo: o cooldown era um FILTRO. Nove modelos tinham entrado em cooldown
+    de cota dois minutos antes, postos lá pela conversa do chat. Sobraram
+    exatamente os dois que estavam mortos com 404. O motor tentou esses dois,
+    desistiu, e a frase "todos falharam" estava certa sobre os dois e calada
+    sobre os nove.
+    """
+
+    def _ns(self):
+        return carregar(["fila_por_cooldown"])
+
+    def test_ninguem_fica_de_fora(self):
+        ns = self._ns()
+        modelos = [f"m{i}" for i in range(11)]
+        # os 9 últimos estacionados; livres são só os dois primeiros
+        cool = {m: 9_999 for m in modelos[2:]}
+        fila, parados = ns["fila_por_cooldown"](modelos, cool, agora=0)
+        self.assertEqual(sorted(fila), sorted(modelos),
+                         "algum modelo foi cortado da fila")
+        self.assertEqual(parados, 9)
+
+    def test_o_estacionado_vai_para_o_FIM_e_nao_para_fora(self):
+        ns = self._ns()
+        fila, _ = ns["fila_por_cooldown"](["a", "b", "c"], {"a": 100}, agora=0)
+        self.assertEqual(fila, ["b", "c", "a"])
+
+    def test_o_cenario_exato_do_log_das_14h45(self):
+        """Dois livres e mortos, nove estacionados e vivos. Antes o motor via
+        dois candidatos; agora vê onze, com os nove no fim."""
+        ns = self._ns()
+        mortos = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+        vivos = ["gemini-3-flash-preview", "gemini-flash-latest",
+                 "gemini-flash-lite-latest", "gemini-3.5-flash",
+                 "gemini-3.1-flash-lite-preview", "gemini-3.1-flash-lite",
+                 "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash"]
+        cool = {m: 9_999 for m in vivos}
+        fila, parados = ns["fila_por_cooldown"](mortos + vivos, cool, agora=0)
+        self.assertEqual(len(fila), 11)
+        self.assertEqual(parados, 9)
+        self.assertEqual(fila[:2], mortos)
+        for m in vivos:
+            self.assertIn(m, fila, f"{m} continuaria fora da fila")
+
+    def test_cooldown_vencido_conta_como_livre(self):
+        ns = self._ns()
+        fila, parados = ns["fila_por_cooldown"](["a", "b"], {"a": 50}, agora=100)
+        self.assertEqual(parados, 0)
+        self.assertEqual(fila, ["a", "b"])
+
+    def test_o_preferido_lidera_mesmo_estacionado(self):
+        """Quem respondeu por último é o mais provável de responder agora."""
+        ns = self._ns()
+        fila, _ = ns["fila_por_cooldown"](["a", "b", "c"], {"c": 100}, agora=0,
+                                          preferido="c")
+        self.assertEqual(fila[0], "c")
+
+    def test_sem_cooldown_nenhum_a_ordem_e_preservada(self):
+        ns = self._ns()
+        fila, parados = ns["fila_por_cooldown"](["a", "b", "c"], {}, agora=0)
+        self.assertEqual(fila, ["a", "b", "c"])
+        self.assertEqual(parados, 0)
+
+    def test_o_motor_usa_a_MESMA_funcao_do_chat(self):
+        """Duas cópias da mesma regra foi o que deixou uma delas errada por
+        semanas: o chat ordenava, o motor cortava."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _analisar_ciclo") if "def _analisar_ciclo" in fonte else 0
+        self.assertIn("candidatos, n_parados = fila_por_cooldown(", fonte)
+        self.assertIn("return fila_por_cooldown(base, cooldown, agora, preferido)[0]",
+                      fonte)
+
+    def test_a_mensagem_de_falha_diz_QUANTOS_foram_tentados(self):
+        """'Todos os modelos falharam' sobre 2 de 11 foi o que escondeu este
+        defeito por um dia inteiro."""
+        fonte = fonte_do_arquivo()
+        self.assertIn("Falharam os {len(candidatos)} modelo(s) tentados", fonte)
+
+
+class TestAImagemQueVaiParaAIALocal(unittest.TestCase):
+    """'o computador inteiro ficou lento' — 13/08.
+
+    Um modelo de visão pica a imagem em quadradinhos antes de pensar. A tela
+    cheia de um MacBook vira milhares de pedaços, e é isso que come a máquina
+    e estoura o prazo. A Gemini roda no servidor do Google e não liga; a IA
+    local roda na mesa dele."""
+
+    def _ns(self):
+        try:
+            from PIL import Image
+        except Exception:
+            self.skipTest("Pillow não instalado nesta máquina de teste")
+        return carregar(["LADO_MAX_VISAO_LOCAL", "_b64_da_imagem"],
+                        stubs={"base64": base64, "BytesIO": BytesIO,
+                               "Image": Image})
+
+    def test_tela_cheia_de_macbook_e_reduzida(self):
+        ns = self._ns()
+        from PIL import Image
+        grande = Image.new("RGB", (3024, 1964), (10, 10, 10))
+        bruto = base64.b64decode(ns["_b64_da_imagem"](grande))
+        saiu = Image.open(BytesIO(bruto))
+        self.assertEqual(max(saiu.size), ns["LADO_MAX_VISAO_LOCAL"])
+        self.assertAlmostEqual(saiu.size[0] / saiu.size[1], 3024 / 1964,
+                               places=2, msg="a proporção foi distorcida")
+
+    def test_imagem_pequena_NAO_e_esticada(self):
+        """Aumentar não cria pixel nenhum: só inventa borrão em cima do preço."""
+        ns = self._ns()
+        from PIL import Image
+        pequena = Image.new("RGB", (800, 600), (10, 10, 10))
+        saiu = Image.open(BytesIO(base64.b64decode(ns["_b64_da_imagem"](pequena))))
+        self.assertEqual(saiu.size, (800, 600))
+
+    def test_o_limite_ainda_deixa_o_preco_legivel(self):
+        """Abaixo de ~1000px os números de 12px do gráfico viram borrão, e a
+        reserva passaria a inventar em vez de ler."""
+        ns = self._ns()
+        self.assertGreaterEqual(ns["LADO_MAX_VISAO_LOCAL"], 1200)

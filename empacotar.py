@@ -60,6 +60,9 @@ COMUM = [
     "tests/test_piso_qualidade.py",
     "tests/test_pregao.py",
     "tests/test_qualidade_leitura.py",
+    "tests/test_visao_local.py",
+    "tests/test_voz.py",
+    "ENTREGA_AO_CLIENTE.md",
 ]
 
 # A CASCA de cada sistema.
@@ -109,6 +112,12 @@ def conferir(arquivos):
 
 def montar(sistema, com_painel=True):
     especificos = SO_WINDOWS if sistema == "windows" else SO_MAC
+    if not com_painel:
+        # O ATALHO SAI JUNTO COM O PAINEL. Deixar o
+        # ABRIR_PAINEL_LICENCAS.command num pacote sem o painel entrega ao
+        # cliente um botão que não faz nada — e, pior, avisa que existe um
+        # painel de licenças que ele não deveria nem saber que existe.
+        especificos = [a for a in especificos if "PAINEL_LICENCAS" not in a]
     arquivos = COMUM + especificos + ([PAINEL] if com_painel else [])
     conferir(arquivos)
 

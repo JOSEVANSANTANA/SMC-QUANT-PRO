@@ -1395,28 +1395,76 @@ VOZ_NATIVA = E_MACOS
 _VOZES_PT_MACOS = ("Luciana", "Joana", "Catarina", "Raquel", "Felipe")
 
 
-def vozes_disponiveis():
-    """TODAS as vozes de português instaladas neste Mac, com uma amostra.
+def analisar_lista_de_vozes(saida):
+    """Transforma a saída crua de `say -v ?` em [(nome, idioma, exemplo)].
+
+    Separada para poder ser testada com a saída de um Mac de verdade, sem
+    precisar de um Mac. O formato tem armadilhas: nomes com espaço e
+    parênteses ("Eddy (English (UK))"), e o macOS moderno às vezes escreve o
+    idioma com hífen (pt-BR) em vez de sublinhado (pt_BR). Só aceitar o
+    sublinhado descartaria vozes existentes em silêncio — e silêncio aqui
+    aparece como 'não tem outras vozes disponíveis'."""
+    vozes = []
+    for linha in (saida or "").splitlines():
+        m = re.match(r"^(.+?)\s{2,}([A-Za-z]{2,3}[-_][A-Za-z]{2,4})\s*#\s*(.*)$",
+                     linha)
+        if not m:
+            continue
+        vozes.append((m.group(1).strip(), m.group(2).replace("-", "_"),
+                      m.group(3).strip()))
+    return vozes
+
+
+def vozes_disponiveis(so_portugues=False):
+    """TODAS as vozes instaladas neste Mac, com uma amostra de cada.
 
     Pedido dele, 13/08: "uma biblioteca de opções de voz para não ser apenas
     essa chata". A lista sai do SISTEMA (`say -v ?`), não de uma tabela
-    escrita à mão — presumir que 'Luciana' está instalada foi o tipo de chute
-    que esta casa não faz. Devolve [(nome, idioma, exemplo)]."""
+    escrita à mão.
+
+    DEFEITO CORRIGIDO EM 14/08: esta função só devolvia as vozes de
+    PORTUGUÊS. Num Mac recém-instalado existe UMA voz pt-BR (às vezes
+    nenhuma, porque as boas são download separado) — então a "biblioteca"
+    aparecia com um item só, e ele escreveu, com razão: "a biblioteca de voz
+    não está ativa para selecionar outras, não tem outras disponíveis".
+    Agora vem tudo, com as de português PRIMEIRO, porque é nelas que a
+    pronúncia dos números da mesa sai certa.
+
+    Devolve [(nome, idioma, exemplo)]."""
     if not E_MACOS:
         return []
     ok, saida = _rodar(["say", "-v", "?"], timeout=8)
     if not ok or not saida:
         return []
-    vozes = []
-    for linha in saida.splitlines():
-        m = re.match(r"^(.+?)\s{2,}([a-z]{2}_[A-Z]{2})\s*#\s*(.*)$", linha)
-        if not m:
+    vozes = analisar_lista_de_vozes(saida)
+    if so_portugues:
+        return [v for v in vozes if v[1].lower().startswith("pt")]
+    # Português primeiro (pt_BR antes de pt_PT), depois o resto por idioma.
+    def _ordem(v):
+        idioma = v[1].lower()
+        return (0 if idioma.startswith("pt_br") else
+                1 if idioma.startswith("pt") else 2, idioma, v[0].lower())
+    return sorted(vozes, key=_ordem)
+
+
+def abrir_ajustes_de_voz():
+    """Abre o painel do macOS onde se BAIXAM mais vozes.
+
+    As vozes boas de português (Premium e Aprimorada) não vêm instaladas:
+    são download do sistema. Mandar o trader "procurar em Ajustes" é o mesmo
+    roteiro de seis passos que já falhou com o Node e com o Ollama."""
+    if not E_MACOS:
+        return False
+    for alvo in ("x-apple.systempreferences:com.apple.preference.universalaccess"
+                 "?SpeakableItems",
+                 "x-apple.systempreferences:com.apple.preference.universalaccess"):
+        try:
+            r = subprocess.run(["open", alvo], timeout=8, **_sem_console())
+            if r.returncode == 0:
+                return True
+        except Exception:
             continue
-        nome, idioma, exemplo = (m.group(1).strip(), m.group(2),
-                                 m.group(3).strip())
-        if idioma.startswith("pt"):
-            vozes.append((nome, idioma, exemplo))
-    return vozes
+    return False
 
 
 def voz_escolhida_ou_melhor(preferida=None):
@@ -1452,24 +1500,18 @@ def voz_portugues_macos():
     lista real do sistema, não presume que 'Luciana' está instalada."""
     if not E_MACOS:
         return None
-    ok, saida = _rodar(["say", "-v", "?"], timeout=8)
-    if not ok or not saida:
-        return None
-    disponiveis = []
-    for linha in saida.splitlines():
-        # Formato: "Luciana            pt_BR    # Olá, o meu nome é Luciana."
-        partes = linha.split()
-        if len(partes) >= 2:
-            disponiveis.append((partes[0], " ".join(partes[:2])))
-    # 1) preferidas, na ordem
+    # UMA leitura só, pela mesma função que a biblioteca usa. Antes havia um
+    # segundo analisador aqui, com `linha.split()`, que quebrava em nomes com
+    # espaço ("Eddy (English (UK))" virava a voz "Eddy"). Duas cópias da
+    # mesma leitura são duas chances de discordarem.
+    disponiveis = vozes_disponiveis(so_portugues=True)
     for preferida in _VOZES_PT_MACOS:
-        for nome, _ in disponiveis:
+        for nome, _i, _e in disponiveis:
             if nome.lower() == preferida.lower():
                 return nome
-    # 2) qualquer uma marcada como pt_BR, depois qualquer pt_
-    for marca in ("pt_BR", "pt_"):
-        for nome, linha in disponiveis:
-            if marca in linha:
+    for marca in ("pt_br", "pt"):
+        for nome, idioma, _e in disponiveis:
+            if idioma.lower().startswith(marca):
                 return nome
     return None
 

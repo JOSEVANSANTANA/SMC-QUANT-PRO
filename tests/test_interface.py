@@ -138,3 +138,71 @@ class TestTamanhoDaLetra(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestAbaDeConfiguracoes(unittest.TestCase):
+    """'o que for possível e considerado configuração, por favor organize em
+    uma opção chamada Configurações, tem muita coisa que está solta e
+    aleatória, isso não é legal' — 14/08.
+
+    Ele tinha razão. A aba Motor acumulou NOVE seções, e a chave da API (que
+    se põe uma vez na vida) dividia espaço com o Registro de atividade, que
+    se olha a cada cinco minutos no meio do pregão.
+
+    O corte é por QUANDO se mexe: MOTOR é o que se opera com o mercado
+    aberto; CONFIGURAÇÕES é o que se ajusta uma vez e se esquece."""
+
+    def test_a_aba_existe(self):
+        fonte = fonte_do_arquivo()
+        self.assertIn('self.tabview.add("🎛️ Configurações")', fonte)
+        self.assertIn('tab_cfg = self.tabview.tab("🎛️ Configurações")', fonte)
+
+    def test_o_que_se_OPERA_fica_no_motor(self):
+        """Janela do gráfico, WhatsApp e Registro são usados COM o mercado
+        aberto. Enterrá-los numa aba de configurações seria trocar um
+        problema por outro."""
+        fonte = fonte_do_arquivo()
+        for secao in ("🪟  JANELAS DO GRÁFICO E PLATAFORMA",
+                      "📋  REGISTRO DE ATIVIDADE (log do motor)"):
+            i = fonte.index(secao)
+            trecho = fonte[max(0, i - 200):i]
+            self.assertIn("self._secao(master,", trecho, secao)
+
+    def test_o_que_se_AJUSTA_UMA_VEZ_vai_para_configuracoes(self):
+        fonte = fonte_do_arquivo()
+        for secao in ("⚙️  INSTALAÇÃO E CHAVE DA API",
+                      "🔠  TAMANHO DA LETRA (todas as abas)",
+                      "🔊  VOZ DA TIGER",
+                      "⏰  PREGÃO E INTERVALO DE ANÁLISE",
+                      "🔔  ALERTAS NA TELA DO COMPUTADOR",
+                      "🤖  AUTOMAÇÃO TRADOVATE (envio de ordem)",
+                      "🛠️  MODO DESENVOLVEDOR"):
+            i = fonte.index(secao)
+            trecho = fonte[max(0, i - 200):i]
+            self.assertIn("self._secao(cfg,", trecho, secao)
+
+    def test_nenhuma_secao_foi_PERDIDA_no_caminho(self):
+        """Mover é mover. Uma seção que some da aba antiga e não aparece na
+        nova vira um recurso que existe no código e não na tela — que foi
+        exatamente o que aconteceu com o slider da velocidade da fala."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _montar_tab_motor")
+        corpo = fonte[i:fonte.index("def _montar_tab_plano")]
+        self.assertEqual(corpo.count("self._secao(master,")
+                         + corpo.count("self._secao(cfg,"), 9)
+
+    def test_sem_a_aba_nova_nada_se_perde(self):
+        """Se `master_cfg` não vier, tudo volta a morar numa aba só. Feio, e
+        muito melhor que estourar na abertura do programa."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _montar_tab_motor")
+        bloco = fonte[i:i + 3000]
+        self.assertIn("master_cfg=None", bloco)
+        self.assertIn("else:\n            cfg = master", bloco)
+
+    def test_a_aba_explica_o_criterio_da_divisao(self):
+        """Divisão sem critério escrito é outra forma de 'solto e aleatório':
+        na próxima vez ninguém sabe de que lado a coisa nova entra."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _montar_tab_motor")
+        self.assertIn("se AJUSTA uma vez e\n        se esquece", fonte[i:i + 3000])

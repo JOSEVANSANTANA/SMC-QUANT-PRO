@@ -34,6 +34,23 @@ sys.path.insert(0, RAIZ)
 falhas = []
 
 
+def esperar(app, ms=250):
+    """Deixa o Tk escoar os `after()` pendentes antes de conferir a tela.
+
+    Precisa existir por causa do `CTkTabview.set()`: ele agenda um
+    `after(100, _grid_forget_all_tabs(exclude_name=...))` que só ESCONDE abas
+    e nunca regride a atual. Vários `set()` em sequência deixam a fila cheia
+    de limpezas antigas, e a última a disparar esconde a aba que acabou de
+    ser escolhida. Não é defeito do app — o app nunca chama `set()`; quem
+    troca de aba é o clique, que segue outro caminho. É defeito de um teste
+    que pergunta 'está na tela?' antes de a tela ter assentado."""
+    fim = [False]
+    app.after(ms, lambda: fim.__setitem__(0, True))
+    while not fim[0]:
+        app.update_idletasks()
+        app.update()
+
+
 def passo(app, nome, fn):
     """Executa um passo e força o Tk a processar tudo antes de seguir."""
     try:
@@ -81,6 +98,49 @@ def main():
         print(f"  {'OK  ' if existe else 'FALTA'} {attr}")
         if not existe:
             falhas.append(f"widget ausente: {attr}")
+
+    # AS QUATRO ABAS. Pedido dele em 14/08: "o que for possível e considerado
+    # configuração, organize em uma opção chamada Configurações". Se a aba
+    # não nascer, tudo o que foi movido para dentro dela some da tela — e
+    # some CALADO, sem exceção nenhuma.
+    print("\n[abas]")
+    abas = list(app.tabview._name_list)
+    print(f"       {abas}")
+    for esperada in ("⚙️ Motor & WhatsApp", "📊 Plano de Trading", "🐯 TIGER",
+                     "🎛️ Configurações"):
+        if esperada in abas:
+            print(f"  OK   {esperada}")
+        else:
+            falhas.append(f"aba ausente: {esperada}")
+            print(f"  FALHA aba ausente: {esperada}")
+    for aba in abas:
+        passo(app, f"abrir a aba {aba}", lambda a=aba: app.tabview.set(a))
+        esperar(app)          # escoa a limpeza atrasada antes da próxima troca
+
+    # O SLIDER DA VELOCIDADE DA FALA PRECISA ESTAR *NA TELA*.
+    # Ele existia, com o comando ligado e o valor certo, e nunca apareceu: o
+    # `.set()` estava encadeado na construção, `.set()` devolve None, e o
+    # `.pack()` nunca aconteceu. Ele escreveu "a velocidade da voz não está
+    # disponível para alterar" e estava certo. `winfo_ismapped()` é a única
+    # pergunta que separa "o widget existe" de "o widget está na tela".
+    print("\n[controles que precisam APARECER, não só existir]")
+    app.tabview.set("🎛️ Configurações")
+    esperar(app)
+    passo(app, "abrir a seção VOZ DA TIGER", app.sec_voz_conteudo.abrir_secao)
+    esperar(app)
+    for attr, quem in (("sld_vel_voz", "slider da velocidade da fala"),
+                       ("lbl_vel_voz", "rótulo do ritmo da fala")):
+        w = getattr(app, attr, None)
+        if w is None:
+            falhas.append(f"widget ausente: {attr} ({quem})")
+            print(f"  FALHA {attr} nem existe")
+        elif not w.winfo_ismapped():
+            falhas.append(f"{attr} existe mas NÃO está na tela ({quem}) — "
+                          "faltou pack/grid")
+            print(f"  FALHA {attr} existe e não está na tela")
+        else:
+            print(f"  OK   {quem} visível ({w.winfo_width()}x{w.winfo_height()}px)")
+    app.tabview.set("⚙️ Motor & WhatsApp")
 
     print("\n[tamanho da letra — todas as escalas, ao vivo]")
     for nome, valor in mod.ESCALAS_LETRA.items():

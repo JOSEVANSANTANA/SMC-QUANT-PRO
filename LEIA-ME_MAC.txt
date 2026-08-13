@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.35.0 — MAC (Apple Silicon M1 / M2 / M3)
+  SMC QUANT PRO v2.36.0 — MAC (Apple Silicon M1 / M2 / M3)
   Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.
 ========================================================================
 
@@ -183,6 +183,130 @@ no meio do pregão.
 
 DEIXE A JANELA DO GRÁFICO ABERTA. Atrás de outras funciona perfeitamente
 — só não pode estar minimizada.
+
+
+========================================================================
+  O QUE MUDOU NA v2.36.0  —  O MOTOR TENTOU 2 MODELOS DE 11 E DISSE
+                             QUE TINHA TENTADO TODOS
+========================================================================
+Voce escreveu: "nao recebi mais envios de relatorios no whatsapp, de
+alguma forma essa api gemini nao esta sendo de fato acionada e nem a ia
+local". Estava certo, e o seu log tinha a prova. Esta parte:
+
+  Modelos disponiveis (ordem de tentativa): [11 modelos]
+  gemini-2.5-flash foi descontinuado - removendo da lista
+  gemini-2.5-flash-lite foi descontinuado - removendo da lista
+  Erro: Todos os modelos disponiveis falharam.
+        Ultimo erro: 404 ... gemini-2.5-flash-lite
+
+Repare: onze modelos na lista, e o ultimo erro veio do SEGUNDO. Os
+outros nove nao aparecem no registro porque nunca foram tentados.
+
+1) A CAUSA: O COOLDOWN CORTAVA MODELO DA FILA
+   Quando um modelo da erro de cota, ele fica "estacionado" por 15 min
+   para nao gastar rede a toa. Ate aqui, tudo certo. O erro era o que
+   vinha depois: o motor EXCLUIA os estacionados da lista de tentativas,
+   e so voltava atras se a lista ficasse COMPLETAMENTE vazia.
+
+   As 14:45, nove modelos estavam estacionados por cota — postos la pela
+   conversa do chat dois minutos antes. Sobraram exatamente dois: os
+   dois que estavam mortos com 404. O motor tentou esses dois, falhou, e
+   escreveu "todos os modelos falharam". A frase estava certa sobre os
+   dois e calada sobre os nove.
+
+   AGORA O COOLDOWN SO ORDENA A FILA. Ninguem e cortado: os estacionados
+   vao para o FIM, e sao tentados se os livres nao resolverem. Cooldown e
+   um palpite sobre o futuro; perder o ciclo por causa de um palpite
+   custa 5 minutos de mercado, e tentar um modelo estacionado custa uma
+   requisicao. E a mesma regra que o lado do CHAT ja usava certo desde a
+   v2.24 — havia duas copias da regra, e a do motor era a errada. Agora
+   e uma funcao so, usada pelos dois.
+
+   A mensagem de falha tambem mudou: em vez de "todos os modelos
+   falharam" ela diz QUANTOS e QUAIS foram tentados. Foi essa frase
+   generica que escondeu o defeito por um dia inteiro.
+
+2) A IA LOCAL PASSOU A DIZER POR QUE NAO LEU
+   O seu log terminava com "A IA local com visao nao devolveu resposta
+   neste ciclo" — uma frase sobre a qual nao da para fazer nada. Agora
+   ela diz o motivo por extenso: se o servico caiu, se nao ha modelo de
+   visao baixado, se o Ollama devolveu erro, ou se o modelo passou do
+   prazo (e nesse caso avisa que na PRIMEIRA leitura isso e normal,
+   porque ele carrega 3,2 GB do disco).
+
+3) "O COMPUTADOR INTEIRO FICOU LENTO" — ERA A IMAGEM
+   Um modelo de visao pica a imagem em quadradinhos antes de pensar. A
+   tela cheia de um MacBook (3024x1964) vira mais de SETE MIL pedacos.
+   A Gemini roda no servidor do Google e nao liga; a IA local roda na sua
+   mesa. Agora a imagem e reduzida para 1400px antes de ir para o modelo
+   local — o preco continua legivel e o custo cai por volta de cinco
+   vezes. O modelo tambem passa a ficar carregado entre os ciclos, em vez
+   de ser lido do disco de novo a cada leitura. O prazo subiu para 7 min,
+   porque ela so entra quando a Gemini JA caiu: nao ha mais nada na fila
+   atras dela, e esperar e melhor que desistir.
+
+4) A VELOCIDADE DA FALA — ELA EXISTIA E ERA INVISIVEL
+   Voce escreveu "a velocidade da voz nao esta disponivel para alterar".
+   Estava certo. O controle existia, com o comando ligado e o valor
+   certo, e nunca aparecia na tela: eu escrevi `CTkSlider(...).set(v)`,
+   e como `.set()` devolve None, o `.pack()` — que e o que coloca o
+   widget na tela — nunca acontecia. Um widget sem `pack` nao e um
+   widget escondido: e um widget que nao esta la. Corrigido, e agora ha
+   um teste que abre a janela de verdade e pergunta se ele APARECE.
+
+5) A BIBLIOTECA DE VOZES — EU FILTRAVA SO PORTUGUES
+   "nao tem outras disponiveis": tambem estava certo. Eu listava apenas
+   as vozes de portugues, e num Mac recem-instalado existe UMA — as boas
+   sao download separado do sistema. Um menu com um item so e igual a um
+   menu quebrado. Agora vem a lista INTEIRA da sua maquina, com as de
+   portugues primeiro (pt-BR antes de pt-PT) e o idioma escrito ao lado
+   do nome, para voce nao escolher no escuro uma voz que vai ler os
+   numeros da mesa com sotaque ingles. E ha um BOTAO que abre direto o
+   painel do Mac onde se baixam mais vozes — em vez do roteiro de cinco
+   menus que ja falhou aqui com o Node.js e com o Ollama.
+   De quebra: o leitor da lista do sistema tambem estava cortando nomes
+   com espaco ("Eddy (Portugues (Brasil))" virava "Eddy", que nao existe).
+
+6) ABA CONFIGURACOES — O QUE ESTAVA SOLTO FOI RECOLHIDO
+   Pedido seu: "o que for possivel e considerado configuracao, organize
+   em uma opcao chamada Configuracoes, tem muita coisa que esta solta e
+   aleatoria". A aba Motor tinha NOVE secoes, e a chave da API (que se
+   poe uma vez na vida) dividia espaco com o Registro de atividade, que
+   se olha a cada cinco minutos no meio do pregao.
+
+   O corte e por QUANDO se mexe em cada coisa:
+     ⚙️ MOTOR & WHATSAPP  — o que se OPERA com o mercado aberto:
+        status, LIGAR MOTOR, janelas do grafico, WhatsApp/QR, Registro.
+     🎛️ CONFIGURACOES     — o que se AJUSTA uma vez e se esquece:
+        chave da API e IA local, pregao e intervalo, alertas na tela,
+        voz e velocidade da fala, tamanho da letra, automacao Tradovate,
+        modo desenvolvedor.
+   Nada foi removido nem renomeado; cada bloco continua abrindo e
+   fechando no clique do titulo, e o app continua lembrando como voce
+   deixou.
+
+7) COMO ENTREGAR A UM CLIENTE
+   Novo arquivo ENTREGA_AO_CLIENTE.md, dentro do pacote: qual zip mandar
+   para Mac e qual para Windows, a licenca, as permissoes do macOS que
+   mais geram chamado, a chave da Gemini e o limite do plano gratuito, a
+   IA local, e como conferir que ficou de pe antes de dizer que ficou.
+   Comeca pelo aviso que mais importa: o painel_licencas.html carrega o
+   SEU token de administrador e NUNCA pode ir junto — use
+   `python3 empacotar.py --sem-painel` e confira o zip antes de enviar.
+
+OS TESTES
+----------
+459 no total, todos passando. Os novos, alem dos que ja existiam:
+  - a fila de modelos com o cenario EXATO do seu log das 14:45 (dois
+    livres e mortos, nove estacionados e vivos): agora os onze entram na
+    fila, e nenhum e cortado;
+  - a tela cheia do MacBook sendo reduzida de verdade, com o Pillow, sem
+    distorcer a proporcao;
+  - a leitura das vozes com a saida real de um Mac, incluindo os nomes
+    com parenteses e o idioma escrito com hifen;
+  - e o teste de janela aberta, que agora percorre as QUATRO abas e
+    pergunta se o slider da velocidade esta MESMO na tela — a pergunta
+    que faltava, e que teria pego o defeito 4 sozinha.
 
 
 ========================================================================

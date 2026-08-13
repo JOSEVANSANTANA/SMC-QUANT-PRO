@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.35.0"
+VERSAO_ATUAL = "2.36.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -939,11 +939,31 @@ def modelo_visao_recomendado(ram_gb=_RAM_NAO_INFORMADA):
     return MODELO_VISAO_LOCAL
 
 
-def _b64_da_imagem(imagem_pil):
-    """A imagem no formato que o Ollama espera (base64, sem prefixo)."""
+# O LADO MAIOR DA IMAGEM QUE VAI PARA A IA LOCAL.
+# A Gemini roda no servidor do Google e recebe a tela inteira sem reclamar.
+# O modelo local roda NA MÁQUINA DELE, e um modelo de visão pica a imagem em
+# quadradinhos de 28x28 antes de pensar: uma tela de MacBook (3024x1964) vira
+# mais de sete mil pedaços. É por isso que o computador inteiro ficou lento e
+# a leitura não voltou dentro do prazo. Em 1400px o gráfico continua legível
+# (o preço tem uns 12px de altura) e o custo cai por volta de cinco vezes.
+LADO_MAX_VISAO_LOCAL = 1400
+
+
+def _b64_da_imagem(imagem_pil, lado_max=LADO_MAX_VISAO_LOCAL):
+    """A imagem no formato que o Ollama espera (base64, sem prefixo),
+    reduzida ao que o modelo local consegue mastigar."""
+    img = imagem_pil.convert("RGB")
+    try:
+        maior = max(img.size)
+        if lado_max and maior > lado_max:
+            fator = lado_max / float(maior)
+            novo = (max(1, int(img.size[0] * fator)),
+                    max(1, int(img.size[1] * fator)))
+            img = img.resize(novo, Image.LANCZOS)
+    except Exception:
+        pass          # reduzir é otimização; falhar aqui não pode custar a leitura
     saida = BytesIO()
-    imagem_pil.convert("RGB").save(saida, format="JPEG", quality=90,
-                                   subsampling=0)
+    img.save(saida, format="JPEG", quality=90, subsampling=0)
     return base64.b64encode(saida.getvalue()).decode("utf-8")
 
 
@@ -1029,15 +1049,25 @@ def analise_local_valida(bruto):
     return dados
 
 
-def analisar_grafico_local(imagem_pil, prompt, modelo=None, timeout=180):
+def analisar_grafico_local(imagem_pil, prompt, modelo=None, timeout=420):
     """Lê o gráfico com o modelo de VISÃO que roda nesta máquina.
 
     Existe porque, em 13/08, TODOS os dez modelos da Gemini devolveram 503 ou
     429 no mesmo ciclo e a análise morreu — com a IA local instalada, no ar, e
     inútil, porque o modelo baixado era de texto puro.
 
-    Devolve o texto cru do modelo (JSON esperado) ou None. NUNCA levanta: a
-    reserva não pode derrubar o ciclo que ela deveria salvar.
+    DEVOLVE (texto, motivo). NUNCA levanta: a reserva não pode derrubar o
+    ciclo que ela deveria salvar. O motivo é para o LOG — "não devolveu
+    resposta neste ciclo" foi o que ele leu no dia 13, e essa frase não diz se
+    o modelo demorou demais, se não estava baixado ou se o serviço caiu: três
+    problemas com três soluções diferentes. Texto None sempre vem com motivo
+    preenchido; texto preenchido vem com motivo vazio.
+
+    O PRAZO É LARGO DE PROPÓSITO (7 min). Os 180s antigos não davam nem para
+    o modelo sair do disco: 3,2 GB carregando + a imagem inteira picada em
+    milhares de pedaços. Como o ciclo do motor é de 5 min e ela só entra
+    quando a Gemini JÁ caiu, esperar é melhor que desistir — não há mais nada
+    na fila atrás dela.
 
     HONESTIDADE QUE PRECISA FICAR ESCRITA: um modelo local de 3 a 7 bilhões de
     parâmetros lê gráfico PIOR que a Gemini. Ele entra como reserva, não como
@@ -1049,25 +1079,44 @@ def analisar_grafico_local(imagem_pil, prompt, modelo=None, timeout=180):
         modelo = modelo or modelo_visao_recomendado()
         instalados = ia_local_no_ar(timeout=3) or []
         if not instalados:
-            return None
+            return None, "o serviço da IA local não respondeu (Ollama fora do ar)"
         if modelo not in instalados:
             candidato = modelo_de_visao_instalado(instalados)
             if not candidato:
-                return None          # nenhum modelo com visão baixado
+                return None, ("nenhum modelo de visão baixado — os instalados "
+                              f"({', '.join(instalados)}) são de texto puro")
             modelo = candidato
+        t0 = time.time()
         r = requests.post(
             "http://localhost:11434/api/generate",
             json={"model": modelo, "prompt": prompt_para_visao_local(prompt),
                   "images": [_b64_da_imagem(imagem_pil)],
                   "stream": False, "format": "json",
+                  # Mantém o modelo na memória entre os ciclos de 5 min: sem
+                  # isto o Ollama descarrega em 5 min e a leitura seguinte
+                  # paga de novo o carregamento de 3,2 GB do disco.
+                  "keep_alive": "12m",
                   "options": {"temperature": 0.1}},
             timeout=timeout)
+        gastou = time.time() - t0
         if r.status_code != 200:
-            return None
-        texto = (r.json() or {}).get("response") or ""
-        return texto.strip() or None
-    except Exception:
-        return None
+            detalhe = ""
+            try:
+                detalhe = (r.json() or {}).get("error") or ""
+            except Exception:
+                detalhe = (r.text or "")[:160]
+            return None, f"o Ollama respondeu HTTP {r.status_code}: {detalhe[:160]}"
+        texto = ((r.json() or {}).get("response") or "").strip()
+        if not texto:
+            return None, f"o modelo {modelo} respondeu vazio (levou {gastou:.0f}s)"
+        return texto, ""
+    except requests.exceptions.Timeout:
+        return None, (f"o modelo {modelo} passou de {timeout}s sem terminar. "
+                      "Na PRIMEIRA leitura isso é normal: ele carrega alguns "
+                      "GB do disco. Se repetir, esta máquina é apertada para "
+                      "o modelo de visão")
+    except Exception as e:
+        return None, f"{type(e).__name__}: {str(e)[:160]}"
 
 
 def _num_gb_de_ram():
@@ -2821,6 +2870,30 @@ def descobrir_modelos(client, forcar=False, log=None):
         _MODELOS["descoberta_ts"] = agora
         return list(_MODELOS["lista"])
 
+def fila_por_cooldown(modelos, cooldown, agora, preferido=None):
+    """A ordem de tentativa: quem está livre primeiro, quem está estacionado
+    depois. NINGUÉM É CORTADO. Devolve (fila, quantos_parados).
+
+    Função PURA, e ela existe por um motivo caro. Esta regra estava escrita
+    em DOIS lugares: aqui, certa, para o chat; e dentro do ciclo do motor,
+    ERRADA — lá o cooldown era um filtro que só relaxava se a lista ficasse
+    vazia. Em 13/08 às 14:45 havia 11 modelos, 9 estacionados por cota (postos
+    lá pela conversa do chat dois minutos antes) e 2 livres — justamente os 2
+    que estavam mortos com 404. O motor tentou 2, falhou, e escreveu "todos os
+    modelos falharam". Sem análise, sem relatório no WhatsApp, e sem pista.
+
+    Cooldown é um PALPITE sobre o futuro ("este provavelmente ainda está sem
+    cota"). Perder o ciclo por causa de um palpite custa 5 minutos de mercado;
+    tentar um modelo estacionado custa uma requisição."""
+    parados_ts = dict(cooldown or {})
+    livres = [m for m in modelos if parados_ts.get(m, 0) <= agora]
+    parados = [m for m in modelos if parados_ts.get(m, 0) > agora]
+    fila = livres + parados
+    if preferido and preferido in fila:
+        fila = [preferido] + [m for m in fila if m != preferido]
+    return fila, len(parados)
+
+
 def modelos_para_tentar(excluir=(), preferido=None):
     """A ordem de tentativa AGORA: descontinuados fora, quem está em cooldown
     por último (não excluído — é melhor uma chance do que recusar a resposta),
@@ -2829,12 +2902,8 @@ def modelos_para_tentar(excluir=(), preferido=None):
     with _trava_modelos:
         base = [m for m in _MODELOS["lista"]
                 if m not in _MODELOS["invalidos"] and m not in excluir]
-        livres = [m for m in base if _MODELOS["cooldown"].get(m, 0) <= agora]
-        parados = [m for m in base if _MODELOS["cooldown"].get(m, 0) > agora]
-    ordem = livres + parados            # os estacionados vão para o fim da fila
-    if preferido and preferido in ordem:
-        ordem = [preferido] + [m for m in ordem if m != preferido]
-    return ordem
+        cooldown = dict(_MODELOS["cooldown"])
+    return fila_por_cooldown(base, cooldown, agora, preferido)[0]
 
 def classificar_erro_modelo(erro):
     """'invalido' (404), 'cota' (429), 'transitorio' (503/timeout...) ou 'fatal'."""
@@ -8025,14 +8094,28 @@ class SmcQuantApp(ctk.CTk):
 
         self.tabview = ctk.CTkTabview(self, width=660, height=720)
         self.tabview.pack(padx=10, pady=10, fill="both", expand=True)
+        # QUATRO ABAS, DIVIDIDAS POR *QUANDO* SE MEXE NELAS.
+        # Pedido dele, 14/08: "o que for possível e considerado configuração,
+        # organize em uma opção chamada Configurações, tem muita coisa que
+        # está solta e aleatória, isso não é legal". Estava certo: a aba
+        # Motor tinha NOVE seções, e a chave da API (que se põe uma vez na
+        # vida) dividia espaço com o Registro de atividade (que se olha a
+        # cada cinco minutos, no meio do pregão).
+        #
+        # O corte é esse, e é o único que se sustenta: MOTOR é o que se opera
+        # com o mercado aberto; CONFIGURAÇÕES é o que se ajusta uma vez e se
+        # esquece. Nada foi removido nem renomeado — cada seção continua
+        # sendo a mesma, e lembrando se está aberta ou fechada.
         self.tabview.add("⚙️ Motor & WhatsApp")
         self.tabview.add("📊 Plano de Trading")
         self.tabview.add("🐯 TIGER")
+        self.tabview.add("🎛️ Configurações")
         tab_motor = self.tabview.tab("⚙️ Motor & WhatsApp")
         tab_plano = self.tabview.tab("📊 Plano de Trading")
         tab_ia = self.tabview.tab("🐯 TIGER")
+        tab_cfg = self.tabview.tab("🎛️ Configurações")
 
-        self._montar_tab_motor(tab_motor, config_atual)
+        self._montar_tab_motor(tab_motor, config_atual, tab_cfg)
         self._montar_tab_plano(tab_plano)
         self._montar_tab_ia(tab_ia)
 
@@ -8066,20 +8149,48 @@ class SmcQuantApp(ctk.CTk):
     # ------------------------------------------------------------------
     # ABA 1: MOTOR / WHATSAPP / SETUP
     # ------------------------------------------------------------------
-    def _montar_tab_motor(self, master, config_atual):
-        """A aba Motor virou uma PILHA DE SEÇÕES RECOLHÍVEIS.
+    def _montar_tab_motor(self, master, config_atual, master_cfg=None):
+        """Monta a aba MOTOR e, em `master_cfg`, a aba CONFIGURAÇÕES.
 
-        Antes era uma lista corrida de uns quinze blocos: para chegar no log de
-        atividade — que é o que se olha no meio do pregão — era preciso rolar
-        por instalação, janelas, plataforma, horário, alertas e QR code. Agora
-        cada bloco abre e fecha com um clique no título, e o app LEMBRA como
-        você deixou (o mesmo mecanismo do Plano de Trading).
+        As duas nascem aqui de propósito. Os widgets conversam entre si (o
+        campo da chave da API alimenta o botão que testa o provedor, que
+        escreve no Registro), e separá-los em dois métodos obrigaria a passar
+        uma dúzia de referências de um lado para o outro — que é como se
+        criam dois lugares para a mesma verdade.
+
+        O CORTE: em `master` fica o que se OPERA com o mercado aberto — o
+        status, o botão LIGAR MOTOR, as janelas do gráfico, o WhatsApp e o
+        Registro de atividade. Em `master_cfg` fica o que se AJUSTA uma vez e
+        se esquece — chave da API, IA local, pregão e intervalo, alertas, voz,
+        tamanho da letra, automação e modo desenvolvedor.
+
+        Cada bloco continua abrindo e fechando com um clique no título, e o
+        app continua lembrando como você deixou.
 
         O que NÃO entra em seção nenhuma: o status e o botão LIGAR MOTOR. São
-        a ação principal da aba e ficam sempre à vista, no topo."""
+        a ação principal e ficam sempre à vista, no topo."""
         scroll_motor = ctk.CTkScrollableFrame(master)
         scroll_motor.pack(fill="both", expand=True)
         master = scroll_motor  # todos os widgets vão para o frame rolável
+
+        # A aba de configurações. Quando não vier (algum caminho antigo que
+        # chame com dois argumentos), tudo volta a morar numa aba só — feio,
+        # mas funcionando, que é melhor que estourar na abertura do programa.
+        if master_cfg is not None:
+            scroll_cfg = ctk.CTkScrollableFrame(master_cfg)
+            scroll_cfg.pack(fill="both", expand=True)
+            cfg = scroll_cfg
+            ctk.CTkLabel(
+                cfg, justify="left", wraplength=600, text_color=COR["dim"],
+                font=ctk.CTkFont(size=11),
+                text=("Tudo o que se ajusta UMA vez e se esquece mora aqui. "
+                      "O que se opera com o mercado aberto — ligar o motor, "
+                      "escolher a janela do gráfico, ler o Registro — ficou na "
+                      "aba ⚙️ Motor & WhatsApp.\nCada bloco abre e fecha "
+                      "clicando no título, e eu lembro como você deixou.")
+            ).pack(anchor="w", padx=12, pady=(10, 6))
+        else:
+            cfg = master
 
         self.lbl_status = ctk.CTkLabel(master, text="Verificando dependências...", text_color="yellow")
         self.lbl_status.pack(pady=8)
@@ -8107,7 +8218,7 @@ class SmcQuantApp(ctk.CTk):
         threading.Thread(target=self._subir_ia_local_no_inicio,
                          daemon=True).start()
 
-        sec_inst = self._secao(master, "⚙️  INSTALAÇÃO E CHAVE DA API",
+        sec_inst = self._secao(cfg, "⚙️  INSTALAÇÃO E CHAVE DA API",
                                "motor_instalacao", aberta_padrao=True)
         self.btn_instalar = ctk.CTkButton(sec_inst, text="1. Baixar Node.js (Obrigatório)", fg_color="blue", command=self.abrir_download)
         self.btn_instalar.pack(pady=4)
@@ -8326,7 +8437,7 @@ class SmcQuantApp(ctk.CTk):
         self._montar_painel_inscritos(self.sec_whatsapp)
 
         # ---------- APARÊNCIA: TAMANHO DA LETRA ----------
-        sec_letra = self._secao(master, "🔠  TAMANHO DA LETRA (todas as abas)",
+        sec_letra = self._secao(cfg, "🔠  TAMANHO DA LETRA (todas as abas)",
                                 "motor_aparencia", aberta_padrao=False)
         linha_letra = ctk.CTkFrame(sec_letra, fg_color="transparent")
         linha_letra.pack(anchor="w", padx=12, pady=(8, 2))
@@ -8354,8 +8465,13 @@ class SmcQuantApp(ctk.CTk):
         # A lista sai do SISTEMA (`say -v ?`), não de uma tabela escrita à
         # mão: presumir que 'Luciana' está instalada seria o mesmo tipo de
         # chute que a ferramenta inteira existe para evitar.
-        sec_voz = self._secao(master, "🔊  VOZ DA TIGER",
+        sec_voz = self._secao(cfg, "🔊  VOZ DA TIGER",
                               "motor_voz", aberta_padrao=False)
+        # Guardada para o teste de fumaça poder ABRIR a seção e conferir que
+        # o slider da velocidade está mesmo na tela. Widget dentro de bloco
+        # recolhido não é mapeado, e a pergunta que importa ("aparece?") só
+        # tem resposta com o bloco aberto.
+        self.sec_voz_conteudo = sec_voz
         linha_vel = ctk.CTkFrame(sec_voz, fg_color="transparent")
         linha_vel.pack(anchor="w", padx=12, pady=(8, 2))
         ctk.CTkLabel(linha_vel, text="Velocidade da fala:",
@@ -8374,9 +8490,18 @@ class SmcQuantApp(ctk.CTk):
             salvar_config({"voz_rate": int(float(v))})
             _mostrar_vel(float(v))
 
-        ctk.CTkSlider(linha_vel, from_=VOZ_RATE_MIN, to=VOZ_RATE_MAX, width=240,
-                      number_of_steps=(VOZ_RATE_MAX - VOZ_RATE_MIN) // 5,
-                      command=_ao_mover_vel).set(_vel)
+        # DEFEITO MEU, E ERA POR ISSO QUE "A VELOCIDADE NÃO ESTAVA
+        # DISPONÍVEL PARA ALTERAR". O slider era criado e o `.set()` era
+        # encadeado direto na construção; `.set()` devolve None, a cadeia
+        # morria ali, e o `.pack()` nunca acontecia. O controle existia, com
+        # o comando ligado e o valor certo — e era INVISÍVEL. Um widget sem
+        # `pack` não é um widget escondido: é um widget que não está na tela.
+        self.sld_vel_voz = ctk.CTkSlider(
+            linha_vel, from_=VOZ_RATE_MIN, to=VOZ_RATE_MAX, width=240,
+            number_of_steps=(VOZ_RATE_MAX - VOZ_RATE_MIN) // 5,
+            command=_ao_mover_vel)
+        self.sld_vel_voz.pack(side="left")
+        self.sld_vel_voz.set(_vel)
         self.lbl_vel_voz.pack(side="left", padx=6)
         _mostrar_vel(_vel)
 
@@ -8388,28 +8513,57 @@ class SmcQuantApp(ctk.CTk):
             _vozes = plataforma.vozes_disponiveis()
         except Exception:
             _vozes = []
-        _nomes = [n for n, _i, _e in _vozes] or ["(a melhor do sistema)"]
-        self._var_voz = tk.StringVar(value=voz_escolhida() or _nomes[0])
-        ctk.CTkOptionMenu(linha_voz, variable=self._var_voz, values=_nomes,
-                          width=200,
-                          command=lambda n: self._trocar_voz(n)).pack(side="left")
+        # A LISTA COMPLETA DA MÁQUINA, NÃO SÓ AS DE PORTUGUÊS.
+        # Ele escreveu: "a biblioteca de voz não está ativa para selecionar
+        # outras, não tem outras disponíveis". Estava certo, e a culpa era
+        # minha: eu filtrava por português, e num Mac recém-instalado existe
+        # UMA voz pt-BR — as boas são download separado do sistema. Um menu
+        # com um item só é indistinguível de um menu quebrado.
+        self._vozes_por_rotulo = {}
+        for _n, _i, _e in _vozes:
+            # O idioma no rótulo evita a escolha às cegas: 'Daniel' em en_GB
+            # vai ler os números da mesa com sotaque inglês.
+            self._vozes_por_rotulo[f"{_n}  ·  {_i}"] = _n
+        _rotulos = list(self._vozes_por_rotulo) or ["(a melhor do sistema)"]
+        _atual = voz_escolhida()
+        self._var_voz = tk.StringVar(
+            value=next((r for r, n in self._vozes_por_rotulo.items()
+                        if n == _atual), _rotulos[0]))
+        ctk.CTkOptionMenu(linha_voz, variable=self._var_voz, values=_rotulos,
+                          width=260,
+                          command=lambda r: self._trocar_voz(r)).pack(side="left")
         # OUVIR ANTES DE ESCOLHER. Escolher voz por NOME, sem ouvir, é escolher
         # no escuro — e depois descobrir no meio do pregão.
         ctk.CTkButton(linha_voz, text="🔈 ouvir", width=90,
                       fg_color=COR["borda"], hover_color=COR["input"],
                       command=self._experimentar_voz).pack(side="left", padx=6)
+
+        _pt = sum(1 for _n, _i, _e in _vozes if _i.lower().startswith("pt"))
+        linha_mais = ctk.CTkFrame(sec_voz, fg_color="transparent")
+        linha_mais.pack(anchor="w", padx=12, pady=(4, 2))
+        # UM BOTÃO, NÃO UM ROTEIRO DE SEIS PASSOS. "Ajustes do Sistema →
+        # Acessibilidade → Conteúdo Falado → Voz do sistema → Gerenciar
+        # vozes" é a mesma instrução escrita que já falhou com o Node.js e
+        # com o Ollama.
+        ctk.CTkButton(linha_mais, text="⬇️ Baixar mais vozes (Ajustes do Mac)",
+                      width=280, fg_color=COR["borda"],
+                      hover_color=COR["input"],
+                      command=self._abrir_ajustes_de_voz).pack(side="left")
         ctk.CTkLabel(
             sec_voz, justify="left", text_color=COR["dim"],
             font=ctk.CTkFont(size=10), wraplength=580,
-            text=("As vozes vêm do seu macOS — a lista é a real desta máquina. "
-                  "Para ter mais opções: Ajustes do Sistema → Acessibilidade → "
-                  "Conteúdo Falado → Voz do sistema → Gerenciar vozes, e baixe "
-                  "as de português (as 'Premium' e 'Aprimorada' são bem "
-                  "melhores que a padrão).\\nVocê também pode falar comigo: "
+            text=(f"São {len(_vozes)} voz(es) instaladas nesta máquina, {_pt} "
+                  "em português — a lista é a REAL do seu Mac, não uma tabela "
+                  "que eu escrevi. As de português vêm primeiro porque só elas "
+                  "pronunciam os números da mesa corretamente; as outras estão "
+                  "aqui porque você pediu a biblioteca inteira.\nNo painel do "
+                  "Mac, procure 'Voz do sistema → Gerenciar vozes' e baixe as "
+                  "de português marcadas como Premium ou Aprimorada: são bem "
+                  "melhores que a padrão.\nVocê também pode falar comigo: "
                   "'acelere a fala', 'fala mais devagar'.")
         ).pack(anchor="w", padx=12, pady=(2, 10))
 
-        sec_horario = self._secao(master, "⏰  PREGÃO E INTERVALO DE ANÁLISE",
+        sec_horario = self._secao(cfg, "⏰  PREGÃO E INTERVALO DE ANÁLISE",
                                   "motor_horario", aberta_padrao=False)
         frame_horario = ctk.CTkFrame(sec_horario, fg_color="transparent")
         frame_horario.pack(pady=6)
@@ -8455,7 +8609,7 @@ class SmcQuantApp(ctk.CTk):
         ).pack(side="left", padx=6)
 
         # ---------- NOTIFICAÇÃO NO COMPUTADOR ----------
-        sec_notif = self._secao(master, "🔔  ALERTAS NA TELA DO COMPUTADOR",
+        sec_notif = self._secao(cfg, "🔔  ALERTAS NA TELA DO COMPUTADOR",
                                 "motor_alertas", aberta_padrao=False)
         frame_notif = ctk.CTkFrame(sec_notif, fg_color="#1b2735",
                                     border_color="#3d7fc0", border_width=1)
@@ -8542,13 +8696,13 @@ class SmcQuantApp(ctk.CTk):
 
         # ---------- AUTOMAÇÃO TRADOVATE (opcional) ----------
         self._montar_painel_tradovate(
-            self._secao(master, "🤖  AUTOMAÇÃO TRADOVATE (envio de ordem)",
+            self._secao(cfg, "🤖  AUTOMAÇÃO TRADOVATE (envio de ordem)",
                         "motor_tradovate", aberta_padrao=False))
 
         # ---------- SEÇÃO DESENVOLVEDOR (oculta no app do cliente) ----------
         if MODO_DEV:
             frame_dev = ctk.CTkFrame(
-                self._secao(master, "🛠️  MODO DESENVOLVEDOR", "motor_dev",
+                self._secao(cfg, "🛠️  MODO DESENVOLVEDOR", "motor_dev",
                             aberta_padrao=False),
                 fg_color="#2b1b1b", border_color="#8b4513", border_width=1)
             frame_dev.pack(padx=10, pady=8, fill="x")
@@ -11472,11 +11626,22 @@ class SmcQuantApp(ctk.CTk):
             self._chat_escrever("sistema", "(modo OLÁ TIGER desligado)",
                                  persistir=False)
 
-    def _trocar_voz(self, nome):
+    def _nome_da_voz_no_menu(self):
+        """O NOME da voz a partir do rótulo do menu ('Luciana  ·  pt_BR').
+
+        O rótulo mostra o idioma para ele não escolher às cegas; o `say`
+        precisa só do nome. Traduzir num lugar só evita que a metade errada
+        do rótulo chegue ao sistema."""
+        rotulo = (self._var_voz.get() or "").strip()
+        if rotulo.startswith("("):
+            return ""
+        return (getattr(self, "_vozes_por_rotulo", {}).get(rotulo)
+                or rotulo.split("  ·  ")[0].strip())
+
+    def _trocar_voz(self, _rotulo=None):
         """Grava a voz, RELÊ do disco e fala uma frase com ela — confirmação
         que se ouve vale mais que confirmação que se lê."""
-        if str(nome).startswith("("):
-            nome = ""
+        nome = self._nome_da_voz_no_menu()
         gravado = salvar_voz_escolhida(nome)
         if str(gravado or "").lower() != str(nome or "").lower():
             self.log("⚠️ NÃO consegui gravar a voz escolhida.")
@@ -11485,15 +11650,36 @@ class SmcQuantApp(ctk.CTk):
         self._experimentar_voz()
 
     def _experimentar_voz(self):
-        nome = (self._var_voz.get() or "").strip()
-        if nome.startswith("("):
+        nome = self._nome_da_voz_no_menu()
+        if not nome:
             nome = plataforma.voz_portugues_macos() or ""
         if not nome:
             self.log("ℹ️ Não achei nenhuma voz de português instalada neste "
-                     "Mac. Baixe uma em Ajustes do Sistema → Acessibilidade → "
-                     "Conteúdo Falado → Gerenciar vozes.")
+                     "Mac. Clique em '⬇️ Baixar mais vozes' aqui na aba que "
+                     "eu abro o painel certo do sistema.")
             return
         plataforma.experimentar_voz(nome, velocidade_da_voz())
+
+    def _abrir_ajustes_de_voz(self):
+        """Abre o painel do Mac onde se BAIXAM vozes novas.
+
+        As boas de português (Premium, Aprimorada) não vêm instaladas. Mandar
+        alguém navegar cinco menus foi o roteiro que já falhou duas vezes
+        nesta casa — com o Node.js e com o Ollama."""
+        if not plataforma.E_MACOS:
+            self.log("ℹ️ A biblioteca de vozes que dá para escolher aqui é "
+                     "do macOS. Neste sistema a fala sai com a voz que o "
+                     "próprio sistema já traz.")
+            return
+        if plataforma.abrir_ajustes_de_voz():
+            self.log("🔊 Abri os Ajustes do Sistema. Vá em 'Conteúdo Falado' → "
+                     "'Voz do sistema' → 'Gerenciar vozes' e baixe as de "
+                     "Português (Brasil) marcadas como Premium ou Aprimorada. "
+                     "Depois reabra o SMC Quant Pro: elas aparecem na lista.")
+        else:
+            self.log("⚠️ Não consegui abrir os Ajustes daqui. Abra à mão: "
+                     "Ajustes do Sistema → Acessibilidade → Conteúdo Falado → "
+                     "Voz do sistema → Gerenciar vozes.")
 
     def diagnostico_microfone(self):
         """Diz TUDO o que se sabe sobre o microfone, em uma tela.
@@ -15809,16 +15995,39 @@ class SmcQuantApp(ctk.CTk):
                         ultimo_erro = None
                         modelo_vencedor = None
 
-                        # Só tenta modelos que NÃO estão em cooldown (cota/sobrecarga
-                        # recentes). Se todos estiverem estacionados, tenta a lista
-                        # inteira mesmo assim — melhor uma chance do que pular o ciclo.
+                        # O COOLDOWN ORDENA A FILA. ELE NÃO CORTA NINGUÉM.
+                        #
+                        # DEFEITO MEU, E FOI ELE QUE MATOU AS ANÁLISES DO DIA 13.
+                        # Antes isto era um FILTRO: modelo em cooldown ficava de
+                        # fora, e a lista só era restaurada se ficasse VAZIA. No
+                        # log das 14:45 havia 11 modelos; 9 tinham entrado em
+                        # cooldown de cota dois minutos antes, postos lá pela
+                        # conversa do chat; sobraram exatamente os 2 que estavam
+                        # mortos com 404. O motor tentou esses 2, falhou, e
+                        # escreveu "Todos os modelos disponíveis falharam" —
+                        # tendo tentado 2 de 11. Daí em diante: nenhuma análise,
+                        # nenhum relatório no WhatsApp, e nenhuma pista no log.
+                        #
+                        # Cooldown é uma APOSTA sobre o futuro ("este aqui
+                        # provavelmente ainda está sem cota"). Perder o ciclo
+                        # inteiro por causa de uma aposta custa 5 minutos de
+                        # mercado; tentar um modelo estacionado custa uma
+                        # requisição. Agora os estacionados vão para o FIM da
+                        # fila — que é o que o lado do chat (`modelos_para_tentar`)
+                        # já fazia certo desde a v2.24.
+                        # MESMA função do lado do chat. Antes eram duas cópias
+                        # da regra, e a daqui era a errada.
                         agora_ts = time.time()
-                        candidatos = [m for m in modelos_fallback
-                                       if cooldown_modelos.get(m, 0) <= agora_ts]
-                        if not candidatos:
-                            candidatos = list(modelos_fallback)
+                        candidatos, n_parados = fila_por_cooldown(
+                            modelos_fallback, cooldown_modelos, agora_ts)
+                        n_livres = len(candidatos) - n_parados
+                        if n_parados and not n_livres:
                             self.log("⏳ Todos os modelos estão em cooldown de cota/sobrecarga — "
                                       "tentando mesmo assim. (Considere aumentar o intervalo ou usar chave paga.)")
+                        elif n_parados:
+                            self.log(f"⏳ {n_parados} modelo(s) em cooldown foram para o fim "
+                                      f"da fila — {n_livres} livre(s) primeiro. Nenhum fica de fora: "
+                                      "perder o ciclo custa mais que uma tentativa.")
 
                         # UMA SEGUNDA PASSADA, PORQUE 503 SIGNIFICA "TENTE DE NOVO".
                         # Log de 13/08, 10:35 e 10:40: dois ciclos seguidos
@@ -15949,24 +16158,40 @@ class SmcQuantApp(ctk.CTk):
                                     "'Instalar a IA LOCAL' na aba Motor que "
                                     "eu trago o modelo que enxerga.")
                             else:
-                                bruto = analisar_grafico_local(screenshot,
-                                                                PROMPT_FINAL)
+                                self.log("🖥️ Gemini fora — chamando a IA LOCAL "
+                                         f"com visão ({modelo_de_visao_instalado(instalados_local)}). "
+                                         "A primeira leitura é lenta: ela "
+                                         "carrega alguns GB do disco.")
+                                t_local = time.time()
+                                bruto, porque = analisar_grafico_local(
+                                    screenshot, PROMPT_FINAL)
                                 if analise_local_valida(bruto):
-                                    self.log("🖥️ Gemini fora — análise feita "
-                                             "pela IA LOCAL com visão. É "
-                                             "reserva: lê pior, e passa pelas "
-                                             "mesmas travas.")
+                                    self.log("🖥️ Leitura feita pela IA LOCAL em "
+                                             f"{time.time() - t_local:.0f}s. É "
+                                             "reserva: lê pior que a Gemini, e "
+                                             "passa pelas mesmas travas.")
                                     resposta = type("R", (), {"text": bruto})()
                                     modelo_vencedor = "IA local (visão)"
                                 elif bruto:
                                     self.log("🖥️ A IA local respondeu, mas fora "
-                                             "do formato esperado — descartado.")
+                                             "do formato esperado (faltaram "
+                                             "campos obrigatórios) — descartado. "
+                                             "Chutar o que faltou seria inventar.")
                                 else:
-                                    self.log("🖥️ A IA local com visão não "
-                                             "devolveu resposta neste ciclo.")
+                                    # O MOTIVO, POR EXTENSO. "não devolveu
+                                    # resposta neste ciclo" foi o que ele leu
+                                    # no dia 13, e essa frase não permite
+                                    # fazer nada a respeito.
+                                    self.log(f"🖥️ A IA local não leu: {porque}.")
                         if resposta is None:
+                            # QUANTOS, POR NOME. "Todos os modelos falharam"
+                            # sobre 2 tentativas de 11 foi exatamente o que
+                            # escondeu o defeito do cooldown por um dia inteiro:
+                            # a frase estava certa sobre os que tentou, e
+                            # calada sobre os que não tentou.
                             raise RuntimeError(
-                                f"Todos os modelos disponíveis falharam. Último erro: {ultimo_erro}"
+                                f"Falharam os {len(candidatos)} modelo(s) tentados "
+                                f"({', '.join(candidatos)}). Último erro: {ultimo_erro}"
                             )
 
                         sinal = json.loads(resposta.text)

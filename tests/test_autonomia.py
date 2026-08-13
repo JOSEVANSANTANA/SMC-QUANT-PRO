@@ -427,7 +427,7 @@ class TestIALocalComVisao(unittest.TestCase):
         """Ela entra depois que TODOS os modelos da Gemini falharam — não no
         lugar deles. Lê pior; entra porque nenhuma leitura é pior ainda."""
         fonte = fonte_do_arquivo()
-        i = fonte.index("analisar_grafico_local(screenshot,")
+        i = fonte.index("bruto, porque = analisar_grafico_local(")
         antes = fonte[i - 2500:i]
         self.assertIn("if resposta is None:", antes)
 
@@ -435,7 +435,7 @@ class TestIALocalComVisao(unittest.TestCase):
         """Não pode parecer leitura da Gemini. Quem lê o log precisa saber de
         onde veio o número."""
         fonte = fonte_do_arquivo()
-        i = fonte.index("analisar_grafico_local(screenshot,")
+        i = fonte.index("bruto, porque = analisar_grafico_local(")
         bloco = fonte[i:i + 1200]
         self.assertIn("IA LOCAL", bloco)
         self.assertIn("reserva", bloco)
@@ -443,7 +443,7 @@ class TestIALocalComVisao(unittest.TestCase):
     def test_resposta_fora_do_formato_e_descartada(self):
         """JSON quebrado do modelo pequeno não pode virar cenário."""
         fonte = fonte_do_arquivo()
-        i = fonte.index("analisar_grafico_local(screenshot,")
+        i = fonte.index("bruto, porque = analisar_grafico_local(")
         bloco = fonte[i:i + 1200]
         # NÃO é mais só `json.loads`: JSON válido com as chaves erradas
         # ("trend", "price") passava no loads e matava o ciclo logo depois,
@@ -454,17 +454,20 @@ class TestIALocalComVisao(unittest.TestCase):
     def test_a_reserva_nunca_derruba_o_ciclo(self):
         fonte = fonte_do_arquivo()
         i = fonte.index("def analisar_grafico_local")
-        bloco = fonte[i:i + 2600]
+        bloco = fonte[i:i + 4200]
         self.assertIn("except Exception", bloco)
-        self.assertIn("return None", bloco)
+        # Devolve (texto, motivo): None sozinho não dizia POR QUE falhou, e
+        # foi isso que deixou o log dele com "não devolveu resposta neste
+        # ciclo" — uma frase sobre a qual não dá para fazer nada.
+        self.assertIn("return None, f\"{type(e).__name__}", bloco)
 
     def test_sem_modelo_de_visao_baixado_ela_nao_finge(self):
         """Ter o Ollama no ar com um modelo de TEXTO não é ter visão. Foi
         exatamente essa confusão que produziu o defeito."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def analisar_grafico_local")
-        bloco = fonte[i:i + 2600]
-        self.assertIn("nenhum modelo com visão baixado", bloco)
+        bloco = fonte[i:i + 4200]
+        self.assertIn("nenhum modelo de visão baixado", bloco)
 
     def test_a_instalacao_assistida_traz_o_modelo_de_visao(self):
         fonte = fonte_do_arquivo()
