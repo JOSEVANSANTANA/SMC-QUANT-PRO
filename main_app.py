@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.32.0"
+VERSAO_ATUAL = "2.33.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -3596,6 +3596,13 @@ def licao_pede_invencao(texto):
             "sempre: se eu gravar um preço, vou repetir esse mesmo preço "
             "daqui a um mês, com o mercado em outro lugar — e aí eu estaria "
             "inventando, que é exatamente o que você não quer")
+    if _e_pergunta(texto):
+        return True, (
+            "isso é uma PERGUNTA, não uma regra — e pergunta gravada não "
+            "instrui nada, só entra em toda análise daqui pra frente como "
+            "ruído. Se o que você quer ensinar é o que vem DEPOIS da "
+            "pergunta, me mande só essa parte: 'quando eu perguntar de um "
+            "ativo, pesquise na web — aprenda isso'")
     return False, ""
 
 
@@ -3622,6 +3629,33 @@ _RE_FATO_EFEMERO = re.compile(
     r"[^.;\n]{0,40}"
     r"(\b(esta|est[áa]|e|é|em|foi|era|vale|marca|bateu|ficou)\b[^.;\n]{0,15})?"
     r"\d{2,}[.,]?\d*", re.IGNORECASE)
+
+def _e_pergunta(texto):
+    """True quando a 'lição' é uma PERGUNTA, não uma regra.
+
+    Log de 13/08, 12:39. Ele escreveu, numa mensagem só:
+        "O QUE ACONTECEU COM HAPV3 HOJE? -APRENDA ISSO, TODA VEZ QUE TIVER
+         ALGUMA PERGUNTA ASSIM, PESQUISE NA WEB..."
+    O que ele queria ensinar era a REGRA que vinha depois. O que ficou gravado
+    foi "o que aconteceu com HAPV3 HOJE?" — a pergunta. Um minuto depois, a
+    lista de lições tinha isso na posição 6, e aquilo passaria a entrar em
+    TODA análise, para sempre, como se fosse instrução.
+
+    Uma pergunta não instrui nada. Ela também não é 'errada' — é só a coisa
+    errada para guardar, e recusar com explicação é melhor que guardar lixo."""
+    t = str(texto or "").strip()
+    if not t:
+        return False
+    if not t.endswith("?"):
+        return False
+    n = _sem_acento(t).lower()
+    # Regra em forma de pergunta retórica existe ("já pensou em arriscar 5%?"),
+    # mas é rara e ambígua. Aqui vale a forma: começou com interrogativo e
+    # terminou com '?', é pergunta.
+    return bool(re.match(r"^(o que|oque|qual|quais|quando|quanto|quantos|"
+                         r"como|onde|por que|porque|porqu[êe]|pq|quem|"
+                         r"sera que|tem |teve |houve |voce |vc )", n))
+
 
 def _e_fato_efemero(texto):
     """True quando a 'lição' é um dado de UM MOMENTO (um preço, um nível de
@@ -3854,7 +3888,34 @@ def simbolo_do_texto(texto):
             nota = difflib.SequenceMatcher(None, c, a).ratio()
             if nota >= 0.85 and nota > nota_melhor:
                 melhor, nota_melhor = (simbolo, apelido), nota
-    return melhor
+    if melhor:
+        return melhor
+
+    # 4ª passada: TICKER DE AÇÃO, que a tabela de apelidos nunca vai cobrir.
+    #
+    # Log de 13/08, 12:15 a 12:39. Ele perguntou quatro vezes sobre HAPV3 e
+    # recebeu, nesta ordem: manchetes do Yahoo sobre Birkenstock e Blue Bird,
+    # "não tenho acesso direto aos dados do Ibovespa", "sugiro que você tire
+    # um print do gráfico do Ibovespa", e de novo manchetes aleatórias. No
+    # meio disso, 'nasdaq' e 'ibovespa' funcionaram perfeitamente — porque
+    # estavam na tabela de apelidos escrita à mão.
+    #
+    # Uma tabela de apelidos nunca vai ter as 400 ações da B3. Mas o FORMATO
+    # de um ticker da B3 é inconfundível: quatro letras e um dígito (PETR4,
+    # VALE3, HAPV3, ITUB4). Nenhuma palavra do português tem essa forma, então
+    # reconhecer o padrão não gera falso positivo — e o Yahoo aceita esses
+    # papéis com o sufixo .SA.
+    for m in re.finditer(r"(?<![A-Za-z0-9])([A-Za-z]{4}\d{1,2})(?![A-Za-z0-9])",
+                         str(texto or "")):
+        papel = m.group(1).upper()
+        # CONTRATO FUTURO TEM A MESMA FORMA E NÃO É AÇÃO. 'MESU6' é quatro
+        # letras e um dígito igualzinho a 'HAPV3' — mas é o Micro E-mini de
+        # setembro, não um papel da B3. Mandar isso ao Yahoo como 'MESU6.SA'
+        # devolveria nada, ou pior, outra coisa. O teste pegou.
+        if _e_contrato_conhecido(papel):
+            continue
+        return (f"{papel}.SA", papel)
+    return None
 
 def cotacao_mercado(simbolo):
     """Preço REAL do ativo, direto do Yahoo Finance. Sem chave, sem cota.
@@ -4334,19 +4395,35 @@ def responder_offline(pergunta, cenario=None):
         do_conhecimento = responder_do_conhecimento(pergunta)
         leitura = ler_cenario_do_topico(item, cenario)
         return f"{do_conhecimento}\n\n{leitura}" if leitura else do_conhecimento
-    # Cotação: só quando ele realmente pediu preço de um ativo.
+    # Cotação: quando ele pediu preço, OU quando citou um ativo e perguntou o
+    # que aconteceu com ELE — porque "o que aconteceu com HAPV3 hoje?" é uma
+    # pergunta sobre o PAPEL, e a resposta útil começa pelo que ele fez no dia.
     alvo = simbolo_do_texto(pergunta)
+    p_norm = _norm_busca(pergunta)
     quer_preco = re.search(r"\b(cota[çc][ãa]o|pre[çc]o|quanto|quanto est|"
-                           r"em quanto|valor)\b", _norm_busca(pergunta))
+                           r"em quanto|valor|subiu|caiu|fechou|abriu|"
+                           r"aconteceu|acontecendo|como (est[áa]|foi|ta))\b",
+                           p_norm)
     if alvo and quer_preco:
         cot = cotacao_mercado(alvo[0])
         if cot:
             return formatar_cotacao(cot, alvo[1].upper())
-    # Notícia: também só quando o assunto é notícia/mercado agora. E vem
-    # RESPONDENDO, com as mais relevantes, não com a lista bruta.
-    if re.search(r"\b(not[íi]cia|manchete|aconteceu|acontecendo|movend|"
-                 r"impact|relevante|mercado hoje|por que|porqu[êe])\b",
-                 _norm_busca(pergunta)):
+        # PERGUNTOU DE UM ATIVO E EU NÃO ACHEI: isso se DIZ.
+        # Log de 13/08: ele perguntou de HAPV3 quatro vezes e recebeu, entre
+        # outras coisas, manchetes sobre Birkenstock e Blue Bird. Manchete de
+        # OUTRA empresa não é resposta parcial sobre a dele — é ruído com cara
+        # de resposta, e o pior tipo, porque parece que a ferramenta respondeu.
+        return (f"Não consegui a cotação de **{alvo[1].upper()}** agora — a "
+                "fonte não respondeu ou o papel não existe com esse código. "
+                "Não vou te mostrar notícia de outra empresa como se fosse "
+                "resposta. Confira o código (na B3 são quatro letras e um "
+                "número, como PETR4 ou HAPV3) e me pergunte de novo.")
+    # Notícia: só quando o assunto é notícia/mercado EM GERAL. Se ele citou um
+    # ativo específico, a pergunta é sobre AQUELE ativo, e o bloco acima já
+    # respondeu — despejar manchete geral aqui seria mudar de assunto.
+    if not alvo and re.search(
+            r"\b(not[íi]cia|manchete|aconteceu|acontecendo|movend|"
+            r"impact|relevante|mercado hoje|por que|porqu[êe])\b", p_norm):
         return resumo_de_noticias(pergunta)
     return None
 
@@ -7265,6 +7342,15 @@ def interpretar_intencao(texto):
     # ainda nao virou o meu ciclo diario no painel de trading". Ele pediu
     # duas vezes e ainda gravou como licao — e as duas vezes a resposta foi o
     # despejo generico. Agora e comando, e roda sem API.
+    # ACENTO IMPORTA AQUI: neste ponto `t` está em minúsculas mas NÃO teve os
+    # acentos removidos, então 'diagnóstico' precisa estar escrito com o 'ó'
+    # na expressão. Foi o teste que pegou — a versão sem acento passava e a
+    # com acento (a que ele digita) caía no genérico.
+    if re.search(r"\b(test|diagn[óo]stic|confer|verific|checa)\w*\b[^.!?]{0,20}?"
+                 r"\b(microfone|mic|audio|[áa]udio|voz|escuta)\b"
+                 r"|\b(microfone|mic)\b[^.!?]{0,20}?"
+                 r"\b(nao|n[ãa]o)\s+(funciona|pega|escuta|capta)\b", t):
+        return "DIAG_MICROFONE"
     if _RE_VIRAR_DIA.search(t):
         return "VIRAR_DIA"
     # "o dia ja virou?", "em que pregao estamos?" — pergunta de FATO, que o
@@ -7468,6 +7554,7 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
                     "CONECTAR_WHATSAPP", "LISTAR_LICOES", "LISTAR_CONHECIMENTO",
                     "NOTICIAS", "COTACAO", "PESQUISAR", "VER_CONFIG",
                     "POR_QUE_SEM_SUGESTAO", "VIRAR_DIA", "QUAL_PREGAO",
+                    "DIAG_MICROFONE",
                     "VOZ_RAPIDA", "VOZ_LENTA", "CALAR"):
         return ("EXECUTAR", intencao)
     return ("IA", None)
@@ -10057,6 +10144,9 @@ class SmcQuantApp(ctk.CTk):
         if acao == "POR_QUE_SEM_SUGESTAO":
             self._chat_estado_do_freio()
             return
+        if acao == "DIAG_MICROFONE":
+            self._chat_responder(self.diagnostico_microfone(), falar_tb=False)
+            return
         if acao == "QUAL_PREGAO":
             self._chat_responder(texto_do_pregao_atual())
             return
@@ -11161,6 +11251,51 @@ class SmcQuantApp(ctk.CTk):
         else:
             self._chat_escrever("sistema", "(modo OLÁ TIGER desligado)",
                                  persistir=False)
+
+    def diagnostico_microfone(self):
+        """Diz TUDO o que se sabe sobre o microfone, em uma tela.
+
+        Isto existe porque ele já relatou o mesmo defeito quatro vezes e cada
+        rodada minha corrigiu uma causa possível sem NUNCA saber qual era a
+        real. Adivinhar em série é caro. Estas seis linhas são a diferença
+        entre 'não funciona' e 'não funciona POR ISTO'."""
+        linhas = ["🎤 DIAGNÓSTICO DO MICROFONE", ""]
+        linhas.append(f"• Bibliotecas: SpeechRecognition={'ok' if VOZ_SR else 'FALTA'}"
+                      f" · sounddevice={'ok' if VOZ_SD else 'FALTA'}")
+        if not VOZ_SD and VOZ_SD_ERRO:
+            linhas.append(f"  causa: {VOZ_SD_ERRO[:150]}")
+        if plataforma.E_MACOS:
+            estado = plataforma.estado_permissao_microfone()
+            quem = plataforma.quem_pede_a_permissao()
+            linhas.append(f"• Permissão do macOS: {estado.upper()}")
+            linhas.append(f"• Quem o macOS lista: “{quem}” "
+                          "(procure ESTE nome, não 'SMC Quant Pro')")
+            if estado == "nunca_pedido":
+                linhas.append("  ⚠️ NUNCA PEDIDO é a explicação de 'não aparece "
+                              "na lista': o macOS só lista quem já pediu. Ligue "
+                              "o OLÁ TIGER que eu peço agora.")
+            elif estado == "negado":
+                linhas.append("  ⚠️ NEGADO. Marque na tela que vou abrir, FECHE "
+                              "e ABRA o programa (a permissão só vale a partir "
+                              "do próximo arranque).")
+            elif estado == "desconhecido":
+                linhas.append("  ⚠️ Não consegui consultar — falta o "
+                              "pyobjc-framework-AVFoundation. Rode o "
+                              "INSTALAR_MAC.command de novo.")
+        try:
+            if VOZ_SD:
+                dev = _sd.query_devices(kind="input")
+                linhas.append(f"• Entrada padrão: {dev['name']} "
+                              f"({int(dev.get('default_samplerate', 0))} Hz)")
+        except Exception as e:
+            linhas.append(f"• Entrada padrão: NÃO consegui ler ({str(e)[:80]})")
+        linhas.append("")
+        linhas.append("Se tudo acima estiver ok e ainda vier silêncio, é o "
+                      "dispositivo errado: troque a entrada padrão em Ajustes "
+                      "do Sistema → Som → Entrada.")
+        texto = "\n".join(linhas)
+        self.log(texto)
+        return texto
 
     def _tiger_iniciar(self):
         if not (VOZ_SR and VOZ_SD):

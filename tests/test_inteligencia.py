@@ -187,7 +187,7 @@ class TestMemoriaQueSePodeCorrigir(unittest.TestCase):
     def _ns(self):
         return carregar(
             ["_sem_acento", "_norm_busca", "_LICAO_IMPOSSIVEL",
-             "_RE_FATO_EFEMERO", "_e_fato_efemero", "licao_pede_invencao",
+             "_RE_FATO_EFEMERO", "_e_pergunta", "_e_fato_efemero", "licao_pede_invencao",
              "_RE_ESQUECER", "pedido_de_esquecer"],
             stubs={"unicodedata": __import__("unicodedata")})
 

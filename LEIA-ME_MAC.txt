@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.32.0 — MAC (Apple Silicon M1 / M2 / M3)
+  SMC QUANT PRO v2.33.0 — MAC (Apple Silicon M1 / M2 / M3)
   Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.
 ========================================================================
 
@@ -183,6 +183,66 @@ no meio do pregão.
 
 DEIXE A JANELA DO GRÁFICO ABERTA. Atrás de outras funciona perfeitamente
 — só não pode estar minimizada.
+
+
+========================================================================
+  O QUE MUDOU NA v2.33.0  —  QUATRO PERGUNTAS, QUATRO RESPOSTAS ERRADAS
+========================================================================
+1) A ACAO DA B3 QUE ELA NAO SABIA BUSCAR
+  13/08, das 12:15 as 12:39, voce perguntou sobre HAPV3 e recebeu:
+    • manchetes do Yahoo sobre Birkenstock e Blue Bird
+    • "nao tenho acesso direto aos dados do Ibovespa"
+    • "sugiro que voce tire um print do grafico do Ibovespa"
+    • de novo, manchetes aleatorias
+
+  E no meio disso 'nasdaq' e 'ibovespa' funcionaram perfeitamente —
+  porque estavam na tabela de apelidos escrita a mao.
+
+  Uma tabela nunca vai ter as 400 acoes da B3. Mas o FORMATO de um
+  ticker da B3 e inconfundivel: quatro letras e um digito (PETR4, VALE3,
+  HAPV3, ITUB4) — e nenhuma palavra do portugues tem essa forma.
+  Agora qualquer acao da B3 e reconhecida e buscada no Yahoo Finance,
+  sem chave e sem cota.
+
+  CONTRATO FUTURO NAO VIRA ACAO: 'MESU6' tem exatamente a mesma forma,
+  mas e o Micro E-mini de setembro. Foi o teste que pegou.
+
+  E MANCHETE DE OUTRA EMPRESA NAO E RESPOSTA. Quando voce cita um ativo
+  e ele nao acha, ele DIZ que nao achou. Ruido com cara de resposta e o
+  pior tipo, porque parece que a ferramenta respondeu.
+
+2) UMA PERGUNTA VIROU LICAO PERMANENTE
+  12:39, numa mensagem so:
+      "O QUE ACONTECEU COM HAPV3 HOJE? -APRENDA ISSO, TODA VEZ QUE TIVER
+       ALGUMA PERGUNTA ASSIM, PESQUISE NA WEB..."
+
+  O que voce queria ensinar era a REGRA que vinha depois. O que ficou
+  gravado foi a PERGUNTA — e um minuto depois ela estava na posicao 6 da
+  sua lista de licoes, entrando em toda analise, para sempre, como se
+  fosse instrucao.
+
+  Agora pergunta e RECUSADA como licao, com a explicacao de como mandar
+  so a regra. Regra de verdade continua passando normalmente.
+
+3) DIAGNOSTICO DO MICROFONE  (diga: "testa o microfone")
+  Voce relatou o mesmo defeito QUATRO vezes, e cada rodada minha
+  corrigiu uma causa possivel sem NUNCA saber qual era a real. Adivinhar
+  em serie e caro.
+
+  Agora ele responde tudo numa tela:
+    • bibliotecas (SpeechRecognition, sounddevice) e a causa se faltar
+    • ESTADO REAL da permissao do macOS:
+        autorizado / negado / NUNCA PEDIDO / restrito
+    • qual nome o macOS lista (procure ESTE, nao 'SMC Quant Pro')
+    • qual e o dispositivo de entrada padrao
+
+  "NUNCA PEDIDO" E a explicacao de "nao aparece na lista": o macOS so
+  lista quem ja pediu.
+
+  ⚠️ Se aparecer "nao consegui consultar", falta o
+     pyobjc-framework-AVFoundation — rode o INSTALAR_MAC.command.
+
+TESTES: 381 (eram 366).
 
 
 ========================================================================

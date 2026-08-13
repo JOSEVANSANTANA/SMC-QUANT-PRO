@@ -292,3 +292,172 @@ class TestPrevisualizacaoDaJanela(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestCotacaoDeAcao(unittest.TestCase):
+    """13/08, 12:15 a 12:39. Ele perguntou QUATRO vezes sobre HAPV3 e recebeu:
+
+      • manchetes do Yahoo sobre Birkenstock e Blue Bird
+      • "não tenho acesso direto aos dados do Ibovespa"
+      • "sugiro que você tire um print do gráfico do Ibovespa"
+      • de novo, manchetes aleatórias
+
+    No meio disso, 'nasdaq' e 'ibovespa' funcionaram perfeitamente — porque
+    estavam na tabela de apelidos escrita à mão. Uma tabela nunca vai ter as
+    400 ações da B3; o FORMATO de um ticker da B3, sim, é inconfundível.
+    """
+
+    def _ns(self):
+        return carregar(
+            ["_sem_acento", "_norm_busca", "_compacto", "SIMBOLOS_MERCADO",
+             "VALOR_POR_PONTO", "_MESES_FUTUROS", "_e_contrato_conhecido",
+             "simbolo_do_texto"],
+            stubs={"unicodedata": __import__("unicodedata")})
+
+    def test_o_papel_dele_e_reconhecido(self):
+        ns = self._ns()
+        for t in ("como esta o preco de hapv3 agora?",
+                  "o que aconteceu com HAPV3 hoje?", "HAPV3"):
+            self.assertEqual(ns["simbolo_do_texto"](t), ("HAPV3.SA", "HAPV3"), t)
+
+    def test_outros_papeis_da_b3_tambem(self):
+        ns = self._ns()
+        for papel in ("PETR4", "VALE3", "ITUB4", "MGLU3", "BBAS3"):
+            self.assertEqual(ns["simbolo_do_texto"](f"cotacao de {papel}")[0],
+                             f"{papel}.SA", papel)
+
+    def test_contrato_futuro_NAO_vira_acao(self):
+        """'MESU6' tem a mesma forma de 'HAPV3' — quatro letras e um dígito —
+        mas é o Micro E-mini de setembro. Mandar isso ao Yahoo como MESU6.SA
+        devolveria nada, ou pior, outra coisa. Foi o teste que pegou."""
+        ns = self._ns()
+        for t in ("o stop do MESU6 é 7760", "MNQZ5 hoje", "analisa o MESU6"):
+            self.assertIsNone(ns["simbolo_do_texto"](t), t)
+
+    def test_os_indices_que_ja_funcionavam_continuam(self):
+        ns = self._ns()
+        self.assertEqual(ns["simbolo_do_texto"]("qual o preco do nasdaq?")[0],
+                         "^IXIC")
+        self.assertEqual(ns["simbolo_do_texto"]("preco do ibovespa")[0], "^BVSP")
+
+    def test_conversa_normal_nao_vira_ticker(self):
+        ns = self._ns()
+        for t in ("compro ou vendo?", "bom dia", "o que é smc?",
+                  "tira um print", "status"):
+            self.assertIsNone(ns["simbolo_do_texto"](t), t)
+
+    def test_ativo_citado_nao_recebe_manchete_de_outra_empresa(self):
+        """Manchete da Birkenstock não é resposta parcial sobre a HAPV3 — é
+        ruído com cara de resposta, e o pior tipo, porque PARECE resposta."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def responder_offline")
+        bloco = fonte[i:i + 4000]
+        self.assertIn("Não vou te mostrar notícia de outra empresa", bloco)
+        self.assertIn("if not alvo and re.search(", bloco)
+
+    def test_perguntar_o_que_aconteceu_com_um_ativo_busca_a_cotacao(self):
+        """'o que aconteceu com HAPV3 hoje?' e uma pergunta sobre o PAPEL — a
+        resposta util comeca pelo que ele fez no dia."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def responder_offline")
+        bloco = fonte[i:i + 4000]
+        self.assertIn("aconteceu|acontecendo", bloco)
+
+
+class TestPerguntaNaoViraLicao(unittest.TestCase):
+    """13/08, 12:39, numa mensagem só:
+
+        "O QUE ACONTECEU COM HAPV3 HOJE? -APRENDA ISSO, TODA VEZ QUE TIVER
+         ALGUMA PERGUNTA ASSIM, PESQUISE NA WEB..."
+
+    O que ele queria ensinar era a REGRA que vinha depois. O que ficou gravado
+    foi a PERGUNTA. Um minuto depois ela estava na posição 6 da lista de lições
+    — e passaria a entrar em toda análise, para sempre, como se fosse
+    instrução."""
+
+    def _ns(self):
+        return carregar(["_sem_acento", "_LICAO_IMPOSSIVEL", "_e_pergunta",
+                         "_RE_FATO_EFEMERO", "_e_fato_efemero",
+                         "licao_pede_invencao"],
+                        stubs={"unicodedata": __import__("unicodedata")})
+
+    def test_a_pergunta_real_e_recusada(self):
+        ns = self._ns()
+        recusa, motivo = ns["licao_pede_invencao"]("O QUE ACONTECEU COM HAPV3 HOJE?")
+        self.assertTrue(recusa)
+        self.assertIn("PERGUNTA", motivo)
+
+    def test_outras_perguntas_tambem(self):
+        ns = self._ns()
+        for t in ("qual o preço do nasdaq?", "como está o mercado hoje?",
+                  "você não é uma IA?", "quando abre Londres?"):
+            self.assertTrue(ns["licao_pede_invencao"](t)[0], t)
+
+    def test_a_recusa_ENSINA_o_que_fazer(self):
+        """Recusar e calar deixaria ele sem saber como ensinar a regra que ele
+        realmente queria."""
+        ns = self._ns()
+        _r, motivo = ns["licao_pede_invencao"]("o que aconteceu com HAPV3 hoje?")
+        self.assertIn("aprenda isso", motivo)
+
+    def test_regra_de_verdade_continua_passando(self):
+        """A trava não pode ter fechado a porta do aprendizado — que é o
+        recurso que ele mais usa."""
+        ns = self._ns()
+        for t in ("nunca arrisque mais de 2% por operação",
+                  "toda vez que te perguntar um preço, acesse o yahoo finance",
+                  "não opere depois das 15h", "exija R:R de 1:2 sempre",
+                  "quando eu perguntar de um ativo, pesquise na web",
+                  "preste atenção nos detalhes, não invente números"):
+            self.assertFalse(ns["licao_pede_invencao"](t)[0], t)
+
+    def test_frase_com_interrogacao_no_meio_nao_e_pergunta(self):
+        """Só a FORMA inteira conta: começou com interrogativo E terminou com
+        '?'. Uma regra que cita uma pergunta continua sendo regra."""
+        ns = self._ns()
+        self.assertFalse(ns["licao_pede_invencao"](
+            "quando eu perguntar 'qual o preço?', busque no yahoo")[0])
+
+
+class TestDiagnosticoDoMicrofone(unittest.TestCase):
+    """Ele relatou o MESMO defeito de microfone quatro vezes, e cada rodada
+    minha corrigiu uma causa possível sem nunca saber qual era a real.
+    Adivinhar em série é caro."""
+
+    def test_existe_o_comando(self):
+        ns = carregar(
+            ["_sem_acento", "_norm_busca", "_RE_QUAL_LADO", "pergunta_qual_lado",
+             "_RE_DEFINIR_NIVEL", "interpretar_niveis_da_posicao", "_RE_NIVEL",
+             "_RE_NIVEL_TEORIA", "pergunta_pede_nivel", "_RE_POSTMORTEM",
+             "pergunta_postmortem", "_RE_VIRAR_DIA", "_RE_QUAL_PREGAO",
+             "_MOTOR_SUBSTANTIVOS", "_MOTOR_ARTIGO", "_MOTOR_NEGADO",
+             "_MOTOR_DESLIGAR", "_MOTOR_PARA", "_MOTOR_LIGAR",
+             "_PRINT_SOZINHO", "_PRINT_COM_AGORA", "_RE_ESQUECER",
+             "pedido_de_esquecer", "_COMANDOS_CONHECIDOS", "_distancia_edicao",
+             "corrigir_digitacao", "interpretar_intencao"],
+            stubs={"extrair_licao": lambda t: None,
+                   "interpretar_configuracao": lambda t: None,
+                   "pergunta_sobre_configuracao": lambda t: False,
+                   "simbolo_do_texto": lambda t: None,
+                   "unicodedata": __import__("unicodedata")})
+        for t in ("testa o microfone", "o microfone não funciona",
+                  "diagnóstico do microfone", "confere o áudio"):
+            self.assertEqual(ns["interpretar_intencao"](t), "DIAG_MICROFONE", t)
+
+    def test_diz_TUDO_o_que_se_sabe(self):
+        """Seis linhas que separam 'não funciona' de 'não funciona POR ISTO'."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def diagnostico_microfone")
+        bloco = fonte[i:i + 2800]
+        for marca in ("Bibliotecas", "Permissão do macOS", "Quem o macOS lista",
+                      "Entrada padrão"):
+            self.assertIn(marca, bloco, marca)
+
+    def test_explica_o_nunca_pedido(self):
+        """'Nunca pedido' É a explicação de 'não aparece na lista' — e essa
+        ligação precisa estar escrita, senão o estado não ajuda ninguém."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def diagnostico_microfone")
+        bloco = fonte[i:i + 2800]
+        self.assertIn("não aparece", bloco)
+        self.assertIn("nunca_pedido", bloco)
