@@ -148,7 +148,7 @@ class TestOsPassosDaInstalacao(unittest.TestCase):
         que só apareceu como 401 no meio do pregão."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def _instalar_ia_worker")
-        bloco = fonte[i:i + 5200]
+        bloco = fonte[i:i + 8000]
         self.assertIn("_pedir_openai", bloco)
         self.assertIn("Responda apenas: OK", bloco)
         # E se o teste não voltar, ela NÃO crava que está pronto.
@@ -159,7 +159,7 @@ class TestOsPassosDaInstalacao(unittest.TestCase):
         escrita: ninguém sabe onde parou."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def _instalar_ia_worker")
-        bloco = fonte[i:i + 5200]
+        bloco = fonte[i:i + 8000]
         for marca in ("Baixando o instalador", "Instalando…",
                       "Subindo o serviço", "Baixando o modelo",
                       "Testando com uma pergunta real"):
@@ -178,7 +178,7 @@ class TestOsPassosDaInstalacao(unittest.TestCase):
         erro obriga a reabrir o programa."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def _instalar_ia_worker")
-        bloco = fonte[i:i + 5600]
+        bloco = fonte[i:i + 8000]
         self.assertIn("finally:", bloco)
         self.assertIn('state="normal"', bloco)
 

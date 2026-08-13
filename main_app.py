@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.33.0"
+VERSAO_ATUAL = "2.34.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -918,9 +918,76 @@ def salvar_chave_provedor(pid: str, chave: str):
 # 8 GB de RAM, fala português bem e segue instrução. Um modelo maior responde
 # melhor e não abre numa máquina modesta — e a ferramenta que não abre na
 # máquina do cliente não serve para nada.
+_RAM_NAO_INFORMADA = object()
+
 MODELO_LOCAL_PADRAO = "qwen2.5:7b"
 # Para máquina apertada. Metade do tamanho, resposta mais curta e mais crua.
 MODELO_LOCAL_LEVE = "qwen2.5:3b"
+# O MODELO QUE ENXERGA. Sem ele, a IA local não serve para o motor: qwen2.5
+# é modelo de TEXTO e não vê imagem nenhuma — foi por isso que, com a Gemini
+# fora do ar, o ciclo morria inteiro mesmo com a IA local instalada e no ar.
+# qwen2.5vl é a versão com visão do mesmo modelo, e lê gráfico razoavelmente.
+MODELO_VISAO_LOCAL = "qwen2.5vl:7b"
+MODELO_VISAO_LOCAL_LEVE = "qwen2.5vl:3b"
+
+
+def modelo_visao_recomendado(ram_gb=_RAM_NAO_INFORMADA):
+    """O modelo de VISÃO que cabe nesta máquina."""
+    ram = _num_gb_de_ram() if ram_gb is _RAM_NAO_INFORMADA else ram_gb
+    if ram is not None and ram < 12:
+        return MODELO_VISAO_LOCAL_LEVE
+    return MODELO_VISAO_LOCAL
+
+
+def _b64_da_imagem(imagem_pil):
+    """A imagem no formato que o Ollama espera (base64, sem prefixo)."""
+    saida = BytesIO()
+    imagem_pil.convert("RGB").save(saida, format="JPEG", quality=90,
+                                   subsampling=0)
+    return base64.b64encode(saida.getvalue()).decode("utf-8")
+
+
+def analisar_grafico_local(imagem_pil, prompt, modelo=None, timeout=180):
+    """Lê o gráfico com o modelo de VISÃO que roda nesta máquina.
+
+    Existe porque, em 13/08, TODOS os dez modelos da Gemini devolveram 503 ou
+    429 no mesmo ciclo e a análise morreu — com a IA local instalada, no ar, e
+    inútil, porque o modelo baixado era de texto puro.
+
+    Devolve o texto cru do modelo (JSON esperado) ou None. NUNCA levanta: a
+    reserva não pode derrubar o ciclo que ela deveria salvar.
+
+    HONESTIDADE QUE PRECISA FICAR ESCRITA: um modelo local de 3 a 7 bilhões de
+    parâmetros lê gráfico PIOR que a Gemini. Ele entra como reserva, não como
+    igual — e tudo o que ele produz passa pelas mesmas travas do resto
+    (conferência do preço contra o título da janela, ticker de contrato
+    conhecido, piso de qualidade). Uma leitura de reserva conferida vale mais
+    que nenhuma leitura."""
+    try:
+        modelo = modelo or modelo_visao_recomendado()
+        instalados = ia_local_no_ar(timeout=3) or []
+        if not instalados:
+            return None
+        if modelo not in instalados:
+            candidato = next((m for m in instalados if "vl" in m.lower()
+                              or "vision" in m.lower() or "llava" in m.lower()
+                              or "moondream" in m.lower()), None)
+            if not candidato:
+                return None          # nenhum modelo com visão baixado
+            modelo = candidato
+        r = requests.post(
+            "http://localhost:11434/api/generate",
+            json={"model": modelo, "prompt": prompt,
+                  "images": [_b64_da_imagem(imagem_pil)],
+                  "stream": False, "format": "json",
+                  "options": {"temperature": 0.1}},
+            timeout=timeout)
+        if r.status_code != 200:
+            return None
+        texto = (r.json() or {}).get("response") or ""
+        return texto.strip() or None
+    except Exception:
+        return None
 
 
 def _num_gb_de_ram():
@@ -949,9 +1016,6 @@ def _num_gb_de_ram():
         return st.ullTotalPhys / (1024 ** 3)
     except Exception:
         return None
-
-
-_RAM_NAO_INFORMADA = object()
 
 
 def modelo_local_recomendado(ram_gb=_RAM_NAO_INFORMADA):
@@ -3368,6 +3432,20 @@ def velocidade_da_voz():
         v = VOZ_RATE_PADRAO
     return max(VOZ_RATE_MIN, min(VOZ_RATE_MAX, v))
 
+def voz_escolhida():
+    """A voz que ele escolheu, do disco. Vazio = a melhor que o sistema tiver."""
+    try:
+        return str(carregar_config().get("voz_nome", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def salvar_voz_escolhida(nome):
+    """Grava a voz e RELÊ do disco para confirmar — como toda gravação aqui."""
+    salvar_config({"voz_nome": str(nome or "").strip()})
+    return voz_escolhida()
+
+
 def ajustar_velocidade_da_voz(passo):
     """Acelera (passo positivo) ou desacelera a fala. Devolve (novo, no_limite)."""
     atual = velocidade_da_voz()
@@ -3418,7 +3496,8 @@ def falar(texto: str):
             # NSSpeechSynthesizer, que precisa do run loop do Cocoa na thread
             # principal — a TIGER fala de uma thread de trabalho e ali ele
             # trava ou fica mudo.
-            engine = plataforma.falar_nativo(texto, velocidade_da_voz())
+            engine = plataforma.falar_nativo(texto, velocidade_da_voz(),
+                                             voz_preferida=voz_escolhida())
             if engine is None:
                 return
             with _TTS_LOCK:
@@ -8189,6 +8268,67 @@ class SmcQuantApp(ctk.CTk):
                  "sem sair da conversa. A escolha fica salva."
         ).pack(anchor="w", padx=12, pady=(2, 10))
 
+        # ---------- VOZ: VELOCIDADE E QUAL VOZ ----------
+        # Pedido dele, 13/08: "uma opção de configurar a velocidade da fala e
+        # uma biblioteca de opções de voz para não ser apenas essa chata".
+        # A lista sai do SISTEMA (`say -v ?`), não de uma tabela escrita à
+        # mão: presumir que 'Luciana' está instalada seria o mesmo tipo de
+        # chute que a ferramenta inteira existe para evitar.
+        sec_voz = self._secao(master, "🔊  VOZ DA TIGER",
+                              "motor_voz", aberta_padrao=False)
+        linha_vel = ctk.CTkFrame(sec_voz, fg_color="transparent")
+        linha_vel.pack(anchor="w", padx=12, pady=(8, 2))
+        ctk.CTkLabel(linha_vel, text="Velocidade da fala:",
+                     text_color=COR["texto"]).pack(side="left", padx=(0, 8))
+        self.lbl_vel_voz = ctk.CTkLabel(linha_vel, width=140,
+                                        text_color=COR["dim"], anchor="w")
+        _vel = velocidade_da_voz()
+
+        def _mostrar_vel(v):
+            rotulo = ("bem devagar" if v < 130 else "devagar" if v < 155
+                      else "normal" if v < 195 else "rápida" if v < 240
+                      else "muito rápida")
+            self.lbl_vel_voz.configure(text=f"{int(v)} palavras/min ({rotulo})")
+
+        def _ao_mover_vel(v):
+            salvar_config({"voz_rate": int(float(v))})
+            _mostrar_vel(float(v))
+
+        ctk.CTkSlider(linha_vel, from_=VOZ_RATE_MIN, to=VOZ_RATE_MAX, width=240,
+                      number_of_steps=(VOZ_RATE_MAX - VOZ_RATE_MIN) // 5,
+                      command=_ao_mover_vel).set(_vel)
+        self.lbl_vel_voz.pack(side="left", padx=6)
+        _mostrar_vel(_vel)
+
+        linha_voz = ctk.CTkFrame(sec_voz, fg_color="transparent")
+        linha_voz.pack(anchor="w", padx=12, pady=(4, 2))
+        ctk.CTkLabel(linha_voz, text="Voz:",
+                     text_color=COR["texto"]).pack(side="left", padx=(0, 8))
+        try:
+            _vozes = plataforma.vozes_disponiveis()
+        except Exception:
+            _vozes = []
+        _nomes = [n for n, _i, _e in _vozes] or ["(a melhor do sistema)"]
+        self._var_voz = tk.StringVar(value=voz_escolhida() or _nomes[0])
+        ctk.CTkOptionMenu(linha_voz, variable=self._var_voz, values=_nomes,
+                          width=200,
+                          command=lambda n: self._trocar_voz(n)).pack(side="left")
+        # OUVIR ANTES DE ESCOLHER. Escolher voz por NOME, sem ouvir, é escolher
+        # no escuro — e depois descobrir no meio do pregão.
+        ctk.CTkButton(linha_voz, text="🔈 ouvir", width=90,
+                      fg_color=COR["borda"], hover_color=COR["input"],
+                      command=self._experimentar_voz).pack(side="left", padx=6)
+        ctk.CTkLabel(
+            sec_voz, justify="left", text_color=COR["dim"],
+            font=ctk.CTkFont(size=10), wraplength=580,
+            text=("As vozes vêm do seu macOS — a lista é a real desta máquina. "
+                  "Para ter mais opções: Ajustes do Sistema → Acessibilidade → "
+                  "Conteúdo Falado → Voz do sistema → Gerenciar vozes, e baixe "
+                  "as de português (as 'Premium' e 'Aprimorada' são bem "
+                  "melhores que a padrão).\\nVocê também pode falar comigo: "
+                  "'acelere a fala', 'fala mais devagar'.")
+        ).pack(anchor="w", padx=12, pady=(2, 10))
+
         sec_horario = self._secao(master, "⏰  PREGÃO E INTERVALO DE ANÁLISE",
                                   "motor_horario", aberta_padrao=False)
         frame_horario = ctk.CTkFrame(sec_horario, fg_color="transparent")
@@ -11252,6 +11392,29 @@ class SmcQuantApp(ctk.CTk):
             self._chat_escrever("sistema", "(modo OLÁ TIGER desligado)",
                                  persistir=False)
 
+    def _trocar_voz(self, nome):
+        """Grava a voz, RELÊ do disco e fala uma frase com ela — confirmação
+        que se ouve vale mais que confirmação que se lê."""
+        if str(nome).startswith("("):
+            nome = ""
+        gravado = salvar_voz_escolhida(nome)
+        if str(gravado or "").lower() != str(nome or "").lower():
+            self.log("⚠️ NÃO consegui gravar a voz escolhida.")
+            return
+        self.log(f"🔊 Voz da TIGER: {gravado or 'a melhor do sistema'}.")
+        self._experimentar_voz()
+
+    def _experimentar_voz(self):
+        nome = (self._var_voz.get() or "").strip()
+        if nome.startswith("("):
+            nome = plataforma.voz_portugues_macos() or ""
+        if not nome:
+            self.log("ℹ️ Não achei nenhuma voz de português instalada neste "
+                     "Mac. Baixe uma em Ajustes do Sistema → Acessibilidade → "
+                     "Conteúdo Falado → Gerenciar vozes.")
+            return
+        plataforma.experimentar_voz(nome, velocidade_da_voz())
+
     def diagnostico_microfone(self):
         """Diz TUDO o que se sabe sobre o microfone, em uma tela.
 
@@ -11699,6 +11862,26 @@ class SmcQuantApp(ctk.CTk):
                 if not ok:
                     self.log(f"⛔ Não consegui trazer o modelo: {msg}")
                     return
+
+            # PASSO 3b — O MODELO QUE ENXERGA. Sem ele a IA local não serve
+            # para o motor: qwen2.5 é texto puro e não vê imagem nenhuma. Foi
+            # por isso que, em 13/08, o ciclo morreu com a Gemini fora do ar e
+            # a IA local instalada e no ar.
+            visao = modelo_visao_recomendado()
+            ja = ia_local_no_ar(timeout=3) or []
+            if not any(("vl" in m.lower() or "vision" in m.lower()
+                        or "llava" in m.lower()) for m in ja):
+                self.log(f"👁 Baixando o modelo de VISÃO {visao} — é ele que "
+                         "permite ler o gráfico quando a Gemini estiver fora. "
+                         "Mais alguns GB, também uma vez só.")
+                ok, msg = plataforma.baixar_modelo_ia_local(exe, visao, self.log)
+                if not ok:
+                    self.log(f"⚠️ Não consegui trazer o modelo de visão: {msg}. "
+                             "A IA local ainda responde por texto; a leitura de "
+                             "gráfico continua dependendo da Gemini.")
+            else:
+                self.log(f"✅ Modelo de visão já presente: "
+                         f"{', '.join(m for m in ja if 'vl' in m.lower() or 'vision' in m.lower() or 'llava' in m.lower())}")
 
             # PASSO 4 — CONFERIR DE VERDADE, com uma pergunta real. Dizer
             # "instalado" sem testar seria repetir o erro da chave dobrada.
@@ -15644,6 +15827,33 @@ class SmcQuantApp(ctk.CTk):
                             modelos_fallback = ([modelo_vencedor] +
                                                  [m for m in modelos_fallback if m != modelo_vencedor])
 
+                        # ---- A IA LOCAL COM VISÃO É A ÚLTIMA RESERVA ----
+                        # Em 13/08, TODOS os dez modelos da Gemini devolveram
+                        # 503 ou 429 no mesmo ciclo, duas passadas seguidas, e
+                        # a análise morreu — com a IA local instalada, no ar e
+                        # INÚTIL, porque o modelo baixado era de texto puro e
+                        # não enxerga imagem. Ele perguntou, com razão: "por
+                        # que não tenta a IA local?".
+                        #
+                        # Agora tenta. Uma leitura de reserva, que passa pelas
+                        # MESMAS travas (preço conferido contra o título,
+                        # ticker conhecido, piso de qualidade), vale mais que
+                        # nenhuma leitura. E ela é declarada como reserva no
+                        # log — não vou deixar parecer leitura da Gemini.
+                        if resposta is None:
+                            bruto = analisar_grafico_local(screenshot, PROMPT_FINAL)
+                            if bruto:
+                                try:
+                                    json.loads(bruto)
+                                    self.log("🖥️ Gemini fora — análise feita "
+                                             "pela IA LOCAL com visão. É "
+                                             "reserva: lê pior, e passa pelas "
+                                             "mesmas travas.")
+                                    resposta = type("R", (), {"text": bruto})()
+                                    modelo_vencedor = "IA local (visão)"
+                                except Exception:
+                                    self.log("🖥️ A IA local respondeu, mas fora "
+                                             "do formato esperado — descartado.")
                         if resposta is None:
                             raise RuntimeError(
                                 f"Todos os modelos disponíveis falharam. Último erro: {ultimo_erro}"

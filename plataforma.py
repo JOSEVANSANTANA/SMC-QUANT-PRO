@@ -45,6 +45,7 @@ e `diagnostico()` diz em uma linha se a permissão está valendo.
 """
 import base64
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -1394,6 +1395,58 @@ VOZ_NATIVA = E_MACOS
 _VOZES_PT_MACOS = ("Luciana", "Joana", "Catarina", "Raquel", "Felipe")
 
 
+def vozes_disponiveis():
+    """TODAS as vozes de português instaladas neste Mac, com uma amostra.
+
+    Pedido dele, 13/08: "uma biblioteca de opções de voz para não ser apenas
+    essa chata". A lista sai do SISTEMA (`say -v ?`), não de uma tabela
+    escrita à mão — presumir que 'Luciana' está instalada foi o tipo de chute
+    que esta casa não faz. Devolve [(nome, idioma, exemplo)]."""
+    if not E_MACOS:
+        return []
+    ok, saida = _rodar(["say", "-v", "?"], timeout=8)
+    if not ok or not saida:
+        return []
+    vozes = []
+    for linha in saida.splitlines():
+        m = re.match(r"^(.+?)\s{2,}([a-z]{2}_[A-Z]{2})\s*#\s*(.*)$", linha)
+        if not m:
+            continue
+        nome, idioma, exemplo = (m.group(1).strip(), m.group(2),
+                                 m.group(3).strip())
+        if idioma.startswith("pt"):
+            vozes.append((nome, idioma, exemplo))
+    return vozes
+
+
+def voz_escolhida_ou_melhor(preferida=None):
+    """A voz que o trader escolheu, se ela EXISTE nesta máquina; senão a
+    melhor disponível. Voz configurada que foi desinstalada não pode deixar a
+    ferramenta muda — cai para a melhor e segue."""
+    if not E_MACOS:
+        return None
+    if preferida:
+        for nome, _i, _e in vozes_disponiveis():
+            if nome.lower() == str(preferida).lower():
+                return nome
+    return voz_portugues_macos()
+
+
+def experimentar_voz(nome, velocidade=165, texto=None):
+    """Fala UMA frase com a voz escolhida, para ele ouvir antes de decidir.
+    Escolher voz por NOME, sem ouvir, é escolher no escuro."""
+    if not E_MACOS:
+        return False
+    frase = texto or ("Josevan, é assim que eu vou falar com você na mesa.")
+    try:
+        subprocess.Popen(
+            ["say", "-r", str(int(max(90, min(velocidade, 320)))),
+             "-v", str(nome), "--", frase], **_sem_console())
+        return True
+    except Exception:
+        return False
+
+
 def voz_portugues_macos():
     """Nome da melhor voz de português instalada, ou None. Só fatos: lê a
     lista real do sistema, não presume que 'Luciana' está instalada."""
@@ -1421,13 +1474,13 @@ def voz_portugues_macos():
     return None
 
 
-def falar_nativo(texto, palavras_por_minuto=165):
+def falar_nativo(texto, palavras_por_minuto=165, voz_preferida=None):
     """Fala pelo sistema e devolve o processo (para poder ser interrompido).
     None se este sistema não usa fala nativa ou se não deu para iniciar."""
     if not E_MACOS or not texto:
         return None
     args = ["say", "-r", str(int(max(90, min(palavras_por_minuto, 320))))]
-    voz = voz_portugues_macos()
+    voz = voz_escolhida_ou_melhor(voz_preferida)
     if voz:
         args += ["-v", voz]
     try:

@@ -393,3 +393,176 @@ class TestBuscaQueNaoViraDespejo(unittest.TestCase):
         i = fonte.index("def _chat_web_pesquisa")
         bloco = fonte[i:i + 3200]
         self.assertIn("termos & set(", bloco)
+
+
+class TestIALocalComVisao(unittest.TestCase):
+    """13/08: TODOS os dez modelos da Gemini devolveram 503/429 no mesmo ciclo,
+    duas passadas seguidas, e a análise morreu — com a IA local instalada, no
+    ar, e INÚTIL. Ele perguntou, com razão: "por que não tenta a IA local?"
+
+    A resposta era constrangedora: o modelo baixado (qwen2.5:3b) é de TEXTO
+    puro. Ele não enxerga imagem nenhuma. A IA local nunca poderia ter lido um
+    gráfico — e nada no app dizia isso."""
+
+    def _ns(self):
+        return carregar(["MODELO_VISAO_LOCAL", "MODELO_VISAO_LOCAL_LEVE",
+                         "_RAM_NAO_INFORMADA", "_num_gb_de_ram",
+                         "modelo_visao_recomendado"])
+
+    def test_existe_um_modelo_de_visao(self):
+        ns = self._ns()
+        self.assertIn("vl", ns["MODELO_VISAO_LOCAL"].lower())
+        self.assertIn("vl", ns["MODELO_VISAO_LOCAL_LEVE"].lower())
+
+    def test_o_modelo_de_visao_tambem_respeita_a_memoria(self):
+        """Modelo de visão é maior que o de texto. Máquina apertada leva o
+        leve — um modelo que não cabe trava a máquina no pregão."""
+        ns = self._ns()
+        self.assertEqual(ns["modelo_visao_recomendado"](8),
+                         ns["MODELO_VISAO_LOCAL_LEVE"])
+        self.assertEqual(ns["modelo_visao_recomendado"](16),
+                         ns["MODELO_VISAO_LOCAL"])
+
+    def test_a_leitura_local_e_a_ULTIMA_reserva(self):
+        """Ela entra depois que TODOS os modelos da Gemini falharam — não no
+        lugar deles. Lê pior; entra porque nenhuma leitura é pior ainda."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("analisar_grafico_local(screenshot, PROMPT_FINAL)")
+        antes = fonte[i - 2500:i]
+        self.assertIn("if resposta is None:", antes)
+
+    def test_a_leitura_local_e_DECLARADA_como_reserva(self):
+        """Não pode parecer leitura da Gemini. Quem lê o log precisa saber de
+        onde veio o número."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("analisar_grafico_local(screenshot, PROMPT_FINAL)")
+        bloco = fonte[i:i + 1200]
+        self.assertIn("IA LOCAL", bloco)
+        self.assertIn("reserva", bloco)
+
+    def test_resposta_fora_do_formato_e_descartada(self):
+        """JSON quebrado do modelo pequeno não pode virar cenário."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("analisar_grafico_local(screenshot, PROMPT_FINAL)")
+        bloco = fonte[i:i + 1200]
+        self.assertIn("json.loads(bruto)", bloco)
+        self.assertIn("descartado", bloco)
+
+    def test_a_reserva_nunca_derruba_o_ciclo(self):
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def analisar_grafico_local")
+        bloco = fonte[i:i + 2600]
+        self.assertIn("except Exception", bloco)
+        self.assertIn("return None", bloco)
+
+    def test_sem_modelo_de_visao_baixado_ela_nao_finge(self):
+        """Ter o Ollama no ar com um modelo de TEXTO não é ter visão. Foi
+        exatamente essa confusão que produziu o defeito."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def analisar_grafico_local")
+        bloco = fonte[i:i + 2600]
+        self.assertIn("nenhum modelo com visão baixado", bloco)
+
+    def test_a_instalacao_assistida_traz_o_modelo_de_visao(self):
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _instalar_ia_worker")
+        bloco = fonte[i:i + 8000]
+        self.assertIn("modelo_visao_recomendado()", bloco)
+        self.assertIn("modelo de VISÃO", bloco)
+
+    def test_a_honestidade_sobre_a_qualidade_esta_escrita(self):
+        """Um modelo local de 3 a 7 bilhões lê gráfico PIOR que a Gemini. Isso
+        precisa estar no código, não só na minha cabeça."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def analisar_grafico_local")
+        self.assertIn("lê gráfico PIOR", fonte[i:i + 2600])
+
+
+class TestVozConfiguravel(unittest.TestCase):
+    """Pedido dele: "configurar a velocidade da fala e uma biblioteca de opções
+    de voz para não ser apenas essa chata"."""
+
+    def _plat(self):
+        import os
+        from harness import RAIZ
+        with open(os.path.join(RAIZ, "plataforma.py"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_a_lista_de_vozes_vem_do_SISTEMA(self):
+        """Presumir que 'Luciana' está instalada seria o mesmo chute que esta
+        ferramenta inteira existe para evitar."""
+        plat = self._plat()
+        self.assertIn("def vozes_disponiveis", plat)
+        self.assertIn('"say", "-v", "?"', plat)
+
+    def test_da_para_OUVIR_antes_de_escolher(self):
+        """Escolher voz por NOME, sem ouvir, é escolher no escuro — e
+        descobrir no meio do pregão."""
+        plat = self._plat()
+        self.assertIn("def experimentar_voz", plat)
+        fonte = fonte_do_arquivo()
+        self.assertIn("🔈 ouvir", fonte)
+
+    def test_voz_desinstalada_nao_deixa_a_ferramenta_muda(self):
+        """Voz configurada que sumiu da máquina cai para a melhor e segue."""
+        plat = self._plat()
+        i = plat.index("def voz_escolhida_ou_melhor")
+        self.assertIn("voz_portugues_macos()", plat[i:i + 800])
+
+    def test_a_escolha_e_gravada_e_RELIDA(self):
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def salvar_voz_escolhida")
+        self.assertIn("return voz_escolhida()", fonte[i:i + 500])
+
+    def test_existe_controle_de_velocidade_na_interface(self):
+        fonte = fonte_do_arquivo()
+        self.assertIn("Velocidade da fala:", fonte)
+        self.assertIn("VOZ DA TIGER", fonte)
+        self.assertIn("palavras/min", fonte)
+
+    def test_a_velocidade_continua_limitada(self):
+        """Fala rápida demais é ininteligível — e no meio do pregão isso é
+        pior que não falar."""
+        plat = self._plat()
+        i = plat.index("def falar_nativo")
+        self.assertIn("max(90, min(", plat[i:i + 600])
+
+
+class TestMicrofoneDentroDoBundle(unittest.TestCase):
+    """CINCO relatos do mesmo defeito. A causa, finalmente:
+
+    O lançador do .app fazia `exec /Library/Frameworks/.../python3 main_app.py`.
+    O processo que passa a existir é o PYTHON — um binário que mora FORA do
+    .app. E o macOS não atribui permissão a "quem abriu": ele atribui ao
+    binário que pede, e ao bundle que CONTÉM esse binário.
+
+    Por isso o Info.plist declarava NSMicrophoneUsageDescription certinho e
+    não servia para nada; por isso o estado ficava eternamente em "nunca
+    pedido"; e por isso autorizar "SMC Quant Pro" e "Terminal" na lista não
+    mudava nada — nenhum dos dois era o requerente."""
+
+    def _criar_app(self):
+        import os
+        from harness import RAIZ
+        with open(os.path.join(RAIZ, "CRIAR_APP.command"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_o_python_e_copiado_para_dentro_do_bundle(self):
+        s = self._criar_app()
+        self.assertIn('cp "$PY" "$APP/Contents/MacOS/python-smc"', s)
+
+    def test_o_lancador_executa_o_python_de_dentro(self):
+        s = self._criar_app()
+        self.assertIn("python-smc", s)
+        self.assertNotIn('exec "${PY}" main_app.py', s)
+
+    def test_a_causa_esta_escrita_no_codigo(self):
+        """Cinco rodadas de correção às cegas custaram caro. O próximo que ler
+        isto precisa saber POR QUE, senão 'simplifica' de volta."""
+        s = self._criar_app()
+        self.assertIn("FORA", s)
+        self.assertIn("nunca pedido", s)
+
+    def test_o_plist_continua_declarando_o_microfone(self):
+        s = self._criar_app()
+        self.assertIn("NSMicrophoneUsageDescription", s)

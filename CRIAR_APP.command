@@ -90,6 +90,28 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+# ---- O PYTHON PRECISA MORAR DENTRO DO BUNDLE ----
+# ESTE É O DEFEITO DO MICROFONE, e ele durou cinco relatos.
+#
+# O lançador antigo fazia `exec /Library/Frameworks/.../python3 main_app.py`.
+# O processo que passa a existir é o PYTHON — um binário que mora FORA do
+# .app. E o macOS não atribui permissão a "quem abriu": ele atribui ao
+# binário que está pedindo, e ao bundle que CONTÉM esse binário.
+#
+# Resultado: o Info.plist aqui do lado declarava NSMicrophoneUsageDescription
+# certinho, e não servia para nada — porque quem pedia microfone era o
+# python3 do /Library/Frameworks, que não tem bundle nenhum. Por isso o
+# estado ficava eternamente em "nunca pedido", por isso nada aparecia na
+# lista, e por isso autorizar "SMC Quant Pro" e "Terminal" não mudava nada:
+# nenhum dos dois era o requerente.
+#
+# A correção é copiar o executável do Python PARA DENTRO do bundle. Ele
+# continua carregando a biblioteca do framework por caminho absoluto, então
+# uma cópia simples funciona — e agora o processo em execução está dentro do
+# .app, com a identidade e o Info.plist do .app.
+cp "$PY" "$APP/Contents/MacOS/python-smc" || falhou "Não consegui copiar o Python para dentro do aplicativo."
+chmod +x "$APP/Contents/MacOS/python-smc"
+
 cat > "$APP/Contents/MacOS/launcher" <<LAUNCHER
 #!/bin/bash
 # Lançador do SMC Quant Pro. Gerado por CRIAR_APP.command.
@@ -100,7 +122,10 @@ cd "${PASTA}" || {
     osascript -e 'display alert "SMC Quant Pro" message "A pasta do programa foi movida ou apagada:\n\n${PASTA}\n\nColoque a pasta de volta, ou rode o CRIAR_APP.command de novo a partir do novo lugar." as critical'
     exit 1
 }
-exec "${PY}" main_app.py
+# O python DE DENTRO do bundle — é isso que faz o macOS reconhecer o pedido
+# de microfone como sendo do "SMC Quant Pro". Ver o comentário no
+# CRIAR_APP.command.
+exec "\$(dirname "\$0")/python-smc" main_app.py
 LAUNCHER
 chmod +x "$APP/Contents/MacOS/launcher"
 
