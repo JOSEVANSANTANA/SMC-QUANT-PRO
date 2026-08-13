@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.30.0"
+VERSAO_ATUAL = "2.31.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1459,6 +1459,66 @@ def _e_contrato_conhecido(simbolo):
         if re.fullmatch(r"\d{1,2}!", resto):      # MES1! / ES1!
             return True
     return False
+
+
+# --------------------------------------------------------------------
+# O TÍTULO DA JANELA SABE O PREÇO — E ELE NÃO MENTE
+# --------------------------------------------------------------------
+# Log de 13/08. A janela monitorada chamava-se:
+#     'Google Chrome — MESU2026 7.784,00 ▲ +0.23% josevan'
+# e o motor mandou para o WhatsApp um cenário inteiro em cima de 7753.25 —
+# trinta pontos abaixo, região que o preço já tinha deixado. Pior: 7753.25 é
+# EXATAMENTE o número que o modelo tinha inventado no dia anterior ("você
+# está com uma posição de venda aberta em 7753.25"). Ele grudou nesse valor.
+#
+# A trava de preço congelado não pegou porque o valor OSCILAVA (7753 · 7753 ·
+# 7788 · 7753), e ela só age com repetição seguida.
+#
+# Mas a corretora escreve o preço AO VIVO no título da aba. Isso é texto do
+# sistema operacional, não leitura de modelo: não tem como ser alucinado. Um
+# cenário cujo preço não bate com o título é um cenário sobre outra realidade.
+# Um número solto no título, em QUALQUER formato: 7.784,00 (pt-BR),
+# 7784.00 (en-US), 7784. A validação de que aquilo é PREÇO vem depois, pelo
+# valor — tentar decidir isso na expressão regular foi o que fez a primeira
+# versão ignorar '7769.56', que é o formato que a Tradovate usa em inglês.
+_RE_PRECO_TITULO = re.compile(r"(?:^|[\s·—-])(\d[\d.,]{2,12}\d)(?=\s|$|[▲▼%])")
+
+# Quanto o preço lido pode diferir do título. Generoso de propósito: título e
+# captura são de instantes diferentes. 0,25% no MES são ~19 pontos — muito
+# mais que qualquer movimento entre uma leitura e outra, e ainda assim pega
+# os 30,75 pontos de erro do caso real.
+TOLERANCIA_PRECO_TITULO = 0.0025
+
+
+def preco_do_titulo(titulo):
+    """O preço que a corretora escreve no título da janela, ou None.
+
+    Função PURA. Só aceita número com cara de PREÇO de índice (4 a 6 dígitos
+    na parte inteira): '7.784,00' vale, '+0.23' e '2026' do nome do contrato
+    não. None significa 'o título não diz o preço' — nunca 'não há preço'."""
+    t = str(titulo or "")
+    # O ticker traz o ano colado (MESU2026); tirar o ticker evita ler 2026
+    # como se fosse cotação.
+    t = re.sub(r"\b[A-Z]{2,4}[FGHJKMNQUVXZ]?\d{1,4}\b", " ", t)
+    for m in _RE_PRECO_TITULO.finditer(t):
+        v = _numero_da_legenda(m.group(1))
+        # FAIXA DE PREÇO, NÃO DE PERCENTUAL. O '+0.23%' da variação e o '2026'
+        # do vencimento moram no mesmo título; o que os separa de uma cotação
+        # é a ordem de grandeza. Abaixo de 100 é variação; acima de 200 mil,
+        # não é contrato que esta ferramenta acompanha.
+        if v is not None and 100 <= v <= 200_000:
+            return v
+    return None
+
+
+def preco_bate_com_o_titulo(preco, titulo, tolerancia=TOLERANCIA_PRECO_TITULO):
+    """Devolve (bate, preco_do_titulo). `bate` é True quando não há título com
+    preço — ausência de referência nunca reprova uma leitura."""
+    do_titulo = preco_do_titulo(titulo)
+    p = _num(preco)
+    if do_titulo is None or p is None or p <= 0:
+        return True, do_titulo
+    return abs(p - do_titulo) <= do_titulo * tolerancia, do_titulo
 
 
 def leitura_e_de_grafico(ativo, preco):
@@ -3393,17 +3453,67 @@ def falar(texto: str):
             if _TTS_ENGINE is not None:
                 _TTS_ENGINE = None
 
+# Teto de bytes da imagem no WhatsApp. Acima disso o envio começa a demorar e
+# a falhar; abaixo disso não há por que economizar.
+TETO_IMAGEM_WHATSAPP = 900_000
+
+
+def comprimir_grafico(imagem_pil, teto=TETO_IMAGEM_WHATSAPP):
+    """Comprime o gráfico PRESERVANDO O TEXTO. Devolve os bytes.
+
+    POR QUE ISTO EXISTE: a imagem ia como JPEG com qualidade 80. Para foto,
+    80 é ótimo. Para GRÁFICO, é destruição: o JPEG foi feito para imagem com
+    variação suave, e um gráfico é o contrário disso — linha de um pixel,
+    número de 10px, alto contraste. A compressão espalha borrão em volta de
+    cada caractere (ringing), e é exatamente ali que está o preço.
+    Queixa dele, 13/08 09:52: "essa qualidade de print está muito ruim".
+
+    Estratégia, na ordem:
+      1. PNG — sem perda nenhuma. Gráfico tem poucas cores chapadas, então o
+         PNG costuma comprimir MUITO bem. Se couber no teto, é o melhor.
+      2. JPEG 95 com subsampling desligado. Subsampling é o que borra a cor
+         nas bordas do texto; desligá-lo custa poucos bytes e salva a leitura.
+      3. Só então reduzir o TAMANHO da imagem — e reduzir é o último recurso,
+         porque metade dos pixels é metade da chance de ler o número."""
+    from PIL import Image
+    img = imagem_pil.convert("RGB")
+
+    saida = BytesIO()
+    img.save(saida, format="PNG", optimize=True)
+    if saida.tell() <= teto:
+        return saida.getvalue()
+
+    for qualidade in (95, 92, 88):
+        saida = BytesIO()
+        img.save(saida, format="JPEG", quality=qualidade, subsampling=0,
+                 optimize=True)
+        if saida.tell() <= teto:
+            return saida.getvalue()
+
+    # Ainda grande: reduz a imagem, nunca abaixo de 1280px de largura — que é
+    # o mínimo para a legenda de um gráfico continuar legível.
+    largura = img.width
+    while largura > 1280:
+        largura = int(largura * 0.8)
+        menor = img.resize((largura, int(img.height * largura / img.width)),
+                           Image.LANCZOS)
+        saida = BytesIO()
+        menor.save(saida, format="JPEG", quality=92, subsampling=0,
+                   optimize=True)
+        if saida.tell() <= teto:
+            return saida.getvalue()
+    return saida.getvalue()
+
+
 def enviar_relatorio_whatsapp(mensagem: str, imagem_print, log_callback):
     log_callback("📲 Disparando relatório para o WhatsApp...")
     try:
         payload = {"jid": "", "texto": mensagem}
         if imagem_print is not None:
-            output = BytesIO()
-            imagem_print.convert("RGB").save(output, format="JPEG", quality=80)
-            payload["imagemBase64"] = base64.b64encode(output.getvalue()).decode('utf-8')
-            output.close()
+            payload["imagemBase64"] = base64.b64encode(
+                comprimir_grafico(imagem_print)).decode("utf-8")
 
-        response = requests.post(BAILEYS_API_URL, json=payload, timeout=15)
+        response = requests.post(BAILEYS_API_URL, json=payload, timeout=45)
         if response.status_code == 200:
             log_callback("✅ Relatório enviado com sucesso!")
         else:
@@ -5306,6 +5416,19 @@ def buscar_base_smc(pergunta, minimo=2):
     # escrito ganha de quem só se parece com ele.
     notas.sort(key=lambda x: x[0], reverse=True)
     if not notas or sum(notas[0][0]) < minimo:
+        return None
+    # PARECER NÃO BASTA: SEM UM ACERTO EXATO, NÃO É O ASSUNTO.
+    # Log de 13/08, 09:52. Ele perguntou "essa qualidade de print está muito
+    # ruim, como fazemos para melhorar?" e recebeu o verbete de TRAILING STOP.
+    # A nota foi 2,0 — e os DOIS pontos vieram só de semelhança de palavra,
+    # com ZERO jargão realmente escrito na pergunta.
+    #
+    # Isso já era ruim antes; virou grave na 2.30.0, quando a base passou a ser
+    # consultada ANTES do modelo — um falso positivo aqui não é mais uma
+    # resposta a mais, é uma resposta que SEQUESTRA a pergunta e impede o
+    # modelo de responder o que foi perguntado. Semelhança serve para
+    # DESEMPATAR entre candidatos, nunca para eleger um sozinha.
+    if notas[0][0][0] <= 0:
         return None
     if len(notas) > 1 and notas[1][0] == notas[0][0]:
         return None                        # empate real = ambíguo, não chuta
@@ -7726,6 +7849,17 @@ class SmcQuantApp(ctk.CTk):
         self._url_download_update = ""
         # Checa em segundo plano para não travar a abertura do app
         threading.Thread(target=self._checar_atualizacao, daemon=True).start()
+        # A IA LOCAL SOBE SOZINHA — ele diagnosticou isso melhor que eu.
+        # Do log de 13/08: das 09:46 às 10:02 ela respondeu "a API está fora"
+        # a TUDO, porque o Ollama estava instalado e PARADO. Ele percebeu
+        # sozinho ("meio que o ollama não estava ativa") e teve de clicar em
+        # 'Instalar a IA LOCAL' de novo só para subir um serviço.
+        # Exigir um clique todo dia para religar algo que já está instalado
+        # não é configuração, é tarefa — e tarefa que ninguém lembra de fazer
+        # é recurso que não existe. Só sobe o que JÁ está instalado; nada é
+        # baixado sem ele mandar.
+        threading.Thread(target=self._subir_ia_local_no_inicio,
+                         daemon=True).start()
 
         sec_inst = self._secao(master, "⚙️  INSTALAÇÃO E CHAVE DA API",
                                "motor_instalacao", aberta_padrao=True)
@@ -11035,6 +11169,41 @@ class SmcQuantApp(ctk.CTk):
             self._chat_escrever("sistema", f"({texto_falta_voz()})",
                                 persistir=False)
             return
+        # ---- A PERMISSÃO É PEDIDA ANTES DE ABRIR O MICROFONE ----
+        # Queixa dele, 13/08: "não aparece na lista de permissão do Mac".
+        # Essa é a chave. No macOS, um programa só ENTRA na lista de Microfone
+        # depois de PEDIR a permissão pela API do sistema. O PortAudio abre o
+        # dispositivo por um caminho que nem sempre dispara esse pedido — então
+        # não aparece prompt, não aparece na lista, e o sistema devolve
+        # SILÊNCIO, sem erro nenhum. Era exatamente o sintoma.
+        if plataforma.E_MACOS:
+            estado = plataforma.pedir_permissao_microfone()
+            quem = plataforma.quem_pede_a_permissao()
+            if estado == "negado":
+                self.ia_tiger_var.set(False)
+                salvar_config({"ia_tiger": False})
+                plataforma.abrir_permissao_microfone()
+                self._chat_escrever("sistema", (
+                    f"(🐯 o microfone está NEGADO para “{quem}” no macOS — por "
+                    "isso não chega som nenhum. Abri a tela de permissões: "
+                    f"marque “{quem}” em Microfone, FECHE e ABRA o programa, e "
+                    "ligue o OLÁ TIGER de novo. Enquanto estiver negado, eu "
+                    "não consigo ouvir — e prefiro te dizer isso a ficar "
+                    "escutando o silêncio.)"), persistir=False)
+                return
+            if estado == "desconhecido":
+                self.log("ℹ️ Não consegui consultar a permissão de microfone "
+                         "(falta o pyobjc-framework-AVFoundation). Vou tentar "
+                         "abrir o microfone assim mesmo — se vier silêncio, é "
+                         "quase certo que é permissão.")
+            elif estado == "restrito":
+                self._chat_escrever("sistema", (
+                    "(🐯 o microfone está RESTRITO por política deste Mac — "
+                    "não é algo que eu ou você consigamos liberar aqui.)"),
+                    persistir=False)
+            else:
+                self.log(f"🎤 Permissão de microfone: {estado} (o macOS lista "
+                         f"este pedido como “{quem}”).")
         if self._tiger_rodando:
             return
         self._tiger_rodando = True
@@ -11423,6 +11592,38 @@ class SmcQuantApp(ctk.CTk):
             self._instalando_ia = False
             self.after(0, lambda: self.btn_instalar_ia.configure(
                 state="normal", text="⬇️ Instalar a IA LOCAL (sem chave)"))
+
+    def _subir_ia_local_no_inicio(self):
+        """Religa a IA local na abertura do programa, se ela já foi instalada.
+
+        NUNCA instala nada: se o Ollama não estiver na máquina, esta função
+        sai calada. Instalar é decisão dele, e continua sendo o botão.
+
+        Também sai calada quando já está no ar — dizer 'subi o serviço' sobre
+        um serviço que já estava rodando seria o mesmo tipo de mentira que o
+        'Motor no ar' sobre processo morto, só que ao contrário."""
+        try:
+            time.sleep(2)                      # deixa a janela abrir primeiro
+            if plataforma.porta_responde(11434):
+                return
+            exe = plataforma.onde_esta("ollama")
+            if not exe:
+                return                         # não instalado: não é problema
+            plataforma.subir_servico_ia_local(exe)
+            for _ in range(15):                # até ~30 s
+                time.sleep(2)
+                if plataforma.porta_responde(11434):
+                    modelos = ia_local_no_ar(timeout=3) or []
+                    self.log("🧠 IA local religada automaticamente"
+                             + (f" ({', '.join(modelos[:3])})." if modelos
+                                else " — mas nenhum modelo baixado ainda; "
+                                     "use o botão 'Instalar a IA LOCAL'."))
+                    return
+            self.log("ℹ️ A IA local está instalada mas o serviço não subiu "
+                     "sozinho. Clique em 'Instalar a IA LOCAL' na aba Motor "
+                     "que eu tento de novo e digo o que aconteceu.")
+        except Exception:
+            pass          # nunca pode atrapalhar a abertura do programa
 
     def _verificar_ia_local(self):
         """Diz o estado REAL, com o que está de pé — nunca um palpite."""
@@ -14107,6 +14308,73 @@ class SmcQuantApp(ctk.CTk):
             return ("Não há cenário aguardando decisão agora. Assim que sair "
                     "uma sugestão nova, é só dizer 'acatar'.")
 
+    def _analise_sob_demanda(self):
+        """Responde ao 'NOVA ANALISE' vindo do WhatsApp: captura AGORA e manda.
+
+        Duas honestidades que esta função precisa ter, porque ele vai estar
+        longe do computador quando pedir:
+        • se o motor está DESLIGADO, ela diz isso — em vez de silêncio, que
+          ele leria como 'a ferramenta parou';
+        • se a captura ou a leitura falharem, ela diz o motivo. Um pedido que
+          some sem resposta é pior que um 'não consegui'."""
+        try:
+            self.log("🔄 NOVA ANÁLISE pedida pelo WhatsApp — capturando agora…")
+            if not (getattr(self, "motor_rodando", False) or
+                    getattr(self, "robo_ativo", False)):
+                enviar_relatorio_whatsapp(
+                    "⚠️ *Não consegui analisar agora*\nO motor está DESLIGADO "
+                    "no computador, então não há como capturar o gráfico. "
+                    "Ligue o motor (ou peça 'liga o motor' no chat da TIGER) e "
+                    "mande NOVA ANALISE de novo.", None, self.log)
+                return
+            info = self._capturar_print_agora()
+            if not info or not os.path.exists(info.get("caminho", "")):
+                enviar_relatorio_whatsapp(
+                    "⚠️ *Não consegui capturar o gráfico agora*\nA janela pode "
+                    "estar minimizada ou totalmente coberta. Deixe-a visível "
+                    "(pode ficar atrás de outras) e mande NOVA ANALISE.",
+                    None, self.log)
+                return
+            self._ultimo_print = info
+            ua = getattr(self, "_ultima_analise", None) or {}
+            linhas = [f"🔄 *Análise sob demanda — "
+                      f"{time.strftime('%d/%m/%Y %H:%M')}*"]
+            if ua.get("ativo"):
+                linhas.append(
+                    f"Última leitura do motor ({ua.get('hora','—')}): "
+                    f"*{ua.get('acao')} {ua.get('ativo')}* @ {ua.get('preco')} "
+                    f"· probabilidade {ua.get('probabilidade', 0):.0f}%")
+                if ua.get("confluencias"):
+                    linhas.append("Confluências: "
+                                  + " · ".join(ua["confluencias"][:6]))
+            else:
+                linhas.append("O motor ainda não completou um ciclo de leitura "
+                              "— esta é a captura de agora, sem análise nova.")
+            try:
+                linhas.append("")
+                linhas.append(self._chat_status_texto())
+            except Exception:
+                pass
+            linhas.append("")
+            linhas.append("_Imagem: a captura de agora. A próxima leitura "
+                          "completa sai no ciclo normal do motor._")
+            imagem = None
+            try:
+                from PIL import Image as _Img
+                imagem = _Img.open(info["caminho"])
+            except Exception:
+                imagem = None
+            enviar_relatorio_whatsapp("\n".join(linhas), imagem, self.log)
+        except Exception as e:
+            self.log(f"⚠️ Falha na análise sob demanda: {str(e)[:150]}")
+            try:
+                enviar_relatorio_whatsapp(
+                    "⚠️ *Não consegui completar a análise sob demanda.* "
+                    "Confira o Registro no computador — o motivo está lá.",
+                    None, self.log)
+            except Exception:
+                pass
+
     def _conferir_saude_do_whatsapp(self):
         """Pergunta ao motor como está a ponte e AVISA quando ela está caindo.
 
@@ -14167,6 +14435,20 @@ class SmcQuantApp(ctk.CTk):
                 # ACATAR/DISPENSAR parariam de funcionar até reiniciar o app).
                 try:
                     tipo = cmd.get("tipo")
+                    # NOVA ANÁLISE PELO WHATSAPP. Até aqui o WhatsApp só servia
+                    # para DECIDIR sobre um cenário que já tinha saído; não
+                    # havia como PEDIR uma leitura. Longe da mesa, isso
+                    # significava esperar o próximo ciclo de 5 minutos sem
+                    # saber se valia a pena voltar para o computador.
+                    if tipo == "NOVA_ANALISE":
+                        ts_cmd = cmd.get("ts", 0)
+                        if ts_cmd and (time.time() * 1000 - ts_cmd) > 120000:
+                            self.log("⌛ Pedido de NOVA ANÁLISE ignorado "
+                                     "(obsoleto na fila).")
+                            continue
+                        threading.Thread(target=self._analise_sob_demanda,
+                                         daemon=True).start()
+                        continue
                     if tipo not in ("ACATAR", "DISPENSAR"):
                         continue
                     # ANTI-FANTASMA: comando obsoleto (ficou preso na fila do motor
@@ -15219,6 +15501,31 @@ class SmcQuantApp(ctk.CTk):
                         # daqui pode seguir adiante: nem leitura, nem posição,
                         # nem sugestão. E o trader precisa SABER, senão vai
                         # continuar esperando um sinal que nunca vem.
+                        # ---- O TÍTULO DA JANELA CONFERE O PREÇO ----
+                        # 13/08, 10:05: a janela dizia 'MESU2026 7.784,00' e o
+                        # motor mandou um cenário inteiro em cima de 7753.25 —
+                        # 30 pontos fora, numa região que o preço já tinha
+                        # deixado. E 7753.25 era o número que o modelo tinha
+                        # INVENTADO no dia anterior; ele grudou nele.
+                        # A trava de preço congelado não pega isso porque o
+                        # valor oscilava. O título, sim: ele é texto do sistema
+                        # operacional, escrito pela corretora ao vivo, e não
+                        # tem como ser alucinado.
+                        bate_titulo, preco_titulo = preco_bate_com_o_titulo(
+                            preco, nome_janela)
+                        if not bate_titulo:
+                            self.log(
+                                f"🚫 LEITURA DESCARTADA: o modelo leu {preco} e "
+                                f"o título da janela diz {preco_titulo}. São "
+                                f"{abs(preco - preco_titulo):.2f} pontos de "
+                                "diferença — isso não é a mesma tela. Nenhuma "
+                                "sugestão sai desta leitura.")
+                            self._chat_feed(
+                                f"🚫 Descartei a leitura de agora: eu li "
+                                f"{preco} e a janela mostra {preco_titulo}. "
+                                "Não vou te sugerir nada em cima de um preço "
+                                "que não é o da sua tela.")
+                            continue
                         e_grafico, motivo_nao_grafico = leitura_e_de_grafico(ativo, preco)
                         if not e_grafico:
                             ciclos_sem_grafico += 1

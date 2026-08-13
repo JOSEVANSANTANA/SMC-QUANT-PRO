@@ -178,6 +178,70 @@ def quem_pede_a_permissao():
     return "Terminal (ou o app que você usou para abrir o programa)"
 
 
+# --------------------------------------------------------------------
+# A PERMISSÃO DE MICROFONE QUE NUNCA APARECE NA LISTA
+# --------------------------------------------------------------------
+# Queixa dele, 13/08: "o microfone ainda não está sendo captado pelo Olá
+# Tiger, NÃO APARECE NA LISTA DE PERMISSÃO DO MAC".
+#
+# Essa é a chave do problema, e ela é do macOS, não do programa: um aplicativo
+# só ENTRA na lista de Microfone depois de PEDIR a permissão pela API do
+# sistema (TCC). O PortAudio abre o dispositivo por baixo, num caminho que nem
+# sempre dispara esse pedido — então não aparece prompt, não aparece na lista,
+# e o sistema devolve SILÊNCIO. Sem erro. Sem nada.
+#
+# A saída é pedir explicitamente, pela AVFoundation, e SABER o estado real em
+# vez de adivinhar. São quatro estados, e cada um pede uma conversa diferente.
+_ESTADOS_MIC = {0: "nunca_pedido", 1: "restrito", 2: "negado", 3: "autorizado"}
+
+
+def estado_permissao_microfone():
+    """O que o macOS REALMENTE diz sobre o microfone deste processo.
+
+    Devolve um destes:
+      'autorizado'   — pode gravar
+      'negado'       — o trader (ou o sistema) recusou; só ele reverte
+      'nunca_pedido' — nunca foi pedido: por isso NÃO APARECE na lista
+      'restrito'     — bloqueado por política do sistema
+      'desconhecido' — não deu para consultar (falta o pyobjc-AVFoundation)
+    """
+    if not E_MACOS:
+        return "autorizado"
+    try:
+        import AVFoundation
+        codigo = AVFoundation.AVCaptureDevice.authorizationStatusForMediaType_(
+            AVFoundation.AVMediaTypeAudio)
+        return _ESTADOS_MIC.get(int(codigo), "desconhecido")
+    except Exception:
+        return "desconhecido"
+
+
+def pedir_permissao_microfone(espera=8.0):
+    """DISPARA o pedido de permissão — é isto que faz o app entrar na lista.
+
+    Sem esta chamada, o macOS nunca mostra o prompt e nunca lista o programa
+    em Ajustes → Privacidade → Microfone. Devolve o estado depois de pedir."""
+    if not E_MACOS:
+        return "autorizado"
+    estado = estado_permissao_microfone()
+    if estado != "nunca_pedido":
+        return estado          # já pedido: pedir de novo não reabre o prompt
+    try:
+        import AVFoundation
+        import threading as _th
+        pronto = _th.Event()
+
+        def respondeu(_concedido):
+            pronto.set()
+
+        AVFoundation.AVCaptureDevice.requestAccessForMediaType_completionHandler_(
+            AVFoundation.AVMediaTypeAudio, respondeu)
+        pronto.wait(espera)
+    except Exception:
+        pass
+    return estado_permissao_microfone()
+
+
 def abrir_permissao_microfone():
     """Abre a tela de permissão de Microfone do macOS direto no painel certo.
 

@@ -54,6 +54,14 @@ pyobjc-framework-Quartz>=10.0
 # macOS: sem ele, o seletor de janelas mostrava coisas como
 # "Accessibility Services", que nunca vao ser o grafico de ninguem.
 pyobjc-framework-Cocoa>=10.0
+# A PERMISSAO DE MICROFONE QUE NUNCA APARECIA NA LISTA. No macOS, um programa
+# so ENTRA em Ajustes -> Privacidade -> Microfone depois de PEDIR a permissao
+# pela API do sistema (TCC). O PortAudio abre o dispositivo por baixo, num
+# caminho que nem sempre dispara esse pedido: nao aparece prompt, nao aparece
+# na lista, e o sistema devolve SILENCIO sem erro nenhum. E a AVFoundation que
+# faz o pedido de verdade e que diz o estado real (autorizado, negado, nunca
+# pedido, restrito) — em vez de a ferramenta ficar adivinhando.
+pyobjc-framework-AVFoundation>=10.0
 
 # ------------------------------------------------------------------
 # LEITURA EXATA DOS INDICADORES  (OCR local — sem chave, sem internet)

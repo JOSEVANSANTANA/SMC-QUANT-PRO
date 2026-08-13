@@ -1,5 +1,5 @@
 ========================================================================
-  SMC QUANT PRO v2.30.0 — WINDOWS
+  SMC QUANT PRO v2.31.0 — WINDOWS
   Comece por aqui.
 ========================================================================
 
@@ -100,6 +100,92 @@ Grafico "congelado" a cada ciclo
 
 A TIGER nao fala
   → confira o pyttsx3 na lista do Passo 3.
+
+
+========================================================================
+  O QUE MUDOU NA v2.31.0  —  O TITULO DA JANELA SABE O PRECO
+========================================================================
+1) A LEITURA PRESA NO 7753 (o mais grave desta versao)
+  13/08, 10:05. A janela monitorada era:
+      'Google Chrome — MESU2026 7.784,00 ▲ +0.23% josevan'
+  e o motor mandou ao WhatsApp um cenario INTEIRO em cima de 7753.25.
+  Trinta pontos abaixo, numa regiao que o preco ja tinha deixado.
+
+  E 7753.25 era EXATAMENTE o numero que o modelo inventou no dia
+  anterior ("voce esta com uma posicao de venda aberta em 7753.25").
+  Ele grudou nele.
+
+  A trava de preco congelado nao pegou porque o valor OSCILAVA:
+      09:50 → 7753.25 · 09:55 → 7753.25 · 10:00 → 7788.25 · 10:05 → 7753.25
+
+  AGORA: a corretora escreve o preco AO VIVO no titulo da aba. Isso e
+  texto do sistema operacional — nao tem como ser alucinado. O app
+  confere o preco lido contra o do titulo; diferenca acima de 0,25%
+  (~19 pontos no MES, muito mais que qualquer movimento entre uma
+  leitura e outra) DESCARTA a leitura.
+
+  E descarta ANTES de ela entrar na memoria do motor — que era o que o
+  mantinha preso naquele numero, ciclo apos ciclo.
+
+  Le os dois formatos (7.784,00 e 7784.00) e nao confunde o 2026 do
+  vencimento nem o +0,23% da variacao com cotacao.
+
+2) A QUALIDADE DO PRINT
+  A imagem ia como JPEG qualidade 80. Para FOTO, 80 e otimo. Para
+  GRAFICO e destruicao: o JPEG foi feito para variacao suave, e um
+  grafico e o oposto — linha de um pixel, numero de 10px, alto
+  contraste. A compressao espalha borrao em volta de cada caractere, e
+  e exatamente ali que esta o preco.
+
+  AGORA vai PNG, sem perda nenhuma. E num grafico o PNG costuma ficar
+  ATE MENOR que o JPEG borrado (num teste: 50 KB contra 84 KB), porque
+  grafico tem poucas cores chapadas. Se nao couber, JPEG 95 com
+  subsampling desligado — subsampling e o que borra a cor na borda do
+  texto. Reduzir o TAMANHO da imagem e o ultimo recurso, e nunca abaixo
+  de 1280px.
+
+3) NOVA ANALISE PELO WHATSAPP  (pedido seu)
+  Mande NOVA ANALISE — ou ANALISE, ANALISA, ANALISAR AGORA — em
+  qualquer chat seu, como START/STOP. O app captura o grafico na hora e
+  responde com a leitura e o placar da conta.
+
+  Se o motor estiver DESLIGADO no computador, ele DIZ isso. Longe da
+  mesa, silencio se le como "a ferramenta parou".
+
+4) A IA LOCAL RELIGA SOZINHA
+  Em 13/08 ela respondeu "a API esta fora" das 09:46 as 10:02 — porque o
+  Ollama estava instalado e PARADO. Voce percebeu sozinho e teve de
+  clicar em "Instalar a IA LOCAL" so para subir um servico.
+
+  Exigir um clique todo dia para religar algo ja instalado nao e
+  configuracao, e tarefa — e tarefa que ninguem lembra de fazer e
+  recurso que nao existe. Agora sobe na abertura do programa.
+  NADA e instalado sozinho: so sobe o que ja esta na maquina.
+
+5) O MICROFONE QUE NAO APARECE NA LISTA DO MAC
+  Essa era a chave que faltava, e o problema e do macOS: um programa so
+  ENTRA em Ajustes -> Privacidade -> Microfone depois de PEDIR a
+  permissao pela API do sistema (TCC). O PortAudio abre o dispositivo
+  por baixo, num caminho que nem sempre dispara esse pedido — entao nao
+  aparece prompt, nao aparece na lista, e o sistema devolve SILENCIO.
+  Sem erro. Sem nada.
+
+  AGORA o app PEDE pela AVFoundation antes de abrir o microfone, e sabe
+  o estado REAL: autorizado / negado / nunca pedido / restrito. Se
+  estiver NEGADO ele nao fica escutando o silencio: diz, e abre a tela
+  certa.
+
+  ⚠️ ESTA VERSAO TEM DEPENDENCIA NOVA (pyobjc-framework-AVFoundation).
+     Rode o INSTALAR_MAC.command de novo.
+
+6) A BASE PAROU DE SEQUESTRAR PERGUNTA
+  "essa qualidade de print esta muito ruim, como fazemos para melhorar?"
+  recebeu o verbete inteiro de TRAILING STOP. A nota veio SO de
+  semelhanca de palavra, com ZERO jargao escrito na pergunta.
+  Semelhanca serve para DESEMPATAR entre candidatos, nunca para eleger
+  um sozinha.
+
+TESTES: 357 (eram 325).
 
 
 ========================================================================

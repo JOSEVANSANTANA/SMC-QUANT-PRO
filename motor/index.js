@@ -410,10 +410,19 @@ async function connectToWhatsApp() {
         const CMD_ACATAR    = ['ACATAR', 'ACATEI', 'ACATO', 'ACATAR CENARIO', 'ACATAR CENÁRIO'];
         const CMD_DISPENSAR = ['NAO OPEREI', 'NÃO OPEREI', 'DISPENSAR',
                                'NAO ACATAR', 'NÃO ACATAR', 'NAO ACATO', 'NÃO ACATO'];
+        // NOVA ANALISE — pedido dele em 13/08. Ate aqui o WhatsApp so servia
+        // para DECIDIR sobre um cenario que ja tinha saido; nao havia como
+        // PEDIR uma leitura. Longe da mesa, isso significava esperar o proximo
+        // ciclo de 5 minutos sem saber se valia a pena voltar para o
+        // computador. Agora ele pede, e o app captura e analisa na hora.
+        const CMD_ANALISE   = ['NOVA ANALISE', 'NOVA ANÁLISE', 'ANALISE',
+                               'ANÁLISE', 'ANALISA', 'ANALISAR AGORA',
+                               'ANALISE AGORA', 'ANÁLISE AGORA'];
 
         const ehComando =
             CMD_STOP.includes(texto) || CMD_START.includes(texto) ||
-            CMD_ACATAR.includes(texto) || CMD_DISPENSAR.includes(texto);
+            CMD_ACATAR.includes(texto) || CMD_DISPENSAR.includes(texto) ||
+            CMD_ANALISE.includes(texto);
         if (!ehComando) return;
 
         const inscrito = lerInscritos().includes(jidAlvo);
@@ -455,6 +464,18 @@ async function connectToWhatsApp() {
             console.log(`👍 ACATAR enfileirado (responde neste chat? ${inscrito}).`);
             if (inscrito) await sock.sendMessage(jidAlvo, {
                 text: "👍 Recebido: vou registrar o ACATAR do último cenário no seu diário e acompanhar até stop/alvo."
+            });
+            return;
+        }
+
+        if (CMD_ANALISE.includes(texto)) {
+            // Vai para a MESMA fila de ACATAR/DISPENSAR: o app consome de 4 em
+            // 4 segundos e trata a idade do pedido, entao um comando preso na
+            // fila com o app fechado nao vira analise fantasma horas depois.
+            filaComandos.push({ tipo: 'NOVA_ANALISE', jid: jidAlvo, ts: Date.now() });
+            console.log(`🔄 NOVA_ANALISE enfileirada (responde neste chat? ${inscrito}).`);
+            if (inscrito) await sock.sendMessage(jidAlvo, {
+                text: "🔄 Pedido recebido. Vou capturar o gráfico agora e te mandar a leitura em instantes.\n(Se o motor estiver desligado no computador, eu não consigo capturar — aí eu te aviso.)"
             });
             return;
         }

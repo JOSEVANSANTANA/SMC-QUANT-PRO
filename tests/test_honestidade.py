@@ -663,3 +663,313 @@ class TestApagarLicaoComErroDeDigitacao(unittest.TestCase):
         ns = self._ns()
         for t in ("aprenda isso", "sim", "nao", "status"):
             self.assertNotEqual(ns["processar_turno_chat"](t)[0], "ESQUECER", t)
+
+
+class TestPrecoContraOTitulo(unittest.TestCase):
+    """13/08, 10:05. A janela monitorada era:
+
+        'Google Chrome — MESU2026 7.784,00 ▲ +0.23% josevan'
+
+    e o motor mandou ao WhatsApp um cenário inteiro em cima de 7753.25 — trinta
+    pontos abaixo, região que o preço já tinha deixado. Pior: 7753.25 era o
+    número que o modelo INVENTOU no dia anterior ("você está com uma posição de
+    venda aberta em 7753.25"). Ele grudou nele.
+
+    A trava de preço congelado não pegou porque o valor OSCILAVA:
+        09:50 → 7753.25 · 09:55 → 7753.25 · 10:00 → 7788.25 · 10:05 → 7753.25
+
+    Mas a corretora escreve o preço AO VIVO no título da aba. Isso é texto do
+    sistema operacional — não tem como ser alucinado.
+    """
+
+    def _ns(self):
+        return carregar(["_num", "_numero_da_legenda", "_RE_PRECO_TITULO",
+                         "TOLERANCIA_PRECO_TITULO", "preco_do_titulo",
+                         "preco_bate_com_o_titulo"])
+
+    TITULO = "Google Chrome — MESU2026 7.784,00 ▲ +0.23% josevan"
+
+    def test_le_o_preco_do_titulo_real(self):
+        self.assertEqual(self._ns()["preco_do_titulo"](self.TITULO), 7784.0)
+
+    def test_le_os_dois_formatos_de_numero(self):
+        """A Tradovate em português escreve 7.784,00; em inglês, 7784.00. A
+        primeira versão desta função só lia o formato brasileiro."""
+        ns = self._ns()
+        self.assertEqual(ns["preco_do_titulo"]("MESU2026 7784.00 ▲ +0.23%"), 7784.0)
+        self.assertEqual(ns["preco_do_titulo"]("MESU6 7769.56"), 7769.56)
+        self.assertEqual(ns["preco_do_titulo"]("MNQZ5 21.500,25 ▼ -0.11%"), 21500.25)
+
+    def test_o_ano_do_contrato_nao_e_preco(self):
+        """'MESU2026' tem 2026 dentro. Ler isso como cotação seria trocar um
+        erro por outro."""
+        ns = self._ns()
+        self.assertNotEqual(ns["preco_do_titulo"](self.TITULO), 2026)
+
+    def test_a_variacao_percentual_nao_e_preco(self):
+        ns = self._ns()
+        self.assertNotEqual(ns["preco_do_titulo"](self.TITULO), 0.23)
+
+    def test_titulo_sem_preco_devolve_None(self):
+        ns = self._ns()
+        for t in ("🌐 Chrome · Tradovate - brewnt", "Claude — Claude",
+                  "Componentes Índice Japão 2", "", None):
+            self.assertIsNone(ns["preco_do_titulo"](t), repr(t))
+
+    def test_o_caso_real_e_reprovado(self):
+        """7753.25 contra 7784.00: 30,75 pontos. Não é a mesma tela."""
+        ns = self._ns()
+        bate, do_titulo = ns["preco_bate_com_o_titulo"](7753.25, self.TITULO)
+        self.assertFalse(bate)
+        self.assertEqual(do_titulo, 7784.0)
+
+    def test_leitura_boa_passa_com_folga(self):
+        """Título e captura são de instantes diferentes: alguns pontos de
+        diferença são normais e não podem reprovar."""
+        ns = self._ns()
+        for p in (7784.0, 7784.25, 7788.25, 7780.0, 7790.0):
+            self.assertTrue(ns["preco_bate_com_o_titulo"](p, self.TITULO)[0], p)
+
+    def test_sem_titulo_com_preco_nada_e_reprovado(self):
+        """Ausência de referência nunca vira reprovação — é a mesma regra do
+        piso de qualidade e da distância da entrada."""
+        ns = self._ns()
+        self.assertTrue(ns["preco_bate_com_o_titulo"](7753.25, "Chrome")[0])
+        self.assertTrue(ns["preco_bate_com_o_titulo"](None, self.TITULO)[0])
+
+    def test_a_trava_esta_ligada_ANTES_da_sugestao(self):
+        """Se rodasse depois, o cenário já teria ido para o WhatsApp."""
+        fonte = fonte_do_arquivo()
+        i_conf = fonte.index("bate_titulo, preco_titulo = preco_bate_com_o_titulo(")
+        i_grafico = fonte.index("e_grafico, motivo_nao_grafico = leitura_e_de_grafico")
+        self.assertLess(i_conf, i_grafico)
+
+
+class TestImagemDoGrafico(unittest.TestCase):
+    """'essa qualidade de print está muito ruim' — 13/08, 09:52.
+
+    A imagem ia como JPEG qualidade 80. Para foto, 80 é ótimo. Para GRÁFICO é
+    destruição: o JPEG foi feito para variação suave, e um gráfico é o oposto —
+    linha de um pixel, número de 10px, alto contraste. A compressão espalha
+    borrão em volta de cada caractere, e é ali que está o preço.
+    """
+
+    def test_prefere_PNG_que_nao_perde_nada(self):
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def comprimir_grafico")
+        bloco = fonte[i:i + 2200]
+        self.assertIn('format="PNG"', bloco)
+        self.assertLess(bloco.index('format="PNG"'), bloco.index('format="JPEG"'))
+
+    def test_o_jpeg_de_reserva_desliga_o_subsampling(self):
+        """Subsampling é o que borra a cor nas bordas do texto. Desligar custa
+        poucos bytes e salva a leitura do número."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def comprimir_grafico")
+        self.assertIn("subsampling=0", fonte[i:i + 2200])
+
+    def test_reduzir_o_tamanho_e_o_ULTIMO_recurso(self):
+        """Metade dos pixels é metade da chance de ler o número."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def comprimir_grafico")
+        bloco = fonte[i:i + 2200]
+        self.assertLess(bloco.index('format="JPEG"'), bloco.index("resize("))
+        self.assertIn("1280", bloco)
+
+    def test_o_envio_usa_a_compressao_nova(self):
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def enviar_relatorio_whatsapp")
+        bloco = fonte[i:i + 900]
+        self.assertIn("comprimir_grafico(imagem_print)", bloco)
+        self.assertNotIn("quality=80", bloco)
+
+
+class TestNovaAnalisePeloWhatsApp(unittest.TestCase):
+    """Pedido dele: um comando como START/STOP que peça uma leitura AGORA.
+
+    Até aqui o WhatsApp só servia para DECIDIR sobre um cenário que já tinha
+    saído. Longe da mesa, isso significava esperar o próximo ciclo de 5 minutos
+    sem saber se valia a pena voltar para o computador."""
+
+    def _motor(self):
+        import os
+        from harness import RAIZ
+        with open(os.path.join(RAIZ, "motor", "index.js"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_o_motor_reconhece_o_comando(self):
+        js = self._motor()
+        self.assertIn("CMD_ANALISE", js)
+        self.assertIn("'NOVA ANALISE'", js)
+        self.assertIn("NOVA_ANALISE", js)
+
+    def test_entra_na_mesma_fila_dos_outros_comandos(self):
+        """A fila já trata comando obsoleto — um pedido preso com o app fechado
+        não pode virar análise fantasma horas depois."""
+        js = self._motor()
+        i = js.index("if (CMD_ANALISE.includes(texto))")
+        self.assertIn("filaComandos.push", js[i:i + 600])
+
+    def test_o_app_consome_e_dispara(self):
+        fonte = fonte_do_arquivo()
+        self.assertIn('if tipo == "NOVA_ANALISE":', fonte)
+        self.assertIn("def _analise_sob_demanda", fonte)
+
+    def test_o_pedido_obsoleto_e_ignorado(self):
+        fonte = fonte_do_arquivo()
+        i = fonte.index('if tipo == "NOVA_ANALISE":')
+        self.assertIn("120000", fonte[i:i + 700])
+
+    def test_motor_desligado_e_DITO_e_nao_silencio(self):
+        """Ele vai estar longe do computador. Silêncio ele leria como 'a
+        ferramenta parou'."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _analise_sob_demanda")
+        bloco = fonte[i:i + 2600]
+        self.assertIn("motor está DESLIGADO", bloco)
+        self.assertIn("Não consegui capturar", bloco)
+
+    def test_roda_fora_da_interface(self):
+        fonte = fonte_do_arquivo()
+        i = fonte.index('if tipo == "NOVA_ANALISE":')
+        self.assertIn("threading.Thread", fonte[i:i + 700])
+
+
+class TestIALocalReligaSozinha(unittest.TestCase):
+    """13/08, 09:46 às 10:02: ela respondeu 'a API está fora' a TUDO, porque o
+    Ollama estava instalado e PARADO. Ele diagnosticou sozinho e teve de clicar
+    em 'Instalar a IA LOCAL' só para subir um serviço.
+
+    Exigir um clique todo dia para religar algo já instalado não é
+    configuração, é tarefa — e tarefa que ninguém lembra de fazer é recurso que
+    não existe."""
+
+    def test_sobe_na_abertura_do_programa(self):
+        fonte = fonte_do_arquivo()
+        self.assertIn("_subir_ia_local_no_inicio", fonte)
+        self.assertIn("threading.Thread(target=self._subir_ia_local_no_inicio",
+                      fonte)
+
+    def test_NUNCA_instala_sozinha(self):
+        """Instalar é decisão dele, e continua sendo o botão. Baixar 5 GB sem
+        pedir seria abusar da máquina e da internet do cliente."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _subir_ia_local_no_inicio")
+        bloco = fonte[i:i + 1800]
+        self.assertIn("NUNCA instala nada", bloco)
+        self.assertNotIn("_baixar_arquivo", bloco)
+        self.assertNotIn("instalar_pacote", bloco)
+        self.assertIn("if not exe:", bloco)
+
+    def test_sai_calada_quando_ja_esta_no_ar(self):
+        """Dizer 'subi o serviço' sobre um serviço que já rodava é o mesmo tipo
+        de mentira do 'Motor no ar' sobre processo morto, ao contrário."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _subir_ia_local_no_inicio")
+        bloco = fonte[i:i + 1800]
+        self.assertIn("porta_responde(11434)", bloco)
+        self.assertIn("return", bloco)
+
+    def test_nunca_atrapalha_a_abertura(self):
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _subir_ia_local_no_inicio")
+        bloco = fonte[i:i + 1800]
+        self.assertIn("except Exception", bloco)
+
+
+class TestPermissaoDeMicrofoneNoMac(unittest.TestCase):
+    """'não aparece na lista de permissão do Mac' — e essa é a chave.
+
+    No macOS um programa só ENTRA em Ajustes → Privacidade → Microfone depois
+    de PEDIR a permissão pela API do sistema (TCC). O PortAudio abre o
+    dispositivo por baixo, num caminho que nem sempre dispara esse pedido:
+    não aparece prompt, não aparece na lista, e o sistema devolve SILÊNCIO
+    sem erro nenhum."""
+
+    def _plat(self):
+        import os
+        from harness import RAIZ
+        with open(os.path.join(RAIZ, "plataforma.py"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_existe_como_PEDIR_a_permissao(self):
+        plat = self._plat()
+        self.assertIn("def pedir_permissao_microfone", plat)
+        self.assertIn("requestAccessForMediaType_completionHandler_", plat)
+
+    def test_existe_como_SABER_o_estado_real(self):
+        """Quatro estados, e cada um pede uma conversa diferente. Adivinhar
+        entre eles foi o que produziu meses de 'troque o dispositivo de
+        entrada' para um problema de permissão."""
+        plat = self._plat()
+        self.assertIn("def estado_permissao_microfone", plat)
+        for estado in ("nunca_pedido", "negado", "autorizado", "restrito"):
+            self.assertIn(estado, plat, estado)
+
+    def test_o_pedido_acontece_ANTES_de_abrir_o_microfone(self):
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _tiger_iniciar")
+        bloco = fonte[i:i + 2600]
+        self.assertIn("pedir_permissao_microfone", bloco)
+
+    def test_negado_NAO_fica_escutando_o_silencio(self):
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _tiger_iniciar")
+        bloco = fonte[i:i + 2600]
+        self.assertIn('estado == "negado"', bloco)
+        self.assertIn("abrir_permissao_microfone", bloco)
+
+    def test_sem_a_biblioteca_ele_DIZ_que_nao_sabe(self):
+        """'desconhecido' não pode virar 'autorizado'. Ausência de informação
+        não é conclusão — nem aqui."""
+        plat = self._plat()
+        self.assertIn('"desconhecido"', plat)
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _tiger_iniciar")
+        self.assertIn('estado == "desconhecido"', fonte[i:i + 2600])
+
+    def test_a_dependencia_esta_declarada(self):
+        import os
+        from harness import RAIZ
+        with open(os.path.join(RAIZ, "requirements-mac.txt"), encoding="utf-8") as f:
+            self.assertIn("pyobjc-framework-AVFoundation", f.read())
+
+
+class TestBaseNaoSequestraPergunta(unittest.TestCase):
+    """13/08, 09:52 — regressão que eu criei na 2.30.0 ao pôr a base primeiro:
+
+        ❯ essa qualidade de print está muito ruim, como fazemos para melhorar?
+        ✳ [o verbete inteiro de TRAILING STOP]
+
+    A nota foi 2,0 e os DOIS pontos vieram só de semelhança de palavra, com
+    ZERO jargão realmente escrito na pergunta. Semelhança serve para
+    DESEMPATAR entre candidatos, nunca para eleger um sozinha."""
+
+    def _ns(self):
+        return carregar(
+            ["_sem_acento", "_norm_busca", "_parecido", "BASE_SMC", "BASE_MACRO",
+             "_todos_os_topicos", "_nota_base_smc", "buscar_base_smc"],
+            stubs={"unicodedata": __import__("unicodedata")})
+
+    def test_a_frase_real_nao_acha_verbete(self):
+        ns = self._ns()
+        self.assertIsNone(ns["buscar_base_smc"](
+            "essa qualidade de print esta muito ruim, como fazemos para melhorar?"))
+
+    def test_conversa_solta_nao_acha_verbete(self):
+        ns = self._ns()
+        for t in ("cuidado com isso", "não foi isso que te perguntei",
+                  "como foi a última análise?", "obrigado",
+                  "você está muito rápida"):
+            self.assertIsNone(ns["buscar_base_smc"](t), t)
+
+    def test_e_os_acertos_de_verdade_continuam(self):
+        """A trava não pode ter derrubado o que funcionava — senão eu troco um
+        defeito por outro maior."""
+        ns = self._ns()
+        for t in ("o que é smc?", "o que é vwap?", "o que é choch?",
+                  "o que é order block?", "o que é atr?", "o que é fvg?",
+                  "como fazer trailing stop?", "onde colocar o stop?",
+                  "o que é premium e discount?", "o que é inducement?",
+                  "o que é tilt?", "o que é poc?"):
+            self.assertIsNotNone(ns["buscar_base_smc"](t), t)
