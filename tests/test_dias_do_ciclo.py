@@ -45,7 +45,7 @@ def _ns(cfg=None):
     cfg = cfg or PREGAO_NOTURNO
     return carregar(
         ["dias_meta_do_plano", "_domingo_e_pregao", "dias_de_pregao_entre",
-         "dia_do_ciclo"],
+         "dia_do_ciclo", "_passo_de_pregao", "data_do_dia_do_ciclo"],
         stubs={"plano_da_conta_ativa": lambda: {},
                "carregar_config": lambda: cfg,
                "PADRAO_CONFIG_APP": cfg,
@@ -227,10 +227,196 @@ class TestAsPontasNoApp(unittest.TestCase):
         """Era texto dentro de um rótulo: não havia onde clicar."""
         fonte = self._fonte()
         i = fonte.index("def _renderizar_trilha")
-        bloco = fonte[i:i + 3000]
+        bloco = fonte[i:i + 4200]
         self.assertIn("CTkButton", bloco)
-        self.assertIn("_escolher_dia_do_ciclo", bloco)
+        # O clique deixou de fazer UMA coisa e passou a abrir o menu do dia
+        # (definir como hoje · lançar resultado · concluído / não operei).
+        self.assertIn("_menu_do_dia", bloco)
 
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestOsCinquentaEQuatroDolaresQueSumiram(unittest.TestCase):
+    """17/08, 19:59, palavras dele:
+
+        "falha no registro. hoje por exemplo encerrou as 17:59, abriu as 19hs,
+         mas antes de fechar eu fiz 54 dolares, e incluir no diario, mas nao
+         esta contabilizando"
+
+    Ele estava certo, e a causa não era o diário: era o CARIMBO. Com o pregão
+    19:00→17:59, TODA hora anterior às 19:00 pertence ao pregão do dia
+    ANTERIOR. Ele operou de tarde e lançou perto das 18h — o lançamento foi,
+    corretamente pela regra da sessão, para o pregão da véspera. E some do
+    "hoje" que ele estava olhando às 19:59.
+
+    A regra da sessão não está errada. Errado era a ferramenta não dizer nada.
+    """
+
+    def _ns(self, cfg):
+        return carregar(
+            ["data_do_pregao", "_hora_do_registro", "carimbo_para_o_pregao"],
+            stubs={"carregar_config": lambda: cfg, "PADRAO_CONFIG_APP": cfg,
+                   "datetime": datetime})
+
+    def test_o_lancamento_das_18h_cai_na_vespera(self):
+        """O defeito, reproduzido. Se um dia isto deixar de ser verdade, é
+        porque a regra do pregão mudou — e aí este teste precisa mudar junto."""
+        ns = self._ns(PREGAO_NOTURNO)
+        às18 = datetime.datetime(2026, 8, 17, 18, 30)
+        self.assertEqual(ns["data_do_pregao"](às18, PREGAO_NOTURNO), "16/08/2026")
+        às20 = datetime.datetime(2026, 8, 17, 20, 0)
+        self.assertEqual(ns["data_do_pregao"](às20, PREGAO_NOTURNO), "17/08/2026")
+
+    def test_o_carimbo_acerta_o_pregao_pedido(self):
+        """É a correção: para gravar NO dia escolhido não basta carimbar
+        meio-dia — com pregão que vira, meio-dia do dia D é o pregão D-1."""
+        for cfg in (PREGAO_NOTURNO, PREGAO_DIURNO):
+            ns = self._ns(cfg)
+            for iso in ("2026-08-14", "2026-08-16", "2026-08-17", "2026-12-31"):
+                d = _d(iso)
+                carimbo = ns["carimbo_para_o_pregao"](d, cfg)
+                volta = ns["data_do_pregao"](ns["_hora_do_registro"](carimbo), cfg)
+                self.assertEqual(volta, d.strftime("%d/%m/%Y"),
+                                 f"cfg={cfg} dia={iso} carimbo={carimbo}")
+
+    def test_aceita_data_em_texto_nos_dois_formatos(self):
+        ns = self._ns(PREGAO_NOTURNO)
+        self.assertTrue(ns["carimbo_para_o_pregao"]("17/08/2026", PREGAO_NOTURNO)
+                        .startswith("17/08/2026"))
+        self.assertTrue(ns["carimbo_para_o_pregao"]("2026-08-17", PREGAO_NOTURNO)
+                        .startswith("17/08/2026"))
+
+    def test_lixo_devolve_None_em_vez_de_gravar_errado(self):
+        """Carimbo errado grava dinheiro no dia errado — calado. Melhor não
+        gravar do que gravar em lugar nenhum."""
+        ns = self._ns(PREGAO_NOTURNO)
+        for lixo in ("", "ontem", "32/13/2026", None, 42):
+            self.assertIsNone(ns["carimbo_para_o_pregao"](lixo, PREGAO_NOTURNO),
+                              f"{lixo!r} produziu carimbo")
+
+    def test_a_inclusao_manual_DIZ_em_que_pregao_caiu(self):
+        """O silêncio era o defeito. Se a data do lançamento não for o dia do
+        calendário, a ferramenta tem de explicar por quê."""
+        from harness import fonte_do_arquivo
+        fonte = fonte_do_arquivo()
+        i = fonte.index("Operação CONCLUÍDA incluída no diário")
+        bloco = fonte[max(0, i - 2000):i + 400]
+        self.assertIn("pregao = data_do_pregao()", bloco)
+        self.assertIn("hoje_calendario", bloco)
+
+
+class TestOResultadoDoDiaLancadoNaMao(unittest.TestCase):
+    """17/08: "às vezes faço operações fora das sugestões, então acho que uma
+    forma de incluir o resultado do dia no diário seria viável".
+
+    O formulário que existia exige entrada, stop e preço de saída. Quem operou
+    cinco vezes na mão e sabe só que fechou o dia em +54 não tem esses números
+    — e, obrigado a preenchê-los, INVENTA preços para acertar o total."""
+
+    def test_o_lancamento_nao_inventa_preco(self):
+        """Um resultado do dia não tem entrada nem saída. Escrever números ali
+        contaminaria toda estatística de preço e de ticks que lê o diário."""
+        from harness import fonte_do_arquivo
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def lancar_resultado_do_dia")
+        bloco = fonte[i:i + 2600]
+        self.assertIn('"entry": None', bloco)
+        self.assertIn('"pnl_final": valor', bloco)
+        self.assertIn("carimbo_para_o_pregao", bloco)
+        self.assertIn('"origem": "RESULTADO_DIA"', bloco)
+
+    def test_o_dia_da_trilha_e_o_dia_do_diario(self):
+        """Se a ida e a volta divergissem, o 'dia 2' da trilha não seria o dia
+        2 do diário — e o dinheiro entraria no quadradinho errado."""
+        ns = _ns()
+        plano = {"dias_meta": 8, "data_inicio": "2026-08-14"}
+        for n in range(1, 9):
+            data = ns["data_do_dia_do_ciclo"](plano, n, PREGAO_NOTURNO)
+            self.assertIsNotNone(data, f"dia {n} sem data")
+            self.assertEqual(ns["dia_do_ciclo"](plano, data, PREGAO_NOTURNO), n)
+
+    def test_a_ancora_dele_move_as_datas_junto(self):
+        """Se ele diz que hoje é o dia 2, o dia 3 é o próximo pregão — e não a
+        data que a contagem automática tinha calculado."""
+        ns = _ns()
+        plano = {"dias_meta": 8, "data_inicio": "2026-08-14",
+                 "dia_ciclo_ancora": {"dia": 2, "data": "2026-08-17"}}
+        self.assertEqual(ns["data_do_dia_do_ciclo"](plano, 2, PREGAO_NOTURNO),
+                         _d("2026-08-17"))
+        self.assertEqual(ns["data_do_dia_do_ciclo"](plano, 3, PREGAO_NOTURNO),
+                         _d("2026-08-18"))
+        # para trás também, e pulando o sábado
+        self.assertEqual(ns["data_do_dia_do_ciclo"](plano, 1, PREGAO_NOTURNO),
+                         _d("2026-08-16"))
+
+    def test_sem_referencia_nenhuma_devolve_None(self):
+        """Sem início de ciclo não dá para saber que data é o dia 2. Melhor
+        dizer isso do que gravar dinheiro num dia chutado."""
+        ns = _ns()
+        self.assertIsNone(ns["data_do_dia_do_ciclo"]({}, 2, PREGAO_NOTURNO))
+        self.assertIsNone(ns["data_do_dia_do_ciclo"](
+            {"data_inicio": "2026-08-14"}, 0, PREGAO_NOTURNO))
+        self.assertIsNone(ns["data_do_dia_do_ciclo"](
+            {"data_inicio": "2026-08-14"}, "x", PREGAO_NOTURNO))
+
+
+class TestAMarcaDeCadaDia(unittest.TestCase):
+    """17/08: "repare que o dia 2, mesmo após eu ter incluso manualmente, se eu
+    clicar no dia 3 para preenchimento a partir de agora, o dia dois fica como
+    se não tivesse operado".
+
+    A marca vinha de UMA conta: lucro ACUMULADO do ciclo contra a meta
+    acumulada até aquele dia. Ela nunca soube responder "eu operei neste dia?"
+    — só "o ciclo está em dia?". Um dia lucrativo saía com ❌ porque o
+    acumulado ainda estava atrás, e um dia sem operar saía igual a um dia de
+    prejuízo."""
+
+    def _marca(self):
+        from harness import fonte_do_arquivo
+        return fonte_do_arquivo()
+
+    def test_a_marca_olha_o_DIA_e_nao_o_acumulado(self):
+        fonte = self._marca()
+        i = fonte.index("def _marca_do_dia")
+        bloco = fonte[i:i + 2200]
+        self.assertIn("por_dia", bloco)
+        self.assertNotIn('stats["lucro_usd"]', bloco,
+                         "a marca voltou a ser deduzida do acumulado do ciclo")
+
+    def test_dia_sem_operacao_nao_leva_X(self):
+        """Ausência não é derrota. Foi exatamente esta a queixa."""
+        fonte = self._marca()
+        i = fonte.index("def _marca_do_dia")
+        bloco = fonte[i:i + 2200]
+        j = bloco.index("if resultado is None:")
+        self.assertIn('return "⬜", None', bloco[j:j + 400])
+
+    def test_a_marca_DELE_ganha_da_deducao(self):
+        """Uma marca que ele clicou não pode ser sobrescrita por dedução —
+        foi para isso que ele clicou."""
+        fonte = self._marca()
+        i = fonte.index("def _marca_do_dia")
+        bloco = fonte[i:i + 2200]
+        pos_estado = bloco.index('estado = marcados.get(str(dia))')
+        pos_hoje = bloco.index('if dia == dia_atual:')
+        self.assertLess(bloco.index('if estado == "nao_operei":'), pos_hoje,
+                        "a dedução passou na frente da marca dele")
+        self.assertLess(pos_estado, pos_hoje)
+
+    def test_o_menu_do_dia_tem_as_tres_coisas_que_ele_pediu(self):
+        fonte = self._marca()
+        i = fonte.index("def _menu_do_dia")
+        bloco = fonte[i:i + 3000]
+        self.assertIn("_escolher_dia_do_ciclo", bloco)    # hoje é este dia
+        self.assertIn("_lancar_resultado_do_dia", bloco)  # resultado em US$
+        self.assertIn('"concluido"', bloco)               # concluído
+        self.assertIn('"nao_operei"', bloco)              # ou não
+
+    def test_marcar_grava_em_disco_e_redesenha(self):
+        fonte = self._marca()
+        i = fonte.index("def _marcar_dia")
+        bloco = fonte[i:i + 1200]
+        self.assertIn("_gravar_plano_silencioso", bloco)
+        self.assertIn("_atualizar_dashboard(forcar=True)", bloco)

@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.39.0"
+VERSAO_ATUAL = "2.40.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -609,6 +609,22 @@ PLANO_PADRAO = {
     # congelaria o dia para sempre; guardar a âncora deixa o contador andar
     # sozinho a partir da escolha dele.
     "dia_ciclo_ancora": None,
+    # O QUE ACONTECEU EM CADA DIA, quando quem diz é ELE.
+    #
+    # 17/08, 19:59: "repare que o dia 2, mesmo após eu ter incluso
+    # manualmente, se eu clicar no dia 3 para preenchimento a partir de agora,
+    # o dia dois fica como se não tivesse operado".
+    #
+    # A marca de cada quadradinho era deduzida de uma única conta: lucro
+    # ACUMULADO do ciclo contra a meta acumulada esperada até aquele dia. Isso
+    # nunca soube responder "eu operei neste dia?" — só "o ciclo está em dia?".
+    # Um dia lucrativo aparecia com ❌ porque o ACUMULADO ainda não tinha
+    # alcançado a meta, e um dia em que ele nem ligou a plataforma aparecia
+    # igual a um dia de prejuízo.
+    #
+    # Aqui ele diz. {"2": "concluido"} | {"3": "nao_operei"} — o que estiver
+    # marcado manda na dedução; o que não estiver segue automático.
+    "dias_marcados": {},
     # ---- FREIO DE SUGESTÕES (proteção contra sequência de stops) ----
     # O robô analisa a cada poucos minutos e o mercado não muda de opinião nesse
     # ritmo: sem freio, ele reapresenta o mesmo cenário sem parar e o trader
@@ -709,6 +725,106 @@ def dia_do_ciclo(plano, hoje=None, cfg=None):
     except (ValueError, TypeError):
         return 1
     return max(1, min(1 + dias_de_pregao_entre(inicio, hoje, cfg), prazo))
+
+
+def _passo_de_pregao(data, adiante=True, cfg=None):
+    """O próximo (ou o anterior) dia de PREGÃO a partir de `data`."""
+    domingo_conta = _domingo_e_pregao(cfg)
+    passo = datetime.timedelta(days=1 if adiante else -1)
+    d = data + passo
+    for _ in range(14):                    # 14 é folga de sobra para um fim de semana
+        if d.weekday() == 5 or (d.weekday() == 6 and not domingo_conta):
+            d += passo
+            continue
+        return d
+    return d
+
+
+def data_do_dia_do_ciclo(plano, n, cfg=None):
+    """A data de calendário do dia N do ciclo. Devolve None sem referência.
+
+    É a VOLTA de `dia_do_ciclo`, e existe porque ele precisa lançar o resultado
+    de UM dia específico ("o dia 2 fica como se não tivesse operado"). Para
+    gravar no dia certo é preciso saber que data é aquele dia.
+
+    Anda pelos mesmos dias de pregão que a ida — se as duas contas
+    divergissem, o dia 2 da trilha não seria o dia 2 do diário."""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return None
+    if n < 1:
+        return None
+    plano = plano or {}
+    # A referência é a âncora que ele escolheu; sem ela, o início do ciclo.
+    ancora = plano.get("dia_ciclo_ancora") or None
+    ref_data = ref_dia = None
+    if isinstance(ancora, dict) and ancora.get("data") and ancora.get("dia"):
+        try:
+            ref_data = datetime.date.fromisoformat(str(ancora["data"]))
+            ref_dia = max(1, int(ancora["dia"]))
+        except (ValueError, TypeError):
+            ref_data = ref_dia = None
+    if ref_data is None:
+        try:
+            ref_data = datetime.date.fromisoformat(str(plano.get("data_inicio")))
+            ref_dia = 1
+        except (ValueError, TypeError):
+            return None
+    d = ref_data
+    for _ in range(abs(n - ref_dia)):
+        d = _passo_de_pregao(d, adiante=(n > ref_dia), cfg=cfg)
+    return d
+
+
+def carimbo_para_o_pregao(dia, cfg=None):
+    """Um horário que a ferramenta lê como pertencendo AO PREGÃO de `dia`.
+
+    Esta função é a resposta ao defeito que ele descreveu em 17/08 às 19:59:
+        "hoje encerrou às 17:59, abriu às 19h, mas antes de fechar eu fiz 54
+         dólares e incluí no diário, e não está contabilizando"
+    Com o pregão 19:00→17:59, TODA hora anterior às 19:00 pertence ao pregão do
+    dia ANTERIOR. Ele operou de tarde, lançou perto das 18h — e o lançamento,
+    corretamente pela regra da sessão, caiu no pregão de ontem. Só que a
+    ferramenta nunca disse isso: o dinheiro simplesmente não aparecia em 'hoje'.
+
+    Então, para gravar num dia escolhido, não basta carimbar meio-dia: com
+    pregão que vira, meio-dia do dia D pertence ao pregão D-1. Aqui o horário é
+    escolhido para que `data_do_pregao` devolva exatamente o dia pedido.
+
+    Devolve string 'dd/mm/aaaa HH:MM'. Função pura o bastante para testar."""
+    if isinstance(dia, str):
+        try:
+            dia = datetime.datetime.strptime(dia, "%d/%m/%Y").date()
+        except ValueError:
+            try:
+                dia = datetime.date.fromisoformat(dia)
+            except ValueError:
+                return None
+    if not isinstance(dia, (datetime.date, datetime.datetime)):
+        return None
+    if isinstance(dia, datetime.datetime):
+        dia = dia.date()
+    try:
+        c = cfg if cfg is not None else carregar_config()
+        ini = str(c.get("hora_inicio", PADRAO_CONFIG_APP["hora_inicio"]))
+        fim = str(c.get("hora_fim", PADRAO_CONFIG_APP["hora_fim"]))
+        h_ini, m_ini = (int(x) for x in ini.split(":")[:2])
+        h_fim, m_fim = (int(x) for x in fim.split(":")[:2])
+    except Exception:
+        return dia.strftime("%d/%m/%Y 12:00")
+    if (h_ini, m_ini) <= (h_fim, m_fim):
+        # Pregão que não vira o dia: qualquer hora do próprio dia serve.
+        return dia.strftime("%d/%m/%Y ") + f"{h_ini:02d}:{max(m_ini, 1):02d}"
+    # Pregão que VIRA: o dia começa na hora de abertura. Um minuto depois dela
+    # está dentro da sessão e não corre risco de cair na véspera.
+    minuto = m_ini + 1
+    hora = h_ini + (1 if minuto > 59 else 0)
+    minuto = 0 if minuto > 59 else minuto
+    if hora > 23:                          # abertura às 23:59 — caso de borda
+        hora, minuto = 23, 59
+    return dia.strftime("%d/%m/%Y ") + f"{hora:02d}:{minuto:02d}"
+
 
 def _novo_id_conta(existentes=None):
     """ID único de conta. O timestamp em milissegundos sozinho NÃO basta: duas
@@ -2115,6 +2231,63 @@ def carregar_posicoes():
     if isinstance(dados, list):
         return _copia_rasa([p for p in dados if isinstance(p, dict) and "id" in p])
     return []
+
+def lancar_resultado_do_dia(dia_pregao, valor, contratos=1, ativo="LANCAMENTO",
+                            cfg=None, lista=None):
+    """Grava no diário o RESULTADO FECHADO de um dia, em dólares.
+
+    Nasceu de 17/08, 19:59, palavras dele: "às vezes faço operações fora das
+    sugestões, então acho que uma forma de incluir o resultado do dia no diário
+    seria viável".
+
+    O formulário que existia exigia entrada, stop e preço de saída para deduzir
+    o resultado. Quem operou cinco vezes na mão e sabe só que fechou o dia em
+    +54 não tem esses números — e, obrigado a inventá-los, produz um registro
+    que MENTE sobre os preços para acertar o total.
+
+    Aqui o valor é o dado. Não há preço fingido: entrada e saída ficam nulas, e
+    o P&L é exatamente o que ele digitou.
+
+    O CARIMBO é o ponto delicado, e é o que perdia o dinheiro dele: com pregão
+    19:00→17:59, um lançamento feito às 18h pertence ao pregão da VÉSPERA. Por
+    isso a data passa por `carimbo_para_o_pregao`, que devolve um horário que a
+    ferramenta relê como sendo do dia pedido."""
+    carimbo = carimbo_para_o_pregao(dia_pregao, cfg)
+    if not carimbo:
+        return None
+    try:
+        valor = round(float(valor), 2)
+    except (TypeError, ValueError):
+        return None
+    lista = carregar_posicoes() if lista is None else lista
+    pos = {
+        "id": _novo_id_posicao(lista),
+        "conta_id": conta_ativa_id(),
+        # Origem própria: não é sugestão acatada nem posição lida da corretora.
+        # O comparativo do ciclo usa a origem para não misturar as três coisas.
+        "origem": "RESULTADO_DIA",
+        "direcao": "BUY" if valor >= 0 else "SELL",
+        "ativo": ativo or "LANCAMENTO",
+        # Sem preço FINGIDO. Um lançamento de resultado não tem entrada nem
+        # saída, e escrever números aqui contaminaria toda estatística de
+        # preço/ticks que lê o diário.
+        "entry": None, "stop": None, "tp1": None, "tp2": None,
+        "contratos": max(int(contratos or 1), 1),
+        "vpp": None,
+        "status": "FECHADA",
+        "execucao": "CONFIRMADA",
+        "confirmacoes_entrada": 0,
+        "preco_atual": None,
+        "pnl_atual": 0.0,
+        "data_criacao": carimbo,
+        "data_abertura": carimbo,
+        "data_fechamento": carimbo,
+        "pnl_final": valor,
+    }
+    lista.append(pos)
+    salvar_posicoes(lista)
+    return pos
+
 
 def salvar_posicoes(lista):
     with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
@@ -7892,6 +8065,120 @@ def conferir_maxima_historica(resposta, preco_agora, nome_ativo=""):
     return texto, None
 
 
+# NUMA COMPRA, O STOP FICA ABAIXO DA ENTRADA. SEMPRE.
+#
+# Log de 17/08, das 10:43 às 10:59 — dezesseis minutos de discussão sobre um
+# erro que é aritmética pura. Ela escreveu:
+#
+#     "Vamos considerar uma entrada de COMPRA (buy):
+#      • Entrada:   7805.25
+#      • Stop Loss: 7813.50      ← ACIMA da entrada
+#      • Alvo:      7796.75      ← ABAIXO da entrada
+#      • R:R: 2.0"
+#
+# Isso não é uma compra. Numa compra o stop fica ABAIXO (é onde a ideia morre)
+# e o alvo ACIMA (é onde ela se paga). Aqueles números são uma VENDA com o
+# rótulo trocado — e o "R:R 2.0" no fim dá ao conjunto uma cara de conta feita.
+#
+# Ele perguntou "tem certeza que essa lógica está certa?", depois "revise a
+# recomendação", depois "é compra ou venda?", depois "então não é buy, é sell,
+# olha a recomendação que você me passou, de compra, sendo que o correto seria
+# venda!!!". Quatro vezes. Nas quatro ela pediu desculpa e REPETIU os mesmos
+# três números. Às 11:03, num "nova análise", repetiu de novo.
+#
+# Nenhum prompt conserta isso de forma confiável — é o modelo pequeno perdendo
+# o fio. O app, esse, consegue: são duas comparações.
+_RE_LADO_DO_CENARIO = re.compile(
+    r"\b(compra|comprar|buy|long|vend[ae]|vender|sell|short)\b", re.IGNORECASE)
+_RE_NIVEL_ROTULADO = {
+    "entrada": re.compile(
+        r"\b(entrada|entry|preço de entrada|preco de entrada)\b\s*[:\-–]?\s*"
+        r"(?:de\s+|em\s+|R\$\s*|US\$\s*)?(\d[\d.,]*)", re.IGNORECASE),
+    "stop": re.compile(
+        r"\b(stop(?:\s*loss)?|stop-loss)\b\s*[:\-–]?\s*"
+        r"(?:de\s+|em\s+|R\$\s*|US\$\s*)?(\d[\d.,]*)", re.IGNORECASE),
+    "alvo": re.compile(
+        r"\b(alvo|alvo\s*1|target|take\s*profit|tp1?)\b\s*[:\-–]?\s*"
+        r"(?:de\s+|em\s+|R\$\s*|US\$\s*)?(\d[\d.,]*)", re.IGNORECASE),
+}
+
+def _numero_rotulado(texto, chave):
+    """O número que vem logo depois do rótulo. None quando o rótulo não aparece."""
+    m = _RE_NIVEL_ROTULADO[chave].search(texto or "")
+    if not m:
+        return None
+    valores = _numeros_de_preco(m.group(2))
+    return valores[0] if valores else None
+
+
+def lado_do_cenario(texto):
+    """'BUY', 'SELL' ou None — de que lado a resposta está recomendando.
+
+    Usa a ÚLTIMA menção de propósito: o modelo costuma abrir com o contexto
+    ('o viés institucional é de venda') e fechar com a recomendação. Quando as
+    duas brigam, o defeito aparece de qualquer forma na conferência dos níveis."""
+    achados = _RE_LADO_DO_CENARIO.findall(str(texto or ""))
+    if not achados:
+        return None
+    ultimo = achados[-1].lower()
+    if ultimo.startswith(("compra", "comprar", "buy", "long")):
+        return "BUY"
+    return "SELL"
+
+
+def conferir_coerencia_do_cenario(resposta):
+    """Pega o cenário cujo stop e alvo estão do lado errado da entrada.
+
+    Função PURA. Devolve (texto, problema) — `problema` é None quando está
+    tudo certo, ou uma frase curta dizendo o que não fecha.
+
+    Só age quando os TRÊS números aparecem rotulados. Com dois, não dá para
+    saber se falta informação ou se está errado — e acusar sem certeza é o
+    caminho mais rápido para ele parar de ler os avisos."""
+    texto = str(resposta or "")
+    if not texto.strip():
+        return texto, None
+    lado = lado_do_cenario(texto)
+    if lado is None:
+        return texto, None
+    entrada = _numero_rotulado(texto, "entrada")
+    stop = _numero_rotulado(texto, "stop")
+    alvo = _numero_rotulado(texto, "alvo")
+    if entrada is None or stop is None or alvo is None:
+        return texto, None
+    if not (entrada > 0 and stop > 0 and alvo > 0):
+        return texto, None
+
+    erros = []
+    if lado == "BUY":
+        if stop > entrada:
+            erros.append(f"o stop ({stop:,.2f}) está ACIMA da entrada "
+                         f"({entrada:,.2f}) — numa compra ele fica abaixo")
+        if alvo < entrada:
+            erros.append(f"o alvo ({alvo:,.2f}) está ABAIXO da entrada "
+                         f"({entrada:,.2f}) — numa compra ele fica acima")
+    else:
+        if stop < entrada:
+            erros.append(f"o stop ({stop:,.2f}) está ABAIXO da entrada "
+                         f"({entrada:,.2f}) — numa venda ele fica acima")
+        if alvo > entrada:
+            erros.append(f"o alvo ({alvo:,.2f}) está ACIMA da entrada "
+                         f"({entrada:,.2f}) — numa venda ele fica abaixo")
+    if not erros:
+        return texto, None
+
+    virado = "VENDA" if lado == "BUY" else "COMPRA"
+    aviso = (
+        f"\n\n⛔ PARE — esse cenário não fecha, e o erro é meu.\n"
+        f"Eu escrevi {'COMPRA' if lado == 'BUY' else 'VENDA'}, mas "
+        + "; ".join(erros) + ".\n"
+        f"Do jeito que os números estão, isso é uma {virado} com o rótulo "
+        f"trocado. NÃO opere por esta mensagem.\n"
+        f"Me peça de novo ('nova análise') e confira: numa compra o stop fica "
+        f"abaixo da entrada e o alvo acima; numa venda é o contrário.")
+    return f"{texto.rstrip()}{aviso}", "; ".join(erros)
+
+
 def corrigir_enrolacao_de_nivel(pergunta, resposta):
     """Devolve (texto, corrigiu). Quando ela enrolou o nível, a resposta segue
     — mas com a admissão colada no fim. Apagar o parágrafo inteiro tiraria a
@@ -12412,6 +12699,14 @@ class SmcQuantApp(ctk.CTk):
                          f"{ref_preco:,.2f} — impossível. Correção anexada.")
         except Exception:
             pass          # conferência é rede de proteção, nunca derruba o turno
+        # COMPRA COM STOP ACIMA DA ENTRADA NÃO É COMPRA.
+        # 17/08, das 10:43 às 10:59: ela sugeriu COMPRA com stop 7813.50 acima
+        # da entrada 7805.25 e alvo 7796.75 abaixo. Ele perguntou quatro vezes
+        # se estava certo; nas quatro ela pediu desculpa e repetiu os mesmos
+        # números. É aritmética — o app consegue o que o prompt não conseguiu.
+        resposta, incoerencia = conferir_coerencia_do_cenario(resposta)
+        if incoerencia:
+            self.log(f"⛔ TIGER: cenário incoerente barrado — {incoerencia}.")
         # OS NÚMEROS DA CONTA DELE, CONFERIDOS CONTRA O DISCO.
         resposta, divergencias = conferir_numeros_da_mesa(
             resposta, self._fatos_da_mesa())
@@ -14532,8 +14827,34 @@ class SmcQuantApp(ctk.CTk):
         if concluida:
             # Fecha imediatamente no preço informado, realizando o resultado.
             fechada = fechar_posicao_manual(pos["id"], preco_saida)
+            # EM QUE PREGÃO ISSO CAIU — e por quê, quando não for o dia de hoje
+            # no calendário.
+            #
+            # 17/08, 19:59: "hoje encerrou às 17:59, abriu às 19h, mas antes de
+            # fechar eu fiz 54 dólares e incluí no diário, e não está
+            # contabilizando". Ele lançou perto das 18h. Com o pregão
+            # 19:00→17:59, TODA hora antes das 19:00 pertence ao pregão da
+            # véspera — então o lançamento foi para o dia anterior, corretamente
+            # pela regra da sessão, e sumiu do "hoje" que ele estava olhando.
+            #
+            # A regra não está errada. Errado era não dizer. Agora diz.
+            pregao = data_do_pregao()
+            hoje_calendario = time.strftime('%d/%m/%Y')
+            aviso_dia = ""
+            if pregao != hoje_calendario:
+                cfg = carregar_config()
+                aviso_dia = (
+                    f"  ⚠️ Entrou no pregão de {pregao}, NÃO no de "
+                    f"{hoje_calendario}: o seu pregão vai das "
+                    f"{cfg.get('hora_inicio', '?')} às {cfg.get('hora_fim', '?')}, "
+                    f"então tudo que acontece antes das "
+                    f"{cfg.get('hora_inicio', '?')} ainda pertence ao pregão "
+                    f"anterior. Se o resultado é de outro dia, use a trilha de "
+                    f"dias (Evolução Patrimonial) e lance no dia certo.")
             self.log(f"📕 Operação CONCLUÍDA incluída no diário: {direcao} {ativo} "
-                      f"{entry} → {preco_saida}  |  Resultado: US$ {fechada['pnl_final']:+,.2f}")
+                      f"{entry} → {preco_saida}  |  Resultado: US$ "
+                      f"{fechada['pnl_final']:+,.2f}  |  pregão de {pregao}."
+                      f"{aviso_dia}")
         elif status == "PENDENTE":
             self.log(f"⏳ Ordem PENDENTE incluída: {direcao} {ativo} @ {entry} "
                       f"— só conta P&L quando o preço tocar a entrada.")
@@ -15377,11 +15698,19 @@ class SmcQuantApp(ctk.CTk):
         semana anterior: dois dias sem mercado, contados como dias perdidos,
         empurrando o ritmo exigido de US$ 400 para US$ 553,42 por dia.
 
-        Três marcas, e nenhuma delas mente:
-          ✅ dia que já passou e estava em dia com a meta acumulada
-          ❌ dia que já passou e ficou atrás
-          ⬜ dia que ainda não chegou
+        As marcas, e nenhuma delas mente:
+          ✅ dia concluído (marcado por ele, ou fechado no azul)
+          ❌ dia que já passou e fechou abaixo do exigido
+          🚪 dia em que ele NÃO OPEROU (disse isso clicando)
+          📍 o dia de hoje         ⬜ dia que ainda não chegou
         O dia de HOJE fica com a borda acesa, para ele ver onde está.
+
+        A MARCA AUTOMÁTICA PASSOU A OLHAR O DIA, NÃO O ACUMULADO.
+        17/08: "o dia dois fica como se não tivesse operado". Estava certo — a
+        conta antiga comparava o lucro ACUMULADO do ciclo com a meta acumulada
+        até aquele dia, então um dia lucrativo aparecia com ❌ só porque o
+        ciclo inteiro ainda estava atrás. Agora cada quadradinho pergunta o que
+        aconteceu NAQUELE dia, no diário. E o que ele marcar à mão ganha.
         """
         frame = getattr(self, "frame_trilha", None)
         if frame is None:
@@ -15393,29 +15722,41 @@ class SmcQuantApp(ctk.CTk):
         dias_meta = stats.get("dias_meta", 5)
         meta = stats.get("meta") or 0
         dia_atual = stats.get("dia_atual", 1)
-        # Prazo longo não cabe numa linha só; quebra a cada 10 quadradinhos.
+        marcados = (self.plano or {}).get("dias_marcados") or {}
+        # Resultado REAL de cada dia, vindo do diário — é o que responde
+        # "operei neste dia?", que o acumulado nunca soube responder.
+        try:
+            por_dia = dict(resultados_por_dia())
+        except Exception:
+            por_dia = {}
+        meta_por_dia = (meta / dias_meta) if (meta and dias_meta) else 0
+
         linha = None
         for dia in range(1, dias_meta + 1):
+            # Prazo longo não cabe numa linha só; quebra a cada 10 quadradinhos.
             if (dia - 1) % 10 == 0:
                 linha = ctk.CTkFrame(frame, fg_color="transparent")
                 linha.pack(anchor="w", pady=1)
-            meta_dia = meta * (dia / dias_meta) if meta else 0
-            if dia < dia_atual:
-                marca = "✅" if stats["lucro_usd"] >= meta_dia else "❌"
-            elif dia == dia_atual:
-                marca = "📍"
-            else:
-                marca = "⬜"
+            marca, resultado = self._marca_do_dia(
+                dia, dia_atual, marcados, por_dia, meta_por_dia)
             e_hoje = (dia == dia_atual)
+            e_manual = str(dia) in marcados
+            # O VALOR DO DIA VAI NO PRÓPRIO QUADRADINHO. A pergunta dele era
+            # "operei neste dia?" — e a resposta honesta é o número que está no
+            # diário daquele dia. Escondê-lo atrás de um tooltip seria manter a
+            # resposta a um passo de distância da pergunta.
+            rotulo = f"D{dia}\n{marca}"
+            if resultado is not None:
+                rotulo += f"\n{resultado:+,.0f}"
             btn = ctk.CTkButton(
-                linha, text=f"D{dia}\n{marca}", width=46, height=40,
-                font=("Arial", 11),
+                linha, text=rotulo, width=54, height=54,
+                font=("Arial", 10),
                 fg_color="#2b4a6f" if e_hoje else "#2a2a3a",
                 hover_color="#3a5a8f",
-                border_width=2 if e_hoje else 0,
-                border_color=COR["verde"] if e_hoje else "#2a2a3a",
+                border_width=2 if (e_hoje or e_manual) else 0,
+                border_color=(COR["verde"] if e_hoje else "#7a6a2a"),
                 text_color=COR["texto"],
-                command=lambda d=dia: self._escolher_dia_do_ciclo(d))
+                command=lambda d=dia: self._menu_do_dia(d))
             btn.pack(side="left", padx=2)
             self._botoes_trilha.append(btn)
 
@@ -15425,16 +15766,203 @@ class SmcQuantApp(ctk.CTk):
         restam = stats.get("dias_restantes", 0)
         if stats.get("dia_manual"):
             ajuda = (f"Hoje é o dia {dia_atual} de {dias_meta} — VOCÊ escolheu "
-                     f"(restam {restam}). Clique em outro dia para mudar, ou em "
-                     f"D{dia_atual} de novo para voltar à contagem automática.")
+                     f"(restam {restam}).")
         else:
             ajuda = (f"Hoje é o dia {dia_atual} de {dias_meta} — contado "
                      f"automaticamente, pulando sábado"
                      f"{'' if _domingo_e_pregao() else ' e domingo'} "
-                     f"(restam {restam}). Clique no dia certo se você ficou "
-                     f"sem operar, ou se foi feriado.")
+                     f"(restam {restam}).")
+        ajuda += ("  Clique em qualquer dia para: dizer que HOJE é ele, lançar "
+                  "o resultado daquele dia em dólares, ou marcá-lo como "
+                  "concluído / não operei.")
         if getattr(self, "lbl_trilha_ajuda", None) is not None:
             self.lbl_trilha_ajuda.configure(text=ajuda)
+
+    def _marca_do_dia(self, dia, dia_atual, marcados, por_dia, meta_por_dia):
+        """Que marca este dia leva, e qual o resultado dele. (marca, resultado).
+
+        ORDEM DE QUEM MANDA: primeiro o que ELE marcou; depois o diário; e só
+        no fim a posição do dia na linha do tempo. Uma marca dele nunca pode
+        ser sobrescrita por dedução — foi para isso que ele clicou."""
+        estado = marcados.get(str(dia))
+        data = None
+        try:
+            data = data_do_dia_do_ciclo(self.plano, dia)
+        except Exception:
+            data = None
+        resultado = por_dia.get(data.strftime("%d/%m/%Y")) if data else None
+
+        if estado == "nao_operei":
+            return "🚪", resultado
+        if estado == "concluido":
+            return "✅", resultado
+        if dia == dia_atual:
+            return "📍", resultado
+        if dia > dia_atual:
+            return "⬜", resultado
+        # Dia que já passou, sem marca dele: manda o DIÁRIO daquele dia.
+        if resultado is None:
+            # Nenhuma operação registrada naquele dia. Isso não é derrota —
+            # é ausência. ❌ aqui foi exatamente a queixa dele.
+            return "⬜", None
+        if meta_por_dia and resultado >= meta_por_dia:
+            return "✅", resultado
+        return ("✅" if resultado > 0 else "❌"), resultado
+
+    def _menu_do_dia(self, dia):
+        """Clicar num quadradinho abre o que dá para fazer COM AQUELE DIA.
+
+        Antes o clique só fazia uma coisa: "hoje é este dia". Em 17/08 ele
+        pediu mais duas, e as duas são do mesmo assunto — o dia:
+          • "às vezes faço operações fora das sugestões, então acho que uma
+             forma de incluir o resultado do dia no diário seria viável"
+          • "além disso, selecionar como aquele dia concluído, ou não"
+        Por isso vira menu, e não mais botões espalhados: tudo o que se faz com
+        um dia sai de onde aquele dia está desenhado."""
+        import tkinter as _tk
+        try:
+            stats = self._computar_stats_plano()
+        except Exception:
+            stats = {}
+        marcados = (self.plano or {}).get("dias_marcados") or {}
+        estado = marcados.get(str(dia))
+        e_hoje_manual = (stats.get("dia_atual") == dia and stats.get("dia_manual"))
+        data = None
+        try:
+            data = data_do_dia_do_ciclo(self.plano, dia)
+        except Exception:
+            pass
+        # A DATA APARECE NO TÍTULO DO MENU de propósito: é a única forma de ele
+        # conferir que o "dia 2" da trilha é o dia que ele tem na cabeça, antes
+        # de lançar dinheiro nele.
+        titulo = f"Dia {dia}" + (f" — {data.strftime('%d/%m/%Y')}" if data else "")
+
+        menu = _tk.Menu(self, tearoff=0)
+        menu.add_command(label=titulo, state="disabled")
+        menu.add_separator()
+        if e_hoje_manual:
+            menu.add_command(label="📍 Voltar à contagem automática",
+                             command=lambda: self._escolher_dia_do_ciclo(dia))
+        else:
+            menu.add_command(label=f"📍 Hoje é o dia {dia}",
+                             command=lambda: self._escolher_dia_do_ciclo(dia))
+        menu.add_separator()
+        menu.add_command(label=f"💵 Lançar o resultado do dia {dia}…",
+                         command=lambda: self._lancar_resultado_do_dia(dia))
+        menu.add_separator()
+        if estado == "concluido":
+            menu.add_command(label="✅ Concluído — clique para desmarcar",
+                             command=lambda: self._marcar_dia(dia, None))
+        else:
+            menu.add_command(label="✅ Marcar como concluído",
+                             command=lambda: self._marcar_dia(dia, "concluido"))
+        if estado == "nao_operei":
+            menu.add_command(label="🚪 Não operei — clique para desmarcar",
+                             command=lambda: self._marcar_dia(dia, None))
+        else:
+            menu.add_command(label="🚪 Marcar: não operei neste dia",
+                             command=lambda: self._marcar_dia(dia, "nao_operei"))
+        try:
+            menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
+        finally:
+            menu.grab_release()
+
+    def _marcar_dia(self, dia, estado):
+        """Grava (ou apaga) o que ELE disse sobre um dia do ciclo."""
+        marcados = dict((self.plano or {}).get("dias_marcados") or {})
+        if estado is None:
+            marcados.pop(str(dia), None)
+            self.log(f"📅 Dia {dia}: marca removida — volta a ser deduzido do "
+                     "diário daquele dia.")
+        else:
+            marcados[str(dia)] = estado
+            nome = "CONCLUÍDO" if estado == "concluido" else "NÃO OPEREI"
+            self.log(f"📅 Dia {dia} marcado por você como {nome}.")
+        self.plano["dias_marcados"] = marcados
+        self._gravar_plano_silencioso()
+        self._atualizar_dashboard(forcar=True)
+
+    def _lancar_resultado_do_dia(self, dia):
+        """O resultado de um dia, em dólares, direto no diário.
+
+        O formulário de 'incluir operação' exige entrada, stop e preço de
+        saída. Quem operou na mão cinco vezes e só sabe que fechou o dia em
+        +54 não tem esses números — e, obrigado a preenchê-los, inventa preços
+        para acertar o total. Aqui o dado é o valor, e nada é fingido."""
+        from tkinter import simpledialog, messagebox
+        data = None
+        try:
+            data = data_do_dia_do_ciclo(self.plano, dia)
+        except Exception:
+            pass
+        if data is None:
+            messagebox.showwarning(
+                "Sem data para esse dia",
+                "Ainda não sei em que data cai o dia " f"{dia} deste ciclo. "
+                "Salve o Plano de Trading uma vez (isso grava o início do "
+                "ciclo) e tente de novo.")
+            return
+        dia_txt = data.strftime("%d/%m/%Y")
+        texto = simpledialog.askstring(
+            f"Resultado do dia {dia}",
+            f"Resultado FECHADO do dia {dia} ({dia_txt}), em dólares.\n"
+            "Use ponto ou vírgula, e sinal negativo para prejuízo.\n"
+            "Exemplos:  54    -120,50    +300\n\n"
+            "Isto entra no diário como resultado realizado daquele pregão.",
+            parent=self)
+        if texto is None:
+            return
+        texto = str(texto).strip().replace(" ", "").replace("$", "")
+        texto = texto.replace("US", "").replace("us", "")
+        # Aceita 1.234,56 (brasileiro) e 1234.56 (inglês) sem adivinhar errado.
+        if "," in texto:
+            texto = texto.replace(".", "").replace(",", ".")
+        try:
+            valor = float(texto)
+        except ValueError:
+            messagebox.showwarning(
+                "Não entendi o valor",
+                f"'{texto}' não é um número. Escreva só o resultado em "
+                "dólares, por exemplo 54 ou -120,50.")
+            return
+        if valor == 0:
+            messagebox.showinfo(
+                "Zero não muda nada",
+                "Um resultado de zero não altera o diário. Se você quis dizer "
+                "que não operou nesse dia, use 'Marcar: não operei neste dia'.")
+            return
+        pos = lancar_resultado_do_dia(dia_txt, valor)
+        if not pos:
+            self.log(f"⚠️ Não consegui lançar o resultado do dia {dia}.")
+            return
+        # DIZ EM QUE PREGÃO ENTROU. Foi o silêncio sobre isto que fez os 54
+        # dólares dele sumirem: o lançamento caiu no pregão da véspera e a
+        # ferramenta não falou nada.
+        self.log(f"📕 Resultado do dia {dia} lançado no diário: "
+                 f"US$ {valor:+,.2f} no pregão de {dia_txt} "
+                 f"(carimbo {pos.get('data_fechamento')}).")
+        # Lançar resultado é dizer que o dia aconteceu.
+        marcados = dict((self.plano or {}).get("dias_marcados") or {})
+        if marcados.get(str(dia)) == "nao_operei":
+            marcados.pop(str(dia), None)
+            self.plano["dias_marcados"] = marcados
+            self._gravar_plano_silencioso()
+        self._atualizar_dashboard(forcar=True)
+
+    def _gravar_plano_silencioso(self):
+        """Grava o plano em disco sem passar pelo formulário.
+
+        `salvar_plano_trading` relê TODOS os campos da tela e desiste em bloco
+        se qualquer um tiver texto inválido — a escolha do dia sumiria por
+        causa de uma vírgula errada na caixa da margem, e sem aviso."""
+        try:
+            salvar_plano_da_conta(self.plano)
+            return True
+        except Exception as e:
+            self.log(f"⚠️ Não consegui gravar no plano ({type(e).__name__}) — "
+                     "vale nesta sessão, mas volta ao anterior se você fechar "
+                     "o programa.")
+            return False
 
     def _escolher_dia_do_ciclo(self, dia):
         """Ele clicou num quadradinho da trilha: aquele passa a ser HOJE.

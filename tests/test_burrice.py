@@ -341,3 +341,107 @@ class TestORecordeAbaixoDoPrecoDeAgora(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestACompraQueEraVenda(unittest.TestCase):
+    """17/08, das 10:43 às 10:59 — dezesseis minutos discutindo aritmética.
+
+        10:43 ✳ "Vamos considerar uma entrada de compra (buy):
+                 • Entrada: 7805.25
+                 • Stop Loss: 7813.50
+                 • Alvo: 7796.75
+                 • R:R: 2.0"
+        10:54 ❯ tem certeza que esta certa essa logica, compra ...
+        10:54 ❯ revise a recomendacao que voce me passou
+        10:56 ❯ é compra ou venda ?
+        10:57 ❯ entao nao é buy, é sell, olha a recomendacao que voce me
+                passou, de compra, sendo que o correto seria venda!!!
+
+    Numa COMPRA o stop fica ABAIXO da entrada (é onde a ideia morre) e o alvo
+    ACIMA (é onde ela se paga). Aqueles números são uma VENDA com o rótulo
+    trocado — e o 'R:R 2.0' no fim dá ao conjunto cara de conta feita.
+
+    Ele perguntou QUATRO vezes. Nas quatro ela pediu desculpa e repetiu os
+    mesmos três números; às 11:03, num 'nova análise', repetiu de novo.
+
+    Nenhum prompt conserta isso de forma confiável — é o modelo pequeno
+    perdendo o fio. O app consegue: são duas comparações.
+    """
+
+    def _ns(self):
+        return carregar(["_RE_MAXIMA_HISTORICA", "_RE_NOME_DE_INDICE",
+                         "_RE_CONTEXTO_DE_DATA", "_numeros_de_preco",
+                         "_RE_LADO_DO_CENARIO", "_RE_NIVEL_ROTULADO",
+                         "_numero_rotulado", "lado_do_cenario",
+                         "conferir_coerencia_do_cenario"])
+
+    RESPOSTA_REAL = (
+        "Entendi. Como você não está posicionado em vendas no momento, vamos "
+        "ajustar a estratégia para essa situação.\n\n"
+        "Vamos considerar uma entrada de compra (buy) com os seguintes "
+        "parâmetros:\n\n"
+        "• Entrada: 7805.25\n"
+        "• Stop Loss: 7813.50\n"
+        "• Alvo: 7796.75\n"
+        "• R:R: 2.0\n\n"
+        "Essa entrada de compra é uma tentativa de entrar no mercado em alta.")
+
+    def test_a_resposta_REAL_do_log_e_barrada(self):
+        texto, problema = self._ns()["conferir_coerencia_do_cenario"](
+            self.RESPOSTA_REAL)
+        self.assertIsNotNone(problema, "a compra com stop acima passou de novo")
+        self.assertIn("stop", problema.lower())
+        self.assertIn("alvo", problema.lower())
+
+    def test_o_aviso_manda_NAO_OPERAR(self):
+        """Anexar uma observação educada no fim não bastaria: ele leu a
+        recomendação como boa e só desconfiou onze minutos depois."""
+        texto, _ = self._ns()["conferir_coerencia_do_cenario"](self.RESPOSTA_REAL)
+        self.assertIn("NÃO opere", texto)
+        self.assertIn("VENDA", texto, "não disse de que lado os números estão")
+        self.assertIn(self.RESPOSTA_REAL.strip()[:40], texto,
+                      "apagou a resposta em vez de anexar o aviso")
+
+    def test_a_venda_invertida_tambem_e_pega(self):
+        f = self._ns()["conferir_coerencia_do_cenario"]
+        _t, p = f("Recomendo venda — Entrada: 7800 Stop: 7790 Alvo: 7820")
+        self.assertIsNotNone(p)
+
+    def test_cenario_CERTO_passa_intacto(self):
+        """Alarme falso ensina o trader a ignorar o aviso — que é pior do que
+        não ter aviso nenhum."""
+        f = self._ns()["conferir_coerencia_do_cenario"]
+        for bom in (
+                "Sugestão de compra. Entrada: 7800.0 · Stop: 7790.0 · Alvo: 7820.0",
+                "Sugestão de venda. Entrada: 7800.0 · Stop: 7810.0 · Alvo: 7780.0",
+                "BUY MESU6 — entrada 7812.75, stop 7807.5, alvo 7837.0"):
+            texto, p = f(bom)
+            self.assertIsNone(p, bom)
+            self.assertEqual(texto, bom)
+
+    def test_sem_os_TRES_numeros_nao_acusa(self):
+        """Com dois níveis não dá para saber se falta informação ou se está
+        errado. Acusar sem certeza é o caminho para ele parar de ler."""
+        f = self._ns()["conferir_coerencia_do_cenario"]
+        for parcial in ("compra com entrada 7800 e stop 7810",
+                        "Entrada: 7800 Stop: 7790 Alvo: 7820",
+                        "O viés institucional é de venda.",
+                        "compro ou vendo agora?"):
+            _t, p = f(parcial)
+            self.assertIsNone(p, parcial)
+
+    def test_o_lado_vem_da_ULTIMA_mencao(self):
+        """O modelo abre com o contexto ('o viés é de venda') e fecha com a
+        recomendação. Quem manda é a recomendação."""
+        lado = self._ns()["lado_do_cenario"]
+        self.assertEqual(
+            lado("O viés institucional é de venda, mas vamos de compra aqui"),
+            "BUY")
+        self.assertEqual(lado("estrutura compradora; recomendo vender"), "SELL")
+        self.assertIsNone(lado("o mercado está lateral e sem gatilho"))
+
+    def test_a_guarda_roda_no_ponto_unico(self):
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _chat_entregar_resposta")
+        bloco = fonte[i:i + 4400]
+        self.assertIn("conferir_coerencia_do_cenario", bloco)

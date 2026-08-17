@@ -219,66 +219,6 @@ def main():
     # prever". Tinha todos os dados. Aqui o caminho inteiro é percorrido —
     # plano, diário e horário do pregão — para provar que ele responde em vez
     # de estourar ou devolver vazio.
-    # A TRILHA DOS DIAS PRECISA SER CLICÁVEL — pedido dele em 17/08.
-    # "e se eu quiser ficar um dia sem operar? e se for feriado ou final de
-    # semana? ajuste isso para que eu consiga clicar ali no quadradinho dos
-    # dias e escolher". Antes era texto dentro de um rótulo: não havia onde
-    # clicar. Aqui os botões são criados, clicados e conferidos de verdade.
-    print("\n[trilha dos dias — tem de dar para CLICAR]")
-    app.plano["meta_alvo"] = 3200.0
-    app.plano["dias_meta"] = 8
-    app.plano["data_inicio"] = (mod.datetime.date.today()
-                                - mod.datetime.timedelta(days=3)).isoformat()
-    app.plano["dia_ciclo_ancora"] = None
-    mod.salvar_plano_da_conta(app.plano)
-    # forcar=True: a assinatura do painel não olha o arquivo do plano, então
-    # sem isto o desenho é pulado e o teste mediria a tela anterior.
-    passo(app, "desenhar a trilha",
-          lambda: app._atualizar_dashboard(forcar=True))
-    botoes = getattr(app, "_botoes_trilha", [])
-    print(f"       quadradinhos na tela: {len(botoes)}")
-    if len(botoes) != 8:
-        falhas.append(f"trilha: esperava 8 quadradinhos, vieram {len(botoes)}")
-    elif not botoes[0].winfo_ismapped():
-        falhas.append("trilha: os quadradinhos existem e NÃO estão na tela")
-        print("  FALHA os quadradinhos não estão na tela")
-    else:
-        print(f"  OK   clicáveis e visíveis "
-              f"({botoes[0].winfo_width()}x{botoes[0].winfo_height()}px)")
-
-    # CLICA NUM DIA DIFERENTE DO ATUAL. Clicar no dia que já está aceso não
-    # provaria nada: passaria verde sem o clique ter feito efeito nenhum.
-    antes_dia = app._computar_stats_plano().get("dia_atual")
-    alvo = 5 if antes_dia != 5 else 3
-    passo(app, f"clicar no D{alvo} (hoje estava no D{antes_dia})",
-          lambda: app._escolher_dia_do_ciclo(alvo))
-    depois = app._computar_stats_plano()
-    print(f"       dia antes do clique: {antes_dia} · depois: {depois.get('dia_atual')}")
-    if depois.get("dia_atual") != alvo:
-        falhas.append(f"trilha: cliquei em D{alvo} e o dia ficou "
-                      f"{depois.get('dia_atual')}")
-        print("  FALHA o clique não mudou o dia")
-    elif not depois.get("dia_manual"):
-        falhas.append("trilha: o dia mudou mas não ficou marcado como escolha dele")
-    else:
-        print("  OK   o clique mandou, e a escolha ficou registrada como dele")
-
-    # GRAVOU EM DISCO? Escolha que morre ao fechar o programa não serve.
-    if (mod.plano_da_conta_ativa() or {}).get("dia_ciclo_ancora"):
-        print("  OK   a escolha foi gravada no plano em disco")
-    else:
-        falhas.append("trilha: a escolha do dia não foi gravada em disco")
-        print("  FALHA a escolha não foi gravada")
-
-    # CLICAR NO MESMO DIA DESFAZ. Sem isso, um clique errado seria permanente.
-    passo(app, f"clicar de novo no D{alvo} (desfazer)",
-          lambda: app._escolher_dia_do_ciclo(alvo))
-    if app._computar_stats_plano().get("dia_manual"):
-        falhas.append("trilha: clicar no dia aceso não voltou ao automático")
-        print("  FALHA não voltou para a contagem automática")
-    else:
-        print("  OK   clicar no dia aceso volta para a contagem automática")
-
     print("\n[a conta da meta de hoje]")
     # SEM META CONFIGURADA ele não pode dizer "meta batida". Foi este passo
     # que pegou a afirmação falsa e simpática numa instalação nova.
@@ -301,9 +241,14 @@ def main():
     # madrugada com o pregão fechado e nunca exercitaria a conta da chance —
     # passaria verde sem ter testado a parte que importa.
     agora = mod.datetime.datetime.now()
+    # A JANELA É RELATIVA A AGORA, e não "00:01 até agora+3h". Rodando às 23h,
+    # agora+3h vira 02:12 do dia seguinte: com início fixo em 00:01 isso vira
+    # um pregão 00:01→02:12 que JÁ FECHOU, e o teste da chance passava batido
+    # sem nunca ter exercitado a conta. Abre uma hora atrás, fecha em três.
+    abre = (agora - mod.datetime.timedelta(hours=1)).strftime("%H:%M")
     fecha = (agora + mod.datetime.timedelta(hours=3)).strftime("%H:%M")
-    mod.salvar_config({"hora_inicio": "00:01", "hora_fim": fecha})
-    print(f"       pregão do teste: 00:01 → {fecha} (aberto agora)")
+    mod.salvar_config({"hora_inicio": abre, "hora_fim": fecha})
+    print(f"       pregão do teste: {abre} → {fecha} (aberto agora)")
     carimbo = (agora - mod.datetime.timedelta(hours=2)).strftime('%d/%m/%Y %H:%M')
     fim = agora.strftime('%d/%m/%Y %H:%M')
     # conta_id e data_criacao são obrigatórios: sem eles a posição não passa
@@ -354,6 +299,140 @@ def main():
             falhas.append(f"meta ({nome}): {type(e).__name__}: {e}")
             print(f"  FALHA {nome}: {type(e).__name__}: {e}")
             traceback.print_exc()
+
+    # A TRILHA VEM DEPOIS DA META DE PROPÓSITO: ela configura meta,
+    # prazo e diário para exercitar os quadradinhos, e o bloco da meta
+    # precisa rodar com o plano VIRGEM para provar que, sem meta
+    # configurada, a ferramenta diz isso em vez de inventar 'meta batida'.
+    # A TRILHA DOS DIAS PRECISA SER CLICÁVEL — pedido dele em 17/08.
+    # "e se eu quiser ficar um dia sem operar? e se for feriado ou final de
+    # semana? ajuste isso para que eu consiga clicar ali no quadradinho dos
+    # dias e escolher". Antes era texto dentro de um rótulo: não havia onde
+    # clicar. Aqui os botões são criados, clicados e conferidos de verdade.
+    print("\n[trilha dos dias — tem de dar para CLICAR]")
+    app.plano["meta_alvo"] = 3200.0
+    app.plano["dias_meta"] = 8
+    app.plano["data_inicio"] = (mod.datetime.date.today()
+                                - mod.datetime.timedelta(days=3)).isoformat()
+    app.plano["dia_ciclo_ancora"] = None
+    mod.salvar_plano_da_conta(app.plano)
+    # forcar=True: a assinatura do painel não olha o arquivo do plano, então
+    # sem isto o desenho é pulado e o teste mediria a tela anterior.
+    passo(app, "desenhar a trilha",
+          lambda: app._atualizar_dashboard(forcar=True))
+    botoes = getattr(app, "_botoes_trilha", [])
+    print(f"       quadradinhos na tela: {len(botoes)}")
+    if len(botoes) != 8:
+        falhas.append(f"trilha: esperava 8 quadradinhos, vieram {len(botoes)}")
+    elif not botoes[0].winfo_ismapped():
+        falhas.append("trilha: os quadradinhos existem e NÃO estão na tela")
+        print("  FALHA os quadradinhos não estão na tela")
+    else:
+        print(f"  OK   clicáveis e visíveis "
+              f"({botoes[0].winfo_width()}x{botoes[0].winfo_height()}px)")
+
+    # O RESULTADO DO DIA, LANÇADO NO DIA CERTO.
+    # 17/08, 19:59: "hoje encerrou às 17:59, abriu às 19h, mas antes de fechar
+    # eu fiz 54 dólares e incluí no diário, e não está contabilizando". O
+    # lançamento tinha caído no pregão da véspera, calado. Aqui o caminho
+    # inteiro é percorrido: dia do ciclo -> data -> carimbo -> diário.
+    print("\n[lançar o resultado de UM dia — os 54 dólares que sumiram]")
+    dia_alvo = 2
+    data_alvo = mod.data_do_dia_do_ciclo(app.plano, dia_alvo)
+    print(f"       o dia {dia_alvo} do ciclo cai em {data_alvo}")
+    if data_alvo is None:
+        falhas.append("resultado do dia: não descobri a data do dia 2")
+    else:
+        alvo_txt = data_alvo.strftime("%d/%m/%Y")
+        antes_dia2 = dict(mod.resultados_por_dia()).get(alvo_txt, 0.0)
+        passo(app, "lançar US$ +54 no dia 2",
+              lambda: mod.lancar_resultado_do_dia(alvo_txt, 54.0))
+        depois_dia2 = dict(mod.resultados_por_dia()).get(alvo_txt)
+        print(f"       diário do dia {alvo_txt}: {antes_dia2} → {depois_dia2}")
+        if depois_dia2 is None or abs(depois_dia2 - (antes_dia2 + 54.0)) > 0.01:
+            falhas.append(
+                f"resultado do dia: lancei +54 em {alvo_txt} e o diário desse "
+                f"pregão ficou {depois_dia2} (era {antes_dia2}) — é o defeito "
+                "dos 54 dólares que sumiram")
+            print("  FALHA o valor não entrou no pregão pedido")
+        else:
+            print("  OK   os 54 dólares entraram NO DIA PEDIDO")
+        # E precisa APARECER na trilha, senão ele continua sem ver.
+        app._atualizar_dashboard(forcar=True)
+        esperar(app)
+        txt_d2 = app._botoes_trilha[dia_alvo - 1].cget("text")
+        print(f"       quadradinho do dia {dia_alvo}: {txt_d2!r}")
+        # O ESPERADO É O TOTAL DO DIA, não os 54. O dia 2 é hoje e já carrega
+        # as duas operações que o bloco da meta gravou — procurar "54" no
+        # texto era a asserção errada, não a conta.
+        esperado = f"{(antes_dia2 + 54.0):+,.0f}"
+        if esperado not in txt_d2:
+            falhas.append(f"trilha: o dia {dia_alvo} não mostra o resultado do "
+                          f"dia ({esperado}) — veio {txt_d2!r}")
+            print(f"  FALHA o quadradinho não mostra {esperado}")
+        else:
+            print("  OK   o quadradinho mostra o resultado do dia")
+
+    # MARCAR O DIA COMO CONCLUÍDO / NÃO OPEREI — o outro pedido de 17/08.
+    print("\n[marcar o dia como concluído ou não operado]")
+    passo(app, "marcar o dia 1 como CONCLUÍDO",
+          lambda: app._marcar_dia(1, "concluido"))
+    if (mod.plano_da_conta_ativa() or {}).get("dias_marcados", {}).get("1") != "concluido":
+        falhas.append("marca do dia: 'concluído' não foi gravado em disco")
+        print("  FALHA não gravou em disco")
+    elif "✅" not in app._botoes_trilha[0].cget("text"):
+        falhas.append("marca do dia: marquei concluído e o quadradinho não "
+                      f"mostra ✅ — veio {app._botoes_trilha[0].cget('text')!r}")
+        print("  FALHA o quadradinho não mudou")
+    else:
+        print("  OK   marcou, gravou e apareceu na tela")
+    passo(app, "marcar o dia 4 como NÃO OPEREI",
+          lambda: app._marcar_dia(4, "nao_operei"))
+    if "🚪" not in app._botoes_trilha[3].cget("text"):
+        falhas.append("marca do dia: 'não operei' não apareceu no quadradinho")
+        print("  FALHA 'não operei' não apareceu")
+    else:
+        print("  OK   'não operei' aparece com marca própria")
+    passo(app, "desmarcar o dia 1", lambda: app._marcar_dia(1, None))
+    if (mod.plano_da_conta_ativa() or {}).get("dias_marcados", {}).get("1"):
+        falhas.append("marca do dia: desmarcar não apagou a marca")
+        print("  FALHA desmarcar não funcionou")
+    else:
+        print("  OK   desmarcar volta o dia para o automático")
+
+    # CLICA NUM DIA DIFERENTE DO ATUAL. Clicar no dia que já está aceso não
+    # provaria nada: passaria verde sem o clique ter feito efeito nenhum.
+    antes_dia = app._computar_stats_plano().get("dia_atual")
+    alvo = 5 if antes_dia != 5 else 3
+    passo(app, f"clicar no D{alvo} (hoje estava no D{antes_dia})",
+          lambda: app._escolher_dia_do_ciclo(alvo))
+    depois = app._computar_stats_plano()
+    print(f"       dia antes do clique: {antes_dia} · depois: {depois.get('dia_atual')}")
+    if depois.get("dia_atual") != alvo:
+        falhas.append(f"trilha: cliquei em D{alvo} e o dia ficou "
+                      f"{depois.get('dia_atual')}")
+        print("  FALHA o clique não mudou o dia")
+    elif not depois.get("dia_manual"):
+        falhas.append("trilha: o dia mudou mas não ficou marcado como escolha dele")
+    else:
+        print("  OK   o clique mandou, e a escolha ficou registrada como dele")
+
+    # GRAVOU EM DISCO? Escolha que morre ao fechar o programa não serve.
+    if (mod.plano_da_conta_ativa() or {}).get("dia_ciclo_ancora"):
+        print("  OK   a escolha foi gravada no plano em disco")
+    else:
+        falhas.append("trilha: a escolha do dia não foi gravada em disco")
+        print("  FALHA a escolha não foi gravada")
+
+    # CLICAR NO MESMO DIA DESFAZ. Sem isso, um clique errado seria permanente.
+    passo(app, f"clicar de novo no D{alvo} (desfazer)",
+          lambda: app._escolher_dia_do_ciclo(alvo))
+    if app._computar_stats_plano().get("dia_manual"):
+        falhas.append("trilha: clicar no dia aceso não voltou ao automático")
+        print("  FALHA não voltou para a contagem automática")
+    else:
+        print("  OK   clicar no dia aceso volta para a contagem automática")
+
 
     destino = os.path.join(tempfile.gettempdir(), "smc_fumaca.png")
     try:

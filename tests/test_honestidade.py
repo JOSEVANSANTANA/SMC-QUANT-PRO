@@ -387,9 +387,10 @@ class TestContextoQueChegaAoModelo(unittest.TestCase):
         com o motor lendo 7.812 no mesmo chat."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def _chat_entregar_resposta")
-        bloco = fonte[i:i + 3600]
+        bloco = fonte[i:i + 4400]
         for guarda in ("censurar_alegacao_falsa", "corrigir_enrolacao_de_nivel",
                        "conferir_posicao_alegada", "conferir_maxima_historica",
+                       "conferir_coerencia_do_cenario",
                        "conferir_numeros_da_mesa"):
             self.assertIn(guarda, bloco, f"a guarda {guarda} saiu do ponto "
                           "único por onde toda resposta de modelo passa")
