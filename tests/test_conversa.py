@@ -30,6 +30,7 @@ def _ns_intencao():
          "_RE_POSTMORTEM", "pergunta_postmortem",
          "_RE_VIRAR_DIA", "_RE_QUAL_PREGAO",
          "_MOTOR_SUBSTANTIVOS", "_MOTOR_ARTIGO", "_MOTOR_NEGADO",
+         "_MOTOR_SUBORDINADO",
          "_MOTOR_DESLIGAR", "_MOTOR_PARA", "_MOTOR_LIGAR",
          "_PRINT_SOZINHO", "_PRINT_COM_AGORA",
          "_RE_ESQUECER", "pedido_de_esquecer",

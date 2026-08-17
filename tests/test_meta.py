@@ -316,6 +316,7 @@ class TestLicaoQueNaoEnsina(unittest.TestCase):
         return carregar(["_sem_acento", "_e_pergunta", "_RE_FATO_EFEMERO",
                          "_e_fato_efemero",
                          "_LICAO_IMPOSSIVEL", "licao_pede_invencao",
+                         "_LICAO_ACAO_WHATSAPP_RECEBE", "licao_pede_acao",
                          "separar_pergunta_da_regra", "licoes_que_nao_ensinam"])
 
     def test_a_lista_REAL_dele_e_limpa_na_medida_certa(self):

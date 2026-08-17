@@ -377,15 +377,22 @@ class TestContextoQueChegaAoModelo(unittest.TestCase):
         self.assertIn("janela", bloco)
         self.assertIn("nunca misturadas", bloco)
 
-    def test_as_tres_guardas_rodam_no_mesmo_ponto(self):
+    def test_as_guardas_rodam_todas_no_mesmo_ponto(self):
         """Uma guarda que roda só em alguns caminhos é uma guarda que não
-        existe. As três ficam onde TODA resposta de modelo passa."""
+        existe. TODAS ficam onde TODA resposta de modelo passa.
+
+        A quarta entrou na 2.38.0: um recorde histórico afirmado ABAIXO do
+        preço que a ferramenta está lendo agora é impossível por aritmética,
+        e ela deixou passar 'a máxima histórica do S&P 500 é 2.924 pontos'
+        com o motor lendo 7.812 no mesmo chat."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def _chat_entregar_resposta")
-        bloco = fonte[i:i + 2200]
-        self.assertIn("censurar_alegacao_falsa", bloco)
-        self.assertIn("corrigir_enrolacao_de_nivel", bloco)
-        self.assertIn("conferir_numeros_da_mesa", bloco)
+        bloco = fonte[i:i + 3600]
+        for guarda in ("censurar_alegacao_falsa", "corrigir_enrolacao_de_nivel",
+                       "conferir_posicao_alegada", "conferir_maxima_historica",
+                       "conferir_numeros_da_mesa"):
+            self.assertIn(guarda, bloco, f"a guarda {guarda} saiu do ponto "
+                          "único por onde toda resposta de modelo passa")
 
 
 if __name__ == "__main__":

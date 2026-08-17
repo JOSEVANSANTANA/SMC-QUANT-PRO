@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.37.0"
+VERSAO_ATUAL = "2.38.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -3950,6 +3950,13 @@ def licoes_que_nao_ensinam(licoes):
             impossivel, porque = licao_pede_invencao(texto)
             if impossivel:
                 motivo = porque
+            else:
+                # As duas do WhatsApp gravadas em 14/08 às 10:57 e 10:58 caem
+                # aqui: pediam AÇÃO, e ação nenhuma sai de lição. Ficaram na
+                # lista entrando em toda análise sem instruir coisa alguma.
+                acao, porque_acao = licao_pede_acao(texto)
+                if acao:
+                    motivo = porque_acao
         (ruins if motivo else boas).append(
             (texto, motivo) if motivo else texto)
     return boas, ruins
@@ -4000,6 +4007,78 @@ def licao_pede_invencao(texto):
             "ruído. Se o que você quer ensinar é o que vem DEPOIS da "
             "pergunta, me mande só essa parte: 'quando eu perguntar de um "
             "ativo, pesquise na web — aprenda isso'")
+    return False, ""
+
+
+# LIÇÃO NÃO LIGA BOTÃO.
+#
+# Log de 14/08, 10:57 e 10:58 — ele mandou a MESMA coisa duas vezes seguidas,
+# que é o que a gente faz quando desconfia que não pegou:
+#     "toda vez que eu enviar STATUS pelo whatsapp, por favor, envie o status
+#      para mim! - Aprenda isso"
+# e as duas vezes recebeu:
+#     "Anotado e aprendido. Está gravado na minha memória e passa a valer em
+#      TODAS as análises e conversas daqui pra frente."
+#
+# Isso é falso de duas maneiras ao mesmo tempo, e a segunda é pior:
+#
+# 1. Lição vira TEXTO dentro do pedido ao modelo. Ela nunca vira código. Por
+#    mais vezes que ele grave "envie o status", nenhum status sai — porque
+#    quem envia é a função de WhatsApp, e ela é chamada por comando, não por
+#    parágrafo no prompt.
+# 2. O WhatsApp desta ferramenta SÓ ENVIA. Não existe nada escutando mensagem
+#    que chega. O que ele pediu — "quando EU MANDAR status, você responde" —
+#    não é uma regra que faltou ensinar: é um recurso que não existe. Dizer
+#    "aprendido" fez ele acreditar que passaria a funcionar, e ficou uma
+#    semana achando que a ferramenta estava ignorando a própria memória.
+#
+# Além de mentir, a frase entrava em toda análise dali pra frente gastando
+# contexto — é literalmente o que ele descreveu como "ficou mais burra".
+_LICAO_ACAO_WHATSAPP_RECEBE = re.compile(
+    r"\b(quando|toda vez que|sempre que|cada vez que|se)\b[^.;\n]{0,40}"
+    r"\b(eu|voce|vc)\b[^.;\n]{0,30}"
+    r"\b(envi\w*|mand\w*|escrev\w*|manda\w*|digit\w*|pedir|perguntar)\b"
+    r"[^.;\n]{0,40}\b(whats?app?|zap|wpp)\b"
+    r"|\b(receb\w*|responde\w*|l[êe]r?|ler|monitor\w*|escut\w*|ouvir?)\b"
+    r"[^.;\n]{0,40}\b(mensage\w*|comando\w*|texto\w*)\b[^.;\n]{0,30}"
+    r"\b(whats?app?|zap|wpp)\b", re.IGNORECASE)
+
+# DE PROPÓSITO, ESTA TRAVA PEGA SÓ O WHATSAPP QUE CHEGA.
+#
+# A primeira versão que escrevi recusava qualquer lição que citasse uma ação —
+# print, motor, zerar ciclo. A suíte derrubou na hora, e com razão: a lista
+# REAL dele tem duas lições assim, e as duas são BOAS —
+#     "tira um print e olha o preço atual, nunca forneça recomendações sem
+#      olhar o preço atual"
+#     "toda vez que pedir alguma análise sobre algum indicador, tire um print
+#      novo e analise para me responder"
+# Essas instruem o RACIOCÍNIO ("não opine sem olhar o preço"), e isso lição
+# faz muito bem. Recusá-las teria consertado um defeito criando outro maior.
+#
+# O WhatsApp que CHEGA é diferente de todos eles por um motivo objetivo: não
+# existe. Não é uma ação que sai por comando em vez de por lição — é uma ação
+# que não sai de jeito nenhum, porque não há nada escutando do outro lado.
+# Prometer isso é a única das quatro que não tem como dar certo nunca.
+def licao_pede_acao(texto):
+    """True quando a 'lição' pede algo que a ferramenta NÃO SABE FAZER.
+
+    Devolve (True, explicação honesta). Dizer 'não faço isso, e olha o que eu
+    faço' vale mais que 'aprendido' — porque é verdade, e porque ele para de
+    esperar por uma coisa que não vem."""
+    t = _sem_acento(str(texto or "")).lower()
+    if not t:
+        return False, ""
+    if _LICAO_ACAO_WHATSAPP_RECEBE.search(t):
+        return True, (
+            "o WhatsApp daqui SÓ ENVIA. Não tem nada do meu lado escutando o "
+            "que chega, então 'quando eu mandar STATUS, você responde' não é "
+            "uma regra que faltou eu aprender — é um recurso que não existe "
+            "ainda. Eu podia gravar a frase e dizer 'aprendido', mas nenhum "
+            "status sairia, e você ficaria esperando por uma coisa que não "
+            "vem.\n\n"
+            "O que funciona hoje: peça 'status' AQUI no chat e eu respondo na "
+            "hora; peça 'manda no whatsapp' e eu disparo o cenário com a "
+            "situação da conta para o seu número")
     return False, ""
 
 
@@ -5884,7 +5963,24 @@ def _nota_base_smc(item, p, palavras):
                 _parecido(w, c, 0.72 if len(c) >= 5 else 0.80)
                 for w in palavras):
             aprox += 2                     # transcrição torta da voz
-    if _norm_busca(item["t"]).split(" (")[0] in p:
+    # O TÍTULO TAMBÉM PRECISA CASAR COMO PALAVRA INTEIRA.
+    #
+    # Log de 14/08, 23:34. Ele escreveu "boa note" (era "boa noite", com um
+    # dedo errado) e recebeu uma AULA sobre OTE — a faixa de 61,8% a 79% do
+    # recuo. Precisou responder "eu disse, boa noite" para ser entendido.
+    #
+    # A causa estava nesta linha: as CHAVES do verbete já casavam com `\b`
+    # (foi o que impediu 'ob' de casar dentro de 'objetivo'), mas o TÍTULO
+    # era comparado com um `in` cru. O título de OTE, cortado no parêntese,
+    # é a string "ote" — e "ote" está dentro de "n-OTE". Pelo mesmo caminho
+    # caíam "anote isso", "note que o preço caiu", "bote", "pote".
+    #
+    # Isto não era uma resposta a mais: desde a 2.30.0 a base é consultada
+    # ANTES do modelo, então o falso positivo SEQUESTRAVA a pergunta e o
+    # modelo nunca via o que foi perguntado. Sete verbetes têm título curto
+    # (OTE, BOS, MSS, FVG, iFVG, BPR, CHoCH) e todos corriam o mesmo risco.
+    titulo = _norm_busca(item["t"]).split(" (")[0]
+    if titulo and re.search(rf"\b{re.escape(titulo)}\b", p):
         exata += 3
     return exata, aprox
 
@@ -6093,6 +6189,29 @@ _MOTOR_PARA = (r"(^|[,.;!?]\s*|\b(tiger|pode|favor|agora|j[áa])\s+)para" +
                _MOTOR_ARTIGO + _MOTOR_SUBSTANTIVOS + r"\b")
 # "NÃO desliga o motor" / "sem parar as análises" é o oposto do comando.
 _MOTOR_NEGADO = r"\b(n[ãa]o|nunca|sem|jamais)\s+(precisa\w*\s+)?$"
+
+# O COMANDO PRECISA SER A ORDEM DA FRASE, NÃO UMA ORAÇÃO SUBORDINADA.
+#
+# Log de 14/08, 23:37. Palavras dele:
+#     "por favor, ANTES DE LIGAR O MOTOR, ajuste o plano de trading para o
+#      segundo dia de operação, pois foi final de semana... fica ciente que o
+#      mercado começa às 19h de domingo e encerra às 17:59 de sexta-feira"
+# A ferramenta ligou o motor e JOGOU FORA o resto da mensagem. Ele pediu três
+# coisas — ajustar o dia do plano, considerar o fim de semana, gravar o
+# horário do pregão — e não recebeu resposta para nenhuma. Nem um "não
+# entendi": a frase inteira virou um clique de botão.
+#
+# "antes de ligar" não é ordem de ligar; é a MARCAÇÃO DE TEMPO de outra ordem.
+# O mesmo vale para "depois de", "quando", "assim que", "toda vez que". Como o
+# roteador devolve UM comando só, casar aqui é perder o pedido de verdade.
+#
+# Fica ancorado em `$` porque é testado contra o TRECHO ANTES do casamento
+# (igual ao _MOTOR_NEGADO): assim "liga o motor antes que o pregão abra"
+# continua ligando — ali o "antes" vem DEPOIS do verbo, e a ordem é real.
+_MOTOR_SUBORDINADO = (
+    r"\b(antes|depois|ap[óo]s|logo)\s+(de|da|do|que)\s+$"
+    r"|\b(quando|caso|assim que|se|sempre que|toda vez que|cada vez que|"
+    r"em vez de|ao inv[ée]s de|na hora de|no momento de)\s+$")
 
 # --------------------------------------------------------------------
 # GUARDA ANTI-MENTIRA
@@ -7555,6 +7674,118 @@ def conferir_numeros_da_mesa(resposta, fatos):
     return f"{texto.rstrip()}{aviso}", divergencias
 
 
+# A MÁXIMA HISTÓRICA NÃO PODE ESTAR ABAIXO DO PREÇO DE AGORA.
+#
+# Log de 13/08, 16:31. Ele perguntou a máxima histórica do S&P 500 e recebeu:
+#     "A máxima histórica do S&P 500 é de aproximadamente 2.924 pontos,
+#      atingido em abril de 2000 durante a crise da bolsa americana."
+# Três erros numa frase só, e a ferramenta imprimiu como fato. No MESMO dia,
+# no MESMO chat, o motor dela estava lendo o MES em 7.812 — ou seja, ela
+# afirmou um teto histórico MENOR que o preço que ela própria tinha acabado de
+# ler no gráfico. Não é preciso saber nada de mercado para pegar isso: é
+# aritmética. Um recorde abaixo do preço de agora é impossível por definição.
+#
+# É a diferença entre "o modelo errou" e "a ferramenta deixou passar". O
+# modelo vai errar de novo — não tenho como impedir. O que dá para impedir é
+# a ferramenta ENTREGAR o erro sem conferir o que ela mesma tem na mão.
+_RE_MAXIMA_HISTORICA = re.compile(
+    r"(m[áa]xim[ao]|topo|pico|recorde|m[áa]ximo)\s+"
+    r"(hist[óo]ric[ao]|de todos os tempos|absolut[ao])"
+    r"|all[\- ]time high|\bath\b", re.IGNORECASE)
+
+# O NÚMERO QUE VEM COLADO NO NOME DO ÍNDICE É NOME, NÃO PREÇO.
+# "S&P 500", "Nasdaq 100", "Russell 2000" — o 500 ali é batismo. Sem esta
+# exclusão, a primeira conferência que eu escrevi acusou "máxima histórica de
+# 500" na frase que fala do S&P 500, que é exatamente o tipo de falso positivo
+# que faria o trader parar de ler os avisos.
+_RE_NOME_DE_INDICE = re.compile(
+    r"(s\s*&\s*p|sp|nasdaq|russell|dow(\s+jones)?|ibovespa|ibov|cac|dax|ftse|"
+    r"nikkei|euro\s*stoxx)\s*$", re.IGNORECASE)
+
+# Data por extenso: só descarta quando o número REALMENTE parece um ano.
+# A primeira versão descartava tudo que vinha depois de "em", e engolia
+# "o topo histórico ficou EM 6.147 pontos" — o caso que a trava existe para pegar.
+_RE_CONTEXTO_DE_DATA = re.compile(
+    r"(\b(em|de|desde|ano de|até|entre)\s+|"
+    r"\b(janeiro|fevereiro|mar[çc]o|abril|maio|junho|julho|agosto|setembro|"
+    r"outubro|novembro|dezembro)\s+de\s+)$", re.IGNORECASE)
+
+def _numeros_de_preco(trecho):
+    """Números do trecho que podem ser PREÇO — sem ano, nome de índice ou %.
+
+    '2.924' em português é dois mil novecentos e vinte e quatro, não 2,924:
+    ponto seguido de exatamente três dígitos, sem vírgula depois, é separador
+    de milhar. Errar isso aqui transformaria a conferência em ruído."""
+    achados = []
+    for m in re.finditer(r"\d[\d.,]*", trecho):
+        bruto = m.group(0).rstrip(".,")
+        if not bruto:
+            continue
+        antes = trecho[:m.start()]
+        depois = trecho[m.end():m.end() + 3]
+        if _RE_NOME_DE_INDICE.search(antes):
+            continue                       # o 500 de "S&P 500" é nome
+        if depois.strip().startswith("%"):
+            continue                       # percentual não é nível
+        if "," in bruto:
+            valor = bruto.replace(".", "").replace(",", ".")
+        elif re.fullmatch(r"\d{1,3}(\.\d{3})+", bruto):
+            valor = bruto.replace(".", "")   # 2.924 e 12.345 são milhares
+        else:
+            valor = bruto
+        try:
+            numero = float(valor)
+        except ValueError:
+            continue
+        # Ano só é descartado quando PARECE ano: inteiro de quatro dígitos numa
+        # faixa plausível E precedido de contexto de data. Assim "abril de
+        # 2000" sai e "ficou em 6.147 pontos" fica.
+        if (1900 <= numero <= 2100 and bruto.isdigit()
+                and _RE_CONTEXTO_DE_DATA.search(antes)):
+            continue
+        achados.append(numero)
+    return achados
+
+def conferir_maxima_historica(resposta, preco_agora, nome_ativo=""):
+    """Pega o recorde histórico afirmado ABAIXO do preço que a ferramenta lê.
+
+    Função PURA. `preco_agora` é o preço real que o app tem em mãos (leitura do
+    motor ou cotação da web); None desliga a conferência — sem preço não há o
+    que conferir, e inventar uma checagem seria repetir o defeito.
+
+    Devolve (texto, impossivel) — `impossivel` é o valor afirmado, ou None."""
+    texto = str(resposta or "")
+    if not texto.strip() or not preco_agora:
+        return texto, None
+    try:
+        agora = float(preco_agora)
+    except (TypeError, ValueError):
+        return texto, None
+    if agora <= 0:
+        return texto, None
+    for frase in re.split(r"(?<=[.!?])\s+|\n", texto):
+        if not _RE_MAXIMA_HISTORICA.search(frase):
+            continue
+        for valor in _numeros_de_preco(frase):
+            # O corte de 20% evita brigar por arredondamento de quem escreveu
+            # "a máxima é cerca de 7.800" com o preço em 7.812. O caso real
+            # errava por 63% — passa longe de qualquer tolerância.
+            if 0 < valor < agora * 0.8:
+                nome = f" do {nome_ativo}" if nome_ativo else ""
+                aviso = (
+                    f"\n\n⚠️ Parei para conferir o que eu mesma escrevi. Eu "
+                    f"disse que a máxima histórica{nome} é {valor:,.2f}, e o "
+                    f"preço que eu estou lendo AGORA é {agora:,.2f} — maior "
+                    f"que o suposto recorde. Isso é impossível: o preço de "
+                    f"hoje não pode estar acima do topo de todos os tempos.\n"
+                    f"Então o número que eu dei está errado, e eu prefiro "
+                    f"dizer isso a deixar você levar um dado furado para a "
+                    f"mesa. O que eu tenho de verdade é o preço de agora: "
+                    f"{agora:,.2f}.")
+                return f"{texto.rstrip()}{aviso}", valor
+    return texto, None
+
+
 def corrigir_enrolacao_de_nivel(pergunta, resposta):
     """Devolve (texto, corrigiu). Quando ela enrolou o nível, a resposta segue
     — mas com a admissão colada no fim. Apagar o parágrafo inteiro tiraria a
@@ -7717,10 +7948,21 @@ def interpretar_intencao(texto):
     if re.search(r"\b(acat\w*|aceito|bora|entra(r)? nessa)\b", t) \
             and not re.search(r"\b(não|nao|nunca|sem)\b", t):
         return "ACATAR"
-    # MOTOR: verbo GRUDADO no substantivo, e não pode estar negado.
+    # MOTOR: verbo GRUDADO no substantivo, não pode estar negado ("não desliga
+    # o motor") nem ser oração subordinada ("ANTES DE ligar o motor, ajuste o
+    # plano" — ali a ordem é ajustar o plano, e ligar é só a marcação de tempo).
+    #
+    # `finditer` e não `search`: basta UMA ocorrência legítima para ser comando.
+    # Com `search`, "antes de ligar o motor, liga o motor" morreria na primeira.
     def _motor(padrao):
-        m = re.search(padrao, t)
-        return bool(m) and not re.search(_MOTOR_NEGADO, t[:m.start()])
+        for m in re.finditer(padrao, t):
+            antes = t[:m.start()]
+            if re.search(_MOTOR_NEGADO, antes):
+                continue
+            if re.search(_MOTOR_SUBORDINADO, antes):
+                continue
+            return True
+        return False
     if _motor(_MOTOR_DESLIGAR) or _motor(_MOTOR_PARA):
         return "DESLIGAR_MOTOR"
     if _motor(_MOTOR_LIGAR):
@@ -9727,6 +9969,17 @@ class SmcQuantApp(ctk.CTk):
                     "Se você quiser mesmo tirar essa dependência, a saída é uma "
                     "chave paga da Gemini colada na aba Motor — aí eu leio o "
                     "gráfico sempre.")
+                return
+
+            # LIÇÃO NÃO LIGA BOTÃO. 14/08, 10:57 e 10:58: ele mandou duas vezes
+            # "toda vez que eu enviar STATUS pelo whatsapp, envie o status para
+            # mim - aprenda isso" e ouviu "aprendido" nas duas. Nunca ia
+            # funcionar: o WhatsApp daqui só envia, e lição nunca vira código.
+            acao, explica = licao_pede_acao(dado)
+            if acao:
+                self._chat_responder(
+                    f"NÃO vou gravar essa: “{dado}”.\n\n"
+                    f"O motivo é que {explica}.")
                 return
             if adicionar_licao(dado):
                 self._chat_responder(
@@ -11968,6 +12221,35 @@ class SmcQuantApp(ctk.CTk):
             pass
         return comeco
 
+    def _preco_de_referencia(self, pergunta, resposta=""):
+        """Preço REAL do ativo de que se está falando. Devolve (preço, nome).
+
+        Serve para conferir número afirmado contra número medido. O ativo sai
+        da PERGUNTA primeiro e só depois da resposta — se saísse do último
+        ativo que o motor leu, uma pergunta sobre ouro seria conferida contra
+        o preço do índice, e a trava viraria uma fábrica de alarme falso.
+
+        Sem cotação confiável devolve (None, "") — e aí não se confere nada.
+        Uma conferência com preço chutado seria o mesmo defeito que ela existe
+        para pegar."""
+        alvo = simbolo_do_texto(pergunta) or simbolo_do_texto(resposta)
+        if not alvo:
+            return None, ""
+        simbolo, nome = alvo[0], alvo[1]
+        try:
+            cot = cotacao_mercado(simbolo) or {}
+        except Exception:
+            cot = {}
+        preco = cot.get("preco")
+        if preco:
+            return float(preco), str(nome).upper()
+        # Sem web: só vale a leitura do motor se for do MESMO ativo.
+        ua = getattr(self, "_ultima_analise", None) or {}
+        lido = simbolo_do_texto(str(ua.get("ativo") or ""))
+        if lido and lido[0] == simbolo and ua.get("preco"):
+            return float(ua["preco"]), str(nome).upper()
+        return None, ""
+
     def _chat_entregar_resposta(self, resposta):
         """Fim de um turno com o modelo: registra em texto, fala se for o caso
         e digita no terminal (sempre pela fila única).
@@ -12003,6 +12285,22 @@ class SmcQuantApp(ctk.CTk):
             elif erro_pos == "omitiu":
                 self.log("🛡️ TIGER: a resposta dizia que ele está zerado e há "
                          "posição ABERTA — correção anexada.")
+        # UM RECORDE ABAIXO DO PREÇO DE AGORA É IMPOSSÍVEL.
+        # 13/08 16:31: "a máxima histórica do S&P 500 é aproximadamente 2.924
+        # pontos" — com o motor dela lendo 7.812 no mesmo chat. O preço vem do
+        # ativo que a PERGUNTA cita (nunca do último ativo lido por acaso),
+        # senão a conferência compararia ouro com índice.
+        try:
+            ref_preco, ref_nome = self._preco_de_referencia(
+                getattr(self, "_ultimo_pedido", "") or "", resposta)
+            resposta, impossivel = conferir_maxima_historica(
+                resposta, ref_preco, ref_nome)
+            if impossivel:
+                self.log(f"🛡️ TIGER: a resposta afirmou máxima histórica "
+                         f"{impossivel:,.2f} com o preço real em "
+                         f"{ref_preco:,.2f} — impossível. Correção anexada.")
+        except Exception:
+            pass          # conferência é rede de proteção, nunca derruba o turno
         # OS NÚMEROS DA CONTA DELE, CONFERIDOS CONTRA O DISCO.
         resposta, divergencias = conferir_numeros_da_mesa(
             resposta, self._fatos_da_mesa())
