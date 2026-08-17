@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.38.0"
+VERSAO_ATUAL = "2.39.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -590,6 +590,25 @@ PLANO_PADRAO = {
     # o ritmo exigido por dia E entra no contexto que a IA recebe.
     "dias_meta": 5,
     "data_inicio": None,
+    # QUAL DIA DO CICLO É HOJE — escolhido por ELE, clicando na trilha.
+    #
+    # Print de 17/08/2026, uma segunda-feira. A trilha mostrava
+    #     D1 ✅  D2 ❌  D3 ❌  D4 ⬜ ...
+    # e os dois ❌ eram SÁBADO (15/08) e DOMINGO (16/08). O ciclo começou na
+    # sexta, o mercado ficou fechado o fim de semana inteiro, e mesmo assim
+    # dois dias do prazo foram consumidos e marcados como dias PERDIDOS. O
+    # efeito no bolso: o ritmo exigido saltou de US$ 400 para US$ 553,42 por
+    # dia, por causa de dois dias em que não havia como operar.
+    #
+    # A causa era uma subtração de calendário — `(hoje - inicio).days`. Ela
+    # não sabe de fim de semana, não sabe de feriado, e não sabe que ele pode
+    # simplesmente decidir não operar num dia.
+    #
+    # Guarda uma ÂNCORA, não um número solto: {"dia": N, "data": "AAAA-MM-DD"}
+    # significa "naquela data, o ciclo estava no dia N". Guardar só o número
+    # congelaria o dia para sempre; guardar a âncora deixa o contador andar
+    # sozinho a partir da escolha dele.
+    "dia_ciclo_ancora": None,
     # ---- FREIO DE SUGESTÕES (proteção contra sequência de stops) ----
     # O robô analisa a cada poucos minutos e o mercado não muda de opinião nesse
     # ritmo: sem freio, ele reapresenta o mesmo cenário sem parar e o trader
@@ -616,6 +635,80 @@ def dias_meta_do_plano(plano=None):
         return max(1, int(float(plano.get("dias_meta", 5))))
     except (TypeError, ValueError):
         return 5
+
+
+def _domingo_e_pregao(cfg=None):
+    """O domingo conta como dia de pregão nesta configuração?
+
+    Conta quando o pregão ATRAVESSA A MEIA-NOITE (19:00→17:59), porque aí a
+    semana abre domingo às 19h — foi o próprio trader quem escreveu isso à
+    ferramenta em 14/08: 'o mercado começa às 19h de domingo e encerra às
+    17:59 de sexta-feira'. Com pregão que não vira o dia (09:00→17:00),
+    domingo não existe como sessão."""
+    try:
+        c = cfg if cfg is not None else carregar_config()
+        ini = str(c.get("hora_inicio", PADRAO_CONFIG_APP["hora_inicio"]))
+        fim = str(c.get("hora_fim", PADRAO_CONFIG_APP["hora_fim"]))
+        h_ini, m_ini = (int(x) for x in ini.split(":")[:2])
+        h_fim, m_fim = (int(x) for x in fim.split(":")[:2])
+    except Exception:
+        return False
+    return (h_ini, m_ini) > (h_fim, m_fim)
+
+
+def dias_de_pregao_entre(inicio, fim, cfg=None):
+    """Quantos dias de PREGÃO se passaram de `inicio` até `fim` (exclusivo).
+
+    Função PURA, recebe e devolve datas — dá para testar sem abrir janela.
+
+    SÁBADO NUNCA CONTA, em nenhuma configuração: não existe sessão. Domingo
+    conta só quando o pregão atravessa a meia-noite (ver `_domingo_e_pregao`).
+
+    É a substituição de `(fim - inicio).days`, que foi o que fez o fim de
+    semana de 15 e 16/08 comer dois dias do prazo de oito dias dele e empurrar
+    o ritmo exigido de US$ 400 para US$ 553,42 por dia. Dia em que o mercado
+    está fechado não é dia perdido: é dia que não existe."""
+    if not inicio or not fim or fim <= inicio:
+        return 0
+    domingo_conta = _domingo_e_pregao(cfg)
+    dias = 0
+    d = inicio
+    while d < fim:
+        d += datetime.timedelta(days=1)
+        # weekday(): 5 = sábado, 6 = domingo
+        if d.weekday() == 5:
+            continue
+        if d.weekday() == 6 and not domingo_conta:
+            continue
+        dias += 1
+    return dias
+
+
+def dia_do_ciclo(plano, hoje=None, cfg=None):
+    """Em que dia do ciclo estamos — 1 = primeiro dia. Nunca menor que 1.
+
+    Manda a ÂNCORA que ele escolheu clicando na trilha; sem âncora, conta os
+    dias de pregão desde o início do ciclo. Os dois caminhos param no prazo:
+    um ciclo de 8 dias não vai para o dia 9, ele acabou."""
+    hoje = hoje or datetime.date.today()
+    prazo = dias_meta_do_plano(plano)
+    ancora = (plano or {}).get("dia_ciclo_ancora") or None
+    if isinstance(ancora, dict) and ancora.get("data") and ancora.get("dia"):
+        try:
+            base_data = datetime.date.fromisoformat(str(ancora["data"]))
+            base_dia = max(1, int(ancora["dia"]))
+            andou = dias_de_pregao_entre(base_data, hoje, cfg)
+            return max(1, min(base_dia + andou, prazo))
+        except (ValueError, TypeError):
+            pass
+    inicio_str = (plano or {}).get("data_inicio")
+    if not inicio_str:
+        return 1
+    try:
+        inicio = datetime.date.fromisoformat(str(inicio_str))
+    except (ValueError, TypeError):
+        return 1
+    return max(1, min(1 + dias_de_pregao_entre(inicio, hoje, cfg), prazo))
 
 def _novo_id_conta(existentes=None):
     """ID único de conta. O timestamp em milissegundos sozinho NÃO basta: duas
@@ -10378,6 +10471,11 @@ class SmcQuantApp(ctk.CTk):
             agora = datetime.datetime.now()
             self.plano["data_inicio"] = agora.date().isoformat()
             self.plano["ciclo_inicio"] = agora.isoformat(timespec="seconds")
+            # CICLO NOVO ZERA O DIA ESCOLHIDO À MÃO. A âncora diz "naquela data
+            # era o dia N"; com um ciclo novo ela aponta para um ciclo que não
+            # existe mais, e o dashboard abriria no dia 4 de um ciclo que
+            # começou agora.
+            self.plano["dia_ciclo_ancora"] = None
             salvar_plano_da_conta(self.plano)
             # PROVA: relê do disco. Se o arquivo não mudou, ela NÃO diz que zerou.
             depois = plano_da_conta_ativa() or {}
@@ -14237,7 +14335,27 @@ class SmcQuantApp(ctk.CTk):
                                         cor_borda=COR["verde_esc"])
         self.lbl_patrimonio = ctk.CTkLabel(frame_patrimonio, text="Sem dados ainda.",
                                             justify="left", anchor="w", font=("Consolas", 11))
-        self.lbl_patrimonio.pack(padx=14, pady=(2, 10), fill="x")
+        self.lbl_patrimonio.pack(padx=14, pady=(2, 4), fill="x")
+
+        # A TRILHA DOS DIAS, AGORA CLICÁVEL — pedido dele em 17/08.
+        # Ela era TEXTO dentro do rótulo acima, montada por uma subtração de
+        # calendário, e não havia como discordar dela. Palavras dele: "e se eu
+        # quiser ficar um dia sem operar? e se for feriado ou final de semana?
+        # ajuste isso para que eu consiga clicar ali no quadradinho dos dias e
+        # escolher". Agora cada quadradinho é um botão: clicou, aquele passa a
+        # ser o dia de hoje, e o contador segue sozinho a partir dali.
+        self.frame_trilha = ctk.CTkFrame(frame_patrimonio, fg_color="transparent")
+        self.frame_trilha.pack(padx=14, pady=(0, 2), fill="x")
+        # wraplength É OBRIGATÓRIO. Sem ele a explicação sai numa linha só e o
+        # fim dela fica FORA da janela — a frase que diz como usar o recurso
+        # seria a única parte que ele não conseguiria ler.
+        self.lbl_trilha_ajuda = ctk.CTkLabel(
+            frame_patrimonio, justify="left", anchor="w", text_color="#a0aec0",
+            font=("Arial", 10), wraplength=560,
+            text="Clique no dia para dizer em que dia do ciclo você está "
+                 "(feriado, folga, fim de semana).")
+        self.lbl_trilha_ajuda.pack(padx=14, pady=(0, 10), fill="x")
+        self._botoes_trilha = []
 
         # ================= POSIÇÕES =================
         self.frame_posicoes = self._secao(
@@ -14898,6 +15016,7 @@ class SmcQuantApp(ctk.CTk):
         agora = datetime.datetime.now()
         self.plano["data_inicio"] = agora.date().isoformat()
         self.plano["ciclo_inicio"] = agora.isoformat(timespec="seconds")
+        self.plano["dia_ciclo_ancora"] = None      # ciclo novo, contagem nova
         salvar_plano_da_conta(self.plano)
         self.log(f"🔄 Novo ciclo de {dias_meta_do_plano(self.plano)} dia(s) iniciado em "
                   f"{agora.strftime('%d/%m/%Y %H:%M:%S')} para a conta "
@@ -14974,16 +15093,18 @@ class SmcQuantApp(ctk.CTk):
         meta = self.plano.get("meta_alvo") or 0
         # Prazo da meta configurável (era fixo em 5 dias).
         dias_meta = dias_meta_do_plano(self.plano)
-        data_inicio_str = self.plano.get("data_inicio")
-        dias_passados = 0
-        dias_restantes = dias_meta
-        if data_inicio_str:
-            try:
-                data_inicio = datetime.date.fromisoformat(data_inicio_str)
-                dias_passados = (datetime.date.today() - data_inicio).days
-                dias_restantes = max(dias_meta - dias_passados, 0)
-            except ValueError:
-                pass
+        # QUE DIA DO CICLO É HOJE. Era `(hoje - inicio).days`, subtração de
+        # calendário — e foi ela que deixou o fim de semana de 15 e 16/08
+        # consumir dois dos oito dias do prazo dele, marcados como dias
+        # PERDIDOS na trilha, empurrando o ritmo exigido de US$ 400 para
+        # US$ 553,42 por dia. Agora conta dia de PREGÃO, e ele pode dizer qual
+        # é o dia clicando na trilha (feriado, folga, viagem).
+        #
+        # `dias_passados` continua sendo "dias já consumidos" — o dia de hoje
+        # ainda está em curso, então é o número do dia menos um.
+        dia_atual = dia_do_ciclo(self.plano)
+        dias_passados = dia_atual - 1
+        dias_restantes = max(dias_meta - dias_passados, 0)
 
         falta = meta - lucro_usd
         meta_diaria = (falta / dias_restantes) if dias_restantes > 0 else None
@@ -14997,6 +15118,10 @@ class SmcQuantApp(ctk.CTk):
             "dias_restantes": dias_restantes, "falta": falta, "abertas": len(abertas),
             "meta_diaria": meta_diaria, "total_ops": total, "meta": meta,
             "resultado_hoje": resultado_hoje, "dias_meta": dias_meta,
+            # O NÚMERO DO DIA DE HOJE, para a trilha marcar onde ele está e
+            # para os botões saberem qual quadradinho está aceso.
+            "dia_atual": dia_atual,
+            "dia_manual": bool((self.plano or {}).get("dia_ciclo_ancora")),
         }
 
     def _contexto_do_plano(self):
@@ -15220,20 +15345,7 @@ class SmcQuantApp(ctk.CTk):
         if dd_max and stats["max_dd_usd"] >= dd_max * 0.8:
             alerta = "  ⚠️ PRÓXIMO DO LIMITE"
 
-        # Trilha do prazo escolhido, com a meta acumulada esperada em cada dia.
-        # Com prazos longos, mostra só os primeiros dias para não estourar a linha.
         dias_meta = stats.get("dias_meta", 5)
-        trilha = []
-        for dia in range(1, min(dias_meta, 10) + 1):
-            meta_dia = meta * (dia / dias_meta) if meta else 0
-            if stats["dias_passados"] >= dia:
-                marca = "✅" if stats["lucro_usd"] >= meta_dia else "❌"
-            else:
-                marca = "⬜"
-            trilha.append(f"D{dia} {marca}")
-        if dias_meta > 10:
-            trilha.append(f"… (+{dias_meta - 10})")
-
         meta_diaria_txt = (f"US$ {stats['meta_diaria']:,.2f}/dia"
                             if stats["meta_diaria"] is not None else "PRAZO ESGOTADO")
 
@@ -15251,11 +15363,119 @@ class SmcQuantApp(ctk.CTk):
             f"{f'  (folga: US$ {margem_dd:,.2f})' if dd_max else ''}{alerta}\n"
             f"Falta p/ meta: US$ {stats['falta']:,.2f}   |   Ritmo: {meta_diaria_txt}\n"
             f"Projeção: {projecao}\n"
-            f"{'─' * 46}\n"
-            f"Trilha de {dias_meta} dia(s):  {'   '.join(trilha)}   "
-            f"({stats['dias_passados']}/{dias_meta} · restam {stats['dias_restantes']})"
+            f"{'─' * 46}"
         )
         self.lbl_patrimonio.configure(text=texto, text_color=cor)
+        self._renderizar_trilha(stats)
+
+    def _renderizar_trilha(self, stats):
+        """A trilha dos dias, em BOTÕES — clicar diz em que dia do ciclo ele está.
+
+        Antes isto era texto dentro do rótulo, montado por uma subtração de
+        calendário, e não havia como discordar. No print de 17/08 (segunda) a
+        trilha mostrava D2 ❌ e D3 ❌ para o SÁBADO e o DOMINGO do fim de
+        semana anterior: dois dias sem mercado, contados como dias perdidos,
+        empurrando o ritmo exigido de US$ 400 para US$ 553,42 por dia.
+
+        Três marcas, e nenhuma delas mente:
+          ✅ dia que já passou e estava em dia com a meta acumulada
+          ❌ dia que já passou e ficou atrás
+          ⬜ dia que ainda não chegou
+        O dia de HOJE fica com a borda acesa, para ele ver onde está.
+        """
+        frame = getattr(self, "frame_trilha", None)
+        if frame is None:
+            return
+        for w in frame.winfo_children():
+            w.destroy()
+        self._botoes_trilha = []
+
+        dias_meta = stats.get("dias_meta", 5)
+        meta = stats.get("meta") or 0
+        dia_atual = stats.get("dia_atual", 1)
+        # Prazo longo não cabe numa linha só; quebra a cada 10 quadradinhos.
+        linha = None
+        for dia in range(1, dias_meta + 1):
+            if (dia - 1) % 10 == 0:
+                linha = ctk.CTkFrame(frame, fg_color="transparent")
+                linha.pack(anchor="w", pady=1)
+            meta_dia = meta * (dia / dias_meta) if meta else 0
+            if dia < dia_atual:
+                marca = "✅" if stats["lucro_usd"] >= meta_dia else "❌"
+            elif dia == dia_atual:
+                marca = "📍"
+            else:
+                marca = "⬜"
+            e_hoje = (dia == dia_atual)
+            btn = ctk.CTkButton(
+                linha, text=f"D{dia}\n{marca}", width=46, height=40,
+                font=("Arial", 11),
+                fg_color="#2b4a6f" if e_hoje else "#2a2a3a",
+                hover_color="#3a5a8f",
+                border_width=2 if e_hoje else 0,
+                border_color=COR["verde"] if e_hoje else "#2a2a3a",
+                text_color=COR["texto"],
+                command=lambda d=dia: self._escolher_dia_do_ciclo(d))
+            btn.pack(side="left", padx=2)
+            self._botoes_trilha.append(btn)
+
+        # O RÓTULO DE AJUDA DIZ DE ONDE VEIO O NÚMERO. Sem isso ele não teria
+        # como saber se está vendo a conta automática ou a escolha dele — e foi
+        # justamente não saber que gerou o pedido.
+        restam = stats.get("dias_restantes", 0)
+        if stats.get("dia_manual"):
+            ajuda = (f"Hoje é o dia {dia_atual} de {dias_meta} — VOCÊ escolheu "
+                     f"(restam {restam}). Clique em outro dia para mudar, ou em "
+                     f"D{dia_atual} de novo para voltar à contagem automática.")
+        else:
+            ajuda = (f"Hoje é o dia {dia_atual} de {dias_meta} — contado "
+                     f"automaticamente, pulando sábado"
+                     f"{'' if _domingo_e_pregao() else ' e domingo'} "
+                     f"(restam {restam}). Clique no dia certo se você ficou "
+                     f"sem operar, ou se foi feriado.")
+        if getattr(self, "lbl_trilha_ajuda", None) is not None:
+            self.lbl_trilha_ajuda.configure(text=ajuda)
+
+    def _escolher_dia_do_ciclo(self, dia):
+        """Ele clicou num quadradinho da trilha: aquele passa a ser HOJE.
+
+        Grava uma ÂNCORA ({dia, data}), não um número solto — assim o contador
+        continua andando sozinho a partir da escolha, em vez de congelar. E
+        clicar no dia que já está aceso DESFAZ a escolha e devolve a contagem
+        automática: sem isso, um clique errado seria permanente."""
+        try:
+            atual = self._computar_stats_plano()
+            ja_era = (atual.get("dia_atual") == dia and atual.get("dia_manual"))
+        except Exception:
+            ja_era = False
+        if ja_era:
+            self.plano["dia_ciclo_ancora"] = None
+            self.log("📅 Dia do ciclo: de volta à contagem automática "
+                     "(pulando fim de semana).")
+        else:
+            self.plano["dia_ciclo_ancora"] = {
+                "dia": int(dia),
+                "data": datetime.date.today().isoformat()}
+            self.log(f"📅 Dia do ciclo definido por você: hoje é o dia {dia}. "
+                     f"A partir daqui ele anda sozinho a cada dia de pregão.")
+        # Grava DIRETO, sem passar por `salvar_plano_trading`: aquela relê
+        # todos os campos do formulário e desiste em bloco se qualquer um
+        # estiver com texto inválido. O dia escolhido sumiria por causa de uma
+        # vírgula errada na caixa da margem — e sem aviso nenhum.
+        try:
+            salvar_plano_da_conta(self.plano)
+        except Exception as e:
+            # Sem gravar em disco a escolha morre ao fechar o app. A tela já
+            # está certa, então isto nunca pode passar em silêncio.
+            self.log(f"⚠️ Não consegui gravar o dia do ciclo no plano "
+                     f"({type(e).__name__}) — ele vale nesta sessão, mas "
+                     "volta ao automático se você fechar o programa.")
+        # forcar=True É OBRIGATÓRIO AQUI. A assinatura do painel olha as
+        # posições, a configuração, os sinais e o desempenho — NÃO olha o
+        # arquivo do plano. Sem forçar, o clique gravava em disco e a tela não
+        # se redesenhava: ele clicaria no dia e nada mudaria na frente dele,
+        # que é pior que não ter o botão.
+        self._atualizar_dashboard(forcar=True)
 
     def _ativar_zoom_pan(self, canvas):
         """Torna um gráfico totalmente MANIPULÁVEL:

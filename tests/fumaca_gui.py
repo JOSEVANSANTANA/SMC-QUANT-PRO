@@ -219,6 +219,66 @@ def main():
     # prever". Tinha todos os dados. Aqui o caminho inteiro é percorrido —
     # plano, diário e horário do pregão — para provar que ele responde em vez
     # de estourar ou devolver vazio.
+    # A TRILHA DOS DIAS PRECISA SER CLICÁVEL — pedido dele em 17/08.
+    # "e se eu quiser ficar um dia sem operar? e se for feriado ou final de
+    # semana? ajuste isso para que eu consiga clicar ali no quadradinho dos
+    # dias e escolher". Antes era texto dentro de um rótulo: não havia onde
+    # clicar. Aqui os botões são criados, clicados e conferidos de verdade.
+    print("\n[trilha dos dias — tem de dar para CLICAR]")
+    app.plano["meta_alvo"] = 3200.0
+    app.plano["dias_meta"] = 8
+    app.plano["data_inicio"] = (mod.datetime.date.today()
+                                - mod.datetime.timedelta(days=3)).isoformat()
+    app.plano["dia_ciclo_ancora"] = None
+    mod.salvar_plano_da_conta(app.plano)
+    # forcar=True: a assinatura do painel não olha o arquivo do plano, então
+    # sem isto o desenho é pulado e o teste mediria a tela anterior.
+    passo(app, "desenhar a trilha",
+          lambda: app._atualizar_dashboard(forcar=True))
+    botoes = getattr(app, "_botoes_trilha", [])
+    print(f"       quadradinhos na tela: {len(botoes)}")
+    if len(botoes) != 8:
+        falhas.append(f"trilha: esperava 8 quadradinhos, vieram {len(botoes)}")
+    elif not botoes[0].winfo_ismapped():
+        falhas.append("trilha: os quadradinhos existem e NÃO estão na tela")
+        print("  FALHA os quadradinhos não estão na tela")
+    else:
+        print(f"  OK   clicáveis e visíveis "
+              f"({botoes[0].winfo_width()}x{botoes[0].winfo_height()}px)")
+
+    # CLICA NUM DIA DIFERENTE DO ATUAL. Clicar no dia que já está aceso não
+    # provaria nada: passaria verde sem o clique ter feito efeito nenhum.
+    antes_dia = app._computar_stats_plano().get("dia_atual")
+    alvo = 5 if antes_dia != 5 else 3
+    passo(app, f"clicar no D{alvo} (hoje estava no D{antes_dia})",
+          lambda: app._escolher_dia_do_ciclo(alvo))
+    depois = app._computar_stats_plano()
+    print(f"       dia antes do clique: {antes_dia} · depois: {depois.get('dia_atual')}")
+    if depois.get("dia_atual") != alvo:
+        falhas.append(f"trilha: cliquei em D{alvo} e o dia ficou "
+                      f"{depois.get('dia_atual')}")
+        print("  FALHA o clique não mudou o dia")
+    elif not depois.get("dia_manual"):
+        falhas.append("trilha: o dia mudou mas não ficou marcado como escolha dele")
+    else:
+        print("  OK   o clique mandou, e a escolha ficou registrada como dele")
+
+    # GRAVOU EM DISCO? Escolha que morre ao fechar o programa não serve.
+    if (mod.plano_da_conta_ativa() or {}).get("dia_ciclo_ancora"):
+        print("  OK   a escolha foi gravada no plano em disco")
+    else:
+        falhas.append("trilha: a escolha do dia não foi gravada em disco")
+        print("  FALHA a escolha não foi gravada")
+
+    # CLICAR NO MESMO DIA DESFAZ. Sem isso, um clique errado seria permanente.
+    passo(app, f"clicar de novo no D{alvo} (desfazer)",
+          lambda: app._escolher_dia_do_ciclo(alvo))
+    if app._computar_stats_plano().get("dia_manual"):
+        falhas.append("trilha: clicar no dia aceso não voltou ao automático")
+        print("  FALHA não voltou para a contagem automática")
+    else:
+        print("  OK   clicar no dia aceso volta para a contagem automática")
+
     print("\n[a conta da meta de hoje]")
     # SEM META CONFIGURADA ele não pode dizer "meta batida". Foi este passo
     # que pegou a afirmação falsa e simpática numa instalação nova.
