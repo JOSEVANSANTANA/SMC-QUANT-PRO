@@ -115,6 +115,37 @@ class TestEmpacotador(unittest.TestCase):
         m = self._mod()
         self.assertIn("tests/run.py", m.COMUM)
 
+    def test_TODO_arquivo_de_teste_entra_no_pacote(self):
+        """A lista do empacotador é escrita à mão, e mão esquece.
+
+        Na 2.38.0 o `tests/test_burrice.py` nasceu com 19 testes — os quatro
+        defeitos do log de 13 e 14/08 — e NÃO entrou na lista. Os zips teriam
+        saído sem ele, calados: o cliente rodaria `tests/run.py` e veria 505
+        testes passando, sem nenhum sinal de que 19 ficaram para trás.
+
+        O teste antigo só perguntava pelo `run.py`, que é o corredor. Faltava
+        perguntar pelos testes que ele corre. Agora é a pasta que manda: todo
+        `tests/test_*.py` que existir no disco tem de estar na lista."""
+        # ÚNICA EXCEÇÃO, E DECLARADA: este arquivo testa o `empacotar.py`, e o
+        # `empacotar.py` não se inclui nos zips (é ferramenta de quem entrega,
+        # não do cliente). Mandá-lo junto criaria um teste que falha na máquina
+        # do cliente por falta do arquivo que ele testa — ruído no lugar de
+        # sinal. Se alguém um dia passar a empacotar o `empacotar.py`, esta
+        # linha sai e o arquivo entra.
+        FORA_DE_PROPOSITO = {"tests/test_empacotamento.py"}
+        import glob
+        m = self._mod()
+        raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.assertNotIn("empacotar.py", m.COMUM,
+                         "o empacotador passou a ir junto — reveja a exceção")
+        for caminho in sorted(glob.glob(os.path.join(raiz, "tests", "test_*.py"))):
+            relativo = "tests/" + os.path.basename(caminho)
+            if relativo in FORA_DE_PROPOSITO:
+                continue
+            self.assertIn(relativo, m.COMUM,
+                          f"{relativo} existe mas não entra nos zips — o "
+                          "cliente receberia a suíte incompleta sem saber")
+
     def test_nenhum_arquivo_esta_nas_duas_cascas(self):
         m = self._mod()
         repetidos = set(m.SO_WINDOWS) & set(m.SO_MAC)

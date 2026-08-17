@@ -166,7 +166,7 @@ class TestALicaoQueEraUmRecursoInexistente(unittest.TestCase):
         return carregar(["_sem_acento", "_LICAO_ACAO_WHATSAPP_RECEBE",
                          "licao_pede_acao"])
 
-    def test_a_frase_dele_e_RECUSADA_com_explicacao(self):
+    def test_a_frase_dele_nao_vira_licao(self):
         f = self._ns()["licao_pede_acao"]
         for frase in (
                 "toda vez que eu enviar STATUS pelo whatsapp, por favor, "
@@ -174,18 +174,51 @@ class TestALicaoQueEraUmRecursoInexistente(unittest.TestCase):
                 "acompanhe o motor,  toda vez que eu enviar STATUS pelo "
                 "whatsapp, por favor, envie o status para mim!",
                 "sempre que eu mandar status no zap voce responde"):
-            recusa, motivo = f(frase)
-            self.assertTrue(recusa, f"{frase!r} ainda seria gravada como lição")
-            self.assertIn("SÓ ENVIA", motivo,
-                          "a recusa precisa DIZER por que não dá")
+            pega, _ = f(frase)
+            self.assertTrue(pega, f"{frase!r} ainda seria gravada como lição")
 
-    def test_a_recusa_diz_o_que_FUNCIONA(self):
-        """Recusar sem oferecer a saída é deixar o trader na mão. A resposta
-        tem de terminar com o que ele pode fazer AGORA."""
+    def test_a_resposta_diz_que_ISSO_JA_FUNCIONA(self):
+        """O conserto de verdade não foi recusar melhor — foi fazer a coisa
+        funcionar. A primeira versão desta trava respondia 'o WhatsApp daqui
+        só envia, esse recurso não existe', e estava ERRADA: o motor recebe
+        mensagens desde sempre (START, STOP, ACATAR, NOVA ANÁLISE). Faltava só
+        o STATUS. Se alguém voltar a escrever a recusa antiga, este teste cai."""
         _, motivo = self._ns()["licao_pede_acao"](
             "toda vez que eu enviar STATUS pelo whatsapp, envie o status")
-        self.assertIn("status", motivo.lower())
-        self.assertIn("manda no whatsapp", motivo)
+        self.assertIn("JÁ FUNCIONA", motivo)
+        self.assertIn("STATUS", motivo)
+        self.assertNotIn("SÓ ENVIA", motivo,
+                         "voltou a afirmar que o WhatsApp não recebe nada")
+        self.assertNotIn("não existe", motivo)
+
+    def test_STATUS_e_comando_de_verdade_nas_DUAS_pontas(self):
+        """Uma ponta só não entrega nada: o motor precisa reconhecer o texto e
+        o app precisa responder ao item da fila."""
+        motor = os.path.join(os.path.dirname(AQUI), "motor", "index.js")
+        with open(motor, encoding="utf-8") as f:
+            js = f.read()
+        self.assertIn("CMD_STATUS", js)
+        self.assertIn("CMD_STATUS.includes(texto)", js)
+        self.assertIn("tipo: 'STATUS'", js)
+
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _poller_comandos_whatsapp")
+        bloco = fonte[i:i + 4000]
+        self.assertIn('if tipo == "STATUS":', bloco)
+        self.assertIn("_chat_status_texto()", bloco,
+                      "o STATUS do WhatsApp tem de usar o MESMO texto do chat")
+        self.assertIn("enviar_relatorio_whatsapp", bloco)
+
+    def test_o_STATUS_do_whatsapp_nao_passa_por_modelo(self):
+        """Ele pediu status justamente quando está longe da mesa. Se dependesse
+        da Gemini, sairia 'a cota estourou' — que é o que ele já cansou de ver.
+        Sai de código, com os números do disco."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index('if tipo == "STATUS":')
+        bloco = fonte[i:i + 1200]
+        for proibido in ("genai", "generate_content", "_chat_worker"):
+            self.assertNotIn(proibido, bloco,
+                             "o STATUS do WhatsApp passou a depender de modelo")
 
     def test_as_licoes_BOAS_dele_continuam_passando(self):
         """A primeira versão desta trava recusava qualquer lição que citasse

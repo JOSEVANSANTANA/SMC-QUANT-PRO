@@ -419,10 +419,22 @@ async function connectToWhatsApp() {
                                'ANÁLISE', 'ANALISA', 'ANALISAR AGORA',
                                'ANALISE AGORA', 'ANÁLISE AGORA'];
 
+        // STATUS — pedido dele em 14/08, as 10:57 e de novo as 10:58:
+        //     "toda vez que eu enviar STATUS pelo whatsapp, por favor, envie o
+        //      status para mim! - Aprenda isso"
+        // Ele mandou duas vezes porque desconfiou que nao tinha pego, e ouviu
+        // "aprendido" nas duas. Nunca ia funcionar: aquilo virou LICAO, e licao
+        // e texto dentro do pedido ao modelo — nao liga botao. O comando e que
+        // liga, e o comando nao existia. Existe agora, do mesmo jeito que
+        // ACATAR e NOVA ANALISE: chega aqui, vira item da fila, e o app monta o
+        // status com os numeros do disco e devolve pelo WhatsApp.
+        const CMD_STATUS    = ['STATUS', 'SITUACAO', 'SITUAÇÃO', 'RESUMO',
+                               'COMO ESTAMOS', 'COMO ESTA', 'COMO ESTÁ'];
+
         const ehComando =
             CMD_STOP.includes(texto) || CMD_START.includes(texto) ||
             CMD_ACATAR.includes(texto) || CMD_DISPENSAR.includes(texto) ||
-            CMD_ANALISE.includes(texto);
+            CMD_ANALISE.includes(texto) || CMD_STATUS.includes(texto);
         if (!ehComando) return;
 
         const inscrito = lerInscritos().includes(jidAlvo);
@@ -477,6 +489,15 @@ async function connectToWhatsApp() {
             if (inscrito) await sock.sendMessage(jidAlvo, {
                 text: "🔄 Pedido recebido. Vou capturar o gráfico agora e te mandar a leitura em instantes.\n(Se o motor estiver desligado no computador, eu não consigo capturar — aí eu te aviso.)"
             });
+            return;
+        }
+
+        if (CMD_STATUS.includes(texto)) {
+            // MESMA fila de ACATAR/NOVA_ANALISE. Sem confirmacao "vou buscar":
+            // o status chega em segundos, e um "aguarde" seguido do proprio
+            // status a dois segundos de distancia e barulho, nao servico.
+            filaComandos.push({ tipo: 'STATUS', jid: jidAlvo, ts: Date.now() });
+            console.log(`📊 STATUS enfileirado (responde neste chat? ${inscrito}).`);
             return;
         }
 

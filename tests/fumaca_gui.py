@@ -89,10 +89,22 @@ def main():
     # posição 6 ("o que aconteceu com HAPV3 HOJE?"), gravada antes de a trava
     # existir, e ela entrava em toda análise porque as lições vão inteiras
     # para dentro do prompt.
+    # As DUAS do WhatsApp (14/08, 10:57 e 10:58) estão gravadas na máquina
+    # dele agora: ele mandou a mesma coisa duas vezes porque desconfiou que
+    # não tinha pego, e ouviu "aprendido" nas duas. Nunca ia funcionar — o
+    # WhatsApp daqui só ENVIA. Elas entram aqui para a faxina ser provada com
+    # o app de verdade aberto, e não só na função pura.
     import json as _json
     with open(mod.LICOES_FILE, "w", encoding="utf-8") as f:
         _json.dump(["nunca invente numeros, nunca alucine",
-                    "o que aconteceu com HAPV3 HOJE?"], f, ensure_ascii=False)
+                    "o que aconteceu com HAPV3 HOJE?",
+                    "toda vez que eu enviar STATUS pelo whatsapp, por favor, "
+                    "envie o status para mim!",
+                    "acompanhe o motor,  toda vez que eu enviar STATUS pelo "
+                    "whatsapp, por favor, envie o status para mim!",
+                    "tira um print e olha o preco atual, nunca forneca "
+                    "recomendacoes sem olhar o preco atual"],
+                   f, ensure_ascii=False)
 
     app = mod.SmcQuantApp()
     app.update_idletasks()
@@ -106,11 +118,15 @@ def main():
         falhas.append("faxina: a pergunta gravada como lição continua lá, "
                       "entrando em toda análise")
         print("  FALHA a pergunta continua gravada como lição")
-    elif len(restantes) != 1:
+    elif any("whatsapp" in l.lower() for l in restantes):
+        falhas.append("faxina: a lição do WhatsApp continua gravada — ela "
+                      "promete um recurso que não existe e entra em toda análise")
+        print("  FALHA a lição do WhatsApp continua gravada")
+    elif len(restantes) != 2:
         falhas.append(f"faxina: levou lição boa junto — sobrou {restantes}")
         print("  FALHA levou lição boa junto")
     else:
-        print("  OK   tirou a pergunta e manteve a regra")
+        print("  OK   tirou a pergunta e as duas do WhatsApp, manteve as regras")
 
     print("\n[widgets que a refatoração da aba Motor precisa ter criado]")
     for attr in ("btn_ligar", "api_entry", "janela_dropdown", "console",

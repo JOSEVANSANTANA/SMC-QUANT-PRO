@@ -732,6 +732,23 @@ TESTES: 366 (eram 357).
   Se o motor estiver DESLIGADO no computador, ele DIZ isso. Longe da
   mesa, silencio se le como "a ferramenta parou".
 
+3-B) STATUS PELO WHATSAPP  (pedido seu, de 14/08)
+  Mande STATUS em qualquer chat seu — tambem valem SITUACAO e RESUMO —
+  e o app responde com a conta, o resultado de hoje e do ciclo, a meta,
+  o ritmo exigido por dia, as posicoes abertas com P&L e a ultima
+  leitura do grafico.
+
+  POR QUE ISTO ESTAVA FALTANDO, ja que voce pediu em agosto: voce tentou
+  ENSINAR ("toda vez que eu enviar STATUS pelo whatsapp, envie o status
+  para mim - aprenda isso") e a ferramenta respondeu "aprendido" duas
+  vezes seguidas. Nunca ia funcionar: licao vira TEXTO dentro do pedido
+  ao modelo, e texto nao aperta botao. Quem executa e comando — e o
+  comando STATUS nao existia. Existe agora.
+
+  O texto e montado em CODIGO, com os numeros do disco. Nao passa por
+  modelo nenhum: funciona com a cota da Gemini estourada, e nao tem como
+  inventar numero.
+
 4) A IA LOCAL RELIGA SOZINHA
   Em 13/08 ela respondeu "a API esta fora" das 09:46 as 10:02 — porque o
   Ollama estava instalado e PARADO. Voce percebeu sozinho e teve de

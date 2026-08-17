@@ -4043,6 +4043,19 @@ _LICAO_ACAO_WHATSAPP_RECEBE = re.compile(
     r"[^.;\n]{0,40}\b(mensage\w*|comando\w*|texto\w*)\b[^.;\n]{0,30}"
     r"\b(whats?app?|zap|wpp)\b", re.IGNORECASE)
 
+# O CONSERTO DE VERDADE FOI FAZER A COISA FUNCIONAR, NÃO RECUSAR MELHOR.
+#
+# A primeira versão desta trava recusava dizendo "o WhatsApp daqui só envia,
+# não existe nada escutando o que chega". Estava ERRADO — e o erro apareceu
+# num print da própria tela do app, na aba do WhatsApp: "um contato entra
+# quando envia START no WhatsApp". O motor recebe mensagens desde sempre, e já
+# tratava START, STOP, ACATAR, NÃO OPEREI e NOVA ANÁLISE.
+#
+# Ou seja: o que ele pediu em 14/08 era trivial de fazer, e passou três meses
+# como "aprendido" porque ninguém foi olhar. STATUS agora é comando de
+# verdade, do mesmo jeito que os outros — a lição continua recusada, mas
+# agora a recusa aponta para uma coisa que existe.
+#
 # DE PROPÓSITO, ESTA TRAVA PEGA SÓ O WHATSAPP QUE CHEGA.
 #
 # A primeira versão que escrevi recusava qualquer lição que citasse uma ação —
@@ -4070,15 +4083,15 @@ def licao_pede_acao(texto):
         return False, ""
     if _LICAO_ACAO_WHATSAPP_RECEBE.search(t):
         return True, (
-            "o WhatsApp daqui SÓ ENVIA. Não tem nada do meu lado escutando o "
-            "que chega, então 'quando eu mandar STATUS, você responde' não é "
-            "uma regra que faltou eu aprender — é um recurso que não existe "
-            "ainda. Eu podia gravar a frase e dizer 'aprendido', mas nenhum "
-            "status sairia, e você ficaria esperando por uma coisa que não "
-            "vem.\n\n"
-            "O que funciona hoje: peça 'status' AQUI no chat e eu respondo na "
-            "hora; peça 'manda no whatsapp' e eu disparo o cenário com a "
-            "situação da conta para o seu número")
+            "ISSO JÁ FUNCIONA, e não por lição — por comando. Mande STATUS no "
+            "WhatsApp e eu respondo com a conta, a meta, o ritmo exigido, as "
+            "posições abertas e a última leitura do gráfico. Também valem "
+            "SITUAÇÃO e RESUMO.\n\n"
+            "Gravar isso como lição é que não adiantaria: lição vira texto "
+            "dentro do meu raciocínio, e texto não aperta botão. Foi por isso "
+            "que você mandou a mesma frase duas vezes em 14/08 e ouviu "
+            "'aprendido' nas duas sem nunca receber um status — o comando é "
+            "que faltava, e ele existe agora")
     return False, ""
 
 
@@ -14538,6 +14551,17 @@ class SmcQuantApp(ctk.CTk):
             text="SÓ estes chats recebem os relatórios. Um contato entra quando envia START\n"
                  "no WhatsApp — remova aqui qualquer um que não deva receber, ou zere tudo."
         ).pack(pady=(2, 6), padx=12, anchor="w")
+        # A LISTA DE COMANDOS ESTAVA SÓ NO LEIA-ME. Ele pediu STATUS pelo
+        # WhatsApp em 14/08 e tentou ENSINAR como lição, porque não tinha como
+        # saber que existia um jeito de mandar comando por ali — a tela só
+        # falava de START. Comando que ninguém descobre é comando que não existe.
+        ctk.CTkLabel(
+            frame, justify="left", text_color="#a0aec0",
+            text="Comandos que você pode mandar em qualquer chat seu:\n"
+                 "STATUS (conta, meta, ritmo, posições abertas) · NOVA ANÁLISE "
+                 "(lê o gráfico agora)\n"
+                 "ACATAR / NÃO OPEREI (decide o último cenário) · START · STOP"
+        ).pack(pady=(0, 8), padx=12, anchor="w")
         self.frame_lista_inscritos = ctk.CTkFrame(frame, fg_color="transparent")
         self.frame_lista_inscritos.pack(fill="x", padx=8, pady=(0, 4))
         linha = ctk.CTkFrame(frame, fg_color="transparent")
@@ -15876,6 +15900,31 @@ class SmcQuantApp(ctk.CTk):
                             continue
                         threading.Thread(target=self._analise_sob_demanda,
                                          daemon=True).start()
+                        continue
+                    # STATUS PELO WHATSAPP — o pedido de 14/08, 10:57 e 10:58.
+                    # Ele mandou duas vezes e recebeu "aprendido" nas duas,
+                    # porque tentou ENSINAR uma ação. Lição vira texto no
+                    # pedido ao modelo; quem executa é comando. Agora é comando.
+                    #
+                    # O texto é o MESMO do 'status' digitado no chat — montado
+                    # em código, com os números do disco. Não passa por modelo
+                    # nenhum: funciona com a cota estourada e não tem como
+                    # inventar número.
+                    if tipo == "STATUS":
+                        ts_cmd = cmd.get("ts", 0)
+                        if ts_cmd and (time.time() * 1000 - ts_cmd) > 120000:
+                            self.log("⌛ Pedido de STATUS ignorado "
+                                     "(obsoleto na fila).")
+                            continue
+                        try:
+                            texto_status = self._chat_status_texto()
+                        except Exception as e:
+                            texto_status = ("Não consegui montar o status agora "
+                                            f"({type(e).__name__}). Abra o app e "
+                                            "confira o Plano de Trading.")
+                        self.log("📊 STATUS pedido pelo WhatsApp — respondendo.")
+                        enviar_relatorio_whatsapp(
+                            f"📊 STATUS\n{texto_status}", None, self.log)
                         continue
                     if tipo not in ("ACATAR", "DISPENSAR"):
                         continue
