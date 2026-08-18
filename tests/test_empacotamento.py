@@ -171,3 +171,179 @@ class TestEmpacotador(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestPainelDeLicencas(unittest.TestCase):
+    """O painel é a chave do negócio, e o abridor dele tem duas regras.
+
+    17/08: "gere o painel de licença para eu salvar junto com os arquivos,
+    para ao clicar, abrir o chrome, e nas próximas atualizações me entregue
+    tudo junto em um zip".
+
+    O painel em si NÃO carrega segredo: a senha de administrador é digitada
+    nele e fica no localStorage do navegador daquela máquina. O que ele
+    carrega é PODER — com a senha, cria e revoga licença. Por isso ele vai no
+    pacote DELE e nunca no do cliente."""
+
+    def test_o_abridor_do_mac_usa_o_CHROME(self):
+        """Antes usava `open` puro, que vai para o navegador padrão. O painel
+        guarda servidor e senha por NAVEGADOR: abrir hoje no Safari e amanhã
+        no Chrome faz o painel parecer que 'esqueceu tudo'."""
+        with open(os.path.join(RAIZ, "ABRIR_PAINEL_LICENCAS.command"),
+                  encoding="utf-8") as f:
+            sh = f.read()
+        self.assertIn('open -a "Google Chrome"', sh)
+        self.assertIn("Google Chrome.app", sh, "não confere se o Chrome existe")
+
+    def test_o_abridor_do_mac_nao_falha_calado_sem_chrome(self):
+        """Máquina sem Chrome não pode ficar sem painel — mas o trader precisa
+        saber que a memória vai ser outra."""
+        with open(os.path.join(RAIZ, "ABRIR_PAINEL_LICENCAS.command"),
+                  encoding="utf-8") as f:
+            sh = f.read()
+        self.assertIn("navegador padrão", sh)
+        self.assertIn("else", sh)
+
+    def test_o_WINDOWS_tambem_tem_abridor(self):
+        """O painel ia no pacote do Windows e não tinha como abrir com dois
+        cliques — ficava um HTML solto no meio dos arquivos."""
+        self.assertTrue(_existe("ABRIR_PAINEL_LICENCAS.bat"))
+        with open(os.path.join(RAIZ, "ABRIR_PAINEL_LICENCAS.bat"),
+                  encoding="utf-8") as f:
+            bat = f.read()
+        self.assertIn("chrome.exe", bat)
+        self.assertIn("navegador padrao", bat, "falha calado sem Chrome")
+
+
+class TestOPainelNuncaVaiParaOCliente(unittest.TestCase):
+    """A única regra desta entrega que não tem volta.
+
+    Quem recebe o painel E a senha administra as licenças no lugar dele. O
+    `--sem-painel` existe para isso, e precisa tirar o painel E os atalhos —
+    um botão 'Abrir Painel de Licenças' num pacote de cliente avisa que existe
+    um painel de licenças, o que já é informação demais."""
+
+    def _mod(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "empacotar", os.path.join(RAIZ, "empacotar.py"))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+
+    def test_sem_painel_tira_o_painel_E_os_dois_atalhos(self):
+        m = self._mod()
+        for sistema in ("windows", "mac"):
+            especificos = m.SO_WINDOWS if sistema == "windows" else m.SO_MAC
+            limpos = [a for a in especificos if "PAINEL_LICENCAS" not in a]
+            arquivos = m.COMUM + limpos          # sem o PAINEL
+            for a in arquivos:
+                self.assertNotIn("painel_licencas", a.lower(),
+                                 f"{sistema}: o painel ficou no pacote limpo")
+                self.assertNotIn("PAINEL_LICENCAS", a,
+                                 f"{sistema}: o atalho do painel ficou no "
+                                 "pacote limpo — ele anuncia que o painel "
+                                 "existe")
+
+    def test_com_painel_os_dois_sistemas_levam_o_atalho(self):
+        """O pacote dele tem de abrir com dois cliques nos dois sistemas."""
+        m = self._mod()
+        self.assertIn("ABRIR_PAINEL_LICENCAS.command", m.SO_MAC)
+        self.assertIn("ABRIR_PAINEL_LICENCAS.bat", m.SO_WINDOWS)
+        self.assertEqual(m.PAINEL, "painel_licencas.html")
+
+    def test_o_painel_nao_carrega_senha_gravada(self):
+        """Se a senha estivesse escrita no arquivo, o painel viraria segredo em
+        si — e um zip esquecido numa pasta entregaria o negócio. Ela é digitada
+        e fica no navegador."""
+        with open(os.path.join(RAIZ, m_painel()), encoding="utf-8") as f:
+            html = f.read()
+        self.assertIn('type="password"', html,
+                      "a senha deixou de ser um campo digitado")
+        self.assertIn("localStorage", html)
+
+
+def m_painel():
+    return "painel_licencas.html"
+
+
+class TestOZipUnicoDeEntrega(unittest.TestCase):
+    """17/08: "nas próximas atualizações me entregue tudo junto em um zip".
+
+    Não é só conforto. O pacote DELE e o do CLIENTE têm exatamente o MESMO
+    NOME DE ARQUIVO — `SMC_QUANT_PRO_MAC_v2.42.1.zip` nos dois casos. Dois
+    zips de mesmo nome em pastas diferentes do computador é a receita para
+    enviar o errado uma vez, e enviar o painel de licenças a um cliente não
+    tem volta. Aqui eles nascem dentro do mesmo zip, em SEU/ e CLIENTE/.
+    """
+
+    def _mod(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "empacotar", os.path.join(RAIZ, "empacotar.py"))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+
+    def test_SEU_leva_o_painel_e_CLIENTE_nao(self):
+        """CONSTRÓI o zip de verdade e abre os pacotes de dentro.
+
+        Isto existe porque a primeira versão tinha um defeito que só a
+        construção real pegaria: `montar()` grava sempre no MESMO nome, e o
+        pacote do CLIENTE sobrescrevia o SEU antes de qualquer um ser lido.
+        Os dois apontavam para o mesmo arquivo, e a pasta SEU/ saía com o
+        conteúdo do cliente — silenciosamente, com o nome certo por cima."""
+        import zipfile, io, shutil, tempfile
+        m = self._mod()
+        destino = os.path.join(RAIZ, f"SMC_QUANT_PRO_ENTREGA_v{m.versao()}.zip")
+        ja_existia = os.path.exists(destino)
+        reserva = None
+        if ja_existia:
+            reserva = tempfile.mktemp(suffix=".zip")
+            shutil.copy2(destino, reserva)
+        try:
+            m.montar_entrega_unica(["mac"])
+            with zipfile.ZipFile(destino) as z:
+                nomes = z.namelist()
+                self.assertIn("LEIA-PRIMEIRO.txt", nomes)
+                seu = [n for n in nomes if n.startswith("SEU/")]
+                cli = [n for n in nomes if n.startswith("CLIENTE/")]
+                self.assertEqual(len(seu), 1, nomes)
+                self.assertEqual(len(cli), 1, nomes)
+
+                with zipfile.ZipFile(io.BytesIO(z.read(seu[0]))) as interno:
+                    dentro = interno.namelist()
+                self.assertTrue(
+                    any("painel_licencas.html" in n for n in dentro),
+                    "o pacote SEU saiu SEM o painel — provavelmente foi "
+                    "sobrescrito pelo do cliente")
+                self.assertTrue(
+                    any("ABRIR_PAINEL_LICENCAS" in n for n in dentro),
+                    "o pacote SEU saiu sem o atalho do painel")
+
+                with zipfile.ZipFile(io.BytesIO(z.read(cli[0]))) as interno:
+                    dentro = interno.namelist()
+                for n in dentro:
+                    self.assertNotIn("painel", n.lower(),
+                                     "O PAINEL VAZOU PARA O PACOTE DO CLIENTE")
+        finally:
+            if os.path.exists(destino):
+                os.remove(destino)
+            if reserva:
+                shutil.move(reserva, destino)
+
+    def test_entrega_e_sem_painel_nao_combinam(self):
+        """--entrega já traz as duas versões. Aceitar --sem-painel junto
+        produziria um 'pacote de entrega' sem a metade que é dele."""
+        m = self._mod()
+        with self.assertRaises(SystemExit):
+            m.main(["--entrega", "--sem-painel"])
+
+    def test_o_leia_primeiro_diz_qual_e_qual_ANTES_de_tudo(self):
+        m = self._mod()
+        texto = m.LEIA_PRIMEIRO.format(v="0.0.0")
+        self.assertIn("MESMO NOME", texto)
+        self.assertIn("é o SEU", texto)
+        self.assertIn("é o que você ENVIA", texto)
+        self.assertIn("grep -i painel", texto,
+                      "não ensina a conferência de cinco segundos")

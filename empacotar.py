@@ -5,6 +5,7 @@
     python3 empacotar.py windows    # só o do Windows
     python3 empacotar.py mac        # só o do Mac
     python3 empacotar.py --sem-painel   # sem o painel de licenças (ver abaixo)
+    python3 empacotar.py --entrega      # UM zip com os dois: SEU/ e CLIENTE/
 
 POR QUE ISTO EXISTE
 -------------------
@@ -76,6 +77,11 @@ SO_WINDOWS = [
     "LEIA-ME_WINDOWS.txt",
     "instalador/LEIA-ME.md",
     "instalador/SMC_Quant_Pro.iss",
+    # O abridor do painel EXISTIA só no Mac. No Windows o painel ia junto no
+    # pacote e não tinha como abrir com dois cliques — ficava um HTML solto no
+    # meio dos arquivos. Sai automaticamente com --sem-painel, porque o filtro
+    # olha "PAINEL_LICENCAS" no nome.
+    "ABRIR_PAINEL_LICENCAS.bat",
 ]
 SO_MAC = [
     "requirements-mac.txt",
@@ -152,13 +158,112 @@ def montar(sistema, com_painel=True):
     return nome_zip
 
 
+LEIA_PRIMEIRO = """PACOTE DE ENTREGA — SMC QUANT PRO v{v}
+=======================================================================
+
+Dentro deste zip há DUAS pastas. Elas contêm arquivos com o MESMO NOME e
+conteúdo DIFERENTE. Por isso vieram separadas, e por isso este aviso é a
+primeira coisa que você lê.
+
+
+SEU/                    <-- é o SEU. Instale a partir daqui.
+  Traz o painel_licencas.html e o atalho ABRIR_PAINEL_LICENCAS
+  (.command no Mac, .bat no Windows). Dois cliques no atalho abrem o
+  painel no Google Chrome.
+
+  O painel NÃO guarda a sua senha: ela é digitada nele e fica no
+  navegador daquela máquina. O que ele dá é PODER — com a senha, cria e
+  revoga licença. Por isso ele fica aqui, e só aqui.
+
+
+CLIENTE/                <-- é o que você ENVIA. Nunca envie o de cima.
+  Idêntico ao SEU, menos o painel e os atalhos. O atalho sozinho já
+  anunciaria ao cliente que existe um painel de licenças.
+
+
+QUAL ARQUIVO MANDAR PARA CADA CLIENTE
+-------------------------------------
+  MacBook / iMac (Apple Silicon) ....  SMC_QUANT_PRO_MAC_v{v}.zip
+  Windows 10 ou 11 ..................  SMC_QUANT_PRO_WINDOWS_v{v}.zip
+
+Não existe pacote que sirva para os dois. Cada um traz o instalador, o
+LEIA-ME e os scripts do seu próprio sistema.
+
+
+CONFERÊNCIA DE CINCO SEGUNDOS, ANTES DE ENVIAR
+----------------------------------------------
+  unzip -l CLIENTE/SMC_QUANT_PRO_MAC_v{v}.zip | grep -i painel
+
+Se isso imprimir qualquer coisa, PARE e não envie. Essa linha tem de sair
+vazia.
+
+O passo a passo completo está no ENTREGA_AO_CLIENTE.md, dentro de SEU/.
+"""
+
+
+def montar_entrega_unica(alvos):
+    """UM zip com tudo: o pacote dele e o do cliente, separados por pasta.
+
+    Pedido de 17/08: "nas próximas atualizações me entregue tudo junto em um
+    zip". Antes saíam dois (ou quatro) arquivos soltos, e ele tinha de saber
+    de cabeça qual era qual.
+
+    O risco que isto remove é real e não é de conforto: o pacote DELE e o do
+    CLIENTE têm exatamente o MESMO NOME DE ARQUIVO. Dois zips com o mesmo nome
+    em pastas diferentes do computador é a receita para enviar o errado uma
+    vez — e enviar o painel de licenças a um cliente não tem volta.
+
+    Aqui eles nascem dentro do mesmo zip, em SEU/ e CLIENTE/, com um
+    LEIA-PRIMEIRO que diz qual é qual antes de qualquer outra coisa."""
+    v = versao()
+    # OS BYTES SÃO LIDOS NA HORA, e isso não é detalhe de estilo.
+    # `montar()` grava sempre no MESMO nome de arquivo — é a mesma versão, o
+    # mesmo sistema. Guardar os caminhos e só depois montar o zip final fazia
+    # o pacote do CLIENTE sobrescrever o SEU antes de qualquer um ser lido: os
+    # dois apontavam para o mesmo arquivo, e a pasta SEU/ saía com o conteúdo
+    # do cliente. Silenciosamente, e com o nome certo por cima.
+    conteudo = {"SEU": [], "CLIENTE": []}
+    for sistema in alvos:
+        for pasta, com_painel in (("SEU", True), ("CLIENTE", False)):
+            caminho = montar(sistema, com_painel=com_painel)
+            with open(caminho, "rb") as f:
+                conteudo[pasta].append((os.path.basename(caminho), f.read()))
+            os.remove(caminho)
+
+    nome = os.path.join(RAIZ, f"SMC_QUANT_PRO_ENTREGA_v{v}.zip")
+    if os.path.exists(nome):
+        os.remove(nome)
+    with zipfile.ZipFile(nome, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("LEIA-PRIMEIRO.txt", LEIA_PRIMEIRO.format(v=v))
+        for pasta in ("SEU", "CLIENTE"):
+            for base, dados in conteudo[pasta]:
+                # Os zips internos já estão comprimidos: comprimir de novo
+                # gasta tempo e não muda o tamanho.
+                z.writestr(f"{pasta}/{base}", dados,
+                           compress_type=zipfile.ZIP_STORED)
+
+    tam = os.path.getsize(nome) / 1024
+    print(f"\n📦 {os.path.basename(nome)}  ({tam:.0f} KB)")
+    print("   SEU/      → com painel de licenças e atalho (é o seu)")
+    print("   CLIENTE/  → sem painel e sem atalho (é o que você envia)")
+    return nome
+
+
 def main(argv):
     com_painel = "--sem-painel" not in argv
+    entrega = "--entrega" in argv
     alvos = [a.lower() for a in argv if not a.startswith("--")] or ["windows", "mac"]
     desconhecidos = [a for a in alvos if a not in ("windows", "mac")]
     if desconhecidos:
         raise SystemExit(f"Sistema desconhecido: {desconhecidos}. "
                          "Use 'windows', 'mac', ou nenhum para os dois.")
+    if entrega:
+        if "--sem-painel" in argv:
+            raise SystemExit(
+                "--entrega e --sem-painel não combinam: o pacote de entrega "
+                "já traz as DUAS versões, em SEU/ e CLIENTE/.")
+        montar_entrega_unica(alvos)
+        return 0
     for sistema in alvos:
         montar(sistema, com_painel)
     if com_painel:

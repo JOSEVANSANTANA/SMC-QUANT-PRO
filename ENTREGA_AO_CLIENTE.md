@@ -28,9 +28,44 @@ unzip -l SMC_QUANT_PRO_MAC_vX.Y.Z.zip | grep painel
 ```
 
 Se essa linha imprimir alguma coisa, **não envie esse zip**. Gere de novo com
-`--sem-painel`. No Mac há também o `ABRIR_PAINEL_LICENCAS.command`, que só
-serve para abrir o painel: sem o painel, ele não faz nada — mas prefira
-mandar o pacote gerado com `--sem-painel`, que já resolve os dois.
+`--sem-painel` — ele tira o painel **e os dois atalhos** de uma vez
+(`ABRIR_PAINEL_LICENCAS.command` no Mac, `ABRIR_PAINEL_LICENCAS.bat` no
+Windows). O atalho sozinho já é informação demais: ele anuncia ao cliente que
+existe um painel de licenças.
+
+**O painel em si não guarda a sua senha.** Ela é digitada nele e fica no
+`localStorage` do navegador daquela máquina. Por isso os atalhos abrem
+sempre no **Google Chrome**: cada navegador tem o seu próprio
+`localStorage`, e abrir hoje no Safari e amanhã no Chrome faz o painel
+parecer que "esqueceu tudo". Sem Chrome instalado, o atalho avisa e abre no
+navegador padrão — não falha calado.
+
+### Um comando só, e os dois pacotes saem separados
+
+```
+python3 empacotar.py --entrega
+```
+
+Sai **um zip** — `SMC_QUANT_PRO_ENTREGA_vX.Y.Z.zip` — com:
+
+```
+LEIA-PRIMEIRO.txt
+SEU/        SMC_QUANT_PRO_MAC_*.zip · SMC_QUANT_PRO_WINDOWS_*.zip   (com painel)
+CLIENTE/    SMC_QUANT_PRO_MAC_*.zip · SMC_QUANT_PRO_WINDOWS_*.zip   (sem painel)
+```
+
+**Por que num zip só, e não soltos:** o seu pacote e o do cliente têm
+exatamente o **mesmo nome de arquivo**. Dois zips de mesmo nome em pastas
+diferentes do computador é a receita para enviar o errado uma vez — e enviar
+o painel a um cliente não tem volta. Dentro do zip único eles nunca se
+misturam.
+
+Os comandos antigos continuam existindo, se você quiser um de cada vez:
+
+```
+python3 empacotar.py                 # só o SEU — com painel e atalhos
+python3 empacotar.py --sem-painel    # só o do CLIENTE — sem nada disso
+```
 
 ---
 
@@ -175,9 +210,9 @@ o botão de baixar. Você não precisa avisar ninguém um por um.
 ## Resumo de bolso
 
 ```
-python3 tests/run.py            # 577 testes — rode ANTES de empacotar
-python3 empacotar.py --sem-painel
-unzip -l SMC_QUANT_PRO_MAC_v*.zip | grep painel     # tem de sair vazio
+python3 tests/run.py            # 586 testes — rode ANTES de empacotar
+python3 empacotar.py --entrega                      # um zip: SEU/ e CLIENTE/
+unzip -l CLIENTE/SMC_QUANT_PRO_MAC_v*.zip | grep painel   # tem de sair vazio
 ```
 
 Manda o zip do sistema certo + a licença. O resto está no LEIA-ME de dentro
