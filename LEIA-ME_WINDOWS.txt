@@ -320,6 +320,7 @@ outros nove nao aparecem no registro porque nunca foram tentados.
    fechando no clique do titulo, e o app continua lembrando como voce
    deixou.
 
+[[SO SEU — nao vai no pacote do cliente]]
 7) COMO ENTREGAR A UM CLIENTE
    Novo arquivo ENTREGA_AO_CLIENTE.md, dentro do pacote: qual zip mandar
    para Mac e qual para Windows, a licenca, as permissoes do macOS que
@@ -328,6 +329,7 @@ outros nove nao aparecem no registro porque nunca foram tentados.
    Comeca pelo aviso que mais importa: o painel_licencas.html carrega o
    SEU token de administrador e NUNCA pode ir junto — use
    `python3 empacotar.py --sem-painel` e confira o zip antes de enviar.
+[[FIM SO SEU]]
 
 OS TESTES
 ----------

@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.43.1"
+VERSAO_ATUAL = "2.43.2"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -3589,6 +3589,43 @@ def classificar_erro_modelo(erro):
     if any(t in e for t in transitorios):
         return "transitorio"
     return "fatal"
+
+# ERRO DO PROGRAMA NÃO PODE SER CONFUNDIDO COM ERRO DO MERCADO.
+# 18/08, log dele, ciclo após ciclo, por horas:
+#     ⚠️ Erro ao analisar: name 'analise' is not defined
+# e, junto, a explicação que o próprio app dava: "A captura funciona; o que
+# falhou foi a leitura... estou sem quem leia o gráfico". Era mentira, e da
+# pior espécie: a leitura tinha funcionado, o gráfico tinha sido lido, as
+# confluências tinham sido impressas — e o ciclo morria DEPOIS disso, numa
+# linha que eu escrevi errado. O app culpou a Gemini pelo meu defeito, e ele
+# passou o pregão achando que era sobrecarga do Google.
+# Um NameError não melhora esperando. Ele tem de ser dito com todas as letras,
+# com arquivo e linha, para virar conserto em vez de paciência.
+_ERROS_DE_PROGRAMACAO = (NameError, AttributeError, TypeError, IndexError,
+                         KeyError, UnboundLocalError, ZeroDivisionError,
+                         AssertionError)
+
+
+def erro_e_defeito_do_programa(erro):
+    """True quando a falha é do CÓDIGO, não da rede, do modelo ou da tela."""
+    return isinstance(erro, _ERROS_DE_PROGRAMACAO)
+
+
+def onde_quebrou(erro):
+    """'arquivo.py:linha' do ponto mais fundo do erro, ou '' se não der.
+
+    É o que transforma "deu erro" em algo consertável: sem a linha, cada
+    relato vira uma caçada."""
+    try:
+        import traceback as _tb
+        quadros = _tb.extract_tb(erro.__traceback__)
+        if not quadros:
+            return ""
+        ultimo = quadros[-1]
+        return f"{os.path.basename(ultimo.filename)}:{ultimo.lineno}"
+    except Exception:
+        return ""
+
 
 def registrar_falha_modelo(modelo, erro):
     """Anota o que aconteceu com o modelo, para o OUTRO lado do app não repetir
@@ -17607,6 +17644,27 @@ class SmcQuantApp(ctk.CTk):
                     type=types.Type.ARRAY,
                     items=types.Schema(type=types.Type.STRING)
                 ),
+                # SEM ESTA LINHA, PEDIR NO PROMPT NÃO ADIANTA NADA.
+                # O `response_schema` não é sugestão: o servidor do Google
+                # OBRIGA o formato e devolve SÓ as chaves declaradas aqui. O
+                # prompt mandava listar os indicadores em maiúsculas, e a
+                # resposta voltava sem o campo — o programa então dizia, todo
+                # ciclo, "ela não listou nenhum indicador na tela", como se
+                # fosse falha de leitura. Prompt é PEDIDO; schema é GARANTIA.
+                # Entra em `required` de propósito: assim vem sempre, nem que
+                # seja lista vazia, e "vazio" passa a significar "olhei e não
+                # havia" em vez de "o campo nem existia".
+                "indicadores_na_tela": types.Schema(
+                    type=types.Type.ARRAY,
+                    items=types.Schema(type=types.Type.STRING),
+                    description="TODOS os indicadores visíveis no gráfico. Pelo nome quando "
+                                "reconhecer (VWAP, RSI, MACD, médias móveis, perfil de volume/VPOC, "
+                                "bandas, ATR, delta/footprint) e POR DESCRIÇÃO quando não reconhecer "
+                                "('faixa roxa acompanhando o preço', 'setas verdes nos fundos', "
+                                "'linha tracejada em 7740'). Nunca omita um indicador só porque não "
+                                "sabe o nome dele — descrever é melhor que ignorar. Lista vazia "
+                                "SOMENTE se o gráfico estiver realmente limpo."
+                ),
                 "confidence_score": types.Schema(type=types.Type.NUMBER),
                 "probabilidade": types.Schema(
                     type=types.Type.NUMBER,
@@ -17626,6 +17684,7 @@ class SmcQuantApp(ctk.CTk):
             },
             required=[
                 "asset_symbol", "current_price", "market_analysis", "confluence_factors",
+                "indicadores_na_tela",
                 "confidence_score", "probabilidade", "action", "ledger_update"
             ]
         )
@@ -18473,10 +18532,27 @@ class SmcQuantApp(ctk.CTk):
                         # basta — prompt é pedido, não garantia. Listar aqui é
                         # o que deixa ELE conferir se o indicador que acabou de
                         # colocar foi mesmo enxergado, em vez de supor.
-                        indicadores = (analise or {}).get("indicadores_na_tela") or []
+                        # `sinal` é o dicionário devolvido pela leitura — o mesmo
+                        # de onde saem market_analysis, entry_price e stop_loss
+                        # logo acima. Eu escrevi `analise` aqui na v2.43.0, um
+                        # nome que não existe neste escopo, e o ciclo inteiro
+                        # morria em "name 'analise' is not defined" DEPOIS de já
+                        # ter lido o gráfico e impresso as confluências: o log
+                        # parecia normal e nenhuma sugestão saía.
+                        indicadores = (sinal or {}).get("indicadores_na_tela") or []
                         if isinstance(indicadores, str):
                             indicadores = [indicadores]
                         indicadores = [str(i)[:80] for i in indicadores][:12]
+                        # Guardado JUNTO DA LEITURA, e não só numa variável
+                        # solta: com dois gráficos monitorados, `_ultimos_
+                        # indicadores` é sempre o da última janela lida. Sem
+                        # isto, perguntar "e o indicador novo do NQ?" logo
+                        # depois de o motor ler o MES devolveria os indicadores
+                        # do MES com o nome do NQ.
+                        self._ultima_analise["indicadores"] = list(indicadores)
+                        if ativo and ativo != "DESCONHECIDO":
+                            self._analises_por_ativo.setdefault(
+                                str(ativo).upper(), {})["indicadores"] = list(indicadores)
                         if indicadores:
                             self._ultimos_indicadores = indicadores
                             self.log("📐 Indicadores que ela ENXERGOU no gráfico: "
@@ -19021,7 +19097,25 @@ class SmcQuantApp(ctk.CTk):
                         # Falha numa janela NÃO pode calar as outras: cada uma é
                         # um ativo, e um erro de captura no MES não pode impedir
                         # a análise do NQ no mesmo ciclo.
-                        self.log(f"⚠️ Erro ao analisar '{nome_janela or 'tela cheia'}': {e}")
+                        defeito = erro_e_defeito_do_programa(e)
+                        local = onde_quebrou(e)
+                        if defeito:
+                            # DEFEITO MEU SE ANUNCIA COMO DEFEITO MEU.
+                            # O texto genérico abaixo dizia "o que falhou foi a
+                            # leitura", e em 18/08 isso mandou ele esperar a
+                            # Gemini desafogar por um erro que estava na linha
+                            # 18476 do meu código. Esperar não conserta código.
+                            self.log(
+                                f"🐞 DEFEITO DO PROGRAMA em "
+                                f"{local or 'main_app.py'}: {e}. "
+                                "Isto NÃO é sobrecarga da IA, cota nem "
+                                "problema no seu gráfico — é erro no código, e "
+                                "esperar não resolve. Nenhuma sugestão vai sair "
+                                "desta janela enquanto ele existir. Me mande "
+                                "esta linha inteira.")
+                        else:
+                            self.log(f"⚠️ Erro ao analisar "
+                                     f"'{nome_janela or 'tela cheia'}': {e}")
                         # CICLO PERDIDO PRECISA APARECER PARA ELE.
                         # Em 13/08 dois ciclos seguidos morreram em 503/504 e
                         # isso existiu só dentro do Registro. Quem esperava
@@ -19029,27 +19123,35 @@ class SmcQuantApp(ctk.CTk):
                         # parado — de novo. Silêncio nunca explica silêncio.
                         est["ciclos_perdidos"] = est.get("ciclos_perdidos", 0) + 1
                         if est["ciclos_perdidos"] == 2:
-                            motivo = ("os modelos da Gemini estão sobrecarregados "
-                                      "ou sem cota agora"
-                                      if classificar_erro_modelo(e) in
-                                      ("transitorio", "cota")
-                                      else f"{str(e)[:120]}")
+                            if defeito:
+                                motivo = (f"um DEFEITO NO PROGRAMA em "
+                                          f"{local or 'main_app.py'} ({e})")
+                                remedio = (
+                                    "Isto não é a IA sobrecarregada nem o seu "
+                                    "gráfico: é erro no código, e ele não passa "
+                                    "sozinho. Me mande esta mensagem — é o "
+                                    "suficiente para consertar.")
+                            else:
+                                motivo = ("os modelos da Gemini estão sobrecarregados "
+                                          "ou sem cota agora"
+                                          if classificar_erro_modelo(e) in
+                                          ("transitorio", "cota")
+                                          else f"{str(e)[:120]}")
+                                remedio = (
+                                    "A captura funciona; o que falhou foi a "
+                                    "leitura. Sigo tentando a cada ciclo e aviso "
+                                    "quando voltar — não estou parada, estou sem "
+                                    "quem leia o gráfico.")
                             self._chat_feed(
                                 f"⚠️ Perdi as 2 últimas análises de "
                                 f"'{nome_janela or 'tela cheia'}': {motivo}. "
-                                "A captura funciona; o que falhou foi a leitura. "
-                                "Sigo tentando a cada ciclo e aviso quando "
-                                "voltar — não estou parada, estou sem quem leia "
-                                "o gráfico.")
+                                + remedio)
                             try:
                                 enviar_relatorio_whatsapp(
                                     f"⚠️ *Análises falhando — "
                                     f"{time.strftime('%d/%m/%Y %H:%M')}*\n"
                                     f"Perdi as 2 últimas leituras: {motivo}.\n"
-                                    "O motor continua tentando. Nenhuma "
-                                    "sugestão sai enquanto isso — prefiro te "
-                                    "avisar a te deixar esperando.", None,
-                                    self.log)
+                                    + remedio, None, self.log)
                             except Exception:
                                 pass
                     else:

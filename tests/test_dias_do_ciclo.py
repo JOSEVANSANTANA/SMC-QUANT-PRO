@@ -726,3 +726,48 @@ class TestOsIndicadoresDaTela(unittest.TestCase):
         um campo novo — trocaria um problema por um pior."""
         ns = carregar(["CHAVES_DA_ANALISE"])
         self.assertNotIn("indicadores_na_tela", ns["CHAVES_DA_ANALISE"])
+
+    def test_o_SCHEMA_da_gemini_declara_o_campo(self):
+        """SEM ISTO, PEDIR NO PROMPT NÃO ADIANTA NADA — e foi o que aconteceu.
+
+        O `response_schema` não é sugestão: o servidor do Google devolve SÓ as
+        chaves declaradas ali. Eu escrevi a instrução em maiúsculas no prompt e
+        esqueci do schema. A resposta voltava sem o campo, e o programa
+        anunciava, ciclo após ciclo, "ela não listou nenhum indicador na tela"
+        — como se fosse falha de leitura dela, quando era omissão minha.
+        Prompt é PEDIDO; schema é GARANTIA."""
+        fonte = self._fonte()
+        i = fonte.index("SIGNAL_SCHEMA = types.Schema(")
+        bloco = fonte[i:fonte.index("config_horario = carregar_config()", i)]
+        self.assertIn('"indicadores_na_tela": types.Schema(', bloco,
+                      "o campo não está declarado no schema — a Gemini nunca "
+                      "vai devolvê-lo, por mais que o prompt peça")
+        # e é OBRIGATÓRIO: assim vem sempre, nem que seja lista vazia, e
+        # "vazio" passa a significar "olhei e não havia".
+        j = bloco.index("required=[")
+        self.assertIn("indicadores_na_tela", bloco[j:])
+
+    def test_o_campo_e_lido_do_dicionario_QUE_EXISTE(self):
+        """O defeito de 18/08, o que derrubou todo ciclo do motor dele:
+
+            ⚠️ Erro ao analisar: name 'analise' is not defined
+
+        Eu li o campo de `analise`, um nome que não existe naquele escopo — o
+        dicionário da leitura ali se chama `sinal`. O ciclo lia o gráfico,
+        imprimia as confluências e morria na linha seguinte, sem sugestão
+        nenhuma. (O crivo geral está em test_nomes_indefinidos.py; aqui fica a
+        linha específica, porque foi esta que quebrou.)"""
+        fonte = self._fonte()
+        self.assertIn('indicadores = (sinal or {}).get("indicadores_na_tela")',
+                      fonte)
+        self.assertNotIn('(analise or {}).get("indicadores_na_tela")', fonte)
+
+    def test_os_indicadores_ficam_junto_da_leitura_DAQUELE_ativo(self):
+        """Com dois gráficos monitorados, uma variável solta guarda sempre o
+        da última janela lida — e "e o indicador novo do NQ?" responderia com
+        os indicadores do MES."""
+        fonte = self._fonte()
+        self.assertIn('self._ultima_analise["indicadores"] = list(indicadores)',
+                      fonte)
+        i = fonte.index('self._ultima_analise["indicadores"]')
+        self.assertIn("_analises_por_ativo", fonte[i:i + 500])

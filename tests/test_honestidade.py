@@ -987,3 +987,78 @@ class TestBaseNaoSequestraPergunta(unittest.TestCase):
                   "o que é premium e discount?", "o que é inducement?",
                   "o que é tilt?", "o que é poc?"):
             self.assertIsNotNone(ns["buscar_base_smc"](t), t)
+
+
+class TestDefeitoDoProgramaNaoSeDisfarcaDeErroDaIA(unittest.TestCase):
+    """18/08, log do motor dele, ciclo após ciclo, por horas:
+
+        📊 Ativo: MES | Leitura IA: ... | Confiança: ... | Preço: ...
+        🔎 Confluências identificadas: ...
+        ⚠️ Erro ao analisar: name 'analise' is not defined
+
+    E, junto, a explicação que o próprio app dava: "A captura funciona; o que
+    falhou foi a leitura... estou sem quem leia o gráfico."
+
+    Era mentira, e da pior espécie. A leitura TINHA funcionado — o gráfico foi
+    lido, o preço saiu, as confluências foram impressas. O ciclo morria na
+    linha seguinte, numa variável que eu escrevi errado. O app culpou a Gemini
+    pelo meu defeito, e ele passou o pregão esperando o Google desafogar.
+
+    NameError não melhora esperando. Tem de ser dito com todas as letras."""
+
+    def _ns(self):
+        return carregar(["erro_e_defeito_do_programa", "onde_quebrou",
+                         "_ERROS_DE_PROGRAMACAO"])
+
+    def test_o_erro_exato_de_18_08_e_reconhecido_como_defeito(self):
+        ns = self._ns()
+        # A linha exata da v2.43.0, levantada por `eval` de propósito: escrita
+        # direto aqui, ela seria (com razão) acusada pelo crivo de nomes
+        # inexistentes em test_nomes_indefinidos.py.
+        try:
+            eval('(analise or {}).get("indicadores_na_tela")', {})
+        except NameError as e:
+            self.assertTrue(ns["erro_e_defeito_do_programa"](e))
+        else:
+            self.fail("o NameError não aconteceu — o teste não testou nada")
+
+    def test_falha_de_rede_ou_de_cota_NAO_vira_defeito_do_programa(self):
+        """Errar para este lado seria pior: mandaria ele caçar defeito no
+        código toda vez que o Google desse 503."""
+        ns = self._ns()
+        for erro in (ConnectionError("503 UNAVAILABLE"),
+                     TimeoutError("deadline exceeded"),
+                     RuntimeError("429 RESOURCE_EXHAUSTED"),
+                     OSError("connection reset")):
+            self.assertFalse(ns["erro_e_defeito_do_programa"](erro),
+                             repr(erro))
+
+    def test_diz_ARQUIVO_E_LINHA_de_onde_quebrou(self):
+        """Sem a linha, cada relato dele vira uma caçada. Com ela, o conserto
+        começa na mensagem."""
+        ns = self._ns()
+        try:
+            1 / 0
+        except ZeroDivisionError as e:
+            local = ns["onde_quebrou"](e)
+        self.assertRegex(local, r"^test_honestidade\.py:\d+$")
+
+    def test_erro_sem_traceback_nao_derruba_o_aviso(self):
+        """A mensagem de erro não pode falhar ao explicar um erro."""
+        ns = self._ns()
+        self.assertEqual(ns["onde_quebrou"](ValueError("nunca levantado")), "")
+        self.assertEqual(ns["onde_quebrou"](None), "")
+
+    def test_o_motor_ANUNCIA_defeito_como_defeito(self):
+        """E, principalmente, para de dizer que é a IA quando não é."""
+        fonte = fonte_do_arquivo()
+        self.assertIn("DEFEITO DO PROGRAMA em", fonte)
+        i = fonte.index("DEFEITO DO PROGRAMA em")
+        bloco = fonte[i:i + 700]
+        self.assertIn("NÃO é sobrecarga da IA", bloco)
+        self.assertIn("esperar não resolve", bloco)
+        # a frase que enganou não pode ser dita neste caso
+        j = fonte.index("A captura funciona; o que falhou foi a ")
+        self.assertIn("else:", fonte[j - 900:j],
+                      "o texto que culpa a leitura precisa estar no ramo que "
+                      "NÃO é defeito de código")

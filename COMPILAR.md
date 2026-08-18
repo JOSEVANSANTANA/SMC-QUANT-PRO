@@ -25,8 +25,13 @@ Os dois pacotes saem de um comando só, do próprio repositório:
 python empacotar.py            # gera os dois zips
 python empacotar.py windows    # só o do Windows
 python empacotar.py mac        # só o do Mac
-python empacotar.py --sem-painel   # sem o painel de licenças (para repasse)
 ```
+[[SO SEU — nao vai no pacote do cliente]]
+```
+python empacotar.py --sem-painel   # sem o painel de licenças (para repasse)
+python empacotar.py --entrega      # um zip só, com SEU/ e CLIENTE/ dentro
+```
+[[FIM SO SEU]]
 
 O script recusa gerar um pacote incompleto: se um arquivo da lista sumir do
 repositório, ele para e diz qual, em vez de entregar um zip capenga.

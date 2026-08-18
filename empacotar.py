@@ -59,6 +59,7 @@ COMUM = [
     "tests/test_inteligencia.py",
     "tests/test_mac.py",
     "tests/test_motor.py",
+    "tests/test_nomes_indefinidos.py",
     "tests/test_notificacao.py",
     "tests/test_piso_qualidade.py",
     "tests/test_pregao.py",
@@ -90,6 +91,11 @@ SO_MAC = [
     # e o Mac respondeu "a Apple não pôde verificar...", com um botão "Mover
     # para o Lixo" ao lado. Sem este arquivo, a instalação para ali.
     "DESBLOQUEAR_MAC.txt",
+    # A SAÍDA QUE NÃO DEPENDE DE NADA DAR CERTO. `bash script.sh` no Terminal
+    # nunca passa pelo Gatekeeper — ele só bloqueia o que o Finder LANÇA.
+    # E, descompactando pelo Terminal, a marca de quarentena nem chega a
+    # existir: quem marca é o Finder, não o `unzip`.
+    "INSTALAR_SEM_BLOQUEIO_MAC.sh",
     "SMC_Quant_Pro_MAC.spec",
     "INSTALAR_NO_MAC.md",
     "LEIA-ME_MAC.txt",
@@ -103,6 +109,44 @@ SO_MAC = [
 # isso vai nos pacotes — mas nunca pode ser repassado a um cliente. O script
 # avisa em toda execução, e `--sem-painel` gera os zips sem ele.
 PAINEL = "painel_licencas.html"
+
+# O GUIA DE REVENDA TAMBÉM É SEU, E ESTAVA INDO JUNTO.
+# Tirar o painel do zip do cliente não adianta nada se o pacote leva, ao lado,
+# o passo a passo que diz "abra o painel_licencas.html na sua máquina e gere
+# uma licença para ele" e "o painel carrega o seu token de administrador". O
+# arquivo não vaza a senha, mas entrega ao cliente o desenho inteiro do
+# negócio — inclusive que existe um painel, que é justamente o que ele não
+# deveria saber. Sai junto com o painel, pelo mesmo motivo.
+SO_SEU = ["ENTREGA_AO_CLIENTE.md"]
+
+# E dentro dos LEIA-ME há trechos que também são só seus (a seção do painel, o
+# item do changelog que explica a revenda). Ali não dá para tirar o arquivo
+# inteiro — o LEIA-ME é do cliente. Então os trechos vêm delimitados no
+# próprio texto, e o empacotador os remove ao montar o pacote do cliente.
+# As MARCAS somem dos dois pacotes: elas são instrução para o empacotador, não
+# para quem lê.
+MARCA_INICIO = "[[SO SEU — nao vai no pacote do cliente]]"
+MARCA_FIM = "[[FIM SO SEU]]"
+
+
+def texto_do_pacote(conteudo, com_painel=True):
+    """Tira os trechos marcados como só-seus (quando for pacote de cliente) e,
+    sempre, as próprias marcas.
+
+    Função PURA, de propósito: é o tipo de coisa que precisa ser conferível
+    sem gerar zip nenhum."""
+    saida, pulando = [], False
+    for linha in conteudo.splitlines(keepends=True):
+        nua = linha.strip()
+        if nua == MARCA_INICIO:
+            pulando = not com_painel
+            continue
+        if nua == MARCA_FIM:
+            pulando = False
+            continue
+        if not pulando:
+            saida.append(linha)
+    return "".join(saida)
 
 
 def versao():
@@ -133,6 +177,8 @@ def montar(sistema, com_painel=True):
         # painel de licenças que ele não deveria nem saber que existe.
         especificos = [a for a in especificos if "PAINEL_LICENCAS" not in a]
     arquivos = COMUM + especificos + ([PAINEL] if com_painel else [])
+    if not com_painel:
+        arquivos = [a for a in arquivos if a not in SO_SEU]
     conferir(arquivos)
 
     v = versao()
@@ -155,6 +201,13 @@ def montar(sistema, com_painel=True):
                 info.compress_type = zipfile.ZIP_DEFLATED
                 with open(origem, "rb") as f:
                     z.writestr(info, f.read())
+            elif rel.endswith((".txt", ".md")):
+                # Passa pelo filtro dos trechos só-seus. Vale para TODOS os
+                # textos: um trecho marcado num arquivo que eu esqueça de
+                # listar aqui continuaria vazando, e a regra que depende de eu
+                # lembrar não é regra.
+                with open(origem, encoding="utf-8") as f:
+                    z.writestr(destino, texto_do_pacote(f.read(), com_painel))
             else:
                 z.write(origem, destino)
 

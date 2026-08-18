@@ -381,3 +381,130 @@ class TestOSocorroDoMacVaiNoPacote(unittest.TestCase):
         texto = m.LEIA_PRIMEIRO.format(v="0.0.0")
         self.assertIn("GATEKEEPER", texto.upper())
         self.assertIn("DESBLOQUEAR_MAC.txt", texto)
+
+
+class TestOGuiaDeRevendaTambemENaoVaiParaOCliente(unittest.TestCase):
+    """Tirar o painel do zip do cliente não adianta se o pacote leva, ao lado,
+    o passo a passo que diz "abra o painel_licencas.html na sua máquina e gere
+    uma licença para ele".
+
+    Conferido no zip de v2.43.1: o ENTREGA_AO_CLIENTE.md — o guia de REVENDA,
+    escrito para ele — ia dentro do pacote do CLIENTE, junto com as seções do
+    LEIA-ME que explicam o painel e a operação de licenças. A senha não vazava;
+    o desenho do negócio, sim, inclusive a existência do painel, que é
+    justamente o que o cliente não deveria saber."""
+
+    def _mod(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "empacotar", os.path.join(RAIZ, "empacotar.py"))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+
+    def test_o_guia_de_revenda_sai_do_pacote_do_cliente(self):
+        m = self._mod()
+        self.assertIn("ENTREGA_AO_CLIENTE.md", m.SO_SEU)
+        self.assertIn("ENTREGA_AO_CLIENTE.md", m.COMUM,
+                      "o guia continua indo no pacote DELE — é lá que serve")
+
+    def test_o_trecho_marcado_some_no_do_cliente_e_fica_no_dele(self):
+        m = self._mod()
+        texto = ("linha de todos\n"
+                 f"{m.MARCA_INICIO}\n"
+                 "segredo do negocio\n"
+                 f"{m.MARCA_FIM}\n"
+                 "outra linha de todos\n")
+        dele = m.texto_do_pacote(texto, com_painel=True)
+        cliente = m.texto_do_pacote(texto, com_painel=False)
+        self.assertIn("segredo do negocio", dele)
+        self.assertNotIn("segredo do negocio", cliente)
+        for saida in (dele, cliente):
+            self.assertIn("linha de todos", saida)
+            self.assertIn("outra linha de todos", saida)
+
+    def test_as_MARCAS_nunca_aparecem_para_ninguem(self):
+        """Marca é instrução para o empacotador. Se ela chega ao leitor, o
+        arquivo fica com cara de rascunho — nos DOIS pacotes."""
+        m = self._mod()
+        texto = f"a\n{m.MARCA_INICIO}\nb\n{m.MARCA_FIM}\nc\n"
+        for com in (True, False):
+            saida = m.texto_do_pacote(texto, com_painel=com)
+            self.assertNotIn("SO SEU", saida)
+            self.assertNotIn("[[", saida)
+
+    def test_texto_sem_marca_nenhuma_passa_intacto(self):
+        """O filtro roda em TODO .txt e .md do pacote. Se ele mexesse num
+        arquivo sem marca, estragaria o LEIA-ME inteiro em silêncio."""
+        m = self._mod()
+        for arq in ("DESBLOQUEAR_MAC.txt", "LEIA-ME_MAC.txt"):
+            with open(os.path.join(RAIZ, arq), encoding="utf-8") as f:
+                original = f.read()
+            if m.MARCA_INICIO in original:
+                continue
+            self.assertEqual(m.texto_do_pacote(original, True), original, arq)
+            self.assertEqual(m.texto_do_pacote(original, False), original, arq)
+
+    def test_marca_aberta_e_nao_fechada_nao_engole_o_arquivo_inteiro(self):
+        """Se eu esquecer de fechar a marca, o certo é perder o resto daquele
+        trecho — nunca sobrar um LEIA-ME de duas linhas sem ninguém notar. Este
+        teste existe para que a falha apareça aqui, e não no zip do cliente."""
+        m = self._mod()
+        for arq in ("LEIA-ME_MAC.txt", "LEIA-ME_WINDOWS.txt",
+                    "DESBLOQUEAR_MAC.txt", "ENTREGA_AO_CLIENTE.md"):
+            caminho = os.path.join(RAIZ, arq)
+            if not os.path.exists(caminho):
+                continue
+            with open(caminho, encoding="utf-8") as f:
+                texto = f.read()
+            self.assertEqual(texto.count(m.MARCA_INICIO),
+                             texto.count(m.MARCA_FIM),
+                             f"{arq}: marca aberta sem fechar")
+            cliente = m.texto_do_pacote(texto, com_painel=False)
+            self.assertGreater(len(cliente), len(texto) * 0.5,
+                               f"{arq}: o pacote do cliente perdeu mais da "
+                               "metade do arquivo — marca sem fechamento?")
+
+    def test_NENHUM_texto_do_cliente_fala_em_painel_de_licencas(self):
+        """O teste que teria pego isto na v2.43.1, se existisse — e ele varre
+        TODO texto que o cliente recebe, não só os que eu lembrei de olhar.
+
+        Foi assim que apareceram os outros três: o DESBLOQUEAR_MAC.txt
+        enumerava o ABRIR_PAINEL_LICENCAS.command no meio de uma lista, o
+        COMPILAR.md ensinava o `--sem-painel`, e as notas do versao.json (que
+        viajam dentro do zip) contavam a história inteira do conserto."""
+        m = self._mod()
+        proibidos = ("painel_licencas", "PAINEL_LICENCAS", "painel de licen",
+                     "PAINEL DE LICEN", "ENTREGA_AO_CLIENTE", "sem-painel",
+                     "token de administrador")
+        for sistema in ("mac", "windows"):
+            especificos = m.SO_MAC if sistema == "mac" else m.SO_WINDOWS
+            especificos = [a for a in especificos if "PAINEL_LICENCAS" not in a]
+            for rel in m.COMUM + especificos:
+                if rel in m.SO_SEU or not rel.endswith((".txt", ".md", ".json")):
+                    continue
+                caminho = os.path.join(RAIZ, rel)
+                if not os.path.exists(caminho):
+                    continue
+                with open(caminho, encoding="utf-8") as f:
+                    cliente = m.texto_do_pacote(f.read(), com_painel=False)
+                for termo in proibidos:
+                    self.assertNotIn(
+                        termo, cliente,
+                        f"{rel} ({sistema}) entrega ao cliente a existência do "
+                        f"painel de licenças, em '{termo}'")
+
+    def test_as_notas_da_versao_nao_contam_o_negocio_dele(self):
+        """O versao.json vai DENTRO do pacote, e as notas aparecem no aviso de
+        atualização. Escrever ali "o painel de licenças carrega o seu token" é
+        o mesmo vazamento por outra porta — e eu fiz isso ao documentar o
+        conserto do vazamento. O que é dele se conta no ENTREGA_AO_CLIENTE.md,
+        que fica em SEU/."""
+        import json
+        with open(os.path.join(RAIZ, "versao.json"), encoding="utf-8") as f:
+            notas = json.load(f)["notas"].lower()
+        for proibido in ("painel", "revenda", "admin_token",
+                         "token de administrador"):
+            self.assertNotIn(proibido, notas,
+                             f"as notas da versão mencionam '{proibido}' — "
+                             "e elas viajam no pacote do cliente")

@@ -44,13 +44,45 @@ OS TRÊS PASSOS
    O caminho dela aparece sozinho, escrito no fim da linha.
    AGORA sim: aperte Enter.
 
-Não vai aparecer nenhuma mensagem de sucesso — no Terminal, silêncio é
-sinal de que deu certo. Volte ao Finder e dê dois cliques no
-INSTALAR_MAC.command normalmente.
+LEIA O QUE APARECER. Eu escrevi antes que "silêncio é sinal de que deu
+certo", e isso me custou caro: se a pasta estiver no iCloud Drive, o
+comando FALHA com "Operation not permitted" — e a instrução mandava
+ignorar justamente a linha que explicava a falha.
 
-Depois disso, os outros arquivos (CRIAR_APP.command,
-ABRIR_SMC_QUANT_PRO.command, ABRIR_PAINEL_LICENCAS.command) também abrem
-sem reclamação: o comando limpou a pasta toda de uma vez.
+  • Não apareceu nada           -> deu certo.
+  • Apareceu "Operation not permitted" ou "Permission denied"
+    -> NÃO deu certo. Vá para o CAMINHO CURTO logo abaixo.
+
+Deu certo? Volte ao Finder e dê dois cliques no INSTALAR_MAC.command.
+
+Depois disso, TODOS os outros .command da pasta também abrem sem
+reclamação: o comando limpou a pasta inteira de uma vez.
+
+
+=======================================================================
+  O CAMINHO CURTO — UM COMANDO SÓ, E RESOLVE TUDO
+=======================================================================
+
+Se os três passos acima falharem (ou se você preferir não pensar), há um
+jeito que NÃO tem como dar errado, porque a marca de quarentena nem chega
+a existir:
+
+QUEM APLICA A MARCA É O FINDER, ao descompactar. O `unzip` do Terminal
+não marca nada. Então, em vez de remediar, é só descompactar por aqui.
+
+  1) Coloque o zip que eu te mandei na pasta DOWNLOADS.
+  2) Salve o INSTALAR_SEM_BLOQUEIO_MAC.sh também em Downloads.
+  3) No Terminal, cole esta linha e aperte Enter:
+
+         bash ~/Downloads/INSTALAR_SEM_BLOQUEIO_MAC.sh
+
+`bash arquivo.sh` NUNCA passa pelo Gatekeeper — ele só bloqueia o que o
+FINDER lança. Por isso este caminho funciona mesmo com tudo bloqueado.
+
+O script instala em ~/Applications/SMC_QUANT_PRO (fora do iCloud), guarda
+a instalação anterior num backup datado, e CONFERE o resultado no fim,
+arquivo por arquivo. Se algo faltar, ele diz e para — em vez de terminar
+dizendo "pronto" com o pacote pela metade.
 
 
 SE PREFERIR NÃO USAR O TERMINAL

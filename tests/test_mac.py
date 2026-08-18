@@ -282,3 +282,92 @@ class TestOGatekeeperBloqueouTudo(unittest.TestCase):
             sh = self._ler(nome)
             self.assertIn("Mobile Documents", sh, nome)
             self.assertIn("ICLOUD DRIVE", sh.upper(), nome)
+
+
+class TestOCaminhoQueNaoDependeDeNada(unittest.TestCase):
+    """A segunda tentativa, depois de a primeira falhar na máquina dele.
+
+    Eu mandei rodar `xattr -dr` na pasta já extraída e escrevi, com todas as
+    letras, que "silêncio é sinal de que deu certo". Ele fez, e o erro
+    continuou. Dois motivos, os dois meus:
+
+      1. A pasta estava no iCLOUD DRIVE. Sem Acesso Total ao Disco, o
+         Terminal não reescreve atributo lá — o `xattr` imprime "Operation
+         not permitted". A minha instrução mandava ignorar exatamente a
+         linha que explicava a falha.
+
+      2. Eu estava REMEDIANDO em vez de EVITAR. A marca de quarentena é posta
+         por QUEM EXTRAI: o Finder marca tudo o que descompacta, o `unzip` do
+         Terminal não marca nada. Descompactando pelo Terminal, não há o que
+         desbloquear.
+
+    E `bash arquivo.sh` nunca passa pelo Gatekeeper — ele bloqueia o que o
+    FINDER lança, não o que o bash executa. Por isso o script funciona mesmo
+    com a pasta inteira bloqueada."""
+
+    def setUp(self):
+        pular_se_faltar("INSTALAR_SEM_BLOQUEIO_MAC.sh")
+
+    def _sh(self):
+        with open(os.path.join(RAIZ, "INSTALAR_SEM_BLOQUEIO_MAC.sh"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def test_descompacta_pelo_TERMINAL(self):
+        """É o que evita a quarentena em vez de remediá-la."""
+        sh = self._sh()
+        self.assertIn("unzip -q -o", sh)
+
+    def test_instala_FORA_do_icloud(self):
+        sh = self._sh()
+        self.assertIn('DESTINO="$HOME/Applications/SMC_QUANT_PRO"', sh)
+
+    def test_nao_perde_a_instalacao_anterior(self):
+        """Sobrescrever a pasta de alguém sem guardar cópia é o tipo de coisa
+        que só se descobre quando já não dá para voltar."""
+        sh = self._sh()
+        self.assertIn("anterior.$(date", sh)
+        self.assertIn("mv \"$DESTINO\"", sh)
+
+    def test_CONFERE_no_fim_e_para_se_faltar_arquivo(self):
+        """Foi a conferência que faltou da última vez: eu disse 'silêncio é
+        sinal de que deu certo' em vez de olhar o resultado."""
+        sh = self._sh()
+        self.assertIn("FALTANDO:", sh)
+        self.assertIn("A instalação ficou INCOMPLETA", sh)
+        self.assertIn("exit 1", sh)
+
+    def test_a_busca_do_zip_nao_usa_stat_nem_xargs_ls(self):
+        """Duas armadilhas já caíram aqui, e as duas passariam despercebidas:
+
+          • `stat -f` dá a data no Mac e o estado do SISTEMA DE ARQUIVOS no
+            Linux — o script chegou a "achar" um zip chamado
+            "Total: 16777216 Free: 16603400".
+          • `find | xargs ls -t` com busca VAZIA roda `ls -t` sem argumento,
+            que lista a PASTA ATUAL: sem nenhum zip, o script pegava o
+            primeiro arquivo do diretório e tentava descompactá-lo.
+        """
+        # SÓ AS LINHAS DE CÓDIGO. Os comentários do script CITAM as duas
+        # armadilhas para explicar por que não se usa nenhuma delas — procurar
+        # no arquivo inteiro acusaria justamente a documentação do conserto.
+        codigo = "\n".join(l for l in self._sh().splitlines()
+                           if not l.lstrip().startswith("#"))
+        self.assertNotIn("stat -f", codigo)
+        self.assertNotIn("xargs -0 ls -t", codigo)
+        self.assertIn('[ "$f" -nt "$achado" ]', codigo)
+
+    def test_lida_com_pasta_de_nome_com_espaco(self):
+        """'Mobile Documents' e 'Application Support' têm espaço no nome. Sem
+        -print0/-d '' o caminho quebra no meio e nada é encontrado."""
+        sh = self._sh()
+        self.assertIn("-print0", sh)
+        self.assertIn('read -r -d ""', sh)
+
+    def test_o_desbloquear_txt_deixou_de_mandar_ignorar_o_erro(self):
+        """A frase 'silêncio é sinal de que deu certo' mandava ignorar a única
+        linha que explicava por que não tinha funcionado."""
+        with open(os.path.join(RAIZ, "DESBLOQUEAR_MAC.txt"), encoding="utf-8") as f:
+            txt = f.read()
+        self.assertNotIn("silêncio é\nsinal de que deu certo", txt)
+        self.assertIn("Operation not permitted", txt)
+        self.assertIn("bash ~/Downloads/INSTALAR_SEM_BLOQUEIO_MAC.sh", txt)
