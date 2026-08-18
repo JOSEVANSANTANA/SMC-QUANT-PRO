@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.42.1"
+VERSAO_ATUAL = "2.43.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1224,6 +1224,7 @@ texto antes nem depois, sem ``` , com EXATAMENTE estas chaves:
  "current_price": número do último preço,
  "market_analysis": "texto em português",
  "confluence_factors": ["lista", "de", "textos"],
+ "indicadores_na_tela": ["TODOS os indicadores que voce VE no grafico, pelo nome: VWAP, RSI, medias moveis, perfil de volume, bandas, faixas coloridas, linhas desenhadas a mao. Liste ate o que voce nao souber nomear, descrevendo ('faixa roxa sobre o preco'). Lista vazia so se realmente nao houver nenhum."],
  "confidence_score": número de 0 a 100,
  "probabilidade": número de 0 a 100,
  "action": "BUY" ou "SELL" ou "HOLD",
@@ -2309,6 +2310,86 @@ def lancar_resultado_do_dia(dia_pregao, valor, contratos=1, ativo="LANCAMENTO",
     return pos
 
 
+def dia_do_ciclo_de_uma_data(plano, data, cfg=None):
+    """Em que dia do ciclo cai esta data. None quando está fora do prazo.
+
+    É a volta de `data_do_dia_do_ciclo`, e existe para saber a que
+    quadradinho um lançamento já gravado pertence — antes de o mapa mudar."""
+    if isinstance(data, str):
+        for formato in ("%d/%m/%Y", "%Y-%m-%d"):
+            try:
+                data = datetime.datetime.strptime(data, formato).date()
+                break
+            except ValueError:
+                continue
+    if isinstance(data, datetime.datetime):
+        data = data.date()
+    if not isinstance(data, datetime.date):
+        return None
+    for n in range(1, dias_meta_do_plano(plano) + 1):
+        if data_do_dia_do_ciclo(plano, n, cfg) == data:
+            return n
+    return None
+
+
+def remapear_lancamentos_para_o_novo_dia(plano_antes, plano_depois, cfg=None):
+    """Faz os LANÇAMENTOS acompanharem o número do dia quando o mapa muda.
+
+    18/08, 14:56, palavras dele: "conserte o plano de trading, no mesmo menu
+    de preenchimento dos dias, tá muito difícil de preencher, se preencher um,
+    apaga o outro, tá uma bagunça, parece que um está ligado ao outro".
+
+    Ele estava certo, e a causa era do jeito que eu desenhei. Dizer "hoje é o
+    dia 3" reposiciona TODO o calendário do ciclo: o dia 1 deixa de ser uma
+    data e passa a ser outra. Os lançamentos ficavam presos à DATA — então o
+    +433 que ele pôs no D1 aparecia no D2 depois do clique seguinte, e o D1
+    ficava vazio. Preencheu um, "apagou" o outro. No log dele há DEZ cliques
+    seguidos (dia 2, 4, 5, 6, 8, 2, 3, 2...): é alguém tentando fazer a conta
+    fechar contra uma ferramenta que embaralhava a cada tentativa.
+
+    Agora o lançamento pertence ao DIA, não à data. Quando o mapa muda, ele é
+    recarimbado para a nova data do MESMO número de dia.
+
+    Operação de verdade — sugestão acatada ou posição lida da corretora — NÃO
+    se move: ela é um fato sobre uma data, e reescrevê-la seria falsificar o
+    histórico. Só o que ele digitou à mão acompanha o rótulo.
+
+    Devolve a lista de (dia, valor, data_velha, data_nova) do que mudou."""
+    lista = carregar_posicoes()
+    conta = conta_ativa_id()
+    # ANTES de mexer: a que dia cada lançamento pertencia no mapa ANTIGO.
+    pendentes = []
+    for pos in lista:
+        if pos.get("origem") != "RESULTADO_DIA" or pos.get("conta_id") != conta:
+            continue
+        quando = _hora_do_registro(pos.get("data_fechamento"))
+        if not quando:
+            continue
+        dia_velho = dia_do_ciclo_de_uma_data(
+            plano_antes, data_do_pregao(quando, cfg), cfg)
+        if dia_velho:
+            pendentes.append((pos, dia_velho))
+    if not pendentes:
+        return []
+
+    movidos = []
+    for pos, dia in pendentes:
+        nova_data = data_do_dia_do_ciclo(plano_depois, dia, cfg)
+        if nova_data is None:
+            continue
+        novo_carimbo = carimbo_para_o_pregao(nova_data, cfg)
+        velho = str(pos.get("data_fechamento") or "")[:10]
+        if not novo_carimbo or novo_carimbo[:10] == velho:
+            continue
+        pos["data_abertura"] = novo_carimbo
+        pos["data_fechamento"] = novo_carimbo
+        movidos.append((dia, float(pos.get("pnl_final") or 0),
+                        velho, novo_carimbo[:10]))
+    if movidos:
+        salvar_posicoes(lista)
+    return movidos
+
+
 def consertar_lancamentos_fora_do_ciclo():
     """Traz de volta o dinheiro que a 2.41.0 gravou fora do próprio ciclo.
 
@@ -3388,6 +3469,36 @@ COOLDOWN_SOBRECARGA_SEG = 120  # 503/timeout: estaciona por 2 min
 # ali a espera é o serviço.
 ORCAMENTO_CHAT_SEG = 45
 TIMEOUT_CHAT_MS = 30_000
+
+# IMAGEM NÃO É VÍDEO, E ESSA CONFUSÃO CUSTOU CINCO MINUTOS DE SILÊNCIO.
+#
+# 18/08, 14:53, ele pediu "tira um print, se atenta nesse indicador novo que
+# coloquei na plataforma tradovate". Às 14:58 — cinco minutos depois — o
+# cabeçalho ainda dizia "olhando o gráfico (print de 14:53)…" e nenhuma
+# resposta tinha chegado. Palavras dele: "está muito lento para pensar".
+#
+# A causa: a regra acima ("não vale para anexo") tratava TODO anexo como
+# vídeo. Com anexo, o prazo de cada chamada virava 300 s e o teto de tempo do
+# turno era desligado por completo. Nove modelos × 300 s = quarenta e cinco
+# minutos de espera possível, sem nada na tela.
+#
+# Isso fazia sentido para um VÍDEO: subir e processar demora mesmo, e ali a
+# espera é o serviço. Não faz sentido nenhum para o print de um gráfico, que
+# vai embutido na própria mensagem, tem alguns KB e é lido em segundos.
+#
+# Então imagem tem prazo e teto próprios: largos o bastante para uma leitura
+# boa (a visão é mais lenta que texto), curtos o bastante para ele saber em
+# um minuto e meio se a resposta vem ou não vem.
+ORCAMENTO_CHAT_IMAGEM_SEG = 90
+TIMEOUT_CHAT_IMAGEM_MS = 60_000
+EXTENSOES_DE_IMAGEM = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp")
+
+
+def anexo_e_imagem(anexo):
+    """O anexo é uma imagem (print de gráfico) e não um vídeo/PDF?
+
+    Separar os dois é o que evita o print herdar a paciência do vídeo."""
+    return bool(anexo) and str(anexo).lower().endswith(EXTENSOES_DE_IMAGEM)
 
 _MODELOS = {
     "lista": list(_MODELOS_PREFERENCIA),
@@ -12202,6 +12313,20 @@ class SmcQuantApp(ctk.CTk):
                           f"({ua.get('hora')}):\n{ua.get('analise')}")
             if ua.get("confluencias"):
                 partes.append("Confluências vistas: " + "; ".join(ua["confluencias"]))
+        # OS INDICADORES DA TELA ENTRAM NA CONVERSA.
+        # 18/08, 14:53: "tira um print, se atenta nesse indicador novo que
+        # coloquei na plataforma tradovate". Sem esta linha ela não tinha como
+        # saber o que estava desenhado no gráfico dele, e responderia sobre
+        # indicador nenhum — ou inventaria um.
+        indic = getattr(self, "_ultimos_indicadores", None) or []
+        if indic:
+            partes.append(
+                "INDICADORES VISÍVEIS NO GRÁFICO DELE (lidos na última "
+                "captura): " + " · ".join(indic) +
+                ". Ele escolheu cada um deles e mexe neles: quando perguntar "
+                "de 'indicador novo', é entre estes que está a resposta. Se o "
+                "que ele descrever não estiver nesta lista, diga que não o "
+                "enxergou na captura em vez de inventar uma leitura.")
         # AS OUTRAS JANELAS TAMBÉM FORAM LIDAS. Com dois ou três gráficos
         # monitorados, só a ÚLTIMA leitura chegava aqui — perguntar "e o NQ?"
         # logo depois de o motor ler o MES devolvia a leitura do MES com o nome
@@ -12440,7 +12565,10 @@ class SmcQuantApp(ctk.CTk):
             client = genai.Client(
                 api_key=carregar_api_key(),
                 http_options=types.HttpOptions(
-                    timeout=300_000 if anexo else TIMEOUT_CHAT_MS))
+                    # Imagem tem prazo próprio: o print do gráfico não pode
+                    # herdar a paciência que existe para vídeo.
+                    timeout=(TIMEOUT_CHAT_IMAGEM_MS if anexo_e_imagem(anexo)
+                             else (300_000 if anexo else TIMEOUT_CHAT_MS))))
             historico = carregar_chat()[-12:]
             corpo = "\n".join(
                 f"{'TRADER' if m['papel'] == 'voce' else 'IA'}: {m['texto']}"
@@ -12525,7 +12653,15 @@ class SmcQuantApp(ctk.CTk):
             # numa porta que não abre. O teto NÃO se aplica quando há anexo:
             # ler um vídeo demora mesmo, e ali a espera é o serviço.
             inicio_espera = time.time()
-            orcamento = None if anexo else ORCAMENTO_CHAT_SEG
+            # O TETO DE TEMPO DO TURNO. Sem anexo: 45 s. Com IMAGEM: 90 s —
+            # a visão é mais lenta que texto, mas continua tendo fim. Só
+            # vídeo/PDF ficam sem teto, porque ali a espera é o serviço.
+            if anexo_e_imagem(anexo):
+                orcamento = ORCAMENTO_CHAT_IMAGEM_SEG
+            elif anexo:
+                orcamento = None
+            else:
+                orcamento = ORCAMENTO_CHAT_SEG
             estourou = False
             for modelo in modelos:
                 if orcamento and (time.time() - inicio_espera) > orcamento:
@@ -12566,7 +12702,8 @@ class SmcQuantApp(ctk.CTk):
                 if resposta or estourou:
                     break
             if estourou and not resposta:
-                self.log(f"⏱️ Passei de {ORCAMENTO_CHAT_SEG}s tentando a Gemini "
+                self.log(f"⏱️ Passei de {orcamento}s tentando a Gemini "
+                         f"{'com a imagem ' if anexo_e_imagem(anexo) else ''}"
                          "sem resposta — parei a fila e fui responder com o que "
                          "tenho aqui. Esperar mais não deixaria a resposta "
                          "melhor, só mais tarde.")
@@ -15929,11 +16066,23 @@ class SmcQuantApp(ctk.CTk):
             # "operei neste dia?" — e a resposta honesta é o número que está no
             # diário daquele dia. Escondê-lo atrás de um tooltip seria manter a
             # resposta a um passo de distância da pergunta.
-            rotulo = f"D{dia}\n{marca}"
+            # A DATA VAI NO QUADRADINHO. Sem ela, "dia 2" é um rótulo sem
+            # âncora: ele clicava, o mapa inteiro se movia e não havia como
+            # ver o que tinha mudado. Com a data à vista, o deslocamento
+            # deixa de ser um mistério e vira uma informação.
+            data_dia = None
+            try:
+                data_dia = data_do_dia_do_ciclo(self.plano, dia)
+            except Exception:
+                pass
+            rotulo = f"D{dia}"
+            if data_dia is not None:
+                rotulo += f"  {data_dia.strftime('%d/%m')}"
+            rotulo += f"\n{marca}"
             if resultado is not None:
                 rotulo += f"\n{resultado:+,.0f}"
             btn = ctk.CTkButton(
-                linha, text=rotulo, width=54, height=54,
+                linha, text=rotulo, width=72, height=56,
                 font=("Arial", 10),
                 fg_color="#2b4a6f" if e_hoje else "#2a2a3a",
                 hover_color="#3a5a8f",
@@ -16272,6 +16421,13 @@ class SmcQuantApp(ctk.CTk):
             ja_era = (atual.get("dia_atual") == dia and atual.get("dia_manual"))
         except Exception:
             ja_era = False
+        # O MAPA INTEIRO DO CICLO SE MOVE AQUI, e os lançamentos têm de ir
+        # junto. Dizer "hoje é o dia 3" reposiciona TODOS os dias: o dia 1
+        # deixa de ser uma data e passa a ser outra. Antes, o que ele tinha
+        # lançado ficava preso à data — o +433 posto no D1 reaparecia no D2 no
+        # clique seguinte, e o D1 ficava vazio. "Se preencher um, apaga o
+        # outro", 18/08. Guardo o mapa ANTIGO antes de mexer.
+        plano_antes = dict(self.plano)
         if ja_era:
             self.plano["dia_ciclo_ancora"] = None
             self.log("📅 Dia do ciclo: de volta à contagem automática "
@@ -16282,6 +16438,21 @@ class SmcQuantApp(ctk.CTk):
                 "data": datetime.date.today().isoformat()}
             self.log(f"📅 Dia do ciclo definido por você: hoje é o dia {dia}. "
                      f"A partir daqui ele anda sozinho a cada dia de pregão.")
+        # Os lançamentos seguem o NÚMERO DO DIA. Operação de verdade não se
+        # move: ela é um fato sobre uma data, e reescrevê-la seria falsificar
+        # o histórico.
+        try:
+            movidos = remapear_lancamentos_para_o_novo_dia(
+                plano_antes, self.plano)
+        except Exception as e:
+            movidos = []
+            self.log(f"(não consegui remapear os lançamentos: {str(e)[:100]})")
+        if movidos:
+            linhas = [f"   • D{d}: US$ {v:+,.2f} — de {de} para {para}"
+                      for d, v, de, para in movidos]
+            self.log(f"↔️ Levei {len(movidos)} lançamento(s) junto com o "
+                     "número do dia, para o que você digitou continuar no "
+                     "quadradinho onde você pôs:\n" + "\n".join(linhas))
         # Grava DIRETO, sem passar por `salvar_plano_trading`: aquela relê
         # todos os campos do formulário e desiste em bloco se qualquer um
         # estiver com texto inválido. O dia escolhido sumiria por causa de uma
@@ -17757,9 +17928,19 @@ class SmcQuantApp(ctk.CTk):
                             "PROATIVO: sinaliza todo cenário SMC válido — tanto de CONTINUAÇÃO quanto "
                             "de REVERSÃO — e busca se ANTECIPAR a reversões prováveis. Qualidade "
                             "importa, mas não seja conservador a ponto de deixar passar setups "
-                            "legítimos. Se houver OUTROS indicadores visíveis no gráfico (volume, "
-                            "perfil de volume/VPOC, RSI, médias móveis, VWAP, etc.), use-os como "
-                            "confluência adicional junto do SMC.\n"
+                            "legítimos.\n"
+                            "\n"
+                            "OS INDICADORES DA TELA SÃO PARTE DO TRABALHO, NÃO UM EXTRA.\n"
+                            "O trader escolheu cada indicador que está naquele gráfico, e mexe "
+                            "neles. Em 'indicadores_na_tela', LISTE TODOS os que você vê — pelo "
+                            "nome quando reconhecer (VWAP, RSI, MACD, médias móveis, perfil de "
+                            "volume/VPOC, bandas, ATR, delta/footprint) e POR DESCRIÇÃO quando "
+                            "não reconhecer ('faixa roxa acompanhando o preço', 'setas verdes nos "
+                            "fundos', 'linha tracejada em 7740'). Um indicador que você não sabe "
+                            "nomear NÃO pode ser omitido: descrever é melhor que ignorar, porque "
+                            "ele pode ser exatamente o que o trader acabou de colocar ali.\n"
+                            "Depois USE o que listou como confluência junto do SMC, e cite em "
+                            "market_analysis o que aquele indicador está dizendo AGORA.\n"
                             "\n"
                             "POSTURA — VOCÊ É UMA MESA INSTITUCIONAL, NÃO UM VAREJISTA MEDROSO:\n"
                             "Pense como quem PRECISA preencher ordem grande: onde está a liquidez "
@@ -18286,6 +18467,25 @@ class SmcQuantApp(ctk.CTk):
                                 self.log(f"    • {c}")
                         else:
                             self.log("🔎 Nenhuma confluência relevante neste ciclo.")
+                        # O QUE ELA VIU NA TELA, DITO EM VOZ ALTA.
+                        # 18/08: "treine a ferramenta para se atentar e analisar
+                        # sempre os novos indicadores". Pedir no prompt não
+                        # basta — prompt é pedido, não garantia. Listar aqui é
+                        # o que deixa ELE conferir se o indicador que acabou de
+                        # colocar foi mesmo enxergado, em vez de supor.
+                        indicadores = (analise or {}).get("indicadores_na_tela") or []
+                        if isinstance(indicadores, str):
+                            indicadores = [indicadores]
+                        indicadores = [str(i)[:80] for i in indicadores][:12]
+                        if indicadores:
+                            self._ultimos_indicadores = indicadores
+                            self.log("📐 Indicadores que ela ENXERGOU no gráfico: "
+                                     + " · ".join(indicadores))
+                        else:
+                            self.log("📐 Ela não listou nenhum indicador na tela. "
+                                     "Se você tem indicador no gráfico e ele não "
+                                     "aparece aqui, a leitura não o está vendo — "
+                                     "vale conferir a qualidade do print.")
 
                         # ---------- DIÁRIO DE TRADER: máquina de estados das posições ----------
                         # Se a leitura de posições da corretora está funcionando, é ELA

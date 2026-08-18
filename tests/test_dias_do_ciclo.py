@@ -187,7 +187,7 @@ class TestAsPontasNoApp(unittest.TestCase):
         causa de uma vírgula errada na caixa da margem."""
         fonte = self._fonte()
         i = fonte.index("def _escolher_dia_do_ciclo")
-        bloco = fonte[i:i + 3200]
+        bloco = fonte[i:i + 4600]
         self.assertIn("salvar_plano_da_conta(self.plano)", bloco)
         self.assertNotIn("self.salvar_plano_trading()", bloco)
 
@@ -197,14 +197,14 @@ class TestAsPontasNoApp(unittest.TestCase):
         gravava e a tela não mudava na frente dele."""
         fonte = self._fonte()
         i = fonte.index("def _escolher_dia_do_ciclo")
-        bloco = fonte[i:i + 3200]
+        bloco = fonte[i:i + 4600]
         self.assertIn("_atualizar_dashboard(forcar=True)", bloco)
 
     def test_clicar_no_dia_aceso_desfaz(self):
         """Sem desfazer, um clique errado seria permanente."""
         fonte = self._fonte()
         i = fonte.index("def _escolher_dia_do_ciclo")
-        bloco = fonte[i:i + 3200]
+        bloco = fonte[i:i + 4600]
         self.assertIn('self.plano["dia_ciclo_ancora"] = None', bloco)
 
     def test_ciclo_novo_zera_a_escolha(self):
@@ -535,7 +535,7 @@ class TestOLancamentoQueNaoAparecia(unittest.TestCase):
         cujo pregao cai dentro do ciclo da conta."""
         fonte = self._fonte()
         i = fonte.index("def consertar_lancamentos_fora_do_ciclo")
-        bloco = fonte[i:i + 3200]
+        bloco = fonte[i:i + 4600]
         self.assertIn('pos.get("origem") != "RESULTADO_DIA"', bloco)
         self.assertIn("criacao != fechamento", bloco,
                       "sem a assinatura, a faxina mexeria em registro sadio")
@@ -557,3 +557,172 @@ class TestOLancamentoQueNaoAparecia(unittest.TestCase):
         i = fonte.index("self._faxina_de_licoes()")
         self.assertIn("_resgatar_lancamentos_fora_do_ciclo", fonte[i:i + 200],
                       "o resgate saiu da abertura")
+
+
+class TestPreencherUmNaoApagaOOutro(unittest.TestCase):
+    """18/08, 14:56, palavras dele:
+
+        "conserte o plano de trading, no mesmo menu de preenchimento dos
+         dias, ta muito dificil de prenher, se prenenhcer um, apaga o outro,
+         ta uma bagunaca, parare que um esta ligado ao outro"
+
+    Ele estava certo, e a causa era do jeito que eu desenhei. Dizer "hoje é o
+    dia 3" reposiciona TODO o calendário do ciclo — o dia 1 deixa de ser uma
+    data e passa a ser outra. Os lançamentos ficavam presos à DATA, então o
+    +433 posto no D1 reaparecia no D2 no clique seguinte e o D1 ficava vazio.
+
+    No log do motor dele há DEZ desses cliques em sequência (dia 2, 4, 5, 6,
+    8, 2, 3, 2...). É alguém tentando fazer a conta fechar contra uma
+    ferramenta que embaralhava a cada tentativa.
+    """
+
+    def _fonte(self):
+        from harness import fonte_do_arquivo
+        return fonte_do_arquivo()
+
+    def test_o_lancamento_segue_o_NUMERO_do_dia(self):
+        fonte = self._fonte()
+        i = fonte.index("def remapear_lancamentos_para_o_novo_dia")
+        bloco = fonte[i:i + 3600]
+        self.assertIn("dia_do_ciclo_de_uma_data", bloco,
+                      "não descobre a que dia o lançamento pertencia")
+        self.assertIn("data_do_dia_do_ciclo(plano_depois, dia", bloco,
+                      "não recarimba para a nova data do MESMO dia")
+
+    def test_operacao_REAL_nunca_se_move(self):
+        """Ela é um fato sobre uma data. Reescrevê-la seria falsificar o
+        histórico para caber num rótulo."""
+        fonte = self._fonte()
+        i = fonte.index("def remapear_lancamentos_para_o_novo_dia")
+        bloco = fonte[i:i + 3600]
+        self.assertIn('pos.get("origem") != "RESULTADO_DIA"', bloco)
+
+    def test_o_clique_no_dia_CHAMA_o_remapeamento(self):
+        """A função certa não serve de nada se o clique não a usar."""
+        fonte = self._fonte()
+        i = fonte.index("def _escolher_dia_do_ciclo")
+        bloco = fonte[i:i + 3600]
+        self.assertIn("plano_antes = dict(self.plano)", bloco,
+                      "não guarda o mapa ANTIGO antes de mexer")
+        self.assertIn("remapear_lancamentos_para_o_novo_dia", bloco)
+        # E tem de dizer o que moveu: mexer no diário em silêncio é pior.
+        self.assertIn("junto com o", bloco)
+
+    def test_o_quadradinho_mostra_a_DATA(self):
+        """Sem a data à vista, 'dia 2' é um rótulo sem âncora: ele clicava, o
+        mapa inteiro se movia, e não havia como ver o que tinha mudado."""
+        fonte = self._fonte()
+        i = fonte.index("def _renderizar_trilha")
+        bloco = fonte[i:i + 4600]
+        self.assertIn("data_do_dia_do_ciclo(self.plano, dia)", bloco)
+        self.assertIn("strftime('%d/%m')", bloco)
+
+    def test_a_volta_da_data_para_o_dia_confere_com_a_ida(self):
+        ns = _ns()
+        carregar_extra = carregar(
+            ["dias_meta_do_plano", "_domingo_e_pregao", "dias_de_pregao_entre",
+             "dia_do_ciclo", "_passo_de_pregao", "data_do_dia_do_ciclo",
+             "dia_do_ciclo_de_uma_data"],
+            stubs={"plano_da_conta_ativa": lambda: {},
+                   "carregar_config": lambda: PREGAO_NOTURNO,
+                   "PADRAO_CONFIG_APP": PREGAO_NOTURNO, "datetime": datetime})
+        plano = {"dias_meta": 8, "data_inicio": "2026-08-14"}
+        for n in range(1, 9):
+            data = ns["data_do_dia_do_ciclo"](plano, n, PREGAO_NOTURNO)
+            self.assertEqual(
+                carregar_extra["dia_do_ciclo_de_uma_data"](
+                    plano, data, PREGAO_NOTURNO), n)
+        # data fora do prazo do ciclo não pertence a dia nenhum
+        self.assertIsNone(carregar_extra["dia_do_ciclo_de_uma_data"](
+            plano, _d("2026-12-31"), PREGAO_NOTURNO))
+
+
+class TestAEsperaDoPrint(unittest.TestCase):
+    """18/08, 14:53 → 14:58: cinco minutos sem resposta a "tira um print".
+
+    "está muito lento para pensar" — e a causa era uma regra minha que
+    tratava TODO anexo como vídeo: 300 s por chamada e teto de tempo do turno
+    DESLIGADO. Nove modelos nessas condições dão quarenta e cinco minutos de
+    espera possível, sem nada na tela.
+
+    Faz sentido para vídeo, que sobe e processa. Não faz nenhum para o print
+    de um gráfico, que vai embutido na mensagem e tem alguns KB."""
+
+    def _fonte(self):
+        from harness import fonte_do_arquivo
+        return fonte_do_arquivo()
+
+    def test_imagem_e_video_sao_coisas_diferentes(self):
+        fonte = self._fonte()
+        self.assertIn("def anexo_e_imagem(anexo)", fonte)
+        i = fonte.index("def anexo_e_imagem")
+        self.assertIn("EXTENSOES_DE_IMAGEM", fonte[i:i + 400])
+
+    def test_o_print_tem_teto_e_o_video_nao(self):
+        fonte = self._fonte()
+        i = fonte.index("inicio_espera = time.time()")
+        bloco = fonte[i:i + 900]
+        self.assertIn("ORCAMENTO_CHAT_IMAGEM_SEG", bloco)
+        self.assertIn("orcamento = None", bloco)
+
+    def test_o_teto_da_imagem_e_maior_que_o_de_texto_e_finito(self):
+        """A visão é mais lenta que texto — o teto tem de ser maior. Mas
+        continua tendo fim, senão volta o silêncio de cinco minutos."""
+        ns = carregar(["ORCAMENTO_CHAT_SEG", "ORCAMENTO_CHAT_IMAGEM_SEG",
+                       "TIMEOUT_CHAT_MS", "TIMEOUT_CHAT_IMAGEM_MS"])
+        self.assertGreater(ns["ORCAMENTO_CHAT_IMAGEM_SEG"],
+                           ns["ORCAMENTO_CHAT_SEG"])
+        self.assertLessEqual(ns["ORCAMENTO_CHAT_IMAGEM_SEG"], 180)
+        self.assertLess(ns["TIMEOUT_CHAT_IMAGEM_MS"], 300_000)
+
+
+class TestOsIndicadoresDaTela(unittest.TestCase):
+    """18/08: "treine a ferramenta para se atentar e analisar sempre os novos
+    indicadores", logo depois de "tira um print, se atenta nesse indicador
+    novo que coloquei na plataforma tradovate".
+
+    A instrução já existia no prompt, mas frouxa ("use-os como confluência
+    adicional"). Neste projeto a regra é que prompt é PEDIDO, não garantia —
+    o que vale é o que dá para conferir."""
+
+    def _fonte(self):
+        from harness import fonte_do_arquivo
+        return fonte_do_arquivo()
+
+    def test_ela_precisa_LISTAR_o_que_ve(self):
+        fonte = self._fonte()
+        self.assertIn("indicadores_na_tela", fonte)
+        self.assertIn("OS INDICADORES DA TELA SÃO PARTE DO TRABALHO", fonte)
+
+    def test_indicador_que_ela_nao_sabe_nomear_e_DESCRITO(self):
+        """Omitir o que não reconhece é o pior resultado possível: o que ele
+        acabou de colocar no gráfico é justamente o que ela não conhece."""
+        fonte = self._fonte()
+        i = fonte.index("OS INDICADORES DA TELA SÃO PARTE DO TRABALHO")
+        bloco = fonte[i:i + 1600]
+        self.assertIn("POR DESCRIÇÃO", bloco)
+        self.assertIn("NÃO pode ser omitido", bloco)
+
+    def test_o_registro_MOSTRA_os_indicadores_lidos(self):
+        """É assim que ele confere se o indicador novo foi enxergado, em vez
+        de supor que foi."""
+        fonte = self._fonte()
+        self.assertIn("Indicadores que ela ENXERGOU no gráfico", fonte)
+        i = fonte.index("Indicadores que ela ENXERGOU no gráfico")
+        # e quando NÃO vê nada, diz isso em vez de ficar calado
+        self.assertIn("não listou nenhum indicador", fonte[i - 900:i + 900])
+
+    def test_os_indicadores_entram_na_CONVERSA(self):
+        """Sem isso ela não teria como responder 'se atenta nesse indicador
+        novo' — responderia sobre indicador nenhum, ou inventaria um."""
+        fonte = self._fonte()
+        self.assertIn("INDICADORES VISÍVEIS NO GRÁFICO DELE", fonte)
+        i = fonte.index("INDICADORES VISÍVEIS NO GRÁFICO DELE")
+        self.assertIn("em vez de inventar", fonte[i:i + 700])
+
+    def test_o_campo_novo_NAO_pode_invalidar_a_leitura(self):
+        """Se `indicadores_na_tela` entrasse nas chaves obrigatórias, o modelo
+        local pequeno passaria a ter a análise inteira recusada por não emitir
+        um campo novo — trocaria um problema por um pior."""
+        ns = carregar(["CHAVES_DA_ANALISE"])
+        self.assertNotIn("indicadores_na_tela", ns["CHAVES_DA_ANALISE"])

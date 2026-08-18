@@ -293,18 +293,39 @@ class TestAEsperaTemTETO(unittest.TestCase):
         self.assertEqual(
             bloco.count("(time.time() - inicio_espera) > orcamento"), 2)
 
-    def test_anexo_NAO_tem_teto(self):
-        """Ler um vídeo demora mesmo; ali a espera é o serviço."""
+    def test_VIDEO_nao_tem_teto_mas_IMAGEM_tem(self):
+        """Ler um VÍDEO demora mesmo; ali a espera é o serviço.
+
+        IMAGEM é outra coisa, e confundir as duas custou cinco minutos de
+        silêncio. 18/08, 14:53: "tira um print, se atenta nesse indicador novo
+        que coloquei na plataforma tradovate". Às 14:58 o cabeçalho ainda dizia
+        "olhando o gráfico (print de 14:53)…" e nada tinha chegado — porque a
+        regra "anexo não tem teto" tratava o print de gráfico como se fosse um
+        vídeo: 300 s por chamada, nove modelos, teto do turno desligado.
+
+        O print vai embutido na mensagem, tem alguns KB e é lido em segundos.
+        Agora ele tem prazo e teto próprios."""
         fonte = fonte_do_arquivo()
         i = fonte.index("inicio_espera = time.time()")
-        self.assertIn("orcamento = None if anexo else ORCAMENTO_CHAT_SEG",
-                      fonte[i:i + 400])
+        bloco = fonte[i:i + 900]
+        self.assertIn("if anexo_e_imagem(anexo):", bloco)
+        self.assertIn("orcamento = ORCAMENTO_CHAT_IMAGEM_SEG", bloco)
+        self.assertIn("orcamento = None", bloco, "vídeo perdeu a paciência")
+        self.assertNotIn("orcamento = None if anexo else", bloco,
+                         "a imagem voltou a herdar a espera do vídeo")
+
+    def test_a_imagem_tem_prazo_proprio_por_chamada(self):
+        fonte = fonte_do_arquivo()
+        self.assertIn("TIMEOUT_CHAT_IMAGEM_MS if anexo_e_imagem(anexo)", fonte)
+        self.assertIn("ORCAMENTO_CHAT_IMAGEM_SEG = ", fonte)
 
     def test_estourar_o_teto_e_DITO_no_registro(self):
         """Resposta que veio da base em vez da Gemini tem origem diferente, e
-        isso não pode ficar escondido."""
+        isso não pode ficar escondido. E o aviso diz o teto REAL do turno —
+        45 s sem anexo, 90 s com imagem — em vez de citar sempre o de texto."""
         fonte = fonte_do_arquivo()
-        self.assertIn("Passei de {ORCAMENTO_CHAT_SEG}s tentando a Gemini", fonte)
+        self.assertIn("Passei de {orcamento}s tentando a Gemini", fonte)
+        self.assertIn("com a imagem ", fonte)
 
 
 class TestLicaoQueNaoEnsina(unittest.TestCase):

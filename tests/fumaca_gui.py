@@ -521,6 +521,53 @@ def main():
         else:
             print("  OK   apagou os lançamentos e NÃO tocou na operação real")
 
+    # PREENCHER UM NÃO PODE APAGAR O OUTRO — 18/08, 14:56.
+    # "se preencher um, apaga o outro, tá uma bagunça, parece que um está
+    # ligado ao outro". Estava: dizer "hoje é o dia N" reposiciona todo o
+    # calendário, e os lançamentos ficavam presos à DATA. Aqui o caminho é
+    # percorrido com o app aberto — lança no D1, muda o dia, confere o D1.
+    print("\n[mudar o dia do ciclo NÃO pode mexer no que já foi lançado]")
+    app.plano["dia_ciclo_ancora"] = None
+    mod.salvar_plano_da_conta(app.plano)
+    app._atualizar_dashboard(forcar=True)
+    d_um = mod.data_do_dia_do_ciclo(app.plano, 1)
+    _p1 = []
+    passo(app, "lançar US$ +433 no D1",
+          lambda: _p1.append(mod.lancar_resultado_do_dia(
+              d_um.strftime("%d/%m/%Y"), 433.0)))
+
+    def _valor_do_dia(n):
+        d = mod.data_do_dia_do_ciclo(app.plano, n)
+        return dict(mod.resultados_por_dia()).get(d.strftime("%d/%m/%Y")) if d else None
+
+    antes_d1 = _valor_do_dia(1)
+    dia_agora = app._computar_stats_plano().get("dia_atual", 1)
+    novo_dia = dia_agora + 1 if dia_agora < 6 else dia_agora - 1
+    print(f"       D1 antes: {antes_d1} · hoje era o dia {dia_agora}")
+    passo(app, f"dizer que HOJE é o dia {novo_dia}",
+          lambda: app._escolher_dia_do_ciclo(novo_dia))
+    depois_d1 = _valor_do_dia(1)
+    print(f"       D1 depois: {depois_d1}")
+    if depois_d1 != antes_d1:
+        falhas.append(
+            f"o valor do D1 mudou ao trocar o dia do ciclo ({antes_d1} → "
+            f"{depois_d1}) — é o 'preencheu um, apagou o outro' de volta")
+        print("  FALHA o lançamento não acompanhou o número do dia")
+    else:
+        print("  OK   o que estava no D1 continua no D1")
+    txt_d1 = app._botoes_trilha[0].cget("text")
+    print(f"       quadradinho D1: {txt_d1!r}")
+    if "/" not in txt_d1:
+        falhas.append(f"o quadradinho não mostra a data — veio {txt_d1!r}")
+        print("  FALHA sem a data no quadradinho")
+    else:
+        print("  OK   o quadradinho mostra a data do dia")
+    if _p1:
+        mod.apagar_lancamentos_do_dia(
+            mod.data_do_dia_do_ciclo(app.plano, 1), ids=[_p1[0]["id"]])
+    app.plano["dia_ciclo_ancora"] = None
+    mod.salvar_plano_da_conta(app.plano)
+
     # MARCAR O DIA COMO CONCLUÍDO / NÃO OPEREI — o outro pedido de 17/08.
     print("\n[marcar o dia como concluído ou não operado]")
     passo(app, "marcar o dia 1 como CONCLUÍDO",
