@@ -373,6 +373,90 @@ def main():
         else:
             print("  OK   o quadradinho mostra o resultado do dia")
 
+    # O VALOR LANÇADO PRECISA APARECER NO RESULTADO DO DIA.
+    # 17/08, 21:29: "lancei, mas não está atualizando lá no relatório, no
+    # resultado do dia!!". O lançamento estava no disco e o menu do dia o
+    # mostrava; só o dashboard não via, porque data_criacao nascia ANTES do
+    # início do ciclo. Este passo percorre o caminho que ele percorreu.
+    print("\n[o lançamento tem de chegar no RESULTADO DO DIA]")
+    hoje_pregao = mod.data_do_pregao()
+    dia_de_hoje = app._computar_stats_plano().get("dia_atual", 1)
+    antes_kpi = app._computar_stats_plano().get("resultado_hoje", 0.0)
+    _lancado = []
+    passo(app, f"lançar US$ +446.89 no dia de HOJE (dia {dia_de_hoje})",
+          lambda: _lancado.append(
+              mod.lancar_resultado_do_dia(hoje_pregao, 446.89)))
+    depois_kpi = app._computar_stats_plano().get("resultado_hoje", 0.0)
+    print(f"       Resultado do dia: {antes_kpi:+.2f} → {depois_kpi:+.2f}")
+    if abs(depois_kpi - (antes_kpi + 446.89)) > 0.01:
+        falhas.append(
+            f"RESULTADO DO DIA não subiu com o lançamento: {antes_kpi} → "
+            f"{depois_kpi}. É o defeito de 17/08 — o dinheiro fica no disco e "
+            "some do relatório.")
+        print("  FALHA o KPI do dia não viu o lançamento")
+    else:
+        print("  OK   o lançamento chegou no Resultado do dia")
+    # E precisa estar DENTRO DO CICLO, que é onde ele sumia.
+    no_ciclo = [p for p in mod.posicoes_do_ciclo()
+                if p.get("origem") == "RESULTADO_DIA"]
+    if not no_ciclo:
+        falhas.append("o lançamento ficou FORA do ciclo — data_criacao "
+                      "nasceu antes do início do ciclo, o defeito de novo")
+        print("  FALHA o lançamento está fora do ciclo")
+    else:
+        print(f"  OK   está dentro do ciclo ({len(no_ciclo)} lançamento(s))")
+    # Limpa SÓ o que este passo criou. Apagar todos os lançamentos do dia
+    # levaria junto os do bloco anterior quando "hoje" for o mesmo dia — foi
+    # exatamente o que quebrou a conferência seguinte na primeira tentativa.
+    if _lancado:
+        mod.apagar_lancamentos_do_dia(hoje_pregao,
+                                      ids=[_lancado[0]["id"]])
+
+    # E O RESGATE DO QUE JÁ ESTAVA QUEBRADO NO DISCO. Consertar o código não
+    # devolve o dinheiro que a versão anterior já escondeu.
+    print("\n[resgatar lançamento gravado fora do próprio ciclo]")
+    conta_id = mod.conta_ativa_id()
+    carimbo_velho = mod.carimbo_para_o_pregao(hoje_pregao)
+    quebrado = {"id": 424242, "conta_id": conta_id, "origem": "RESULTADO_DIA",
+                "direcao": "BUY", "ativo": "LANCAMENTO", "entry": None,
+                "stop": None, "tp1": None, "tp2": None, "contratos": 1,
+                "vpp": None, "status": "FECHADA", "execucao": "CONFIRMADA",
+                "confirmacoes_entrada": 0, "preco_atual": None,
+                "pnl_atual": 0.0, "pnl_final": 446.89,
+                # A ASSINATURA DO DEFEITO: as três datas iguais ao carimbo.
+                "data_criacao": carimbo_velho,
+                "data_abertura": carimbo_velho,
+                "data_fechamento": carimbo_velho}
+    # Ciclo começando DEPOIS do carimbo — foi assim na máquina dele.
+    # GUARDA E DEVOLVE o início original: empurrar o ciclo para agora jogaria
+    # para fora TODOS os lançamentos feitos nos passos anteriores, e os testes
+    # seguintes falhariam por causa do cenário, não por causa do app.
+    _ciclo_original = app.plano.get("ciclo_inicio")
+    app.plano["ciclo_inicio"] = (mod.datetime.datetime.now()
+                                 ).isoformat(timespec="seconds")
+    mod.salvar_plano_da_conta(app.plano)
+    mod.salvar_posicoes(mod.carregar_posicoes() + [quebrado])
+    sumido = dict(mod.resultados_por_dia()).get(hoje_pregao, 0.0)
+    print(f"       antes do resgate, o diário de hoje: {sumido}")
+    passo(app, "rodar o resgate da abertura",
+          app._resgatar_lancamentos_fora_do_ciclo)
+    voltou = dict(mod.resultados_por_dia()).get(hoje_pregao, 0.0)
+    print(f"       depois do resgate: {voltou}")
+    if abs(voltou - (sumido + 446.89)) > 0.01:
+        falhas.append(f"resgate: o lançamento escondido não voltou "
+                      f"({sumido} → {voltou})")
+        print("  FALHA o lançamento escondido não voltou")
+    else:
+        print("  OK   o dinheiro escondido voltou para o relatório")
+    if mod.consertar_lancamentos_fora_do_ciclo():
+        falhas.append("resgate: rodar de novo mexeu em algo — não é idempotente")
+        print("  FALHA não é idempotente")
+    else:
+        print("  OK   rodar de novo não mexe em mais nada")
+    mod.apagar_lancamentos_do_dia(hoje_pregao, ids=[424242])
+    app.plano["ciclo_inicio"] = _ciclo_original
+    mod.salvar_plano_da_conta(app.plano)
+
     # APAGAR O QUE FOI LANÇADO — pedido de 17/08, 21:29: "não tem a opção de
     # desfazer (apagar), adicione por favor". Um valor lançado errado entra na
     # média/dia, no ritmo exigido e na projeção do ciclo inteiro.

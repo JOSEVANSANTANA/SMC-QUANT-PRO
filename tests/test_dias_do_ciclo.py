@@ -321,7 +321,7 @@ class TestOResultadoDoDiaLancadoNaMao(unittest.TestCase):
         from harness import fonte_do_arquivo
         fonte = fonte_do_arquivo()
         i = fonte.index("def lancar_resultado_do_dia")
-        bloco = fonte[i:i + 2600]
+        bloco = fonte[i:i + 4200]
         self.assertIn('"entry": None', bloco)
         self.assertIn('"pnl_final": valor', bloco)
         self.assertIn("carimbo_para_o_pregao", bloco)
@@ -491,3 +491,69 @@ class TestApagarOValorLancado(unittest.TestCase):
         bloco = fonte[i:i + 2800]
         self.assertIn("Nada lançado no dia", bloco)
         self.assertIn("posições lidas da", bloco)
+
+
+class TestOLancamentoQueNaoAparecia(unittest.TestCase):
+    """17/08, 21:29: "lancei, mas nao esta atualizando la no relatorio, no
+    resultado do dia!!"
+
+    Ele estava certo, e o defeito era meu — introduzido na versao anterior.
+
+    Um registro de posicao tem DUAS datas com trabalhos diferentes:
+        data_criacao    -> QUANDO o registro foi feito. `_dentro_do_ciclo`
+                           usa ela: data_criacao >= ciclo_inicio.
+        data_fechamento -> A QUE PREGAO o resultado pertence.
+                           `resultados_por_dia` agrupa por ela.
+
+    Eu tinha posto o CARIMBO DO PREGAO nas duas. Resultado: um lancamento
+    feito as 21:29, num ciclo iniciado as 21:00, nascia com data_criacao
+    19:01 — ANTES do proprio ciclo. `posicoes_do_ciclo` o descartava e o
+    Resultado do dia ficava US$ 0,00 com o dinheiro gravado no disco.
+
+    Pior que sumir: o menu do dia CONTINUAVA mostrando o lancamento (ele le o
+    disco direto, sem filtro de ciclo). A ferramenta afirmava duas coisas
+    contrarias na mesma tela.
+    """
+
+    def test_as_duas_datas_nao_podem_ser_a_mesma(self):
+        fonte = self._fonte()
+        i = fonte.index("def lancar_resultado_do_dia")
+        bloco = fonte[i:i + 4200]
+        self.assertIn('"data_fechamento": carimbo', bloco,
+                      "o dia do pregao tem de vir do carimbo")
+        self.assertIn("\"data_criacao\": time.strftime", bloco,
+                      "data_criacao voltou a ser o carimbo — o lancamento "
+                      "nasce de novo fora do proprio ciclo")
+
+    def _fonte(self):
+        from harness import fonte_do_arquivo
+        return fonte_do_arquivo()
+
+    def test_o_resgate_so_toca_no_que_tem_a_assinatura_do_defeito(self):
+        """Mexer no diario de alguem exige precisao. A faxina so pega:
+        origem RESULTADO_DIA, com data_criacao IGUAL a data_fechamento, e
+        cujo pregao cai dentro do ciclo da conta."""
+        fonte = self._fonte()
+        i = fonte.index("def consertar_lancamentos_fora_do_ciclo")
+        bloco = fonte[i:i + 3200]
+        self.assertIn('pos.get("origem") != "RESULTADO_DIA"', bloco)
+        self.assertIn("criacao != fechamento", bloco,
+                      "sem a assinatura, a faxina mexeria em registro sadio")
+        self.assertIn("dt.date() < partida", bloco,
+                      "puxaria lancamento de ciclo ANTERIOR para o ciclo de "
+                      "agora — isso seria inventar resultado")
+
+    def test_o_resgate_e_DITO_no_registro(self):
+        """Mexer no diario em silencio e pior que deixar o defeito."""
+        fonte = self._fonte()
+        i = fonte.index("def _resgatar_lancamentos_fora_do_ciclo")
+        bloco = fonte[i:i + 2000]
+        self.assertIn("Total devolvido ao ciclo", bloco)
+        self.assertIn("apague pelo menu do dia", bloco)
+
+    def test_o_resgate_roda_na_abertura(self):
+        fonte = self._fonte()
+        self.assertIn("self._resgatar_lancamentos_fora_do_ciclo()", fonte)
+        i = fonte.index("self._faxina_de_licoes()")
+        self.assertIn("_resgatar_lancamentos_fora_do_ciclo", fonte[i:i + 200],
+                      "o resgate saiu da abertura")

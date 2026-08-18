@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.41.0"
+VERSAO_ATUAL = "2.42.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -2279,7 +2279,27 @@ def lancar_resultado_do_dia(dia_pregao, valor, contratos=1, ativo="LANCAMENTO",
         "confirmacoes_entrada": 0,
         "preco_atual": None,
         "pnl_atual": 0.0,
-        "data_criacao": carimbo,
+        # AS DUAS DATAS TÊM TRABALHOS DIFERENTES, E EU TINHA COLOCADO A MESMA
+        # NAS DUAS. Foi o defeito de 17/08, 21:29: "lancei, mas não está
+        # atualizando lá no relatório, no resultado do dia!!"
+        #
+        #   data_criacao   -> QUANDO O REGISTRO FOI FEITO. É por ela que
+        #                     `_dentro_do_ciclo` decide se a posição pertence ao
+        #                     ciclo atual (data_criacao >= ciclo_inicio).
+        #   data_fechamento-> A QUE PREGÃO O RESULTADO PERTENCE. É por ela que
+        #                     `resultados_por_dia` agrupa o diário.
+        #
+        # Com as duas iguais ao carimbo, um lançamento feito às 21:29 num ciclo
+        # iniciado às 21:00 nascia com data_criacao 19:01 — ANTES do próprio
+        # ciclo. `posicoes_do_ciclo` o descartava, e o resultado do dia ficava
+        # em US$ 0,00 com o dinheiro gravado no disco. Pior: o menu do dia
+        # continuava mostrando o lançamento (ele lê o disco direto), então a
+        # ferramenta afirmava duas coisas contrárias na mesma tela.
+        #
+        # `data_criacao` é AGORA porque é agora que ele está lançando. Isso
+        # também mantém o "Reiniciar ciclo" correto: lançamento feito antes do
+        # reinício continua caindo fora, como qualquer outro registro antigo.
+        "data_criacao": time.strftime('%d/%m/%Y %H:%M'),
         "data_abertura": carimbo,
         "data_fechamento": carimbo,
         "pnl_final": valor,
@@ -2287,6 +2307,83 @@ def lancar_resultado_do_dia(dia_pregao, valor, contratos=1, ativo="LANCAMENTO",
     lista.append(pos)
     salvar_posicoes(lista)
     return pos
+
+
+def consertar_lancamentos_fora_do_ciclo():
+    """Traz de volta o dinheiro que a 2.41.0 gravou fora do próprio ciclo.
+
+    17/08, 21:29: "lancei, mas não está atualizando lá no relatório, no
+    resultado do dia!!" — e ele tinha razão. A 2.41.0 gravava o CARIMBO DO
+    PREGÃO nas três datas do registro, inclusive em `data_criacao`. Só que
+    `data_criacao` é o campo que `_dentro_do_ciclo` usa para decidir se a
+    posição pertence ao ciclo. Um lançamento feito às 21:29, num ciclo
+    iniciado às 21:00, nascia com data_criacao 19:01 — antes do próprio ciclo
+    — e era descartado do dashboard. O menu do dia continuava mostrando o
+    lançamento (ele lê o disco direto), então a ferramenta afirmava duas
+    coisas contrárias na mesma tela.
+
+    Corrigir o código não basta: o dinheiro já lançado continua invisível na
+    máquina dele. Esta faxina roda na abertura e conserta o que já está lá.
+
+    O QUE ELA TOCA, e só isto:
+      • origem RESULTADO_DIA (nunca operação do robô ou da corretora);
+      • com a assinatura do defeito: data_criacao IGUAL a data_fechamento;
+      • cujo pregão cai DENTRO do ciclo da conta (data >= início do ciclo).
+    Um lançamento de um ciclo anterior fica onde está — puxá-lo para o ciclo
+    de agora seria inventar resultado, que é o oposto do que se quer.
+
+    Devolve a lista do que foi consertado, para o Registro poder DIZER."""
+    lista = carregar_posicoes()
+    if not lista:
+        return []
+    # O ciclo é POR CONTA: cada uma tem o seu início e a sua data de partida.
+    ciclos = {}
+    for conta in carregar_contas():
+        plano = conta.get("plano_trading") or {}
+        try:
+            inicio = datetime.datetime.fromisoformat(plano["ciclo_inicio"])
+        except (KeyError, TypeError, ValueError):
+            inicio = None
+        try:
+            partida = datetime.date.fromisoformat(str(plano.get("data_inicio")))
+        except (TypeError, ValueError):
+            partida = None
+        ciclos[conta.get("id")] = (inicio, partida)
+
+    consertados = []
+    for pos in lista:
+        if pos.get("origem") != "RESULTADO_DIA":
+            continue
+        criacao, fechamento = pos.get("data_criacao"), pos.get("data_fechamento")
+        if not criacao or criacao != fechamento:
+            continue                      # não tem a assinatura do defeito
+        inicio, partida = ciclos.get(pos.get("conta_id"), (None, None))
+        if inicio is None:
+            continue                      # sem ciclo definido, nada é filtrado
+        dt = _parse_dt(criacao)
+        if dt is None or dt >= inicio:
+            continue                      # já estava dentro; não mexe
+        if partida is not None and dt.date() < partida:
+            continue                      # é de um ciclo anterior — fica lá
+        # OS SEGUNDOS SÃO A ARMADILHA AQUI, e o teste de fumaça pegou.
+        #
+        # `data_criacao` é gravada com precisão de MINUTO ('%d/%m/%Y %H:%M'),
+        # mas `ciclo_inicio` tem SEGUNDOS (2026-08-18T00:59:47). Carimbar o
+        # registro com o início do ciclo produzia "18/08/2026 00:59", que ao
+        # ser relido vira 00:59:00 — quarenta e sete segundos ANTES do ciclo.
+        # O resgate dizia que tinha consertado e o dinheiro continuava
+        # invisível: o mesmo defeito, um minuto mais curto.
+        #
+        # Por isso o alvo é o MAIOR entre agora e o minuto seguinte ao início
+        # do ciclo. Os dois são seguramente posteriores ao início; `agora` é
+        # também a verdade sobre quando este conserto aconteceu.
+        alvo = max(datetime.datetime.now(),
+                   inicio + datetime.timedelta(minutes=1))
+        pos["data_criacao"] = alvo.strftime('%d/%m/%Y %H:%M')
+        consertados.append(pos)
+    if consertados:
+        salvar_posicoes(lista)
+    return consertados
 
 
 def lancamentos_do_dia(dia_pregao, cfg=None, lista=None):
@@ -9058,6 +9155,7 @@ class SmcQuantApp(ctk.CTk):
         # com HAPV3 HOJE?"), e ela entrava em toda análise e toda conversa,
         # porque as lições vão inteiras para dentro do prompt.
         self._faxina_de_licoes()
+        self._resgatar_lancamentos_fora_do_ciclo()
 
         self.verificar_node()
         self.after(3000, self._loop_atualizar_dashboard)
@@ -11735,6 +11833,36 @@ class SmcQuantApp(ctk.CTk):
                      "em forma de regra.")
         except Exception as e:
             self.log(f"(faxina de lições não rodou: {str(e)[:120]})")
+
+    def _resgatar_lancamentos_fora_do_ciclo(self):
+        """Traz de volta, na abertura, o dinheiro que a 2.41.0 escondeu.
+
+        "lancei, mas não está atualizando lá no relatório, no resultado do
+        dia!!" — 17/08, 21:29. O lançamento estava gravado no disco e o menu
+        do dia o mostrava; só o dashboard não via, porque a data de criação
+        tinha nascido antes do próprio ciclo.
+
+        Consertar o código não devolve o que já foi lançado. Esta faxina
+        devolve — e DIZ o que mexeu, com o valor e o dia, porque mexer no
+        diário de alguém em silêncio é pior que deixar o defeito."""
+        try:
+            resgatados = consertar_lancamentos_fora_do_ciclo()
+            if not resgatados:
+                return
+            total = sum(float(p.get("pnl_final") or 0) for p in resgatados)
+            linhas = [f"   • US$ {float(p.get('pnl_final') or 0):+,.2f} "
+                      f"no pregão de {str(p.get('data_fechamento', ''))[:10]}"
+                      for p in resgatados]
+            self.log(
+                f"🩹 Encontrei {len(resgatados)} lançamento(s) de resultado que "
+                "estavam gravados mas NÃO entravam no relatório — uma versão "
+                "anterior carimbou a data de criação antes do início do seu "
+                "ciclo, e o dashboard os descartava:\n" + "\n".join(linhas) +
+                f"\n   Total devolvido ao ciclo: US$ {total:+,.2f}. Confira o "
+                "Resultado do dia e a trilha; se algum não devia estar aí, "
+                "apague pelo menu do dia.")
+        except Exception as e:
+            self.log(f"(resgate de lançamentos não rodou: {str(e)[:120]})")
 
     def _numeros_da_meta_de_hoje(self):
         """Todos os números da pergunta "dá para bater a meta hoje?".
