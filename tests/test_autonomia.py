@@ -26,7 +26,7 @@ A legenda abaixo é a do print real da Tradovate de 12/08/2026 15:45, candle das
 
 import unittest
 
-from harness import carregar, fonte_do_arquivo
+from harness import carregar, fonte_do_arquivo, pular_se_faltar
 
 LEGENDA_REAL = """12/08/2026 13:25
 PSAR 7764.20
@@ -546,6 +546,12 @@ class TestMicrofoneDentroDoBundle(unittest.TestCase):
     não servia para nada; por isso o estado ficava eternamente em "nunca
     pedido"; e por isso autorizar "SMC Quant Pro" e "Terminal" na lista não
     mudava nada — nenhum dos dois era o requerente."""
+
+    def setUp(self):
+        # No pacote do outro sistema este arquivo não existe — e não
+        # existir ali é o certo. Falhar por isso assustaria o cliente
+        # com um vermelho que não é defeito nenhum.
+        pular_se_faltar("CRIAR_APP.command")
 
     def _criar_app(self):
         import os

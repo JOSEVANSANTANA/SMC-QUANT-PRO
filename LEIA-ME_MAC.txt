@@ -1,3 +1,25 @@
+=======================================================================
+  PASSO ZERO — O MAC VAI BLOQUEAR OS ARQUIVOS. E NORMAL.
+=======================================================================
+
+Ao dar dois cliques em qualquer .command, o Mac dira:
+
+    "A Apple nao pode verificar se o item esta livre de algum malware"
+              [ Mover para o Lixo ]   [ OK ]
+
+Clique em OK. NUNCA em "Mover para o Lixo".
+
+Depois abra o arquivo DESBLOQUEAR_MAC.txt (esta nesta mesma pasta) e siga
+os tres passos. Leva um minuto e libera a pasta inteira de uma vez.
+
+Isso acontece com TODO arquivo que sai de um zip baixado da internet. A
+mensagem diz que o Mac NAO PODE VERIFICAR — nao que encontrou alguma
+coisa. Some de vez so com assinatura paga da Apple.
+
+E NAO deixe a pasta no iCloud Drive (nem em Documentos/Mesa com o iCloud
+ligado): o iCloud retira do disco os arquivos parados e o programa quebra
+no meio do pregao. Use $HOME/Applications/SMC_QUANT_PRO.
+
 ========================================================================
   SMC QUANT PRO v2.37.0 — MAC (Apple Silicon M1 / M2 / M3)
   Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.

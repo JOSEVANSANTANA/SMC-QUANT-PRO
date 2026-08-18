@@ -85,6 +85,11 @@ SO_WINDOWS = [
 ]
 SO_MAC = [
     "requirements-mac.txt",
+    # O PRIMEIRO ARQUIVO QUE ELE PRECISA NUM MAC, e o único que o Gatekeeper
+    # nunca bloqueia — é texto puro. 18/08: dois cliques no CRIAR_APP.command
+    # e o Mac respondeu "a Apple não pôde verificar...", com um botão "Mover
+    # para o Lixo" ao lado. Sem este arquivo, a instalação para ali.
+    "DESBLOQUEAR_MAC.txt",
     "SMC_Quant_Pro_MAC.spec",
     "INSTALAR_NO_MAC.md",
     "LEIA-ME_MAC.txt",
@@ -179,6 +184,22 @@ SEU/                    <-- é o SEU. Instale a partir daqui.
 CLIENTE/                <-- é o que você ENVIA. Nunca envie o de cima.
   Idêntico ao SEU, menos o painel e os atalhos. O atalho sozinho já
   anunciaria ao cliente que existe um painel de licenças.
+
+
+NO MAC, ANTES DE TUDO: O GATEKEEPER
+-----------------------------------
+Ao dar dois cliques num .command o Mac vai dizer "A Apple não pôde
+verificar se o item está livre de algum malware", com um botão "Mover
+para o Lixo" ao lado. Clique em OK — NUNCA em "Mover para o Lixo" — e
+abra o DESBLOQUEAR_MAC.txt que está dentro do pacote. São três passos e
+um minuto: uma linha colada no Terminal libera a pasta inteira.
+
+Isso acontece com TODO arquivo vindo de zip baixado, e não é sinal de
+problema: a mensagem diz que o Mac NÃO PÔDE VERIFICAR, não que achou
+alguma coisa. Só some de vez com uma assinatura paga da Apple.
+
+Avise o seu cliente disso ANTES de ele receber o zip. É o momento em que
+mais gente desiste, e é o mais fácil de resolver.
 
 
 QUAL ARQUIVO MANDAR PARA CADA CLIENTE

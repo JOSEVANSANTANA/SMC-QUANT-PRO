@@ -85,3 +85,30 @@ def fonte_do_arquivo(caminho=None):
     tela do Windows?')."""
     with open(caminho or os.path.join(RAIZ, "main_app.py"), encoding="utf-8") as f:
         return f.read()
+
+
+def pular_se_faltar(*relativos):
+    """Pula o teste quando o arquivo que ele examina não veio NESTE pacote.
+
+    POR QUE ISTO EXISTE
+    -------------------
+    A suíte vai dentro dos DOIS zips, e os dois zips não têm os mesmos
+    arquivos: o do Windows não leva `requirements-mac.txt` nem os `.command`,
+    e o do cliente não leva o painel de licenças nem o atalho dele.
+
+    Sem esta função, um cliente de Windows rodava `python tests/run.py` — que
+    é exatamente o que o guia de entrega manda fazer — e via ONZE falhas
+    vermelhas sobre arquivos do Mac que nunca deveriam estar ali. Nenhuma
+    delas era defeito do programa; todas destruíam a confiança no programa.
+
+    PULAR não é varrer para debaixo do tapete: o teste continua rodando (e
+    falhando, se for o caso) no repositório e no pacote do sistema a que ele
+    pertence. O que ele deixa de fazer é acusar a ausência de um arquivo que,
+    naquele pacote, tem de estar ausente mesmo.
+    """
+    import unittest
+    faltando = [r for r in relativos
+                if not os.path.exists(os.path.join(RAIZ, r))]
+    if faltando:
+        raise unittest.SkipTest(
+            "não faz parte deste pacote: " + ", ".join(faltando))

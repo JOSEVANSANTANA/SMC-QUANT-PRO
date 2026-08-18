@@ -347,3 +347,37 @@ class TestOZipUnicoDeEntrega(unittest.TestCase):
         self.assertIn("é o que você ENVIA", texto)
         self.assertIn("grep -i painel", texto,
                       "não ensina a conferência de cinco segundos")
+
+
+class TestOSocorroDoMacVaiNoPacote(unittest.TestCase):
+    """Estes testes vivem AQUI, e não no test_mac.py, por um motivo aprendido
+    do jeito caro: eles consultam o `empacotar.py`, e o `empacotar.py` NÃO vai
+    nos zips (é ferramenta de quem entrega). Postos no test_mac.py, a suíte
+    passava aqui e QUEBRAVA na máquina do cliente com dois FileNotFoundError —
+    o pacote entregava uma suíte que não roda, que é pior que não entregar
+    suíte nenhuma. Foi o próprio 'rodar a suíte de dentro do pacote' que pegou.
+    """
+
+    def _mod(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "empacotar", os.path.join(RAIZ, "empacotar.py"))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+
+    def test_o_desbloquear_VAI_no_pacote_do_mac(self):
+        """Um arquivo de socorro que não é entregue não socorre ninguém."""
+        m = self._mod()
+        self.assertIn("DESBLOQUEAR_MAC.txt", m.SO_MAC)
+        # e sai também no pacote do cliente — ele passa pelo mesmo bloqueio
+        limpos = [a for a in m.SO_MAC if "PAINEL_LICENCAS" not in a]
+        self.assertIn("DESBLOQUEAR_MAC.txt", limpos)
+
+    def test_o_leia_primeiro_da_entrega_avisa_o_dono(self):
+        """Ele precisa avisar o cliente ANTES de mandar o zip — é o momento
+        em que mais gente desiste, e o mais fácil de resolver."""
+        m = self._mod()
+        texto = m.LEIA_PRIMEIRO.format(v="0.0.0")
+        self.assertIn("GATEKEEPER", texto.upper())
+        self.assertIn("DESBLOQUEAR_MAC.txt", texto)

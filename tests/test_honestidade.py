@@ -32,7 +32,7 @@ jogo, quem confere é o app — determinístico, testável, e testado aqui.
 
 import unittest
 
-from harness import carregar, fonte_do_arquivo
+from harness import carregar, fonte_do_arquivo, pular_se_faltar
 
 
 class TestNivelDoIndicador(unittest.TestCase):
@@ -893,6 +893,12 @@ class TestPermissaoDeMicrofoneNoMac(unittest.TestCase):
     dispositivo por baixo, num caminho que nem sempre dispara esse pedido:
     não aparece prompt, não aparece na lista, e o sistema devolve SILÊNCIO
     sem erro nenhum."""
+
+    def setUp(self):
+        # No pacote do outro sistema este arquivo não existe — e não
+        # existir ali é o certo. Falhar por isso assustaria o cliente
+        # com um vermelho que não é defeito nenhum.
+        pular_se_faltar("requirements-mac.txt")
 
     def _plat(self):
         import os

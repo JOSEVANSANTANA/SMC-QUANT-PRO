@@ -17,7 +17,7 @@ import os
 import re
 import unittest
 
-from harness import RAIZ, carregar, fonte_do_arquivo
+from harness import RAIZ, carregar, fonte_do_arquivo, pular_se_faltar
 
 
 class _Plataforma:
@@ -34,6 +34,12 @@ def _ns(macos=True, sr_ok=True, sd_ok=True, erro=""):
 
 
 class TestRequirementsMac(unittest.TestCase):
+
+    def setUp(self):
+        # No pacote do outro sistema este arquivo não existe — e não
+        # existir ali é o certo. Falhar por isso assustaria o cliente
+        # com um vermelho que não é defeito nenhum.
+        pular_se_faltar("requirements-mac.txt")
     def test_numpy_esta_na_lista(self):
         """O sounddevice IMPORTA numpy. Sem esta linha, `pip install -r` termina
         com sucesso e o microfone morre no primeiro uso."""
@@ -198,3 +204,81 @@ class TestMensagemDeFalhaDoMicrofone(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestOGatekeeperBloqueouTudo(unittest.TestCase):
+    """18/08, 15:37 — o print dele, dois cliques no CRIAR_APP.command:
+
+        "O item CRIAR_APP.command Não Foi Aberto
+         A Apple não pôde verificar se o item está livre de algum malware"
+                  [ Mover para o Lixo ]   [ OK ]
+
+    Todo arquivo que sai de um zip baixado leva a marca de QUARENTENA, e
+    script sem assinatura paga da Apple é bloqueado. Não é defeito do
+    programa — mas é o ponto onde a instalação para, e um botão "Mover para o
+    Lixo" ao lado do aviso é o convite para apagar o pacote inteiro.
+
+    O `.command` já citava o LEIA-ME, e isso nunca resolveu nada: texto dentro
+    de um arquivo bloqueado não desarma o Gatekeeper.
+    """
+
+    def setUp(self):
+        # No pacote do outro sistema este arquivo não existe — e não
+        # existir ali é o certo. Falhar por isso assustaria o cliente
+        # com um vermelho que não é defeito nenhum.
+        pular_se_faltar("DESBLOQUEAR_MAC.txt")
+
+    def _ler(self, nome):
+        with open(os.path.join(RAIZ, nome), encoding="utf-8") as f:
+            return f.read()
+
+    def test_existe_um_arquivo_de_TEXTO_com_a_saida(self):
+        """Texto puro é a única coisa que o Gatekeeper nunca bloqueia — por
+        isso a saída tem de estar num .txt, e não dentro de um .command."""
+        self.assertTrue(os.path.exists(os.path.join(RAIZ, "DESBLOQUEAR_MAC.txt")))
+        txt = self._ler("DESBLOQUEAR_MAC.txt")
+        self.assertIn("xattr -dr com.apple.quarantine", txt)
+        self.assertIn("ARRASTE", txt, "não ensina a arrastar a pasta — sem "
+                      "isso ele teria de digitar o caminho à mão")
+        self.assertIn("NUNCA", txt.upper())
+        self.assertIn("Mover para o Lixo", txt,
+                      "não avisa qual botão NÃO clicar")
+
+    def test_o_txt_explica_que_nao_e_virus(self):
+        """'A Apple não pôde verificar' não é 'a Apple encontrou algo'. Quem
+        não sabe a diferença apaga o pacote."""
+        txt = self._ler("DESBLOQUEAR_MAC.txt")
+        self.assertIn("NÃO PÔDE VERIFICAR", txt.upper())
+
+    def _todos_os_command(self):
+        """Os .command que existem NESTA pasta.
+
+        Lista fixa não serve: o `ABRIR_PAINEL_LICENCAS.command` sai do pacote
+        do CLIENTE (o `--sem-painel` o remove de propósito). Com a lista
+        escrita à mão, a suíte passava aqui e quebrava com FileNotFoundError
+        dentro do zip do cliente — quem pegou foi rodar a suíte de dentro do
+        pacote descompactado. Perguntar à pasta funciona nos dois."""
+        import glob
+        achados = sorted(glob.glob(os.path.join(RAIZ, "*.command")))
+        self.assertGreaterEqual(len(achados), 3,
+                                "sumiram os .command do Mac desta pasta")
+        return achados
+
+    def test_todo_command_se_AUTO_CURA(self):
+        """O primeiro script que conseguir rodar limpa a pasta inteira. Sem
+        isso ele levaria o mesmo susto quatro vezes, uma por arquivo."""
+        for caminho in self._todos_os_command():
+            sh = self._ler(os.path.basename(caminho))
+            self.assertIn('xattr -dr com.apple.quarantine "$(pwd)"', sh,
+                          os.path.basename(caminho))
+
+    def test_todo_command_avisa_do_iCLOUD(self):
+        """No print de 18/08 a pasta estava em iCloud Drive e o Finder já
+        mostrava 'Não foi possível concluir a sincronização'. O iCloud retira
+        do disco o arquivo parado e deixa um marcador — o programa quebra no
+        meio do pregão, num arquivo que funcionava ontem."""
+        for caminho in self._todos_os_command():
+            nome = os.path.basename(caminho)
+            sh = self._ler(nome)
+            self.assertIn("Mobile Documents", sh, nome)
+            self.assertIn("ICLOUD DRIVE", sh.upper(), nome)

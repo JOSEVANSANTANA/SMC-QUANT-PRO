@@ -1,0 +1,91 @@
+=======================================================================
+  O MAC BLOQUEOU OS ARQUIVOS? LEIA ISTO. LEVA UM MINUTO.
+=======================================================================
+
+Se ao dar dois cliques apareceu:
+
+    "O item CRIAR_APP.command Não Foi Aberto
+     A Apple não pôde verificar se o item está livre de algum malware"
+              [ Mover para o Lixo ]   [ OK ]
+
+...está tudo bem com o programa. Clique em OK (NUNCA em "Mover para o
+Lixo") e siga os três passos abaixo.
+
+
+POR QUE ISSO ACONTECE
+---------------------
+Todo arquivo que sai de um zip baixado da internet recebe do macOS uma
+marca invisível chamada QUARENTENA. Para abrir um script sem essa marca,
+a Apple exige que ele seja assinado por um Apple Developer ID — uma
+assinatura paga, anual, ligada a uma empresa registrada.
+
+O SMC Quant Pro não é assinado. Então o macOS bloqueia por precaução, e
+não porque encontrou alguma coisa: a mensagem diz que ele NÃO PÔDE
+VERIFICAR, não que achou vírus. Os arquivos são os mesmos que você abre
+e lê aqui — todos em texto, nenhum compilado.
+
+Tirar a marca é o que os três passos fazem, e vale para a pasta inteira:
+uma vez só, e todos os arquivos passam a abrir com dois cliques.
+
+
+OS TRÊS PASSOS
+--------------
+
+1) Abra o TERMINAL.
+   Cmd + Espaço, escreva "Terminal", Enter.
+
+2) COPIE a linha abaixo e cole no Terminal.
+   ATENÇÃO: NÃO aperte Enter ainda. Deixe um espaço no fim.
+
+       xattr -dr com.apple.quarantine
+
+3) ARRASTE a pasta SMC_QUANT_PRO (aquela onde estão o main_app.py e os
+   .command) de dentro do Finder para dentro da janela do Terminal.
+   O caminho dela aparece sozinho, escrito no fim da linha.
+   AGORA sim: aperte Enter.
+
+Não vai aparecer nenhuma mensagem de sucesso — no Terminal, silêncio é
+sinal de que deu certo. Volte ao Finder e dê dois cliques no
+INSTALAR_MAC.command normalmente.
+
+Depois disso, os outros arquivos (CRIAR_APP.command,
+ABRIR_SMC_QUANT_PRO.command, ABRIR_PAINEL_LICENCAS.command) também abrem
+sem reclamação: o comando limpou a pasta toda de uma vez.
+
+
+SE PREFERIR NÃO USAR O TERMINAL
+-------------------------------
+Dá para liberar um arquivo de cada vez:
+
+  • Clique com o botão DIREITO no arquivo → Abrir → no aviso, "Abrir".
+  • Ou: Ajustes do Sistema → Privacidade e Segurança → role até o fim →
+    "Abrir Assim Mesmo" (o botão aparece por alguns minutos depois da
+    tentativa bloqueada).
+
+Funciona, mas é arquivo por arquivo. O comando do Terminal resolve todos
+de uma vez, e é por isso que ele vem primeiro aqui.
+
+
+=======================================================================
+  ⚠️  NÃO DEIXE A PASTA NO iCLOUD DRIVE
+=======================================================================
+
+Se o caminho da pasta tiver "iCloud Drive" (ou se você a colocou em
+Documentos/Mesa com a sincronização do iCloud ligada), MOVA-A para fora.
+
+O motivo é concreto: para poupar espaço, o iCloud tira do disco os
+arquivos que você não usa há um tempo e deixa só um marcador. Quando o
+programa vai ler um arquivo que foi retirado, ele simplesmente não está
+lá — e a falha aparece no meio do pregão, sem explicação, num arquivo
+que "estava funcionando ontem".
+
+UM LUGAR SEGURO, que não sincroniza:
+
+    /Users/SEU_USUARIO/Applications/SMC_QUANT_PRO
+
+ou qualquer pasta na sua Casa fora de Documentos e da Mesa.
+
+Depois de mover, rode os três passos acima de novo (a marca de quarentena
+volta a valer no lugar novo) e NÃO mude mais a pasta de lugar: o ícone do
+aplicativo aponta para o caminho onde ela estava quando você rodou o
+CRIAR_APP.command.

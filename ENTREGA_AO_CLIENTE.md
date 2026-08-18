@@ -210,7 +210,7 @@ o botão de baixar. Você não precisa avisar ninguém um por um.
 ## Resumo de bolso
 
 ```
-python3 tests/run.py            # 600 testes — rode ANTES de empacotar
+python3 tests/run.py            # 606 testes — rode ANTES de empacotar
 python3 empacotar.py --entrega                      # um zip: SEU/ e CLIENTE/
 unzip -l CLIENTE/SMC_QUANT_PRO_MAC_v*.zip | grep painel   # tem de sair vazio
 ```
