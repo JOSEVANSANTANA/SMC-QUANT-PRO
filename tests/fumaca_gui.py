@@ -373,6 +373,70 @@ def main():
         else:
             print("  OK   o quadradinho mostra o resultado do dia")
 
+    # APAGAR O QUE FOI LANÇADO — pedido de 17/08, 21:29: "não tem a opção de
+    # desfazer (apagar), adicione por favor". Um valor lançado errado entra na
+    # média/dia, no ritmo exigido e na projeção do ciclo inteiro.
+    print("\n[apagar o valor lançado — o desfazer que faltava]")
+    if data_alvo is not None:
+        alvo_txt = data_alvo.strftime("%d/%m/%Y")
+        # Segundo lançamento, errado de propósito: é o caso real de errar o
+        # valor e querer tirar SÓ ele.
+        passo(app, "lançar US$ +900 por engano no mesmo dia",
+              lambda: mod.lancar_resultado_do_dia(alvo_txt, 900.0))
+        lancados = mod.lancamentos_do_dia(data_alvo)
+        print(f"       lançamentos no dia: "
+              f"{[p['pnl_final'] for p in lancados]}")
+        if len(lancados) != 2:
+            falhas.append(f"apagar: esperava 2 lançamentos, vi {len(lancados)}")
+        # Apaga SÓ O ÚLTIMO (os +900).
+        passo(app, "apagar só o último lançamento",
+              lambda: mod.apagar_lancamentos_do_dia(
+                  data_alvo, ids=[lancados[-1]["id"]]))
+        sobrou = mod.lancamentos_do_dia(data_alvo)
+        print(f"       sobrou: {[p['pnl_final'] for p in sobrou]}")
+        if [p["pnl_final"] for p in sobrou] != [54.0]:
+            falhas.append(f"apagar: apagar o último tirou a coisa errada — "
+                          f"sobrou {[p['pnl_final'] for p in sobrou]}")
+            print("  FALHA apagou o lançamento errado")
+        else:
+            print("  OK   apagou só o último e manteve os 54")
+
+        # E O DIÁRIO PRECISA REFLETIR. Apagar da lista e deixar o número na
+        # tela seria trocar um defeito por outro.
+        no_diario = dict(mod.resultados_por_dia()).get(alvo_txt)
+        print(f"       diário do dia depois do apagar: {no_diario}")
+        if no_diario is None or abs(no_diario - (antes_dia2 + 54.0)) > 0.01:
+            falhas.append(f"apagar: o diário do dia ficou {no_diario} depois "
+                          f"de apagar os +900")
+            print("  FALHA o diário não voltou")
+        else:
+            print("  OK   o diário voltou ao valor certo")
+
+        # A TRAVA QUE MAIS IMPORTA: operação REAL não pode ser apagada por um
+        # desfazer de lançamento. Sem isto, um clique errado apagaria histórico.
+        conta = mod.conta_ativa_id()
+        carimbo_real = mod.carimbo_para_o_pregao(alvo_txt)
+        real = {"id": 987654321, "conta_id": conta, "origem": "ROBO",
+                "status": "FECHADA", "direcao": "BUY", "ativo": "MESU6",
+                "contratos": 2, "entry": 7800.0, "pnl_final": 33.0,
+                "data_criacao": carimbo_real, "data_abertura": carimbo_real,
+                "data_fechamento": carimbo_real}
+        todas = mod.carregar_posicoes() + [real]
+        mod.salvar_posicoes(todas)
+        passo(app, "apagar TODOS os lançamentos do dia",
+              lambda: mod.apagar_lancamentos_do_dia(data_alvo))
+        sobrevivente = [p for p in mod.carregar_posicoes()
+                        if p.get("id") == 987654321]
+        if not sobrevivente:
+            falhas.append("apagar: o desfazer APAGOU UMA OPERAÇÃO REAL do "
+                          "diário — isso é pior que não ter desfazer")
+            print("  FALHA apagou operação real do robô")
+        elif mod.lancamentos_do_dia(data_alvo):
+            falhas.append("apagar: sobrou lançamento depois de apagar todos")
+            print("  FALHA não apagou tudo")
+        else:
+            print("  OK   apagou os lançamentos e NÃO tocou na operação real")
+
     # MARCAR O DIA COMO CONCLUÍDO / NÃO OPEREI — o outro pedido de 17/08.
     print("\n[marcar o dia como concluído ou não operado]")
     passo(app, "marcar o dia 1 como CONCLUÍDO",

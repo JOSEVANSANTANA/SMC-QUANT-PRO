@@ -175,7 +175,7 @@ o botão de baixar. Você não precisa avisar ninguém um por um.
 ## Resumo de bolso
 
 ```
-python3 tests/run.py            # 568 testes — rode ANTES de empacotar
+python3 tests/run.py            # 573 testes — rode ANTES de empacotar
 python3 empacotar.py --sem-painel
 unzip -l SMC_QUANT_PRO_MAC_v*.zip | grep painel     # tem de sair vazio
 ```

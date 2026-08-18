@@ -405,18 +405,89 @@ class TestAMarcaDeCadaDia(unittest.TestCase):
                         "a dedução passou na frente da marca dele")
         self.assertLess(pos_estado, pos_hoje)
 
-    def test_o_menu_do_dia_tem_as_tres_coisas_que_ele_pediu(self):
+    def test_o_menu_do_dia_tem_tudo_o_que_ele_pediu(self):
         fonte = self._marca()
         i = fonte.index("def _menu_do_dia")
-        bloco = fonte[i:i + 3000]
-        self.assertIn("_escolher_dia_do_ciclo", bloco)    # hoje é este dia
-        self.assertIn("_lancar_resultado_do_dia", bloco)  # resultado em US$
-        self.assertIn('"concluido"', bloco)               # concluído
-        self.assertIn('"nao_operei"', bloco)              # ou não
+        bloco = fonte[i:i + 5200]
+        self.assertIn("_escolher_dia_do_ciclo", bloco)      # hoje é este dia
+        self.assertIn("_lancar_resultado_do_dia", bloco)    # resultado em US$
+        self.assertIn('"concluido"', bloco)                 # concluído
+        self.assertIn('"nao_operei"', bloco)                # ou não
+        self.assertIn("_apagar_lancamentos_do_dia", bloco)  # e desfazer
 
     def test_marcar_grava_em_disco_e_redesenha(self):
         fonte = self._marca()
         i = fonte.index("def _marcar_dia")
-        bloco = fonte[i:i + 1200]
+        bloco = fonte[i:i + 2400]
         self.assertIn("_gravar_plano_silencioso", bloco)
         self.assertIn("_atualizar_dashboard(forcar=True)", bloco)
+
+    def test_nao_operei_num_dia_COM_resultado_avisa(self):
+        """No print de 17/08 o D1 estava marcado 'não operei' e mostrava +924
+        no mesmo quadradinho. A ferramenta aceitava calada."""
+        fonte = self._marca()
+        i = fonte.index("def _marcar_dia")
+        bloco = fonte[i:i + 2400]
+        self.assertIn('if estado == "nao_operei":', bloco)
+        self.assertIn("os dois não batem", bloco)
+
+
+class TestApagarOValorLancado(unittest.TestCase):
+    """17/08, 21:29: "adicione ali a opção de apagar o valor incluído também,
+    não tem a opção de desfazer (apagar), adicione por favor".
+
+    Estava certo: dava para pôr dinheiro no dia e não dava para tirar. E um
+    valor lançado errado não fica quieto — ele entra na média por dia, no
+    ritmo exigido, na projeção e na chance da meta. Sem desfazer, o único
+    jeito de corrigir era reiniciar o ciclo inteiro, perdendo o que estava
+    certo junto com o que estava errado."""
+
+    def _fonte(self):
+        from harness import fonte_do_arquivo
+        return fonte_do_arquivo()
+
+    def test_so_apaga_LANCAMENTO_e_nunca_operacao_real(self):
+        """No mesmo dia convivem sugestões acatadas e posições lidas da
+        corretora. Um desfazer que apagasse operação real seria bem pior que
+        não ter desfazer nenhum. A checagem de origem é refeita na hora de
+        apagar, e não só na hora de listar."""
+        fonte = self._fonte()
+        i = fonte.index("def apagar_lancamentos_do_dia")
+        bloco = fonte[i:i + 1400]
+        self.assertIn('p.get("origem") == "RESULTADO_DIA"', bloco)
+        j = fonte.index("def lancamentos_do_dia")
+        listar = fonte[j:j + 1600]
+        self.assertIn('pos.get("origem") != "RESULTADO_DIA"', listar)
+        self.assertIn('pos.get("conta_id") != conta', listar,
+                      "apagaria lançamento de outra conta")
+
+    def test_a_confirmacao_MOSTRA_o_que_vai_sair(self):
+        """Apagar dinheiro do diário sem mostrar o que se está apagando é o
+        tipo de botão que ninguém deveria clicar com confiança."""
+        fonte = self._fonte()
+        i = fonte.index("def _apagar_lancamentos_do_dia")
+        bloco = fonte[i:i + 2800]
+        self.assertIn("askyesno", bloco)
+        self.assertIn("Total que sai do diário", bloco)
+        self.assertIn("data_criacao", bloco, "não mostra quando foi lançado")
+
+    def test_da_para_apagar_so_o_ULTIMO(self):
+        """Lançou +54 e depois +900 por engano: apagar tudo e redigitar seria
+        obrigá-lo a refazer o que estava certo."""
+        fonte = self._fonte()
+        i = fonte.index("def _apagar_lancamentos_do_dia")
+        bloco = fonte[i:i + 2800]
+        self.assertIn("so_o_ultimo", bloco)
+        j = fonte.index("def lancamentos_do_dia")
+        self.assertIn('achados.sort(key=lambda p: p.get("id") or 0)',
+                      fonte[j:j + 1600],
+                      "sem ordenar, 'o último' não é o último de verdade")
+
+    def test_dia_sem_lancamento_explica_em_vez_de_apagar(self):
+        """Quadradinho com valor que veio de operação real: o certo é dizer
+        que aquilo não se apaga por ali, e por quê."""
+        fonte = self._fonte()
+        i = fonte.index("def _apagar_lancamentos_do_dia")
+        bloco = fonte[i:i + 2800]
+        self.assertIn("Nada lançado no dia", bloco)
+        self.assertIn("posições lidas da", bloco)

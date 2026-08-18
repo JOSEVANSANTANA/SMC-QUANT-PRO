@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.40.0"
+VERSAO_ATUAL = "2.41.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -2287,6 +2287,62 @@ def lancar_resultado_do_dia(dia_pregao, valor, contratos=1, ativo="LANCAMENTO",
     lista.append(pos)
     salvar_posicoes(lista)
     return pos
+
+
+def lancamentos_do_dia(dia_pregao, cfg=None, lista=None):
+    """Os lançamentos de RESULTADO que ELE fez à mão naquele pregão.
+
+    Devolve só os de origem RESULTADO_DIA e só os da conta selecionada. É a
+    lista que o 'apagar' pode tocar — e o filtro é a parte que importa: no
+    mesmo dia convivem operações acatadas do robô e posições lidas da
+    corretora, e nenhuma das duas pode ser apagada por um clique de desfazer.
+
+    Ordenada do mais antigo para o mais novo, para 'apagar o último' ser o
+    último de verdade."""
+    if isinstance(dia_pregao, (datetime.date, datetime.datetime)):
+        dia_pregao = dia_pregao.strftime("%d/%m/%Y")
+    dia_pregao = str(dia_pregao or "").strip()
+    if not dia_pregao:
+        return []
+    c = cfg if cfg is not None else carregar_config()
+    conta = conta_ativa_id()
+    achados = []
+    for pos in (carregar_posicoes() if lista is None else lista):
+        if pos.get("origem") != "RESULTADO_DIA":
+            continue
+        if pos.get("conta_id") != conta:
+            continue
+        quando = _hora_do_registro(pos.get("data_fechamento"))
+        if not quando:
+            continue
+        if data_do_pregao(quando, c) == dia_pregao:
+            achados.append(pos)
+    achados.sort(key=lambda p: p.get("id") or 0)
+    return achados
+
+
+def apagar_lancamentos_do_dia(dia_pregao, ids=None, cfg=None):
+    """Apaga lançamentos de resultado. Devolve a lista do que saiu.
+
+    `ids` limita a quais apagar (para 'apagar só o último'); sem ele, apaga
+    todos os lançamentos daquele pregão.
+
+    NUNCA toca em nada que não seja RESULTADO_DIA — a checagem de origem é
+    refeita aqui, e não só na hora de listar. Um desfazer que apagasse uma
+    operação real do diário seria bem pior que não ter desfazer nenhum."""
+    alvos = lancamentos_do_dia(dia_pregao, cfg)
+    if ids is not None:
+        ids = {int(i) for i in ids}
+        alvos = [p for p in alvos if int(p.get("id", 0)) in ids]
+    if not alvos:
+        return []
+    apagar = {int(p["id"]) for p in alvos}
+    lista = carregar_posicoes()
+    restante = [p for p in lista
+                if not (int(p.get("id", 0)) in apagar
+                        and p.get("origem") == "RESULTADO_DIA")]
+    salvar_posicoes(restante)
+    return alvos
 
 
 def salvar_posicoes(lista):
@@ -15849,6 +15905,39 @@ class SmcQuantApp(ctk.CTk):
         menu.add_separator()
         menu.add_command(label=f"💵 Lançar o resultado do dia {dia}…",
                          command=lambda: self._lancar_resultado_do_dia(dia))
+
+        # APAGAR O QUE FOI LANÇADO. Pedido dele em 17/08, 21:29: "adicione ali
+        # a opção de apagar o valor incluído também, não tem a opção de
+        # desfazer". Estava certo: dava para pôr dinheiro no dia e não dava
+        # para tirar — e um valor lançado errado envenena a média/dia, o ritmo
+        # exigido e a projeção do ciclo inteiro.
+        #
+        # Só aparece quando HÁ lançamento naquele dia, e só apaga LANÇAMENTO:
+        # operação acatada do robô e posição lida da corretora ficam onde
+        # estão. Um desfazer que apagasse operação real seria pior que não ter.
+        lancados = []
+        if data:
+            try:
+                lancados = lancamentos_do_dia(data)
+            except Exception:
+                lancados = []
+        if lancados:
+            menu.add_separator()
+            total = sum(float(p.get("pnl_final") or 0) for p in lancados)
+            if len(lancados) == 1:
+                menu.add_command(
+                    label=f"🗑️ Apagar o lançamento (US$ {total:+,.2f})",
+                    command=lambda: self._apagar_lancamentos_do_dia(dia))
+            else:
+                ultimo = float(lancados[-1].get("pnl_final") or 0)
+                menu.add_command(
+                    label=f"🗑️ Apagar o último lançamento (US$ {ultimo:+,.2f})",
+                    command=lambda: self._apagar_lancamentos_do_dia(
+                        dia, so_o_ultimo=True))
+                menu.add_command(
+                    label=(f"🗑️ Apagar os {len(lancados)} lançamentos do dia "
+                           f"(US$ {total:+,.2f})"),
+                    command=lambda: self._apagar_lancamentos_do_dia(dia))
         menu.add_separator()
         if estado == "concluido":
             menu.add_command(label="✅ Concluído — clique para desmarcar",
@@ -15867,6 +15956,65 @@ class SmcQuantApp(ctk.CTk):
         finally:
             menu.grab_release()
 
+    def _apagar_lancamentos_do_dia(self, dia, so_o_ultimo=False):
+        """Desfaz o lançamento de resultado de um dia.
+
+        17/08, 21:29: "adicione ali a opção de apagar o valor incluído também,
+        não tem a opção de desfazer". Um valor lançado errado não fica quieto:
+        ele entra na média por dia, no ritmo exigido, na projeção e na chance
+        da meta. Sem desfazer, o único jeito de corrigir era reiniciar o ciclo
+        inteiro — perdendo o que estava certo junto com o que estava errado.
+
+        A confirmação LISTA o que vai sair, com valor e horário. Apagar
+        dinheiro do diário sem mostrar o que se está apagando é o tipo de
+        botão que ninguém deveria clicar com confiança."""
+        from tkinter import messagebox
+        data = None
+        try:
+            data = data_do_dia_do_ciclo(self.plano, dia)
+        except Exception:
+            pass
+        if data is None:
+            messagebox.showwarning(
+                "Sem data para esse dia",
+                f"Ainda não sei em que data cai o dia {dia} deste ciclo.")
+            return
+        dia_txt = data.strftime("%d/%m/%Y")
+        lancados = lancamentos_do_dia(data)
+        if not lancados:
+            messagebox.showinfo(
+                f"Nada lançado no dia {dia}",
+                f"Não há lançamento manual de resultado no pregão de "
+                f"{dia_txt}.\n\nSe há um valor no quadradinho, ele veio de "
+                "operações do diário (sugestões acatadas ou posições lidas da "
+                "corretora) — essas não se apagam por aqui, para não sumir com "
+                "o histórico real por engano.")
+            return
+        alvos = [lancados[-1]] if so_o_ultimo else lancados
+        total = sum(float(p.get("pnl_final") or 0) for p in alvos)
+        linhas = "\n".join(
+            f"   • US$ {float(p.get('pnl_final') or 0):+,.2f}"
+            f"   (lançado em {p.get('data_criacao', '—')})" for p in alvos)
+        quantos = ("o lançamento" if len(alvos) == 1
+                   else f"os {len(alvos)} lançamentos")
+        if not messagebox.askyesno(
+                f"Apagar {quantos} do dia {dia}?",
+                f"Vou apagar {quantos} de resultado do pregão de {dia_txt}:\n\n"
+                f"{linhas}\n\n"
+                f"Total que sai do diário: US$ {total:+,.2f}\n\n"
+                "Isto NÃO mexe em sugestões acatadas nem em posições lidas da "
+                "corretora — só no que você lançou à mão pela trilha de dias.\n\n"
+                "Confirma?"):
+            return
+        removidos = apagar_lancamentos_do_dia(
+            data, ids=[p["id"] for p in alvos])
+        if not removidos:
+            self.log(f"⚠️ Não consegui apagar o lançamento do dia {dia}.")
+            return
+        self.log(f"🗑️ Apaguei {len(removidos)} lançamento(s) do dia {dia} "
+                 f"(pregão de {dia_txt}): US$ {total:+,.2f} saíram do diário.")
+        self._atualizar_dashboard(forcar=True)
+
     def _marcar_dia(self, dia, estado):
         """Grava (ou apaga) o que ELE disse sobre um dia do ciclo."""
         marcados = dict((self.plano or {}).get("dias_marcados") or {})
@@ -15878,6 +16026,26 @@ class SmcQuantApp(ctk.CTk):
             marcados[str(dia)] = estado
             nome = "CONCLUÍDO" if estado == "concluido" else "NÃO OPEREI"
             self.log(f"📅 Dia {dia} marcado por você como {nome}.")
+            # "NÃO OPEREI" NUM DIA QUE TEM RESULTADO É CONTRADIÇÃO — e a
+            # ferramenta aceitava calada. No print de 17/08 o D1 estava
+            # marcado assim e mostrava +924 no mesmo quadradinho.
+            # A marca dele continua valendo (é dele que se trata), mas o
+            # Registro passa a dizer que os dois não batem, e como resolver.
+            if estado == "nao_operei":
+                try:
+                    data = data_do_dia_do_ciclo(self.plano, dia)
+                    resultado = dict(resultados_por_dia()).get(
+                        data.strftime("%d/%m/%Y")) if data else None
+                except Exception:
+                    resultado = None
+                if resultado:
+                    self.log(
+                        f"⚠️ Só que o diário do dia {dia} tem US$ "
+                        f"{resultado:+,.2f} registrado. Marquei como você "
+                        "pediu, mas os dois não batem: se esse valor foi "
+                        "lançado por engano, apague no mesmo menu "
+                        "('🗑️ Apagar o lançamento'); se a operação foi real, "
+                        "o dia não foi de folga.")
         self.plano["dias_marcados"] = marcados
         self._gravar_plano_silencioso()
         self._atualizar_dashboard(forcar=True)
