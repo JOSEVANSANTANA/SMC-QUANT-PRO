@@ -103,6 +103,78 @@ A TIGER nao fala
 
 
 ========================================================================
+  MODO AUTONOMO — A FERRAMENTA OPERA SOZINHA
+========================================================================
+LIGA ONDE: Configuracoes -> AUTOMACAO TRADOVATE -> "Ligar automacao".
+E o MESMO interruptor de antes. O que ele significa mudou.
+
+ANTES: a sugestao esperava voce clicar em ACATAR, e so entao a ordem ia
+para a plataforma.
+AGORA: com ele ligado, toda sugestao aprovada vira ordem NA HORA. Voce e
+avisado DEPOIS (registro, WhatsApp, voz e aviso de tela) e a mensagem diz
+"EXECUTADO AUTOMATICAMENTE" em vez de perguntar se voce quer acatar.
+
+Desligado, tudo volta a ser como era: ela sugere, voce decide.
+
+O QUE **NAO** MUDA — e esta e a parte que importa
+-------------------------------------------------
+Sumiu UM passo (o ACATAR), nenhuma trava. Para uma sugestao virar ordem
+ela precisa passar, tudo em codigo e nesta ordem:
+
+  1. piso de qualidade: R:R minimo e probabilidade minima do seu Plano;
+  2. desconto por evento macro recem-publicado (CPI, FOMC, payroll);
+  3. correcao pelo aprendizado das SUAS operacoes fechadas;
+  4. politica de posicao aberta: nao empilha contra o que ja esta aberto;
+  5. FREIO: perda diaria (drawdown), limite de stops seguidos e teto de
+     operacoes do dia;
+  6. anti-repeticao: o mesmo setup nao vira duas ordens.
+
+E a ultima, que nao se negocia: o DIMENSIONAMENTO. Se o seu Plano
+dimensionar ZERO contrato (drawdown do dia consumido, margem
+insuficiente, stop curto demais), nao existe ordem para enviar. Zero
+contrato nao vira "manda um" — vira "hoje nao", escrito no registro.
+
+COMO A ORDEM VAI PARA A PLATAFORMA
+-----------------------------------
+Numa submissao SO: entrada + stop + alvo juntos, pela estrategia ATM da
+propria Tradovate (em ticks), com o OCO dela — executou um lado, o outro
+e cancelado pela corretora.
+
+Antes eram TRES ordens separadas, e entre uma e outra o painel vira
+comprovante e precisa voltar ao formulario. Toda vez que essa volta
+falhava existia uma janela em que a ENTRADA estava no mercado e a
+PROTECAO nao. Com a ATM essa janela deixa de existir.
+
+E a regra de ouro: NADA e enviado antes de todos os campos terem sido
+escritos E CONFERIDOS por leitura de volta. Se qualquer um falhar, ela
+nao clica em Enviar e diz por que. O pior resultado possivel passa a ser
+"nao operou".
+
+ANTES DE LIGAR, FACA ESTE TESTE DE UM MINUTO
+---------------------------------------------
+  1. Deixe o "Chamado do pedido" aberto na Tradovate, com a aba ATMs
+     visivel e "EXIBIR EM" em Ticks.
+  2. Configuracoes -> AUTOMACAO TRADOVATE -> "Testar conexao".
+     Ela vai dizer, campo por campo, o que consegue mirar e o que esta
+     escrito em cada um AGORA. Se algum disser "NAO consigo mirar",
+     resolva isso ANTES de ligar o modo autonomo.
+  3. Marque "Modo teste" e deixe rodar um cenario. Ela preenche o ticket
+     inteiro (preco, quantidade, obter lucro, stop loss) e NAO clica em
+     Enviar. Confira os numeros na tela.
+  4. So entao desmarque o "Modo teste".
+
+DUAS COISAS QUE VOCE PRECISA SABER
+-----------------------------------
+- Os valores de OBTER LUCRO e STOP LOSS ficam no ticket depois que ela
+  escreve. Se voce mandar uma ordem NA MAO logo em seguida, ela sai com
+  o bracket do ultimo cenario dela. Confira antes.
+- Se ela nao souber o tick do contrato (a tabela cobre MES/ES, MNQ/NQ,
+  MYM/YM, M2K/RTY, MGC/GC, MCL/CL, WIN/IND, WDO/DOL), ela avisa e vai
+  pelo caminho antigo das tres ordens. Nao chuta tick: chutar tick e
+  chutar a distancia do seu stop.
+
+
+========================================================================
   O QUE MUDOU NA v2.37.0  —  ELA TINHA TODOS OS DADOS E RESPONDEU
                              "NAO TENHO DADOS SUFICIENTES"
 ========================================================================

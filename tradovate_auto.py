@@ -49,6 +49,106 @@ PORTA_DEBUG_PADRAO = 9222
 
 
 # ============================================================================
+#  CONTAS QUE PRECISAM FECHAR ANTES DE QUALQUER CLIQUE
+#  ---------------------------------------------------------------------------
+#  Funções PURAS, de propósito: elas decidem quantos ticks vão no stop e no
+#  alvo de uma ordem que vai ser ENVIADA. Isso tem de poder ser conferido sem
+#  Chrome, sem Tradovate e sem mercado aberto — e é o que os testes fazem.
+# ============================================================================
+def _como_numero(valor):
+    """'29.542,00', '29,542.00', '7732.50' -> float. None quando não é número.
+
+    A Tradovate escreve o número no campo do jeito da localidade do navegador,
+    e o campo é lido de volta como TEXTO. Comparar '7732.5' com '7,732.50' como
+    string diria que o valor não entrou — e o robô abortaria uma ordem correta."""
+    if valor is None:
+        return None
+    if isinstance(valor, (int, float)):
+        return float(valor)
+    texto = str(valor).strip().replace(" ", "")
+    if not texto:
+        return None
+    # Fica só o último separador decimal; os outros são de milhar.
+    if "," in texto and "." in texto:
+        decimal = "," if texto.rfind(",") > texto.rfind(".") else "."
+        milhar = "." if decimal == "," else ","
+        texto = texto.replace(milhar, "").replace(decimal, ".")
+    elif "," in texto:
+        # "1,5" é decimal; "1,500" pode ser milhar. Três casas depois da
+        # vírgula, sem outro separador, é milhar em pt-BR.
+        inteiro, _, resto = texto.rpartition(",")
+        texto = (inteiro + resto) if len(resto) == 3 else texto.replace(",", ".")
+    try:
+        return float(texto)
+    except ValueError:
+        return None
+
+
+def valores_batem(escrito, lido, tolerancia=None):
+    """O que eu escrevi é o que está no campo?
+
+    Compara como NÚMERO quando os dois são números (a plataforma reformata
+    '7732.5' como '7,732.50', e isso continua sendo o mesmo preço), e como
+    texto quando não são. A tolerância existe para arredondamento de tick, não
+    para 'chegou perto' — o padrão é igualdade exata."""
+    a, b = _como_numero(escrito), _como_numero(lido)
+    if a is not None and b is not None:
+        return abs(a - b) <= (tolerancia if tolerancia is not None else 1e-9)
+    return str(escrito).strip() == str(lido).strip()
+
+
+def ticks_entre(preco_a, preco_b, tick):
+    """Distância entre dois preços, EM TICKS, sempre positiva e inteira.
+
+    É o que a estratégia ATM da Tradovate espera: ela não recebe preço de stop,
+    recebe DISTÂNCIA em ticks a partir do preenchimento. Devolve None quando
+    não dá para calcular — e None aqui significa "não envie a ordem", nunca
+    "use zero": ATM com zero tick é ordem sem proteção nenhuma."""
+    try:
+        a, b, t = float(preco_a), float(preco_b), float(tick)
+    except (TypeError, ValueError):
+        return None
+    if t <= 0:
+        return None
+    n = int(round(abs(a - b) / t))
+    return n if n > 0 else None
+
+
+def plano_atm(direcao, entrada, stop, alvo, tick):
+    """Traduz o cenário SMC para o que o formulário ATM entende.
+
+    Devolve (ticks_stop, ticks_alvo, erro). Com `erro` preenchido, NADA deve
+    ser enviado: sem os dois números não existe bracket, e uma entrada sem
+    bracket é justamente o estado que este caminho veio eliminar.
+
+    A conferência de LADO não é preciosismo. A ATM é cega: ela mede distância
+    e não sabe se o seu stop está do lado certo da entrada. Um BUY com stop
+    ACIMA da entrada vira, na Tradovate, um stop de N ticks ABAIXO — ou seja,
+    ela inverteria silenciosamente a proteção que o cenário pedia."""
+    try:
+        ent = float(entrada)
+        stp = float(stop)
+        alv = float(alvo)
+    except (TypeError, ValueError):
+        return None, None, "entrada, stop e alvo precisam ser números"
+    comprado = str(direcao).upper() in ("BUY", "COMPRA", "COMPRAR", "C", "LONG")
+    if comprado and not (stp < ent < alv):
+        return None, None, (f"cenário incoerente para COMPRA: stop {stp}, "
+                            f"entrada {ent}, alvo {alv} — o stop tem de ficar "
+                            "ABAIXO da entrada e o alvo ACIMA")
+    if not comprado and not (alv < ent < stp):
+        return None, None, (f"cenário incoerente para VENDA: alvo {alv}, "
+                            f"entrada {ent}, stop {stp} — o stop tem de ficar "
+                            "ACIMA da entrada e o alvo ABAIXO")
+    t_stop = ticks_entre(ent, stp, tick)
+    t_alvo = ticks_entre(ent, alv, tick)
+    if not t_stop or not t_alvo:
+        return None, None, (f"não consegui converter para ticks (tick={tick}): "
+                            f"stop={t_stop}, alvo={t_alvo}")
+    return t_stop, t_alvo, None
+
+
+# ============================================================================
 #  Cliente WebSocket mínimo (localhost) — o suficiente pra falar CDP.
 #  Escrito à mão de propósito: evita a dependência 'websocket-client' no
 #  executável. CDP em localhost manda frames de texto pequenos; este cliente
@@ -416,6 +516,129 @@ class TradovateAuto:
 
     def localizar(self, palavra):
         return self._achar_por_texto([palavra]).get(palavra)
+
+    # ==================================================================
+    #  MIRAR O CAMPO PELO RÓTULO — e conferir que o valor entrou nele
+    # ==================================================================
+    #  O QUE ESTAVA ERRADO, e por que era invisível.
+    #
+    #  `definir_campo_ticket` pegava "o primeiro input do painel da esquerda,
+    #  sem placeholder, cujo valor pareça número". Isso funciona enquanto o
+    #  ticket está sozinho na tela. Com o painel de ATMs ABERTO — que é
+    #  exatamente como ele opera — a mesma coluna passa a ter os campos de
+    #  OBTER LUCRO, STOP LOSS, ACIONAR LUCROS e FREQUÊNCIA, todos numéricos e
+    #  todos sem placeholder. O primeiro "input numérico da esquerda" deixa de
+    #  ser o PREÇO da ordem.
+    #
+    #  E o pior nem era errar o campo: era não perceber. A função devolvia 'OK'
+    #  por ter ENCONTRADO um input, nunca por ter CONFERIDO que o número entrou
+    #  onde devia. Escrever no campo errado e reportar sucesso é a pior
+    #  combinação possível quando o próximo passo é clicar em Enviar.
+    #
+    #  A âncora certa é o RÓTULO, que é o que um humano usa para achar o campo:
+    #  "PREÇO" tem um input à direita, na mesma linha. É layout de formulário,
+    #  não heurística de posição.
+    _JS_CAMPO_POR_ROTULO = r"""
+    (function(rotulo, valor, ocorrencia, tolerancia){
+      function vis(el){var r=el.getBoundingClientRect();
+        return r.width>0 && r.height>0 && r.bottom>0 && r.right>0;}
+      function norm(s){return (s||'').replace(/\s+/g,' ').trim().toUpperCase();}
+      var alvo = norm(rotulo);
+      // O MENOR elemento cujo texto é EXATAMENTE o rótulo: o maior seria um
+      // contêiner que engloba meia tela e cujo "centro" não diz nada.
+      var rotulos = [];
+      var els = document.querySelectorAll('div,span,label,p,td,th');
+      for (var i=0;i<els.length;i++){
+        var el = els[i];
+        if (!vis(el)) continue;
+        if (norm(el.textContent) !== alvo) continue;
+        var r = el.getBoundingClientRect();
+        rotulos.push({el:el, r:r, area:r.width*r.height});
+      }
+      if (!rotulos.length) return JSON.stringify({estado:'ROTULO_NAO_ACHADO'});
+      // Um rótulo pode repetir (STOP LOSS aparece no bracket E no auto trail).
+      // Desempata por posição na tela, de cima para baixo: `ocorrencia` diz
+      // qual delas. Ordem visual é estável; ordem no DOM não é.
+      rotulos.sort(function(a,b){ return (a.r.top - b.r.top) || (a.area - b.area); });
+      // entre rótulos na MESMA linha, fica o menor (o texto, não o contêiner)
+      var linhas = [];
+      rotulos.forEach(function(c){
+        var achou = linhas.find(function(l){
+          return Math.abs(l.r.top - c.r.top) <= tolerancia; });
+        if (!achou) linhas.push(c);
+        else if (c.area < achou.area) linhas[linhas.indexOf(achou)] = c;
+      });
+      if (ocorrencia >= linhas.length)
+        return JSON.stringify({estado:'OCORRENCIA_INEXISTENTE',
+                               quantas:linhas.length});
+      var lr = linhas[ocorrencia].r;
+      var meio = lr.top + lr.height/2;
+      // O input da MESMA LINHA, à DIREITA do rótulo, e o mais próximo dele.
+      // "Mais próximo" importa nas linhas do ATM, que têm dois campos: o de
+      // TICKS (perto) e o de PREÇO calculado (longe). Quem manda é o de ticks.
+      var melhor = null;
+      var ins = document.querySelectorAll('input');
+      for (var j=0;j<ins.length;j++){
+        var inp = ins[j];
+        if (!vis(inp) || inp.disabled || inp.readOnly) continue;
+        var ir = inp.getBoundingClientRect();
+        var centro = ir.top + ir.height/2;
+        if (Math.abs(centro - meio) > tolerancia) continue;
+        if (ir.left < lr.left) continue;
+        var dist = ir.left - lr.right;
+        if (!melhor || dist < melhor.dist) melhor = {el:inp, dist:dist, r:ir};
+      }
+      if (!melhor) return JSON.stringify({estado:'CAMPO_NAO_ACHADO'});
+      var el = melhor.el;
+      if (valor !== null){
+        var setter = Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype, 'value').set;
+        el.focus();
+        setter.call(el, '');
+        el.dispatchEvent(new Event('input', {bubbles:true}));
+        setter.call(el, String(valor));
+        el.dispatchEvent(new Event('input', {bubbles:true}));
+        el.dispatchEvent(new Event('change', {bubbles:true}));
+        el.blur();
+      }
+      return JSON.stringify({estado:'OK', valor:String(el.value||''),
+                             x:Math.round(melhor.r.x + melhor.r.width/2),
+                             y:Math.round(melhor.r.y + melhor.r.height/2)});
+    })(%s, %s, %s, %s)
+    """
+
+    def _campo_por_rotulo(self, rotulo, valor=None, ocorrencia=0, tolerancia=18):
+        js = self._JS_CAMPO_POR_ROTULO % (
+            json.dumps(str(rotulo)),
+            "null" if valor is None else json.dumps(str(valor)),
+            json.dumps(int(ocorrencia)), json.dumps(int(tolerancia)))
+        try:
+            return json.loads(self.avaliar_js(js) or "{}") or {}
+        except ConexaoPerdida:
+            raise
+        except Exception as e:
+            return {"estado": "ERRO", "detalhe": str(e)[:120]}
+
+    def ler_campo_por_rotulo(self, rotulo, ocorrencia=0):
+        """O que está ESCRITO no campo daquele rótulo agora, ou None."""
+        r = self._campo_por_rotulo(rotulo, None, ocorrencia)
+        return r.get("valor") if r.get("estado") == "OK" else None
+
+    def definir_campo_por_rotulo(self, rotulo, valor, ocorrencia=0,
+                                 tolerancia_num=None):
+        """Escreve no campo do rótulo e CONFERE lendo de volta.
+
+        Devolve (ok, detalhe). A conferência é o ponto: sem ela, escrever no
+        campo errado e reportar sucesso é a pior combinação possível quando o
+        passo seguinte é clicar em Enviar."""
+        r = self._campo_por_rotulo(rotulo, valor, ocorrencia, tolerancia=18)
+        estado = r.get("estado")
+        if estado != "OK":
+            return False, estado or "SEM_RESPOSTA"
+        lido = r.get("valor", "")
+        if valores_batem(valor, lido, tolerancia_num):
+            return True, lido
+        return False, f"escrevi {valor!r} e o campo ficou {lido!r}"
 
     def definir_campo_ticket(self, papel, valor):
         """Preenche o campo do ticket: papel='preco' ou 'qtd'. Usa o setter
@@ -1455,6 +1678,196 @@ class TradovateAuto:
         else:
             self.log("   👀 Preenchido (não enviei). Confira e mande '!' pra enviar.")
         return True
+
+    # ==================================================================
+    #  BRACKET DE UMA VEZ SÓ — pela estratégia ATM, em ticks
+    # ==================================================================
+    #  A ideia é dele, e é melhor que a minha. O caminho antigo mandava TRÊS
+    #  ordens separadas (entrada, stop, alvo), e entre uma e outra o painel da
+    #  Tradovate vira comprovante e precisa voltar ao formulário. Toda vez que
+    #  essa volta falha, existe uma janela em que a ENTRADA já está no mercado
+    #  e a PROTEÇÃO não — o pior estado que este programa pode produzir.
+    #
+    #  A plataforma já resolve isso sozinha: o painel ATM recebe o alvo e o
+    #  stop EM TICKS e anexa os dois à ordem no momento do preenchimento, com
+    #  OCO nativo (executou um, o outro é cancelado pela corretora, não por
+    #  mim). Uma submissão, sem volta ao formulário, sem janela de exposição.
+    #
+    #  A regra de ouro deste método: NADA é enviado antes de todos os campos
+    #  terem sido escritos E conferidos por leitura de volta. Se qualquer um
+    #  falhar, ele devolve o motivo e não clica em Enviar — o pior resultado
+    #  possível passa a ser "não operou", que é um resultado com o qual dá
+    #  para viver.
+    ROTULO_PRECO = "PREÇO"
+    ROTULO_QTD = "QTD"
+    ROTULO_ALVO_ATM = "OBTER LUCRO"
+    ROTULO_STOP_ATM = "STOP LOSS"
+
+    def painel_atm_visivel(self):
+        """Os campos de bracket do ATM estão na tela?"""
+        return (self._campo_por_rotulo(self.ROTULO_ALVO_ATM).get("estado") == "OK"
+                and self._campo_por_rotulo(self.ROTULO_STOP_ATM).get("estado") == "OK")
+
+    def garantir_painel_atm(self, pausa=0.5):
+        """Abre a aba ATMs se os campos não estiverem à vista."""
+        if self.painel_atm_visivel():
+            return True
+        for palavra in ("ATMs", "ATM"):
+            alvo = self.localizar(palavra)
+            if alvo:
+                self.log(f"   🔧 abrindo o painel de {palavra}…")
+                self.clicar_pagina(alvo["x"], alvo["y"])
+                time.sleep(pausa)
+                if self.painel_atm_visivel():
+                    return True
+        return False
+
+    def garantir_exibir_em_ticks(self, pausa=0.4):
+        """'EXIBIR EM' precisa estar em Ticks — é a unidade em que eu escrevo.
+
+        Se estiver em PREÇO, o mesmo número 40 deixa de ser 40 ticks e vira o
+        preço 40. Não é um detalhe de tela: é a diferença entre um stop de dez
+        pontos e uma ordem sem sentido nenhum."""
+        atual = self.ler_campo_por_rotulo("EXIBIR EM")
+        if atual and "TICK" in str(atual).upper():
+            return True
+        # O controle costuma ser um combo (não um input): procura pelo texto.
+        combo = self._achar_por_texto(["Ticks", "Preço", "Preco", "Ticks "])
+        if combo.get("Ticks"):
+            self.clicar_pagina(combo["Ticks"]["x"], combo["Ticks"]["y"])
+            time.sleep(pausa)
+            return True
+        # Não consegui CONFIRMAR. Devolver True aqui seria fingir: quem chama
+        # decide se segue sem a confirmação ou aborta.
+        return False
+
+    def configurar_atm(self, ticks_stop, ticks_alvo, pausa=0.4):
+        """Escreve o bracket em ticks no painel ATM e confere os dois campos.
+
+        Devolve (ok, detalhe)."""
+        if not self.garantir_painel_atm():
+            return False, ("o painel de ATMs não está à vista no 'Chamado do "
+                           "pedido' — sem ele não dá para anexar stop e alvo "
+                           "na mesma ordem")
+        em_ticks = self.garantir_exibir_em_ticks()
+        if not em_ticks:
+            self.log("   ⚠️ não consegui CONFIRMAR que 'EXIBIR EM' está em "
+                     "Ticks. Deixe esse seletor em Ticks na Tradovate — em "
+                     "Preço, o mesmo número vira outra ordem.")
+        ok_alvo, det_alvo = self.definir_campo_por_rotulo(
+            self.ROTULO_ALVO_ATM, int(ticks_alvo))
+        time.sleep(pausa)
+        ok_stop, det_stop = self.definir_campo_por_rotulo(
+            self.ROTULO_STOP_ATM, int(ticks_stop))
+        time.sleep(pausa)
+        if not ok_alvo:
+            return False, f"campo OBTER LUCRO: {det_alvo}"
+        if not ok_stop:
+            return False, f"campo STOP LOSS: {det_stop}"
+        self.log(f"   🛡️ ATM configurada: alvo {int(ticks_alvo)} ticks · "
+                 f"stop {int(ticks_stop)} ticks (conferidos na tela)")
+        return True, f"alvo={det_alvo} stop={det_stop}"
+
+    def enviar_ordem_com_atm(self, direcao, entrada, stop, alvo, tick,
+                             qtd=None, enviar=False, tipo="LIMITE", pausa=0.5):
+        """A ordem INTEIRA numa submissão só: entrada + stop + alvo + OCO.
+
+        Devolve o mesmo formato do bracket antigo, para quem chama não precisar
+        saber por qual caminho foi:
+          {ok, enviadas, faltando, erro, exposto, ticks_stop, ticks_alvo}
+        """
+        resultado = {"ok": False, "enviadas": [], "faltando": [], "erro": None,
+                     "exposto": False, "ticks_stop": None, "ticks_alvo": None,
+                     "via": "ATM"}
+        t_stop, t_alvo, erro = plano_atm(direcao, entrada, stop, alvo, tick)
+        if erro:
+            resultado["erro"] = erro
+            resultado["faltando"] = ["ENTRADA", "STOP", "ALVO"]
+            self.log(f"   ⛔ não envio: {erro}")
+            return resultado
+        resultado["ticks_stop"], resultado["ticks_alvo"] = t_stop, t_alvo
+
+        long_ = str(direcao).upper() in ("BUY", "COMPRA", "COMPRAR", "C", "LONG")
+        palavra_dir = "Comprar" if long_ else "Vender"
+        self.log(f"📦 Ordem ÚNICA com ATM [{'ENVIAR' if enviar else 'dry'}]: "
+                 f"{palavra_dir} {tipo} @ {entrada} · stop {t_stop} ticks "
+                 f"({stop}) · alvo {t_alvo} ticks ({alvo}) · qtd={qtd}")
+
+        if enviar and not qtd:
+            resultado["erro"] = "quantidade não informada"
+            resultado["faltando"] = ["ENTRADA", "STOP", "ALVO"]
+            self.log("   ⚠️ QTD é obrigatória para enviar.")
+            return resultado
+
+        if not self._garantir_formulario():
+            resultado["erro"] = "formulário do ticket não está à vista"
+            resultado["faltando"] = ["ENTRADA", "STOP", "ALVO"]
+            return resultado
+
+        d = self.localizar(palavra_dir)
+        if not d:
+            resultado["erro"] = f"botão '{palavra_dir}' não encontrado"
+            resultado["faltando"] = ["ENTRADA", "STOP", "ALVO"]
+            self.log(f"   ❌ {resultado['erro']}.")
+            return resultado
+        self.clicar_pagina(d["x"], d["y"])
+        time.sleep(pausa)
+
+        if tipo:
+            self._selecionar_tipo(tipo, pausa)
+
+        # Preço e quantidade, cada um conferido por leitura de volta. O preço
+        # tem tolerância de meio tick: a plataforma arredonda para o tick dela,
+        # e recusar a ordem por causa disso seria recusar por estar certa.
+        ok_preco, det_preco = self.definir_campo_por_rotulo(
+            self.ROTULO_PRECO, entrada, tolerancia_num=float(tick) / 2)
+        if not ok_preco:
+            resultado["erro"] = f"campo PREÇO: {det_preco}"
+            resultado["faltando"] = ["ENTRADA", "STOP", "ALVO"]
+            self.log(f"   ❌ {resultado['erro']} — não envio nada.")
+            return resultado
+        self.log(f"   ✏️ preço {entrada} conferido no campo ({det_preco}).")
+        time.sleep(pausa)
+
+        if qtd is not None:
+            ok_qtd, det_qtd = self.definir_campo_por_rotulo(
+                self.ROTULO_QTD, int(qtd))
+            if not ok_qtd:
+                resultado["erro"] = f"campo QTD: {det_qtd}"
+                resultado["faltando"] = ["ENTRADA", "STOP", "ALVO"]
+                self.log(f"   ❌ {resultado['erro']} — não envio nada.")
+                return resultado
+            self.log(f"   ✏️ quantidade {int(qtd)} conferida no campo.")
+            time.sleep(pausa)
+
+        ok_atm, det_atm = self.configurar_atm(t_stop, t_alvo, pausa)
+        if not ok_atm:
+            resultado["erro"] = det_atm
+            resultado["faltando"] = ["ENTRADA", "STOP", "ALVO"]
+            self.log(f"   ⛔ {det_atm}. NÃO enviei a entrada: entrada sem "
+                     "proteção anexada é exatamente o que este caminho veio "
+                     "eliminar.")
+            return resultado
+
+        if not enviar:
+            resultado["ok"] = True
+            resultado["enviadas"] = ["PRE-VISUALIZACAO"]
+            self.log("   👀 Formulário preenchido e conferido. NÃO enviei "
+                     "(modo teste) — confira na tela.")
+            return resultado
+
+        e = self.localizar("Enviar")
+        if not e:
+            resultado["erro"] = "botão 'Enviar' não encontrado"
+            resultado["faltando"] = ["ENTRADA", "STOP", "ALVO"]
+            self.log("   ❌ botão 'Enviar' não encontrado — nada foi enviado.")
+            return resultado
+        self.clicar_pagina(e["x"], e["y"])
+        resultado["ok"] = True
+        resultado["enviadas"] = ["ENTRADA", "STOP", "ALVO"]
+        self.log("   ✅ Enviada. Stop e alvo foram junto, anexados pela "
+                 "própria Tradovate — o OCO é dela, não meu.")
+        return resultado
 
     def enviar_bracket_ticket(self, direcao, entrada, stop, alvo, qtd=None,
                               enviar=False, pausa=0.7):

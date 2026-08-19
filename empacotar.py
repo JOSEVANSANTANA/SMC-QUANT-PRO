@@ -63,6 +63,8 @@ COMUM = [
     "tests/test_macro_no_motor.py",
     "tests/test_ia_local_rapida.py",
     "tests/test_aprendizado_visivel.py",
+    "tests/test_ordem_atm.py",
+    "tests/test_modo_autonomo.py",
     "tests/test_notificacao.py",
     "tests/test_piso_qualidade.py",
     "tests/test_pregao.py",

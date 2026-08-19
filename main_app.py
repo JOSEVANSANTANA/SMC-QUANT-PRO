@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.44.0"
+VERSAO_ATUAL = "2.45.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -3496,6 +3496,56 @@ def drawdown_restante_hoje(plano=None):
         return drawdown
     usado = min(0.0, realizado + aberto)      # lucro NÃO aumenta o limite
     return max(0.0, drawdown - abs(usado))
+
+# ====================================================================
+#  MODO AUTÔNOMO — a ferramenta acata sozinha
+# ====================================================================
+#  19/08, ele: "quero deixar essa 100% autonoma (um robo operando para mim)
+#  sem precisar que eu confirme, e acate todas as sugestoes que surgirem no
+#  motor... CERTIFIQUE-SE DE DEIXAR TOTALMENTE AUTONOMA SEM A NECESSIDADE DE
+#  ACATAR OU NAO, DESDE QUE NA GESTAO DA FERRAMENTA A AUTOMACAO TRADOVATE
+#  ESTEJA ATIVADA". Ambiente simulado, riscos declarados por escrito.
+#
+#  O QUE MUDA E O QUE NÃO MUDA. Some UM passo: o ACATAR. Não some NENHUMA
+#  trava — e é importante que isso esteja escrito, porque é fácil confundir
+#  "autônomo" com "sem freio". Quando uma sugestão chega até aqui, ela já
+#  passou, nesta ordem e tudo em código:
+#     • piso de qualidade (R:R mínimo e probabilidade mínima),
+#     • desconto por evento macro recém-publicado,
+#     • correção pelo aprendizado das operações dele,
+#     • política de posição aberta (não empilha contra o que já está aberto),
+#     • freio: perda diária, stops seguidos e teto de operações do dia,
+#     • anti-repetição do mesmo setup.
+#  O ACATAR nunca foi uma dessas travas. Ele era a confirmação humana em cima
+#  delas — e é exatamente isso que ele está me pedindo para tirar.
+#
+#  A trava que sobra e que não pode ser negociada é o DIMENSIONAMENTO: se o
+#  plano devolve zero contrato (drawdown do dia consumido, margem insuficiente,
+#  stop curto demais), não existe ordem para enviar. Zero contrato não é "envia
+#  um" — é "hoje não".
+def decidir_execucao_autonoma(automacao_ligada, modo_teste, contratos,
+                              motivo_limite=None):
+    """Esta sugestão vira ordem sozinha? Devolve (executa, motivo).
+
+    Função PURA e determinística: é ela que decide mandar dinheiro para a
+    plataforma sem ninguém olhando, e por isso precisa ser conferível sem
+    Chrome, sem mercado e sem interface."""
+    if not automacao_ligada:
+        return False, ("automação da Tradovate desligada — a sugestão fica "
+                       "aguardando o seu ACATAR, como antes")
+    try:
+        n = int(contratos or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n <= 0:
+        return False, ("o plano dimensionou ZERO contrato"
+                       + (f": {motivo_limite}" if motivo_limite else "")
+                       + " — não há ordem para enviar")
+    if modo_teste:
+        return True, ("MODO TESTE: preencho o ticket e conferi os campos, mas "
+                      "NÃO clico em Enviar")
+    return True, "executando sozinha"
+
 
 def freio_de_sugestoes(plano=None, agora=None):
     """PROTEÇÃO CONTRA SEQUÊNCIA DE STOPS.
@@ -10369,18 +10419,34 @@ class SmcQuantApp(ctk.CTk):
                          text_color="#e0a458").pack(pady=(2, 10), padx=12, anchor="w")
             return
 
+        # O AVISO PRECISA DIZER O QUE MUDOU, E EM PRIMEIRO LUGAR.
+        # Este interruptor deixou de ser "envia a ordem quando você acatar" e
+        # passou a ser "opera sozinha". Quem ligar isto achando que é o de
+        # antes vai descobrir a diferença com dinheiro na tela — mesmo em
+        # simulado, é o tipo de surpresa que não se dá a ninguém.
+        ctk.CTkLabel(
+            frame, justify="left", text_color="#ffcc66",
+            font=ctk.CTkFont(weight="bold", size=12),
+            text="🤖 COM A AUTOMAÇÃO LIGADA, A FERRAMENTA OPERA SOZINHA.\n"
+                 "Toda sugestão aprovada vira ordem NA HORA, sem passar pelo\n"
+                 "seu ACATAR. Você é avisado (WhatsApp, voz, tela) DEPOIS."
+        ).pack(pady=(6, 2), padx=12, anchor="w")
         ctk.CTkLabel(
             frame, justify="left", text_color=COR["texto"],
-            text="Ao ACATAR um sinal, o robô coloca entrada + stop + alvo na Tradovate\n"
-                 "(preço exato do SMC), em 2º plano. Requer o Chrome aberto pelo botão\n"
-                 "abaixo e o 'Chamado do pedido' visível. Quem não usa Tradovate é só\n"
-                 "deixar desligado.  Com a automação LIGADA, as ordens são ENVIADAS de\n"
-                 "verdade — marque 'Modo teste' se quiser só pré-visualizar sem enviar."
+            text="A ordem vai numa submissão só: entrada + stop + alvo juntos, pela\n"
+                 "estratégia ATM da própria Tradovate (em ticks), com o OCO dela —\n"
+                 "executou um lado, o outro é cancelado pela corretora. Requer o\n"
+                 "Chrome aberto pelo botão abaixo e o 'Chamado do pedido' visível.\n"
+                 "\n"
+                 "O que NÃO muda: continuam valendo o piso de qualidade, o freio de\n"
+                 "perda diária, o limite de stops seguidos, o teto de operações do\n"
+                 "dia e o dimensionamento do seu Plano. Zero contrato = não opera.\n"
+                 "Marque 'Modo teste' para preencher o ticket sem enviar."
         ).pack(pady=(2, 6), padx=12, anchor="w")
 
         # text_color explícito: sem definir modo de aparência, o padrão do
         # CustomTkinter deixa o texto do checkbox escuro (some no fundo escuro).
-        ctk.CTkCheckBox(frame, text="Ligar automação (enviar ordem ao Acatar)",
+        ctk.CTkCheckBox(frame, text="Ligar automação (OPERA SOZINHA — acata e envia)",
                         variable=self.tv_auto_var, command=self._tv_salvar_prefs,
                         text_color=COR["texto"], fg_color="#1f8b4c",
                         border_color="#63b3ed", hover_color="#25a35a"
@@ -10437,8 +10503,24 @@ class SmcQuantApp(ctk.CTk):
         if self.tv_auto_var.get():
             modo = "TESTE (não envia)" if self.tv_dry_var.get() else "REAL (envia ordem)"
             self.log(f"🎯 Automação Tradovate LIGADA — modo {modo}.")
+            # DITO POR EXTENSO, TODA VEZ. Este interruptor mudou de
+            # significado: era "envia quando você acatar", virou "opera
+            # sozinha". Quem ligou achando que era o de antes precisa
+            # descobrir aqui, e não vendo uma ordem aparecer na plataforma.
+            self.log("🤖 MODO AUTÔNOMO ATIVO: toda sugestão que passar no piso "
+                     "de qualidade vira ordem NA HORA, sem o seu ACATAR. "
+                     "Continuam valendo o freio de perda diária, o limite de "
+                     "stops seguidos, o teto de operações do dia e o "
+                     "dimensionamento do Plano. Para voltar a decidir você "
+                     "mesmo, desligue esta caixinha.")
+            self._chat_feed(
+                "🤖 Passei para o modo autônomo" + (" (em teste, sem enviar)"
+                                                    if self.tv_dry_var.get() else "")
+                + ". A partir de agora eu acato e envio sozinha o que passar "
+                  "no piso de qualidade — você é avisado depois.")
         else:
-            self.log("🎯 Automação Tradovate desligada.")
+            self.log("🎯 Automação Tradovate desligada — as sugestões voltam a "
+                     "esperar o seu ACATAR.")
         # Ao LIGAR a detecção automática, testa na hora e mostra o resultado.
         # Antes a caixinha ficava marcada sem nenhum retorno, dando a impressão
         # de que a detecção não funcionava.
@@ -10510,6 +10592,34 @@ class SmcQuantApp(ctk.CTk):
             else:
                 self.log("⚠️ Conectei, mas não achei o formulário de ordem. "
                          "Abra o 'Chamado do pedido' na Tradovate.")
+                return
+            # A CONFERÊNCIA QUE FALTAVA — e que vale mais que a de cima.
+            # "Achei o botão Comprar" não diz se eu consigo escrever no campo
+            # CERTO. Este teste mira cada campo pelo rótulo e diz o que está
+            # escrito nele agora, sem tocar em nada. É a única forma de você
+            # saber, ANTES de ligar o modo autônomo, se eu enxergo o ticket
+            # como ele está na sua tela.
+            for rotulo in (bot.ROTULO_PRECO, bot.ROTULO_QTD):
+                valor = bot.ler_campo_por_rotulo(rotulo)
+                if valor is None:
+                    self.log(f"   ⚠️ campo '{rotulo}': NÃO consigo mirar. "
+                             "Sem ele eu não envio ordem nenhuma.")
+                else:
+                    self.log(f"   ✅ campo '{rotulo}': está com {valor!r}.")
+            if bot.painel_atm_visivel():
+                alvo = bot.ler_campo_por_rotulo(bot.ROTULO_ALVO_ATM)
+                stop = bot.ler_campo_por_rotulo(bot.ROTULO_STOP_ATM)
+                unidade = bot.ler_campo_por_rotulo("EXIBIR EM")
+                self.log(f"   ✅ painel ATM à vista — OBTER LUCRO {alvo!r} · "
+                         f"STOP LOSS {stop!r} · EXIBIR EM {unidade!r}.")
+                if unidade and "TICK" not in str(unidade).upper():
+                    self.log("   ⚠️ 'EXIBIR EM' NÃO está em Ticks. Deixe em "
+                             "Ticks: em Preço, o mesmo número vira outra ordem.")
+            else:
+                self.log("   ⚠️ painel de ATMs não está à vista. Sem ele eu "
+                         "mando as três ordens separadas (entrada, stop e "
+                         "alvo), que é o caminho antigo e mais frágil. Abra a "
+                         "aba ATMs no 'Chamado do pedido'.")
         threading.Thread(target=tarefa, daemon=True).start()
 
     # ------------------------------------------------------------------
@@ -14844,12 +14954,57 @@ class SmcQuantApp(ctk.CTk):
             self._tv_ultimo_aviso_falha = agora
             self.log(mensagem)
 
-    def _tv_enviar_bracket(self, direcao, entry, stop, alvo, qtd):
+    def _modo_autonomo(self):
+        """A ferramenta está operando sozinha AGORA?
+
+        A condição é a que ele definiu: a Automação Tradovate ligada. Não
+        inventei um segundo interruptor para isso — dois interruptores para uma
+        decisão só é a forma mais confiável de alguém ligar um e achar que
+        ligou os dois."""
+        try:
+            return bool(TRADOVATE_DISPONIVEL and self.tv_auto_var.get())
+        except Exception:
+            return False
+
+    def _acatar_sozinha(self, sinal_id, direcao, ativo, contratos,
+                        motivo_limite=None):
+        """Acata a sugestão sem perguntar, quando o modo autônomo está ligado.
+
+        Passa pelo MESMO caminho do botão 'Acatei' — `_registrar_decisao` — de
+        propósito: registro no diário, vínculo com o sinal, dimensionamento e
+        envio à plataforma são o mesmo código dos dois jeitos. Um atalho
+        próprio aqui viraria um segundo caminho para manter, e é sempre o
+        segundo caminho que fica para trás."""
+        executa, motivo = decidir_execucao_autonoma(
+            self._modo_autonomo(), bool(self.tv_dry_var.get()),
+            contratos, motivo_limite)
+        if not executa:
+            if self._modo_autonomo():
+                self.log(f"🤖 NÃO executei sozinha: {motivo}.")
+                self._chat_feed(f"🤖 Não executei este cenário: {motivo}.")
+            return False
+        decisao = "ACATOU_COMPRA" if direcao == "BUY" else "ACATOU_VENDA"
+        self.log(f"🤖 MODO AUTÔNOMO: acatando {direcao} {ativo} sozinha "
+                 f"({contratos} ctr) — {motivo}.")
+        # De volta à thread da interface: `_registrar_decisao` mexe no
+        # dashboard, e Tk não aceita isso vindo da thread do motor.
+        self.after(0, lambda: self._registrar_decisao(sinal_id, decisao))
+        return True
+
+    def _tv_enviar_bracket(self, direcao, entry, stop, alvo, qtd, ativo=None):
         """Dispara o envio em thread separada (não trava a GUI). Usa dry-run
-        conforme o interruptor. direcao: 'BUY'/'SELL'."""
+        conforme o interruptor. direcao: 'BUY'/'SELL'.
+
+        CAMINHO PREFERIDO: uma ordem só, com o bracket anexado pela estratégia
+        ATM da própria Tradovate (stop e alvo em ticks, OCO nativo). O caminho
+        das três ordens separadas continua existindo como reserva — para o
+        ativo cujo tick eu não conheço, ou quando o painel de ATMs não está na
+        tela — mas ele é a exceção, e não o normal, porque é ele que tem a
+        janela de 'entrada enviada, proteção não'."""
         if not TRADOVATE_DISPONIVEL:
             return
         dry = self.tv_dry_var.get()
+        tick = tick_do_ativo(ativo or getattr(self, "_ultimo_ativo_lido", "") or "")
 
         def tarefa():
             try:
@@ -14861,8 +15016,26 @@ class SmcQuantApp(ctk.CTk):
                 self.log(f"🎯 Tradovate: enviando bracket {direcao} "
                          f"(entrada {entry} · stop {stop} · alvo {alvo} · {qtd} ctr)"
                          + (" [TESTE]" if dry else ""))
-                res = bot.enviar_bracket_ticket(direcao, entry, stop, alvo,
-                                                 qtd=qtd, enviar=not dry)
+                res = None
+                if tick:
+                    res = bot.enviar_ordem_com_atm(
+                        direcao, entry, stop, alvo, tick, qtd=qtd,
+                        enviar=not dry)
+                    if not res.get("ok") and res.get("erro") and not res.get("exposto"):
+                        # A ATM não conseguiu montar a ordem e NADA foi enviado
+                        # — este é o único momento em que cair para o caminho
+                        # antigo é seguro, justamente porque não há posição.
+                        self.log(f"↩️ ATM não montou a ordem ({res['erro']}). "
+                                 "Tentando pelo caminho antigo, com as três "
+                                 "ordens separadas.")
+                        res = None
+                else:
+                    self.log(f"ℹ️ Não conheço o tick de '{ativo or '?'}' — sem "
+                             "ele não dá para converter stop e alvo em ticks. "
+                             "Vou pelo caminho das três ordens separadas.")
+                if res is None:
+                    res = bot.enviar_bracket_ticket(direcao, entry, stop, alvo,
+                                                     qtd=qtd, enviar=not dry)
                 # Compatível com versões que devolviam só True/False.
                 if not isinstance(res, dict):
                     return
@@ -17356,7 +17529,8 @@ class SmcQuantApp(ctk.CTk):
                         alvo = sinal.get("tp1") or sinal.get("tp2")
                         self._tv_enviar_bracket(
                             direcao, sinal["entry"], sinal["stop"], alvo,
-                            sizing["contratos"] or 1
+                            sizing["contratos"] or 1,
+                            ativo=sinal.get("ativo")
                         )
         self._atualizar_dashboard()
 
@@ -18083,6 +18257,21 @@ class SmcQuantApp(ctk.CTk):
         # aprendizado funcionando.
         try:
             self.log("📚 " + resumo_do_aprendizado())
+        except Exception:
+            pass
+        # EM QUE MODO ELE ESTÁ SUBINDO. Ligar o motor sem saber se ele vai
+        # sugerir ou EXECUTAR é a única dúvida que não pode existir aqui.
+        try:
+            if self._modo_autonomo():
+                teste = " (MODO TESTE — preenche o ticket e não envia)" \
+                    if self.tv_dry_var.get() else ""
+                self.log(f"🤖 MODO AUTÔNOMO LIGADO{teste}: eu acato e envio "
+                         "sozinha toda sugestão aprovada. Freio, drawdown, "
+                         "stops seguidos e teto de operações continuam valendo.")
+            else:
+                self.log("👤 MODO ASSISTIDO: eu sugiro, você acata. Para eu "
+                         "operar sozinha, ligue a Automação Tradovate em "
+                         "Configurações.")
         except Exception:
             pass
         falar("Integração concluída. Sistemas de proteção visual e aprendizado ativados.")
@@ -19553,37 +19742,79 @@ class SmcQuantApp(ctk.CTk):
                                 f"{bloco_macro_wpp}"
                                 f"{bloco_gestao}\n\n"
                                 f"_{sinal.get('market_analysis', '')}_\n\n"
-                                f"❓ *Deseja acatar este cenário?*\n"
-                                f"Responda *ACATAR* para eu registrar e plotar as ordens (entrada, "
-                                f"stop e alvo) na plataforma, ou *NÃO ACATAR* para dispensar.\n\n"
-                                f"_Material educacional. A decisão de operar é sua._"
+                                # NO MODO AUTÔNOMO, PERGUNTAR SERIA MENTIRA.
+                                # A ordem já foi. Mandar "deseja acatar?" para
+                                # o celular de alguém cuja ordem já está na
+                                # plataforma é pior que não mandar nada: ele
+                                # decidiria sobre um trade que já existe.
+                                + (("🤖 *EXECUTADO AUTOMATICAMENTE* — a ordem foi "
+                                    "enviada com stop e alvo anexados.\n"
+                                    "Para voltar a decidir você mesmo, desligue "
+                                    "'Ligar automação' em Configurações.\n\n")
+                                   if self._modo_autonomo() else
+                                   ("❓ *Deseja acatar este cenário?*\n"
+                                    "Responda *ACATAR* para eu registrar e plotar as ordens (entrada, "
+                                    "stop e alvo) na plataforma, ou *NÃO ACATAR* para dispensar.\n\n"))
+                                + "_Material educacional. A decisão de operar é sua._"
                             )
                             enviar_relatorio_whatsapp(mensagem_wpp, screenshot, self.log)
-                            falar(f"Novo cenário de {acao} em {ativo}, probabilidade {probabilidade:.0f} por cento.")
+                            _autonomo = self._modo_autonomo()
+                            falar(
+                                (f"Executando sozinha: {acao} em {ativo}, "
+                                 f"probabilidade {probabilidade:.0f} por cento."
+                                 if _autonomo else
+                                 f"Novo cenário de {acao} em {ativo}, "
+                                 f"probabilidade {probabilidade:.0f} por cento."))
 
                             # Alerta na tela do computador (além do WhatsApp).
                             self._sinais_notificados.add(novo_sinal_id)
                             # A sugestão também entra na CONVERSA da aba 🐯 TIGER — você
                             # pode responder 'acatar' / 'dispensar' ali, por texto ou voz.
                             self._chat_feed(
-                                f"📘 Nova sugestão: {acao} {ativo} — entrada "
-                                f"{sinal_ativo['entry']}, stop {sinal_ativo['stop']}, alvo "
-                                f"{sinal_ativo['tp1']}"
-                                + (f", R:R {rr1}" if rr1 else "") +
-                                f", probabilidade {probabilidade:.0f}%. Quer conversar sobre "
-                                "o cenário? Ou diga 'acatar' / 'dispensar'.")
+                                (f"🤖 Executei sozinha: {acao} {ativo} — entrada "
+                                 f"{sinal_ativo['entry']}, stop {sinal_ativo['stop']}, "
+                                 f"alvo {sinal_ativo['tp1']}"
+                                 + (f", R:R {rr1}" if rr1 else "") +
+                                 f", probabilidade {probabilidade:.0f}%. Stop e alvo "
+                                 "foram anexados à ordem.")
+                                if _autonomo else
+                                (f"📘 Nova sugestão: {acao} {ativo} — entrada "
+                                 f"{sinal_ativo['entry']}, stop {sinal_ativo['stop']}, alvo "
+                                 f"{sinal_ativo['tp1']}"
+                                 + (f", R:R {rr1}" if rr1 else "") +
+                                 f", probabilidade {probabilidade:.0f}%. Quer conversar sobre "
+                                 "o cenário? Ou diga 'acatar' / 'dispensar'."))
                             self._notificar_desktop(
-                                f"📘 Nova sugestão — {acao} {ativo}",
+                                (f"🤖 EXECUTADO — {acao} {ativo}" if _autonomo
+                                 else f"📘 Nova sugestão — {acao} {ativo}"),
                                 [f"Entrada {sinal_ativo['entry']}  ·  Stop {sinal_ativo['stop']}",
                                  f"Alvo {sinal_ativo['tp1']}" + (f"  ·  R:R {rr1}" if rr1 else ""),
                                  f"Probabilidade {probabilidade:.0f}%  ·  {sizing['contratos']} ctr"
                                  f"  ·  conta {nome_conta_ativa()}",
-                                 f"Decida aqui ou no app (prazo {TIMEOUT_ACATAR_SEG // 60} min)."],
+                                 ("Ordem enviada com stop e alvo anexados."
+                                  if _autonomo else
+                                  f"Decida aqui ou no app (prazo {TIMEOUT_ACATAR_SEG // 60} min).")],
                                 cor="#1f8b4c" if acao == "BUY" else "#c53030",
                                 # O aviso fica de pé durante todo o prazo de acatar,
                                 # com os botões de decisão.
                                 segundos=TIMEOUT_ACATAR_SEG,
-                                sinal_id=novo_sinal_id, direcao=acao)
+                                # No autônomo não há o que decidir: os botões
+                                # de ACATAR/NÃO OPEREI num aviso de ordem que
+                                # JÁ foi enviada só serviriam para confundir.
+                                sinal_id=None if _autonomo else novo_sinal_id,
+                                direcao=acao)
+
+                            # ---- A FERRAMENTA ACATA SOZINHA ----
+                            # Vem por último de propósito: primeiro ele é
+                            # avisado (registro, WhatsApp, voz, tela), depois a
+                            # ordem sai. Se algo falhar no envio, o aviso já
+                            # existe — o contrário deixaria ordem na plataforma
+                            # sem uma linha em lugar nenhum dizendo por quê.
+                            if _autonomo:
+                                self._acatar_sozinha(
+                                    novo_sinal_id, acao, ativo,
+                                    sizing.get("contratos"),
+                                    sizing.get("motivo_limite"))
                             self.after(0, self._atualizar_dashboard)
 
                         else:

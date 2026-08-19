@@ -503,8 +503,13 @@ class TestOGuiaDeRevendaTambemENaoVaiParaOCliente(unittest.TestCase):
         import json
         with open(os.path.join(RAIZ, "versao.json"), encoding="utf-8") as f:
             notas = json.load(f)["notas"].lower()
-        for proibido in ("painel", "revenda", "admin_token",
-                         "token de administrador"):
+        # A PALAVRA "painel" SOZINHA NÃO É O PROBLEMA — e proibi-la foi meu
+        # erro na v2.43.2. A Tradovate tem painel de ATMs, painel de posições
+        # e painel de ordem, e as notas precisam poder falar deles. O que não
+        # pode viajar no zip do cliente é o painel de LICENÇAS e a operação de
+        # revenda em volta dele.
+        for proibido in ("painel de licen", "painel_licencas", "revenda",
+                         "admin_token", "token de administrador"):
             self.assertNotIn(proibido, notas,
                              f"as notas da versão mencionam '{proibido}' — "
                              "e elas viajam no pacote do cliente")

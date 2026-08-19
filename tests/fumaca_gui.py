@@ -629,6 +629,71 @@ def main():
         print("  OK   clicar no dia aceso volta para a contagem automática")
 
 
+    # ---- MODO AUTÔNOMO: ela acata sozinha, com o app de verdade aberto ----
+    # Este é o caminho que manda ordem para a plataforma sem ninguém olhando.
+    # Testar só as funções puras não bastaria: o que já quebrou aqui antes foi
+    # sempre a costura — `after` na thread errada, dashboard que não redesenha,
+    # decisão que não chega ao disco. Roda em MODO TESTE (tv_dry_var), então
+    # nada sai para lugar nenhum.
+    print("\n[modo autônomo — acatar sem ninguém clicar]")
+    app.tv_auto_var.set(True)
+    app.tv_dry_var.set(True)
+    if not app._modo_autonomo():
+        falhas.append("modo autônomo não liga nem com a automação marcada")
+        print("  FALHA _modo_autonomo() continua False")
+    else:
+        print("  OK   automação ligada = modo autônomo ligado")
+
+    sid = mod.registrar_novo_sinal_log("BUY", 7732.50, 7722.50, 7752.50,
+                                       7762.50, "MESU6")
+    antes_pos = len(mod.carregar_posicoes())
+    passo(app, "acatar sozinha (2 contratos)",
+          lambda: app._acatar_sozinha(sid, "BUY", "MESU6", 2))
+    esperar(app, 600)
+    depois = mod.carregar_posicoes()
+    nova = [p for p in depois if p.get("sinal_id") == sid]
+    if len(depois) != antes_pos + 1 or not nova:
+        falhas.append("o modo autônomo não abriu a posição no diário")
+        print(f"  FALHA posições: {antes_pos} -> {len(depois)}")
+    else:
+        print(f"  OK   posição registrada: {nova[0]['direcao']} "
+              f"{nova[0]['ativo']} @ {nova[0]['entry']} ({nova[0]['status']})")
+    decisao = next((s.get("decisao") for s in mod.carregar_sinais_log()
+                    if s["id"] == sid), None)
+    if decisao != "ACATOU_COMPRA":
+        falhas.append(f"a decisão do sinal ficou {decisao!r}, não ACATOU_COMPRA")
+        print(f"  FALHA decisão gravada: {decisao!r}")
+    else:
+        print("  OK   a decisão ACATOU_COMPRA foi gravada sozinha")
+
+    # ZERO CONTRATO É "HOJE NÃO" — nunca "envia um".
+    sid2 = mod.registrar_novo_sinal_log("SELL", 7732.50, 7742.50, 7712.50,
+                                        7702.50, "MESU6")
+    antes2 = len(mod.carregar_posicoes())
+    passo(app, "tentar acatar com ZERO contrato",
+          lambda: app._acatar_sozinha(sid2, "SELL", "MESU6", 0,
+                                      "drawdown do dia consumido"))
+    esperar(app, 400)
+    if len(mod.carregar_posicoes()) != antes2:
+        falhas.append("abriu posição com zero contrato dimensionado")
+        print("  FALHA operou com 0 contrato")
+    else:
+        print("  OK   zero contrato não virou ordem")
+
+    # DESLIGAR A AUTOMAÇÃO VOLTA A ESPERAR O ACATAR.
+    app.tv_auto_var.set(False)
+    sid3 = mod.registrar_novo_sinal_log("BUY", 7732.50, 7722.50, 7752.50,
+                                        7762.50, "MESU6")
+    antes3 = len(mod.carregar_posicoes())
+    passo(app, "com a automação desligada, não acatar sozinha",
+          lambda: app._acatar_sozinha(sid3, "BUY", "MESU6", 2))
+    esperar(app, 400)
+    if len(mod.carregar_posicoes()) != antes3:
+        falhas.append("operou sozinha com a automação DESLIGADA")
+        print("  FALHA operou com a automação desligada")
+    else:
+        print("  OK   automação desligada = ninguém opera sozinho")
+
     destino = os.path.join(tempfile.gettempdir(), "smc_fumaca.png")
     try:
         from PIL import ImageGrab
