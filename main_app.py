@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.45.0"
+VERSAO_ATUAL = "2.45.1"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -9735,6 +9735,12 @@ class SmcQuantApp(ctk.CTk):
         # sync_posicoes: lê o painel de posições da corretora a cada ciclo para
         # descobrir se você já está posicionado (inclusive fora da sugestão).
         self.tv_sync_var = tk.BooleanVar(value=tv_cfg.get("sync_posicoes", False))
+        # trailing: liga o AUTO TRAIL do ticket (o stop passa a perseguir o
+        # preço). DESLIGADO por padrão de propósito — ele muda a GESTÃO do
+        # trade, não o preenchimento: "stop fixo até o alvo" e "stop que
+        # persegue" são estratégias diferentes, e a segunda não pode entrar
+        # por tabela junto com uma correção de outra coisa.
+        self.tv_trail_var = tk.BooleanVar(value=tv_cfg.get("trailing", False))
 
         # --- Notificação no COMPUTADOR (além do WhatsApp) ---
         self.notif_var = tk.BooleanVar(
@@ -10456,6 +10462,19 @@ class SmcQuantApp(ctk.CTk):
                         text_color=COR["texto"], fg_color="#1f8b4c",
                         border_color="#63b3ed", hover_color="#25a35a"
                         ).pack(pady=3, padx=12, anchor="w")
+        ctk.CTkCheckBox(frame,
+                        text="AUTO TRAIL (o stop passa a perseguir o preço a partir de 1R)",
+                        variable=self.tv_trail_var, command=self._tv_salvar_prefs,
+                        text_color=COR["texto"], fg_color="#1f8b4c",
+                        border_color="#63b3ed", hover_color="#25a35a"
+                        ).pack(pady=3, padx=12, anchor="w")
+        ctk.CTkLabel(
+            frame, justify="left", text_color=COR["dim"],
+            font=ctk.CTkFont(size=11),
+            text="   Desligado, o stop fica onde o cenário mandou até o alvo. Ligado, ele\n"
+                 "   preenche o AUTO TRAIL do ticket com a MESMA distância do stop, começando\n"
+                 "   quando o trade paga 1R. É outra gestão de trade — ligue sabendo disso."
+        ).pack(pady=(0, 6), padx=12, anchor="w")
 
         linha = ctk.CTkFrame(frame, fg_color="transparent")
         linha.pack(pady=(4, 4), padx=8, anchor="w")
@@ -10499,6 +10518,7 @@ class SmcQuantApp(ctk.CTk):
             "auto_ativo": self.tv_auto_var.get(),
             "dry_run": self.tv_dry_var.get(),
             "sync_posicoes": self.tv_sync_var.get(),
+            "trailing": self.tv_trail_var.get(),
         }})
         if self.tv_auto_var.get():
             modo = "TESTE (não envia)" if self.tv_dry_var.get() else "REAL (envia ordem)"
@@ -15005,6 +15025,8 @@ class SmcQuantApp(ctk.CTk):
             return
         dry = self.tv_dry_var.get()
         tick = tick_do_ativo(ativo or getattr(self, "_ultimo_ativo_lido", "") or "")
+        usar_trail = bool(getattr(self, "tv_trail_var", None)
+                          and self.tv_trail_var.get())
 
         def tarefa():
             try:
@@ -15018,9 +15040,12 @@ class SmcQuantApp(ctk.CTk):
                          + (" [TESTE]" if dry else ""))
                 res = None
                 if tick:
+                    trailing = tradovate_auto.plano_trailing(
+                        tradovate_auto.ticks_entre(entry, stop, tick),
+                        ligado=usar_trail)
                     res = bot.enviar_ordem_com_atm(
                         direcao, entry, stop, alvo, tick, qtd=qtd,
-                        enviar=not dry)
+                        enviar=not dry, trailing=trailing)
                     if not res.get("ok") and res.get("erro") and not res.get("exposto"):
                         # A ATM não conseguiu montar a ordem e NADA foi enviado
                         # — este é o único momento em que cair para o caminho
