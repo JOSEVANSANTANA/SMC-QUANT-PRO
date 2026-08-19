@@ -239,12 +239,19 @@ class TestIALocalSemChave(unittest.TestCase):
         self.assertTrue(ns["PROVEDORES_IA"]["local"]["sem_chave"])
         self.assertIn("localhost", ns["PROVEDORES_IA"]["local"]["url"])
 
-    def test_ela_fala_o_protocolo_que_ja_existe(self):
-        """O Ollama expõe o formato da OpenAI. Por isso a IA local entrou sem
-        uma linha de código novo de rede — e é por isso que ela é barata de
-        manter, não uma segunda implementação para dar manutenção."""
+    def test_ela_fala_a_porta_NATIVA_do_ollama(self):
+        """Entrou pelo formato da OpenAI, que o Ollama imita — e foi isso que
+        a deixou barata de adicionar. Só que a porta de compatibilidade não
+        aceita `keep_alive` nem `num_predict`: o modelo era descarregado da
+        memória depois de CADA resposta (3 a 5 GB relidos do disco na pergunta
+        seguinte) e escrevia até 1200 tokens a ~8 por segundo.
+
+        19/08: "esta muito lento para pensar". Era isto, e era meu. A porta
+        nativa custa uma função a mais de manutenção e devolve os dois campos
+        que mandam no relógio."""
         ns = self._ns()
-        self.assertEqual(ns["PROVEDORES_IA"]["local"]["formato"], "openai")
+        self.assertEqual(ns["PROVEDORES_IA"]["local"]["formato"], "ollama")
+        self.assertIn("/api/chat", ns["PROVEDORES_IA"]["local"]["url"])
 
     def test_ela_e_a_ultima_da_fila(self):
         """Quando há um modelo grande de pé, ele responde melhor. A local é o

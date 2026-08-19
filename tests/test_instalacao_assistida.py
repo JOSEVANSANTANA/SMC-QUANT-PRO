@@ -154,7 +154,11 @@ class TestOsPassosDaInstalacao(unittest.TestCase):
         fonte = fonte_do_arquivo()
         i = fonte.index("def _instalar_ia_worker")
         bloco = fonte[i:i + 8000]
-        self.assertIn("_pedir_openai", bloco)
+        # PELA PORTA ÚNICA, e não chamando um provedor na mão: quando a IA
+        # local trocou o formato da OpenAI pelo nativo do Ollama, uma chamada
+        # direta aqui passaria a mandar o corpo errado para o endereço certo,
+        # e o teste de instalação falharia sem motivo aparente.
+        self.assertIn("pedir_ao_provedor(", bloco)
         self.assertIn("Responda apenas: OK", bloco)
         # E se o teste não voltar, ela NÃO crava que está pronto.
         self.assertIn("prefiro te dizer isso a cravar", bloco)

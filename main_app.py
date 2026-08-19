@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.43.2"
+VERSAO_ATUAL = "2.44.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1048,13 +1048,31 @@ PROVEDORES_IA = {
     # precisa servir, porque quem lê número agora é o OCR.
     "local": {
         "rotulo": "IA LOCAL (Ollama — sem chave, sem internet)",
-        "formato": "openai",
-        "url": "http://localhost:11434/v1/chat/completions",
+        # FORMATO PRÓPRIO, E NÃO O DA OPENAI — foi isto que fez dela a coisa
+        # mais lenta do programa. Pela porta de compatibilidade não dá para
+        # mandar `keep_alive` nem `num_predict`: o modelo era DESCARREGADO do
+        # disco a cada resposta (3 a 5 GB relidos) e escrevia até 1200 tokens
+        # a ~8 por segundo. Só isso já são dois minutos e meio de espera para
+        # uma frase que ele leria em dez segundos. Ver `_pedir_ollama`.
+        "formato": "ollama",
+        "url": "http://localhost:11434/api/chat",
         "onde_pegar": "https://ollama.com/download",
         "sem_chave": True,
         "modelos": ["qwen2.5:7b", "llama3.1:8b", "gemma2:9b", "mistral:7b"],
     },
 }
+
+# Quanto tempo o modelo local fica RESIDENTE depois de responder. Enquanto ele
+# está na memória, a resposta seguinte começa na hora; descarregado, ela paga
+# de novo a leitura de vários GB do disco. Não é maior de propósito: manter um
+# 7B residente custa RAM da máquina dele o tempo todo, e uma ferramenta que
+# deixa o computador lento no meio do pregão não resolveu nada.
+KEEP_ALIVE_LOCAL = "10m"
+
+# Teto de saída do modelo local. O da nuvem escreve 1200 tokens em segundos; o
+# local, em minutos. Resposta de chat não precisa de mais que isto, e o teto
+# alto não estava deixando a resposta melhor — só mais tarde.
+TETO_SAIDA_LOCAL = 420
 
 # A ordem em que os alternativos são tentados quando a Gemini não responde.
 # A LOCAL vem por último de propósito: quando há um modelo grande disponível,
@@ -1259,7 +1277,30 @@ def analise_local_valida(bruto):
     return dados
 
 
-def analisar_grafico_local(imagem_pil, prompt, modelo=None, timeout=420):
+def _keep_alive_do_ciclo(intervalo_min=None, folga=5):
+    """Por quanto tempo o modelo de visão fica residente entre uma leitura e a
+    seguinte: o INTERVALO DO MOTOR mais uma folga.
+
+    O número era fixo em '12m' contra um intervalo que sai de fábrica em 15
+    minutos — o modelo era descarregado três minutos antes de ser chamado de
+    novo, e cada leitura recomeçava do disco. Função pura, para o cálculo poder
+    ser conferido sem subir Ollama nenhum."""
+    if intervalo_min is None:
+        try:
+            intervalo_min = (carregar_config() or {}).get("intervalo_minutos", 15)
+        except Exception:
+            intervalo_min = 15
+    try:
+        intervalo_min = max(1, int(float(intervalo_min)))
+    except (TypeError, ValueError):
+        intervalo_min = 15
+    # Teto: manter um modelo de visão residente por horas é RAM da máquina dele
+    # parada o dia inteiro. Com ciclo muito longo, vale mais recarregar.
+    return f"{min(intervalo_min + folga, 45)}m"
+
+
+def analisar_grafico_local(imagem_pil, prompt, modelo=None, timeout=420,
+                           keep_alive=None):
     """Lê o gráfico com o modelo de VISÃO que roda nesta máquina.
 
     Existe porque, em 13/08, TODOS os dez modelos da Gemini devolveram 503 ou
@@ -1302,10 +1343,13 @@ def analisar_grafico_local(imagem_pil, prompt, modelo=None, timeout=420):
             json={"model": modelo, "prompt": prompt_para_visao_local(prompt),
                   "images": [_b64_da_imagem(imagem_pil)],
                   "stream": False, "format": "json",
-                  # Mantém o modelo na memória entre os ciclos de 5 min: sem
-                  # isto o Ollama descarrega em 5 min e a leitura seguinte
-                  # paga de novo o carregamento de 3,2 GB do disco.
-                  "keep_alive": "12m",
+                  # Mantém o modelo na memória ENTRE OS CICLOS. O valor vem do
+                  # intervalo configurado, e não de um número fixo: estava em
+                  # "12m" contra um ciclo que sai de fábrica em 15 minutos, ou
+                  # seja, ele descarregava três minutos antes de ser chamado de
+                  # novo e TODA leitura pagava o carregamento do disco. Um
+                  # keep_alive menor que o ciclo é o mesmo que nenhum.
+                  "keep_alive": keep_alive or _keep_alive_do_ciclo(),
                   "options": {"temperature": 0.1}},
             timeout=timeout)
         gastou = time.time() - t0
@@ -1429,6 +1473,96 @@ def _pedir_openai(url, chave, modelo, mensagens, timeout=45):
     return (dados.get("choices") or [{}])[0].get("message", {}).get("content", "")
 
 
+def _pedir_ollama(url, chave, modelo, mensagens, timeout=90):
+    """A IA local, pela porta NATIVA do Ollama — e não pela de compatibilidade.
+
+    POR QUE ISTO EXISTE, escrito para não ser desfeito por engano:
+    19/08 ele disse "esta muito lento para pensar... é muito burra". A parte
+    lenta era minha, e não do modelo. Eu falava com o Ollama pela porta que
+    imita a OpenAI (/v1/chat/completions), e por ali passam só os campos que a
+    OpenAI entende. Faltavam os dois que mandam no tempo:
+
+      • `keep_alive` — sem ele o Ollama descarrega o modelo da memória logo
+        depois de responder. A pergunta seguinte relê 3 a 5 GB do disco ANTES
+        de começar a pensar. Toda resposta era uma primeira resposta.
+      • `num_predict` — o teto de 1200 tokens herdado da nuvem. Lá isso sai em
+        segundos; aqui, a ~8 tokens por segundo, são dois minutos e meio.
+
+    Devolve o texto. Levanta em erro, como as outras — quem chama já trata."""
+    corpo = {
+        "model": modelo,
+        "messages": mensagens,
+        "stream": False,
+        "keep_alive": KEEP_ALIVE_LOCAL,
+        "options": {
+            # Mesma temperatura baixa dos outros: numa mesa, criatividade é o
+            # defeito — é ela que faz um modelo pequeno completar um número
+            # que não sabe.
+            "temperature": 0.2,
+            "num_predict": TETO_SAIDA_LOCAL,
+        },
+    }
+    r = requests.post(url, json=corpo, timeout=timeout)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:220]}")
+    dados = r.json() or {}
+    return ((dados.get("message") or {}).get("content") or "").strip()
+
+
+# ---- MANTER A RESERVA AQUECIDA, MAS SÓ QUANDO ELA VAI SER PRECISA ----
+# A primeira resposta local é sempre a pior: o modelo tem de sair do disco. O
+# jeito óbvio de resolver seria deixá-lo residente o tempo todo — e seria uma
+# troca ruim, porque um 7B ocupa vários GB da RAM dele durante o pregão
+# inteiro, para o caso de talvez precisar.
+#
+# O gatilho certo é outro: no instante em que a cota da Gemini estoura, a
+# reserva ESTÁ prestes a ser chamada. É ali que vale começar a carregá-la, em
+# segundo plano, para que ela já esteja quente quando a fila chegar nela.
+INTERVALO_AQUECIMENTO_LOCAL = 300      # não repete o pedido antes disto
+_aquecimento_local = {"quando": 0.0}
+
+
+def deve_aquecer_ia_local(agora=None, intervalo=INTERVALO_AQUECIMENTO_LOCAL):
+    """Já pedi o aquecimento faz pouco? Então não peço de novo.
+
+    Função PURA (usa e atualiza um relógio próprio): sem isto, uma rajada de
+    dez 429 seguidos dispararia dez carregamentos do mesmo modelo."""
+    agora = time.time() if agora is None else agora
+    if agora - _aquecimento_local["quando"] < intervalo:
+        return False
+    _aquecimento_local["quando"] = agora
+    return True
+
+
+def aquecer_ia_local(modelo=None, timeout=6):
+    """Pede ao Ollama para CARREGAR o modelo e segurá-lo na memória.
+
+    Corpo sem prompt = só carrega, não gera. NUNCA levanta: aquecer é um luxo,
+    e luxo que derruba o programa não é luxo."""
+    try:
+        instalados = ia_local_no_ar(timeout=2) or []
+        if not instalados:
+            return False
+        alvo = modelo if modelo in instalados else instalados[0]
+        requests.post("http://localhost:11434/api/generate",
+                      json={"model": alvo, "keep_alive": KEEP_ALIVE_LOCAL},
+                      timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+
+def _aquecer_reserva_em_segundo_plano():
+    """Dispara o aquecimento sem segurar quem chamou. O ciclo do motor não
+    pode esperar pelo carregamento de um modelo de reserva."""
+    if not deve_aquecer_ia_local():
+        return
+    try:
+        threading.Thread(target=aquecer_ia_local, daemon=True).start()
+    except Exception:
+        pass
+
+
 def _pedir_anthropic(url, chave, modelo, mensagens, timeout=45):
     """A Anthropic separa o `system` do resto e usa cabeçalho próprio."""
     sistema = "\n".join(m["content"] for m in mensagens if m["role"] == "system")
@@ -1446,6 +1580,27 @@ def _pedir_anthropic(url, chave, modelo, mensagens, timeout=45):
         raise RuntimeError(f"HTTP {r.status_code}: {r.text[:220]}")
     partes = r.json().get("content") or []
     return "".join(p.get("text", "") for p in partes if p.get("type") == "text")
+
+
+def pedir_ao_provedor(info, chave, modelo, mensagens, timeout=None):
+    """UMA porta para todos os provedores, escolhida pelo campo `formato`.
+
+    Existe porque o mesmo `if formato == 'anthropic' ... else openai` estava
+    escrito em TRÊS lugares. Quando a IA local ganhou porta própria, dois
+    deles continuariam mandando o formato da OpenAI para o endereço nativo do
+    Ollama — e o teste de instalação passaria a falhar sem motivo aparente.
+    Despacho repetido é defeito esperando a próxima mudança."""
+    formato = (info or {}).get("formato")
+    url = (info or {}).get("url")
+    if formato == "anthropic":
+        fn = _pedir_anthropic
+    elif formato == "ollama":
+        fn = _pedir_ollama
+    else:
+        fn = _pedir_openai
+    if timeout is None:
+        return fn(url, chave, modelo, mensagens)
+    return fn(url, chave, modelo, mensagens, timeout)
 
 
 def responder_por_provedor_alternativo(mensagens, log=None):
@@ -1478,10 +1633,7 @@ def responder_por_provedor_alternativo(mensagens, log=None):
             modelos = info["modelos"]
         for modelo in modelos:
             try:
-                if info["formato"] == "anthropic":
-                    txt = _pedir_anthropic(info["url"], chave, modelo, mensagens)
-                else:
-                    txt = _pedir_openai(info["url"], chave, modelo, mensagens)
+                txt = pedir_ao_provedor(info, chave, modelo, mensagens)
                 if txt and txt.strip():
                     if log:
                         log(f"🧠 Respondido por {info['rotulo']} ({modelo}) — "
@@ -3639,6 +3791,12 @@ def registrar_falha_modelo(modelo, erro):
             _MODELOS["cooldown"][modelo] = time.time() + COOLDOWN_COTA_SEG
         elif tipo == "transitorio":
             _MODELOS["cooldown"][modelo] = time.time() + COOLDOWN_SOBRECARGA_SEG
+    # A COTA ESTOUROU: a reserva local está prestes a ser chamada. Começa a
+    # carregá-la AGORA, em segundo plano, para que ela já esteja na memória
+    # quando a fila chegar nela — em vez de ele esperar o modelo sair do disco
+    # depois de já ter esperado a Gemini inteira.
+    if tipo in ("cota", "transitorio"):
+        _aquecer_reserva_em_segundo_plano()
     return tipo
 
 def registrar_sucesso_modelo(modelo):
@@ -3842,6 +4000,76 @@ def aprendizado_por_padrao(minimo=3):
     por_hora.sort(key=lambda x: x[3], reverse=True)
     return bons, ruins, por_hora
 
+def progresso_do_aprendizado(minimo=3):
+    """O que já virou regra, e o que ainda está juntando amostra.
+
+    POR QUE ISTO EXISTE. 19/08, ele: "nao aprende com as operacoes". O
+    mecanismo existia e estava ligado — mas `aprendizado_por_padrao` descarta
+    tudo que tem menos de `minimo` amostras, e descartar em SILÊNCIO faz o
+    aprendizado parecer inexistente. Do lado de fora, "ainda não tenho dados"
+    e "isto não funciona" são a mesma tela: nenhuma.
+
+    E havia um agravante que só apareceu depois: quem alimenta este histórico é
+    o motor, quando um cenário dele resolve. Com o motor morrendo em todo ciclo
+    (o `name 'analise' is not defined` da v2.43.0), NADA era gravado. O
+    aprendizado ficou congelado exatamente no período em que ele o achou burro.
+
+    Devolve (prontos, faltando, total_operacoes):
+      prontos  = [(padrão, acertos, amostras, %)] já contando na decisão
+      faltando = [(padrão, amostras, quantas faltam)] ordenado pelo mais perto
+    """
+    db = carregar_performance()
+    if not db:
+        return [], [], 0
+
+    placar = {}
+    for op in db:
+        venceu = 1 if op.get("resultado") == "WIN" else 0
+        vistos = set()
+        for c in (op.get("confluencias") or []):
+            rot = _normalizar_padrao(c)
+            if not rot or rot in vistos:
+                continue
+            vistos.add(rot)
+            a, b = placar.get(rot, (0, 0))
+            placar[rot] = (a + venceu, b + 1)
+
+    prontos, faltando = [], []
+    for rot, (v, n) in placar.items():
+        if n >= minimo:
+            prontos.append((rot, v, n, v / n * 100.0))
+        else:
+            faltando.append((rot, n, minimo - n))
+    prontos.sort(key=lambda x: (-x[2], -x[3]))
+    faltando.sort(key=lambda x: (x[2], -x[1]))
+    return prontos, faltando, len(db)
+
+
+def resumo_do_aprendizado(minimo=3, quantos=4):
+    """A mesma coisa em uma frase, para caber no registro e na conversa.
+
+    Nunca devolve vazio: 'ainda não aprendi nada' também é resposta, e é
+    infinitamente melhor que silêncio — silêncio ele lê como defeito, e leu."""
+    prontos, faltando, total = progresso_do_aprendizado(minimo)
+    if not total:
+        return ("Ainda não aprendi nada com as suas operações: nenhum cenário "
+                "meu chegou ao fim ainda. Cada cenário que resolve (no alvo ou "
+                "no stop) vira amostra — a partir de "
+                f"{minimo} amostras o padrão passa a pesar na probabilidade.")
+    partes = []
+    if prontos:
+        partes.append("JÁ PESA NA MINHA DECISÃO: " + " · ".join(
+            f"{rot} {pct:.0f}% ({v}/{n})" for rot, v, n, pct in prontos[:quantos]))
+    if faltando:
+        partes.append("AINDA JUNTANDO AMOSTRA: " + " · ".join(
+            f"{rot} {n}/{minimo} (faltam {f})" for rot, n, f in faltando[:quantos]))
+    if not partes:
+        partes.append(f"{total} cenário(s) fechado(s), nenhum padrão repetido "
+                      "o bastante para virar regra ainda")
+    return (f"Aprendizado com {total} cenário(s) fechado(s). " +
+            " | ".join(partes))
+
+
 #  Limites do ajuste por aprendizado. Existem para o histórico CORRIGIR a
 #  leitura da IA sem SUBSTITUIR a leitura: mesmo um padrão com péssimo
 #  histórico não derruba sozinho um cenário excelente, e nem um padrão bom
@@ -3952,6 +4180,19 @@ def compilar_memoria_prompt():
         winrate = 100.0
 
     # 3b) AUTOAPRENDIZAGEM — o que a experiência REAL já mostrou.
+    # O QUE AINDA NÃO É REGRA TAMBÉM ENTRA, dito como o que é: amostra
+    # insuficiente. Sem esta linha, o modelo não tinha como responder "o que
+    # você já aprendeu comigo?" sem inventar — e inventar aprendizado é a pior
+    # mentira possível numa ferramenta que promete aprender.
+    try:
+        _prontos, _faltando, _total_ap = progresso_do_aprendizado()
+        if _faltando:
+            contexto += (
+                "\nPADRÕES AINDA SEM AMOSTRA SUFICIENTE (não pesam na conta, e "
+                "você NÃO deve tratá-los como aprendidos): " + " · ".join(
+                    f"{rot} ({n} de 3)" for rot, n, _f in _faltando[:5]) + "\n")
+    except Exception:
+        pass
     bons, ruins, por_hora = aprendizado_por_padrao()
     if bons or ruins:
         contexto += ("\nO QUE O HISTÓRICO DESTE TRADER JÁ ENSINOU (aprendido dos "
@@ -5462,6 +5703,13 @@ def responder_offline(pergunta, cenario=None):
         return saudacao
     if pergunta_sobre_capacidades(pergunta):
         return texto_das_capacidades()
+    # "O QUE VOCÊ APRENDEU COMIGO?" — resposta de FATO, do disco dela.
+    # Sem esta porta, a pergunta ia para o modelo, que não tem como saber e
+    # responde bonito: inventa que aprendeu. Numa ferramenta que promete
+    # aprender com as operações dele, aprendizado inventado é a pior mentira
+    # possível — e é justamente a pergunta que ele fez em 19/08.
+    if pergunta_sobre_aprendizado(pergunta):
+        return resumo_do_aprendizado()
     # HISTÓRICO DE SUGESTÕES: dado que está no disco dela. Vem antes da base
     # de metodologia porque "onde foi a última sugestão de venda de MGCV6?" é
     # pergunta de FATO REGISTRADO, não de conceito — e caía no despejo de
@@ -5615,6 +5863,203 @@ def bloco_web_para_prompt(texto):
         partes.append("MANCHETES REAIS DO MERCADO AGORA (cite a fonte ao usar; "
                       f"não invente notícia que não esteja aqui):\n{linhas}")
     return "\n\n".join(partes)
+
+
+# ====================================================================
+# O MOTOR PASSA A ENXERGAR O MUNDO, E NÃO SÓ O DESENHO DO GRÁFICO
+# ====================================================================
+# 19/08, ele: "nao aprende com a web". Fui conferir e ele tinha razão de um
+# jeito que eu não esperava: `bloco_web_para_prompt` era chamado num lugar só
+# do programa inteiro — o CHAT. O MOTOR, que é quem gera a SUGESTÃO DE ENTRADA,
+# lia o gráfico sem saber que naquela manhã tinha saído CPI, que o payroll
+# acabara de ser publicado ou que o Powell falava às 15h. A notícia chegava
+# quando ELE perguntava, e não chegava quando ELA sugeria. É o inverso do que
+# precisa ser: no chat, macro é assunto; no motor, é dinheiro.
+#
+# Duas coisas entram aqui, e a segunda é a que vale:
+#   1. o mesmo dado real (cotação do ativo + manchetes das casas) passa a
+#      entrar no prompt da análise;
+#   2. evento macro quente vira NÚMERO — penalidade limitada e auditável na
+#      probabilidade, do mesmo jeito que o aprendizado por padrão. Porque
+#      prompt é PEDIDO, não garantia: escrever "cuidado, saiu CPI" no prompt e
+#      torcer para o modelo obedecer não é trava, é esperança.
+
+# Tópicos que mexem no preço de índice em minutos. `penaliza` separa o que tem
+# HORA MARCADA (dado macro sai às 9h30, e a estrutura do gráfico vale menos nos
+# minutos seguintes) do que é fluxo contínuo de notícia — guerra e tarifa saem
+# o dia inteiro, e penalizar por isso seria penalizar todo dia, o que é o mesmo
+# que não penalizar nada.
+TOPICOS_DE_ALTO_IMPACTO = (
+    ("Fed / FOMC / Powell",
+     r"\b(fomc|federal\s+reserve|fed\s+(decision|funds|chair)|powell|"
+     r"decis[aã]o\s+do\s+fed|juros\s+do\s+fed|ata\s+do\s+fomc)\b", True),
+    ("inflação (CPI/PCE/IPCA)",
+     r"\b(cpi|pce|core\s+inflation|infla[cç][aã]o|ipca|igp-m)\b", True),
+    ("emprego (payroll/jobless)",
+     r"\b(payrolls?|non-?farm|jobless|initial\s+claims|unemployment|"
+     r"desemprego|jolts|caged)\b", True),
+    ("atividade (PIB/ISM/PMI)",
+     r"\b(gdp|pib|ism|pmi|retail\s+sales|vendas\s+no\s+varejo)\b", True),
+    ("Copom / Selic",
+     r"\b(copom|selic|banco\s+central\s+do\s+brasil)\b", True),
+    ("choque geopolítico / tarifas",
+     r"\b(tarifas?|tariffs?|san[cç][oõ]es|sanctions|opep|opec|"
+     r"guerra|war|ataque|strike)\b", False),
+)
+
+# Teto da penalidade por evento macro quente, em pontos de probabilidade.
+# Existe teto pelo mesmo motivo do aprendizado: o macro CORRIGE a leitura, não
+# a substitui. Um CPI recém-saído não transforma um setup excelente em lixo, e
+# nenhuma quantidade de manchete pode zerar sozinha um cenário.
+PENALIDADE_EVENTO_MACRO = 8.0
+# Depois disso, a manchete deixa de ser "acabou de sair" e vira contexto. Uma
+# hora e meia cobre a janela em que o mercado ainda está digerindo o número.
+MINUTOS_EVENTO_QUENTE = 90
+
+
+def eventos_de_alto_impacto(noticias, minutos=MINUTOS_EVENTO_QUENTE, agora=None):
+    """Manchetes de peso macro publicadas nos últimos `minutos`.
+
+    Função PURA: recebe a lista já baixada e devolve o que casou, do mais
+    recente para o mais velho, um por tópico. Pura de propósito — é ela que
+    decide mexer na probabilidade, e isso tem de poder ser conferido sem rede,
+    sem relógio e sem modelo nenhum."""
+    agora = time.time() if agora is None else agora
+    achados = {}
+    for n in (noticias or []):
+        quando = n.get("quando")
+        if not quando:
+            continue                      # sem data não dá para dizer "quente"
+        idade = (agora - float(quando)) / 60.0
+        if idade < 0 or idade > minutos:
+            continue
+        texto = f"{n.get('titulo', '')} {n.get('resumo', '')}"
+        for rotulo, padrao, penaliza in TOPICOS_DE_ALTO_IMPACTO:
+            if not re.search(padrao, texto, re.IGNORECASE):
+                continue
+            anterior = achados.get(rotulo)
+            if anterior and anterior["minutos"] <= idade:
+                continue
+            achados[rotulo] = {
+                "rotulo": rotulo,
+                "titulo": str(n.get("titulo", ""))[:160],
+                "fonte": n.get("fonte", ""),
+                "minutos": round(idade),
+                "penaliza": penaliza,
+            }
+    return sorted(achados.values(), key=lambda e: e["minutos"])
+
+
+def ajuste_por_evento_macro(eventos):
+    """Devolve (delta, porques) — a correção da probabilidade por macro quente.
+
+    NEGATIVO sempre: dado macro recém-publicado não melhora a confiabilidade de
+    uma leitura de estrutura, piora. Um tópico já custa a penalidade cheia;
+    dois não custam o dobro, porque o teto é o teto."""
+    quentes = [e for e in (eventos or []) if e.get("penaliza")]
+    if not quentes:
+        return 0.0, []
+    porques = [f"{e['rotulo']} há {e['minutos']} min ({e['fonte']})"
+               for e in quentes[:3]]
+    return -PENALIDADE_EVENTO_MACRO, porques
+
+
+def raiz_do_contrato(simbolo):
+    """'MESU6' -> 'MES'. Devolve a raiz conhecida, ou None.
+
+    Serve para achar a cotação do ativo que ele está operando: a tabela de
+    apelidos conhece 'mes' e 'mnq', mas nunca vai conhecer 'MESU2026'."""
+    s = str(simbolo or "").strip().upper()
+    for raiz in sorted(VALOR_POR_PONTO, key=len, reverse=True):
+        if not s.startswith(raiz):
+            continue
+        resto = s[len(raiz):]
+        if resto == "" or re.fullmatch(rf"[{_MESES_FUTUROS}]\d{{1,4}}", resto) \
+                or re.fullmatch(r"\d{1,2}!", resto):
+            return raiz
+    return None
+
+
+def simbolo_de_cotacao_do_ativo(ativo):
+    """Do ticker do gráfico para o símbolo que o Yahoo entende.
+
+    Devolve (simbolo, apelido) ou None."""
+    raiz = raiz_do_contrato(ativo)
+    if raiz:
+        alvo = SIMBOLOS_MERCADO.get(raiz.lower())
+        if alvo:
+            return (alvo, raiz)
+    return simbolo_do_texto(str(ativo or ""))
+
+
+# Teto de espera pela rede DENTRO do ciclo do motor. A queixa que abriu esta
+# versão foi "está muito lento para pensar" — seria uma piada de mau gosto
+# consertar a lentidão e, na mesma entrega, pendurar mais quinze segundos de
+# feed RSS na frente de cada análise. Estourou, o ciclo segue sem o macro: ler
+# o gráfico é o principal, e o principal nunca espera pelo acessório.
+ORCAMENTO_MACRO_SEG = 12
+
+
+def contexto_de_mercado_do_motor(ativo=None, agora=None, ttl=240,
+                                 orcamento=ORCAMENTO_MACRO_SEG):
+    """(texto_para_o_prompt, eventos_quentes) para a análise do motor.
+
+    NUNCA levanta e NUNCA demora o ciclo inteiro: rede é opcional aqui, e um
+    feed fora do ar não pode impedir a leitura do gráfico. Cacheado, porque o
+    ciclo roda de 5 em 5 minutos e as manchetes não mudam nesse ritmo."""
+    def montar():
+        partes, eventos = [], []
+        try:
+            noticias = noticias_do_mercado(maximo=6) or []
+        except Exception:
+            noticias = []
+        try:
+            alvo = simbolo_de_cotacao_do_ativo(ativo)
+            cot = cotacao_mercado(alvo[0]) if alvo else None
+        except Exception:
+            alvo, cot = None, None
+        if alvo and cot:
+            partes.append(
+                "COTAÇÃO REAL DE REFERÊNCIA AGORA (do mercado, não do print — "
+                "se ela e o gráfico discordarem muito, DIGA isso em vez de "
+                f"escolher uma): {formatar_cotacao(cot, alvo[1].upper())}")
+        try:
+            eventos = eventos_de_alto_impacto(noticias, agora=agora)
+        except Exception:
+            eventos = []
+        if eventos:
+            linhas = "\n".join(
+                f"• [{e['rotulo']} · há {e['minutos']} min · {e['fonte']}] "
+                f"{e['titulo']}" for e in eventos)
+            partes.append(
+                "⚠️ EVENTO DE ALTO IMPACTO RECÉM-PUBLICADO. Estrutura de "
+                "gráfico vale MENOS nos minutos seguintes a um número macro: "
+                "liquidez some, spread abre e o movimento é do dado, não do "
+                "desenho. Leve isso em conta na probabilidade e DIGA na "
+                f"análise que existe evento agora:\n{linhas}")
+        if noticias:
+            linhas = "\n".join(
+                f"• [{n['fonte']}, {_idade_texto(n['quando'])}] {n['titulo']}"
+                for n in noticias[:5])
+            partes.append(
+                "MANCHETES REAIS DO MERCADO AGORA (contexto; cite a fonte se "
+                f"usar, e NUNCA invente notícia que não esteja aqui):\n{linhas}")
+        return ("\n\n".join(partes), eventos)
+
+    def com_teto():
+        # O `montar` só é interrompido no sentido de PARAR DE ESPERAR por ele:
+        # a thread segue e o resultado dela entra no cache para o ciclo
+        # seguinte aproveitar. Ninguém é morto no meio de um download.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(montar).result(timeout=orcamento)
+
+    try:
+        return _web_cacheado(f"motor_web:{ativo or '-'}", ttl, com_teto) or ("", [])
+    except concurrent.futures.TimeoutError:
+        return ("", [])
+    except Exception:
+        return ("", [])
+
 
 # ====================================================================
 # BASE DE CONHECIMENTO SMC NATIVA — a TIGER pensa sem gastar cota
@@ -6738,6 +7183,34 @@ _RE_CAPACIDADES = re.compile(
 
 def pergunta_sobre_capacidades(texto):
     return bool(_RE_CAPACIDADES.search(_norm_busca(texto) or ""))
+
+
+# "O QUE VOCÊ APRENDEU COMIGO?" — e todas as formas em que ele pergunta isso.
+#
+# A regra exige APRENDER (ou aprendizado/evoluir) LIGADO ao que ela vive com
+# ele: as operações, os cenários, o histórico, o que já foi feito. O verbo
+# sozinho não basta, e não pode bastar: "me ensina a aprender SMC" e "quero
+# aprender a operar" são pedidos de METODOLOGIA, e devem continuar caindo na
+# base de conhecimento, não num relatório de amostras.
+_RE_APRENDIZADO = re.compile(
+    r"\b(o que|quanto|qu[aã]o|ja|j[áa]|voce|vc|nao|n[ãa]o)\b[^.?!]{0,60}"
+    r"\b(aprend\w+|evolu\w+|melhor\w+)\b[^.?!]{0,60}"
+    r"\b(comigo|com as? (minhas?|nossas?)?\s*(opera|trade|entrada)\w*|"
+    r"das? (minhas?\s*)?opera\w*|com os? (meus?\s*)?(cenario|trade)\w*|"
+    r"do (meu\s*)?historico|com o (meu\s*)?historico)\b"
+    r"|^\s*(o que|quanto)\s+voce\s+(ja\s+)?aprendeu\s*\??\s*$"
+    r"|\b(seu|teu)\s+aprendizado\b"
+    r"|\baprendizado\s+(ate\s+agora|atual|da\s+ferramenta)\b",
+    re.IGNORECASE)
+
+
+def pergunta_sobre_aprendizado(texto):
+    """Ele está perguntando o que ela já aprendeu com as operações DELE?
+
+    Função PURA. Falso positivo aqui rouba a resposta de metodologia; falso
+    negativo devolve a pergunta ao modelo, que não tem como saber e responde
+    bonito — inventando aprendizado. Dos dois, o segundo é o pior."""
+    return bool(_RE_APRENDIZADO.search(_norm_busca(texto) or ""))
 
 # Como o trader chama o motor de análise ao falar: "liga o motor", "desliga o
 # robô", "para a análise".
@@ -11941,6 +12414,14 @@ class SmcQuantApp(ctk.CTk):
                         f"P&L agora US$ {p.get('pnl_atual', 0):+,.2f}")
         except Exception:
             pass
+        # O APRENDIZADO DITO EM VOZ ALTA, INCLUSIVE QUANDO AINDA É POUCO.
+        # 19/08: "nao aprende com as operacoes". O mecanismo estava ligado, mas
+        # descartava em silêncio todo padrão com menos de 3 amostras — e, de
+        # fora, "ainda não tenho dados" e "isto não funciona" são a mesma tela.
+        try:
+            partes.append("• " + resumo_do_aprendizado())
+        except Exception:
+            pass
         ua = getattr(self, "_ultima_analise", None) or {}
         if ua.get("ativo"):
             partes.append(
@@ -13762,8 +14243,8 @@ class SmcQuantApp(ctk.CTk):
             self.log("🧪 Testando com uma pergunta real…")
             mensagens = [{"role": "user", "content": "Responda apenas: OK"}]
             try:
-                texto = _pedir_openai(PROVEDORES_IA["local"]["url"], "local",
-                                      modelo, mensagens, timeout=120)
+                texto = pedir_ao_provedor(PROVEDORES_IA["local"], "local",
+                                          modelo, mensagens, 120)
             except Exception as e:
                 texto = None
                 self.log(f"   (falha no teste: {str(e)[:140]})")
@@ -13867,10 +14348,7 @@ class SmcQuantApp(ctk.CTk):
                     try:
                         msg = [{"role": "user",
                                 "content": "Responda apenas: OK"}]
-                        if info["formato"] == "anthropic":
-                            t = _pedir_anthropic(info["url"], chave, modelo, msg, 25)
-                        else:
-                            t = _pedir_openai(info["url"], chave, modelo, msg, 25)
+                        t = pedir_ao_provedor(info, chave, modelo, msg, 25)
                         if t and t.strip():
                             self.log(f"   ✅ {info['rotulo']} respondeu "
                                      f"({modelo}).")
@@ -17598,6 +18076,15 @@ class SmcQuantApp(ctk.CTk):
     # ------------------------------------------------------------------
     def _loop_robo_quant(self):
         self.log("\n🚀 ROBÔ SMC INICIADO COM MÓDULO DE APRENDIZADO E FOCO DE JANELA!")
+        # DIZ O QUE JÁ APRENDEU, LOGO NA PRIMEIRA LINHA.
+        # "Módulo de aprendizado ativado" é propaganda; o que informa é o
+        # número. Sem isto, um aprendizado zerado (porque o motor passou dias
+        # quebrado e nenhum cenário fechou) tem exatamente a mesma cara de um
+        # aprendizado funcionando.
+        try:
+            self.log("📚 " + resumo_do_aprendizado())
+        except Exception:
+            pass
         falar("Integração concluída. Sistemas de proteção visual e aprendizado ativados.")
 
         api_key = carregar_api_key()
@@ -18033,9 +18520,19 @@ class SmcQuantApp(ctk.CTk):
                             "Cite em confluence_factors os nomes REAIS dos conceitos que você "
                             "de fato identificou no gráfico."
                         )
+                        # O MUNDO ENTRA NA ANÁLISE, E NÃO SÓ O DESENHO.
+                        # Até aqui isto só existia no chat: ela sabia da
+                        # notícia quando ELE perguntava, e não sabia quando
+                        # ELA sugeria entrada. O ativo vem da leitura do ciclo
+                        # anterior — serve para buscar a cotação de referência;
+                        # a manchete não depende de ativo nenhum.
+                        bloco_macro, eventos_macro = contexto_de_mercado_do_motor(
+                            getattr(self, "_ultimo_ativo_lido", None))
                         PROMPT_FINAL = (
                             f"{PROMPT_BASE}\n{memoria_dinamica}\n"
-                            f"ÚLTIMO ESTADO DO LEDGER:\n{ledger_text_memory}\n"
+                            + (f"\n--- O QUE ESTÁ ACONTECENDO NO MUNDO AGORA ---\n"
+                               f"{bloco_macro}\n\n" if bloco_macro else "")
+                            + f"ÚLTIMO ESTADO DO LEDGER:\n{ledger_text_memory}\n"
                             f"CONTEXTO DA TELA: {DICAS_PLATAFORMA.get(self.plataforma_atual, DICAS_PLATAFORMA['outra'])}\n"
                             f"{contexto_meta}"
                             f"{bloco_licoes_prompt()}"
@@ -18743,6 +19240,24 @@ class SmcQuantApp(ctk.CTk):
                                     f"{probabilidade:.0f}% ({_delta:+.1f} pts pelo seu "
                                     f"histórico). " + " · ".join(_porques))
 
+                        # MACRO QUENTE ENTRA NA CONTA, E NÃO SÓ NO PROMPT.
+                        # Escrever "cuidado, saiu CPI" no prompt e torcer para
+                        # o modelo obedecer não é trava, é esperança — e neste
+                        # projeto a regra é que prompt é PEDIDO, não garantia.
+                        # Aqui a manchete recém-publicada vira desconto na
+                        # probabilidade, limitado e escrito no registro: quem
+                        # ler o log vê de onde veio cada ponto.
+                        _dmac, _pmac = ajuste_por_evento_macro(eventos_macro)
+                        if _dmac:
+                            _antes_macro = probabilidade
+                            probabilidade = round(
+                                max(0.0, min(100.0, probabilidade + _dmac)), 1)
+                            if acao in ("BUY", "SELL"):
+                                self.log(
+                                    f"📰 MACRO: probabilidade {_antes_macro:.0f}% → "
+                                    f"{probabilidade:.0f}% ({_dmac:+.1f} pts — dado "
+                                    "recém-publicado). " + " · ".join(_pmac))
+
                         # PISO DE QUALIDADE — decisão de código, em função pura e
                         # testada (ver tests/test_piso_qualidade.py).
                         _piso = avaliar_piso_de_qualidade(
@@ -18969,6 +19484,23 @@ class SmcQuantApp(ctk.CTk):
                                     f"• {c}" for c in confluencias
                                 )
 
+                            # O QUE ESTÁ ACONTECENDO NO MUNDO VAI JUNTO.
+                            # Ele lê a sugestão no celular, longe da tela do
+                            # programa. Se saiu CPI há vinte minutos, isso
+                            # muda a decisão dele — e esconder no registro do
+                            # computador é o mesmo que não contar.
+                            bloco_macro_wpp = ""
+                            if eventos_macro:
+                                bloco_macro_wpp = (
+                                    "\n\n📰 *Atenção — evento macro agora:*\n"
+                                    + "\n".join(
+                                        f"• {e['rotulo']} há {e['minutos']} min "
+                                        f"({e['fonte']}): {e['titulo']}"
+                                        for e in eventos_macro[:3])
+                                    + "\n_Estrutura vale menos logo depois de "
+                                      "número macro; a probabilidade acima já "
+                                      "está descontada por isso._")
+
                             # PLANO DE GESTÃO — como raspar o máximo do movimento sem
                             # devolver o lucro. Parcial no 1º alvo, risco zerado, e o
                             # restante corre até o alvo institucional.
@@ -19018,6 +19550,7 @@ class SmcQuantApp(ctk.CTk):
                                 f"{f'  |  R:R {rr1}' if rr1 else ''}"
                                 f"{linha_contratos}"
                                 f"{bloco_confluencias}"
+                                f"{bloco_macro_wpp}"
                                 f"{bloco_gestao}\n\n"
                                 f"_{sinal.get('market_analysis', '')}_\n\n"
                                 f"❓ *Deseja acatar este cenário?*\n"

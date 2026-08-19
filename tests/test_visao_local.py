@@ -145,9 +145,10 @@ class BaseComOllamaFalso(unittest.TestCase):
              "tem_modelo_de_visao", "modelo_de_visao_instalado",
              "CHAVES_DA_ANALISE", "_CONTRATO_JSON_LOCAL",
              "prompt_para_visao_local", "analise_local_valida",
-             "analisar_grafico_local", "_num_gb_de_ram", "ia_local_no_ar"],
+             "analisar_grafico_local", "_num_gb_de_ram", "ia_local_no_ar",
+             "_keep_alive_do_ciclo"],
             stubs={"requests": requests, "base64": base64, "BytesIO": BytesIO,
-                   "Image": _Image()})
+                   "Image": _Image(), "carregar_config": lambda: {}})
 
 
 def _Image():

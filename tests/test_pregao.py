@@ -351,7 +351,10 @@ class TestCotacaoDeAcao(unittest.TestCase):
         ruído com cara de resposta, e o pior tipo, porque PARECE resposta."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def responder_offline")
-        bloco = fonte[i:i + 4000]
+        # A FUNÇÃO INTEIRA, e não os primeiros N caracteres dela: o
+        # recorte fixo transformava 'inseri uma porta nova no começo do
+        # roteador' em teste vermelho de coisa que não mudou.
+        bloco = fonte[i:fonte.index('\ndef ', i + 10)]
         self.assertIn("Não vou te mostrar notícia de outra empresa", bloco)
         self.assertIn("if not alvo and re.search(", bloco)
 
@@ -360,7 +363,10 @@ class TestCotacaoDeAcao(unittest.TestCase):
         resposta util comeca pelo que ele fez no dia."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def responder_offline")
-        bloco = fonte[i:i + 4000]
+        # A FUNÇÃO INTEIRA, e não os primeiros N caracteres dela: o
+        # recorte fixo transformava 'inseri uma porta nova no começo do
+        # roteador' em teste vermelho de coisa que não mudou.
+        bloco = fonte[i:fonte.index('\ndef ', i + 10)]
         self.assertIn("aconteceu|acontecendo", bloco)
 
 
