@@ -11645,8 +11645,7 @@ class SmcQuantApp(ctk.CTk):
             ativo=ativo or None,
             trailing=tradovate_auto.plano_trailing(
                 8, ligado=bool(getattr(self, "tv_trail_var", None)
-                               and self.tv_trail_var.get())),
-            ativo=ativo)
+                               and self.tv_trail_var.get())))
         if res.get("ok"):
             self.log("   ━━━ ✅ ENSAIO OK. Todos os campos foram preenchidos e "
                      "CONFERIDOS na tela. Se um cenário sair agora, a ordem "
