@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.46.0"
+VERSAO_ATUAL = "2.46.2"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -2798,10 +2798,41 @@ def atualizar_posicoes_com_preco(preco, ativo=None, exigir_confirmacao_plataform
             # O preço ainda serve para MOSTRAR onde o mercado está...
             pos["preco_atual"] = preco
             if bateu_stop:
-                # Stop rompido antes da entrada: o setup nunca foi executado.
+                # "NUNCA FOI EXECUTADA" ERA UM PALPITE COM CARA DE FATO — e em
+                # 19/08 ele foi um palpite ERRADO, com dinheiro no meio.
+                #
+                # O que aconteceu: a ordem foi para a Tradovate (Vender 30 @
+                # 7704.25 com bracket), o preço entrou, bateu o stop e saiu —
+                # TUDO entre duas leituras de 5 minutos. O capital da conta caiu
+                # de 50.000,00 para 49.495,05, então a operação existiu. Mas
+                # aqui dentro a posição continuava PENDENTE (com a sincronização
+                # ligada, o preço não abre posição: quem confirma execução é a
+                # plataforma), e quando o preço apareceu além do stop este
+                # trecho cravou "cancelada, nunca foi executada".
+                #
+                # Eu não tinha como saber isso, e é justamente esse o ponto: EU
+                # NÃO TINHA COMO SABER. Uma leitura a cada 5 minutos não vê a
+                # ordem dos acontecimentos dentro do intervalo. O que eu posso
+                # afirmar é o que eu vi; o resto tem de ser dito como dúvida.
+                #
+                # A distinção que resolve: a ordem chegou a ir para a corretora?
+                #  • NÃO (registro só meu) -> não existe ordem em lugar nenhum,
+                #    logo não executou. Aí "cancelada sem executar" é fato.
+                #  • SIM -> ela pode ter entrado e saído no intervalo. Aqui a
+                #    única resposta honesta é NÃO SEI, e ele tem de conferir.
                 pos["status"] = "CANCELADA"
                 pos["data_fechamento"] = time.strftime('%d/%m/%Y %H:%M')
                 pos["pnl_final"] = 0.0
+                if pos.get("enviada_plataforma") or pos.get("entrada_vista_no_preco"):
+                    pos["execucao_incerta"] = True
+                    pos["motivo_cancelamento"] = (
+                        "o preço passou do stop e eu não vi execução — mas a "
+                        "ordem ESTAVA na plataforma e pode ter entrado e saído "
+                        "entre duas leituras")
+                else:
+                    pos["motivo_cancelamento"] = (
+                        "stop rompido antes da entrada (a ordem não chegou a "
+                        "ir para a plataforma)")
                 eventos.append(("CANCELADA", dict(pos)))
                 continue
 
@@ -3218,6 +3249,8 @@ def cancelar_pendentes_do_sinal(sinal_id, motivo="cenário invalidado"):
         return 0
     lista = carregar_posicoes()
     n = 0
+    global _canceladas_ainda_na_corretora
+    _canceladas_ainda_na_corretora = []
     for pos in lista:
         if (pos.get("sinal_id") == sinal_id and pos.get("origem") == "ROBO"
                 and pos.get("status") == "PENDENTE"):
@@ -3225,10 +3258,22 @@ def cancelar_pendentes_do_sinal(sinal_id, motivo="cenário invalidado"):
             pos["data_fechamento"] = time.strftime('%d/%m/%Y %H:%M')
             pos["pnl_final"] = 0.0
             pos["motivo_cancelamento"] = motivo
+            # CANCELAR AQUI NÃO CANCELA LÁ, e isso precisa ficar explícito.
+            # Este cancelamento é no DIÁRIO. A ordem limitada continua viva na
+            # Tradovate até alguém tirá-la de lá — eu não mexo em ordem que já
+            # está na corretora, porque ali pode haver ordem que ELE lançou na
+            # mão, e cancelar a errada é pior que não cancelar nenhuma.
+            if pos.get("enviada_plataforma"):
+                _canceladas_ainda_na_corretora.append(dict(pos))
             n += 1
     if n:
         salvar_posicoes(lista)
     return n
+
+
+# Preenchido por `cancelar_pendentes_do_sinal`: as pendentes que sumiram do
+# diário mas CONTINUAM na corretora. Quem chama tem de avisar o trader.
+_canceladas_ainda_na_corretora = []
 
 def resultados_por_dia():
     """Agrega o P&L realizado por dia (posições fechadas) + P&L aberto de hoje.
@@ -3934,6 +3979,37 @@ def posicao_aberta_no_ativo(ativo):
             return p
     return None
 
+def ordem_enviada_e_viva_no_ativo(ativo):
+    """Uma ordem NOSSA que já foi para a plataforma e AINDA NÃO executou.
+
+    ISTO EXISTE PORQUE `posicao_aberta_no_ativo` só enxerga status 'ABERTA', e
+    uma ordem limitada esperando o preço tocar a entrada está 'PENDENTE'. Ela é
+    invisível para a política de posição — e no modo autônomo isso significava
+    que um cenário novo mandaria uma SEGUNDA ordem, com um SEGUNDO bracket, em
+    cima de uma primeira que continua viva na corretora.
+
+    A pergunta dele em 19/08 é o que destapou isto: "depois que ele envia a
+    ordem... se surgir outra sugestão, ele está programado para voltar ali na
+    seta e preencher de novo?". Está — e era exatamente esse o problema: ele
+    voltaria e preencheria, sem que nada olhasse para a ordem que ficou.
+
+    Só conta o que foi ENVIADO à plataforma (`enviada_plataforma`): uma
+    pendente registrada só no diário, com a automação desligada, não ocupa
+    lugar nenhum na corretora."""
+    alvo = str(ativo or "").upper()
+    if not alvo or alvo == "DESCONHECIDO":
+        return None
+    for p in carregar_posicoes():
+        if not _e_da_conta_ativa(p) or p.get("status") != "PENDENTE":
+            continue
+        if not p.get("enviada_plataforma"):
+            continue
+        nome = str(p.get("ativo") or "").upper()
+        if nome and (nome.startswith(alvo[:3]) or alvo.startswith(nome[:3])):
+            return p
+    return None
+
+
 def politica_com_posicao_aberta(acao, ativo, plano=None):
     """O QUE FAZER QUANDO ELE JÁ ESTÁ POSICIONADO.
 
@@ -3964,6 +4040,21 @@ def politica_com_posicao_aberta(acao, ativo, plano=None):
         return "LIVRE", None, ""
     pos = posicao_aberta_no_ativo(ativo)
     if not pos:
+        # NADA ABERTO — MAS PODE HAVER ORDEM VIVA NA CORRETORA.
+        # Uma limitada esperando o preço tocar a entrada não é posição, e por
+        # isso passava por aqui como se o ativo estivesse livre. No modo
+        # autônomo isso empilha: 30 contratos esperando em 7704,25 e, dez
+        # minutos depois, mais 30 esperando em 7699,50 — cada uma com o seu
+        # bracket, as duas vivas. Se as duas preencherem, ele está com o dobro
+        # do risco que o Plano dimensionou, e ninguém decidiu isso.
+        viva = ordem_enviada_e_viva_no_ativo(ativo)
+        if viva:
+            return ("ORDEM_VIVA", viva,
+                    f"já existe uma ordem minha de {viva.get('direcao')} "
+                    f"{viva.get('ativo')} ({viva.get('contratos')} ctr) "
+                    f"esperando em {viva.get('entry')} na plataforma, e ela "
+                    "ainda não executou. Mandar outra agora empilharia risco "
+                    "que o seu Plano não dimensionou.")
         return "LIVRE", None, ""
     if modo == "bloquear":
         return ("BLOQUEIA", pos,
@@ -4447,6 +4538,13 @@ def situacao_do_sinal(sinal, posicoes=None):
                     COR["verde"] if pnl >= 0 else COR["vermelho"])
         if st == "CANCELADA":
             motivo = pos.get("motivo_cancelamento") or "stop rompido antes da entrada"
+            if pos.get("execucao_incerta"):
+                # "CANCELADA sem executar" sobre uma ordem que ESTAVA na
+                # corretora é afirmação que eu não posso sustentar — e foi
+                # exatamente esta linha que ele leu na tela enquanto o extrato
+                # dele mostrava a perda.
+                return (f"⚠️ NÃO SEI se executou — {motivo}. CONFIRA na "
+                        "plataforma", COR["amarelo"])
             return (f"🚫 CANCELADA sem executar ({motivo})", COR["dim"])
 
     if decisao in ("ACATOU_COMPRA", "ACATOU_VENDA"):
@@ -15027,13 +15125,37 @@ class SmcQuantApp(ctk.CTk):
                             "Estou acompanhando até o stop/alvo — me chame se quiser "
                             "discutir a gestão.")
         elif tipo == "CANCELADA":
-            self.log(f"🚫 ORDEM CANCELADA: {pos['direcao']} {pos['ativo']} @ {pos['entry']} — "
-                      "o preço rompeu o stop antes de tocar a entrada. Nunca foi executada.")
-            self._notificar_desktop(
-                f"🚫 Ordem cancelada — {pos['direcao']} {pos['ativo']}",
-                [f"O preço rompeu o stop antes de tocar {pos['entry']}.",
-                 "A ordem nunca foi executada."],
-                cor="#a0a0a0")
+            if pos.get("execucao_incerta"):
+                # NÃO SEI. E dizer "não sei" é a única coisa verdadeira aqui.
+                aviso = (
+                    f"⚠️ NÃO SEI SE ESTA ORDEM EXECUTOU: {pos['direcao']} "
+                    f"{pos['ativo']} @ {pos['entry']} ({pos.get('contratos')} ctr). "
+                    "O preço passou do stop e eu não vi execução — mas a ordem "
+                    "ESTAVA na plataforma, e eu só olho o mercado a cada ciclo: "
+                    "ela pode ter entrado e saído entre duas leituras. "
+                    "CONFIRA O EXTRATO DA CONTA NA TRADOVATE. Não vou registrar "
+                    "resultado nenhum em cima de um palpite.")
+                self.log(aviso)
+                self._chat_feed(aviso)
+                self._notificar_desktop(
+                    f"⚠️ Execução incerta — {pos['direcao']} {pos['ativo']}",
+                    [f"Entrada {pos['entry']} · stop {pos.get('stop')}",
+                     "A ordem estava na plataforma e o preço passou do stop.",
+                     "CONFIRA na Tradovate se ela entrou."],
+                    cor="#e0a458", segundos=300)
+                try:
+                    enviar_relatorio_whatsapp(aviso, None, self.log)
+                except Exception:
+                    pass
+            else:
+                self.log(f"🚫 ORDEM CANCELADA: {pos['direcao']} {pos['ativo']} @ "
+                         f"{pos['entry']} — o preço rompeu o stop antes de tocar a "
+                         "entrada, e esta ordem não chegou a ir para a plataforma.")
+                self._notificar_desktop(
+                    f"🚫 Ordem cancelada — {pos['direcao']} {pos['ativo']}",
+                    [f"O preço rompeu o stop antes de tocar {pos['entry']}.",
+                     "Ela não chegou a ir para a plataforma."],
+                    cor="#a0a0a0")
         else:
             emoji = "🔴" if tipo == "STOP" else "🟢"
             msg = (f"{emoji} *Operação encerrada ({tipo})*\n"
@@ -15219,7 +15341,27 @@ class SmcQuantApp(ctk.CTk):
         self.after(0, lambda: self._registrar_decisao(sinal_id, decisao))
         return True
 
-    def _tv_enviar_bracket(self, direcao, entry, stop, alvo, qtd, ativo=None):
+    def _marcar_ordem_na_corretora(self, sinal_id):
+        """Carimba a posição como ENVIADA À PLATAFORMA.
+
+        É este carimbo que faz `ordem_enviada_e_viva_no_ativo` enxergar a
+        ordem e impedir que o cenário seguinte empilhe outra em cima. Ele só é
+        posto quando a corretora REALMENTE recebeu — em modo teste, ou quando
+        o envio falha, a posição continua sendo só um registro meu, e um
+        registro meu não ocupa lugar na Tradovate."""
+        if not sinal_id:
+            return
+        lista = carregar_posicoes()
+        mexeu = False
+        for p in lista:
+            if p.get("sinal_id") == sinal_id and p.get("status") == "PENDENTE":
+                p["enviada_plataforma"] = True
+                mexeu = True
+        if mexeu:
+            salvar_posicoes(lista)
+
+    def _tv_enviar_bracket(self, direcao, entry, stop, alvo, qtd, ativo=None,
+                           sinal_id=None):
         """Dispara o envio em thread separada (não trava a GUI). Usa dry-run
         conforme o interruptor. direcao: 'BUY'/'SELL'.
 
@@ -15280,6 +15422,43 @@ class SmcQuantApp(ctk.CTk):
                 if res is None:
                     res = bot.enviar_bracket_ticket(direcao, entry, stop, alvo,
                                                      qtd=qtd, enviar=not dry)
+                # A ORDEM ESTÁ NA CORRETORA — a partir daqui ela ocupa lugar.
+                # Vale também para o caso incerto (a ligação caiu no clique de
+                # Enviar): se eu NÃO SEI se saiu, tenho de tratar como se
+                # tivesse saído. Empilhar em cima de uma ordem que existe é
+                # pior que segurar uma sugestão que talvez pudesse ir.
+                if not dry and (res.get("ok") or res.get("incerto")):
+                    self.after(0, lambda: self._marcar_ordem_na_corretora(sinal_id))
+
+                # ---- A CONFIRMAÇÃO. O QUE ACONTECEU DE VERDADE. ----
+                # 19/08, ele: "nao pode falar que fez e nao ter feito". A
+                # mensagem que sai antes do envio agora diz que está MANDANDO;
+                # esta aqui é a que diz se foi. Sem ela, a única frase que ele
+                # lia era a do futuro do pretérito, e ordem nenhuma desmentia.
+                rotulo = f"{direcao} {ativo or ''} {qtd} ctr @ {entry}".strip()
+                if dry:
+                    aviso = (f"🧪 MODO TESTE: preenchi o ticket de {rotulo} e "
+                             "NÃO enviei. Nenhuma ordem foi para a plataforma.")
+                elif res.get("incerto"):
+                    aviso = (f"⚠️ {rotulo}: a ligação com o Chrome caiu no "
+                             "momento do clique de Enviar. NÃO SEI dizer se a "
+                             "ordem saiu. CONFIRA A PLATAFORMA AGORA.")
+                elif res.get("ok"):
+                    aviso = (f"✅ ORDEM ENVIADA: {rotulo} · stop {stop} · alvo "
+                             f"{alvo}"
+                             + (f" ({res['ticks_stop']}/{res['ticks_alvo']} ticks)"
+                                if res.get("ticks_stop") else "")
+                             + ". Stop e alvo foram anexados pela Tradovate.")
+                else:
+                    aviso = (f"❌ NÃO ENVIEI {rotulo}: {res.get('erro') or 'motivo não informado'}. "
+                             "NENHUMA ordem foi para a plataforma — a sugestão "
+                             "continua no diário, mas não existe posição.")
+                self.log(aviso)
+                self._chat_feed(aviso)
+                try:
+                    enviar_relatorio_whatsapp(aviso, None, self.log)
+                except Exception:
+                    pass
                 # Compatível com versões que devolviam só True/False.
                 if not isinstance(res, dict):
                     return
@@ -17774,7 +17953,7 @@ class SmcQuantApp(ctk.CTk):
                         self._tv_enviar_bracket(
                             direcao, sinal["entry"], sinal["stop"], alvo,
                             sizing["contratos"] or 1,
-                            ativo=sinal.get("ativo")
+                            ativo=sinal.get("ativo"), sinal_id=sinal_id
                         )
         self._atualizar_dashboard()
 
@@ -19589,6 +19768,30 @@ class SmcQuantApp(ctk.CTk):
                                     self.after(0, self._atualizar_dashboard)
                                 elif bateu_entrada:
                                     sinal_ativo["estado"] = "ATIVA"
+                                    # O QUE EU VI FICA ESCRITO NA POSIÇÃO.
+                                    # Este ramo é o app dizendo, com todas as
+                                    # letras, "o preço mitigou a entrada". Em
+                                    # 19/08 ele disse isso e, ciclos depois, a
+                                    # máquina de posições cravou "nunca foi
+                                    # executada" sobre o MESMO cenário — duas
+                                    # partes do programa se contradizendo no
+                                    # mesmo registro. Carimbando aqui, a
+                                    # segunda não tem mais como negar o que a
+                                    # primeira anunciou.
+                                    _sid_ea = sinal_ativo.get("sinal_id")
+                                    if _sid_ea:
+                                        try:
+                                            _lst = carregar_posicoes()
+                                            _mex = False
+                                            for _p in _lst:
+                                                if (_p.get("sinal_id") == _sid_ea
+                                                        and _p.get("status") == "PENDENTE"):
+                                                    _p["entrada_vista_no_preco"] = True
+                                                    _mex = True
+                                            if _mex:
+                                                salvar_posicoes(_lst)
+                                        except Exception:
+                                            pass
                                     msg = f"🎯 *ENTRADA ACIONADA — {direcao}*\nPreço mitigou a zona em {sinal_ativo['entry']}."
                                     self.log(msg)
                                     if acatado_atual:
@@ -19728,6 +19931,26 @@ class SmcQuantApp(ctk.CTk):
                                 f"um setup de {acao} com qualidade)."
                                 + (f" {n_canc} ordem(ns) pendente(s) cancelada(s)." if n_canc else "")
                             )
+                            # O CANCELAMENTO ACIMA É NO MEU DIÁRIO, NÃO NA
+                            # CORRETORA. Se a ordem chegou a ir para lá, ela
+                            # continua viva — e "cancelada" no meu registro
+                            # com a ordem viva na plataforma é a pior mentira
+                            # que eu poderia contar aqui.
+                            for _p in _canceladas_ainda_na_corretora:
+                                aviso_viva = (
+                                    f"⚠️ ATENÇÃO: a ordem {_p.get('direcao')} "
+                                    f"{_p.get('ativo')} {_p.get('contratos')} ctr @ "
+                                    f"{_p.get('entry')} JÁ ESTAVA NA TRADOVATE. Eu a "
+                                    "tirei do meu diário, mas NÃO cancelo ordem na "
+                                    "corretora — lá pode haver ordem sua, lançada na "
+                                    "mão, e cancelar a errada é pior que não cancelar "
+                                    "nenhuma. CANCELE ESSA ORDEM NA PLATAFORMA.")
+                                self.log(aviso_viva)
+                                self._chat_feed(aviso_viva)
+                                try:
+                                    enviar_relatorio_whatsapp(aviso_viva, None, self.log)
+                                except Exception:
+                                    pass
                             if sid_inv in getattr(self, "_sinais_notificados", set()):
                                 self._sinais_notificados.discard(sid_inv)
                             sinal_ativo = {"estado": "ENCERRADA"}
@@ -19819,6 +20042,21 @@ class SmcQuantApp(ctk.CTk):
                             elif _dec == "BLOQUEIA":
                                 repetido = True
                                 self.log(f"⏸️ {acao} {ativo}: {_motivo_pa}")
+                            elif _dec == "ORDEM_VIVA":
+                                # NÃO EMPILHA. E diz o que fazer para destravar,
+                                # porque "segurei a sugestão" sem saída vira
+                                # ferramenta muda no meio do pregão.
+                                repetido = True
+                                if _motivo_pa != getattr(self, "_ultimo_motivo_viva", None):
+                                    self._ultimo_motivo_viva = _motivo_pa
+                                    self.log(f"⛔ {acao} {ativo}: {_motivo_pa} "
+                                             "Se você quer o cenário novo, "
+                                             "cancele a ordem antiga na "
+                                             "Tradovate — assim que ela sair "
+                                             "de lá, eu volto a sugerir.")
+                                    self._chat_feed(
+                                        f"⛔ Segurei o {acao} {ativo}: "
+                                        f"{_motivo_pa}")
                             elif _dec == "AUMENTO":
                                 self.log(f"➕ {acao} {ativo}: {_motivo_pa} Vai como "
                                          "sugestão de AUMENTO — confira o risco somado "
@@ -19995,8 +20233,17 @@ class SmcQuantApp(ctk.CTk):
                                 # o celular de alguém cuja ordem já está na
                                 # plataforma é pior que não mandar nada: ele
                                 # decidiria sobre um trade que já existe.
-                                + (("🤖 *EXECUTADO AUTOMATICAMENTE* — a ordem foi "
-                                    "enviada com stop e alvo anexados.\n"
+                                # TEMPO VERBAL É HONESTIDADE AQUI.
+                                # Esta mensagem sai ANTES de a ordem ir. Dizer
+                                # "foi enviada" neste ponto é afirmar um fato
+                                # que ainda não existe — e em 19/08 ela disse
+                                # exatamente isso sobre ordens que nunca foram
+                                # para a plataforma. Agora ela diz o que vai
+                                # FAZER, e a confirmação vem numa segunda
+                                # mensagem, depois de o envio responder.
+                                + (("🤖 *EXECUTANDO SOZINHA* — estou mandando a "
+                                    "ordem agora, com stop e alvo anexados.\n"
+                                    "Confirmo em seguida se ela foi aceita.\n"
                                     "Para voltar a decidir você mesmo, desligue "
                                     "'Ligar automação' em Configurações.\n\n")
                                    if self._modo_autonomo() else
@@ -20008,7 +20255,7 @@ class SmcQuantApp(ctk.CTk):
                             enviar_relatorio_whatsapp(mensagem_wpp, screenshot, self.log)
                             _autonomo = self._modo_autonomo()
                             falar(
-                                (f"Executando sozinha: {acao} em {ativo}, "
+                                (f"Mandando ordem sozinha: {acao} em {ativo}, "
                                  f"probabilidade {probabilidade:.0f} por cento."
                                  if _autonomo else
                                  f"Novo cenário de {acao} em {ativo}, "
@@ -20019,12 +20266,12 @@ class SmcQuantApp(ctk.CTk):
                             # A sugestão também entra na CONVERSA da aba 🐯 TIGER — você
                             # pode responder 'acatar' / 'dispensar' ali, por texto ou voz.
                             self._chat_feed(
-                                (f"🤖 Executei sozinha: {acao} {ativo} — entrada "
+                                (f"🤖 Vou executar sozinha: {acao} {ativo} — entrada "
                                  f"{sinal_ativo['entry']}, stop {sinal_ativo['stop']}, "
                                  f"alvo {sinal_ativo['tp1']}"
                                  + (f", R:R {rr1}" if rr1 else "") +
-                                 f", probabilidade {probabilidade:.0f}%. Stop e alvo "
-                                 "foram anexados à ordem.")
+                                 f", probabilidade {probabilidade:.0f}%. Mandando a "
+                                 "ordem agora — confirmo aqui se ela foi aceita.")
                                 if _autonomo else
                                 (f"📘 Nova sugestão: {acao} {ativo} — entrada "
                                  f"{sinal_ativo['entry']}, stop {sinal_ativo['stop']}, alvo "
@@ -20033,13 +20280,13 @@ class SmcQuantApp(ctk.CTk):
                                  f", probabilidade {probabilidade:.0f}%. Quer conversar sobre "
                                  "o cenário? Ou diga 'acatar' / 'dispensar'."))
                             self._notificar_desktop(
-                                (f"🤖 EXECUTADO — {acao} {ativo}" if _autonomo
+                                (f"🤖 EXECUTANDO — {acao} {ativo}" if _autonomo
                                  else f"📘 Nova sugestão — {acao} {ativo}"),
                                 [f"Entrada {sinal_ativo['entry']}  ·  Stop {sinal_ativo['stop']}",
                                  f"Alvo {sinal_ativo['tp1']}" + (f"  ·  R:R {rr1}" if rr1 else ""),
                                  f"Probabilidade {probabilidade:.0f}%  ·  {sizing['contratos']} ctr"
                                  f"  ·  conta {nome_conta_ativa()}",
-                                 ("Ordem enviada com stop e alvo anexados."
+                                 ("Mandando a ordem agora — confirmo em seguida."
                                   if _autonomo else
                                   f"Decida aqui ou no app (prazo {TIMEOUT_ACATAR_SEG // 60} min).")],
                                 cor="#1f8b4c" if acao == "BUY" else "#c53030",
