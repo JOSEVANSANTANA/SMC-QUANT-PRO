@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.47.1"
+VERSAO_ATUAL = "2.47.2"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1149,6 +1149,65 @@ def diagnostico_de_provedor(erro, rotulo=""):
         return (f"{quem}não cheguei ao servidor (rede/timeout). "
                 "Confira a internet e tente de novo.")
     return f"{quem}{e[:160]}"
+
+
+# O FORMATO DE CADA CHAVE — e por que vale a pena guardar isso.
+#
+# "401: copie de novo do painel do provedor" é um beco sem saída. Ele copiou de
+# novo e tomou 401 de novo, seis vezes seguidas, porque a frase não distingue
+# as duas causas possíveis: a chave chegou TORTA até aqui (colada duas vezes,
+# cortada, com um pedaço a menos) ou chegou INTEIRA e foi recusada lá (revogada,
+# apagada, de outra conta). São problemas opostos — um se resolve colando de
+# novo, o outro só gerando uma chave nova — e a mensagem mandava fazer a mesma
+# coisa nos dois casos.
+#
+# O formato eu consigo conferir AQUI, sem rede e sem gastar cota. É pouco, mas é
+# exatamente o pedaço que separa uma causa da outra.
+FORMATO_DAS_CHAVES = {
+    "openrouter": (r"^sk-or-v1-[0-9a-f]{64}$", "sk-or-v1- e mais 64 caracteres", 73),
+    "openai":     (r"^sk-[A-Za-z0-9_\-]{20,}$", "sk- e mais de 20 caracteres", None),
+    "anthropic":  (r"^sk-ant-[A-Za-z0-9_\-]{20,}$", "sk-ant- e mais de 20 caracteres", None),
+    "groq":       (r"^gsk_[A-Za-z0-9]{20,}$", "gsk_ e mais de 20 caracteres", None),
+}
+
+
+def conferir_formato_da_chave(pid, chave):
+    """A chave GRAVADA tem a cara de uma chave desse provedor? (ok, observação).
+
+    Função PURA, e de propósito: ela olha só o texto, nunca a rede. Serve para
+    responder uma pergunta que a resposta 401 não responde — o problema está
+    aqui dentro ou está lá?
+
+    NUNCA devolve a chave, nem pedaço do meio dela. Só o começo (que é público:
+    todo mundo sabe que chave da OpenRouter começa com sk-or-v1-) e o tamanho.
+    Uma mensagem de diagnóstico que vaza credencial no log é pior que não ter
+    diagnóstico nenhum.
+    """
+    regra = FORMATO_DAS_CHAVES.get(pid)
+    chave = str(chave or "")
+    if not chave:
+        return False, "não há chave nenhuma gravada para este provedor"
+    if not regra:
+        return True, f"{len(chave)} caracteres (não sei o formato deste provedor)"
+    padrao, descricao, tamanho = regra
+    if re.match(padrao, chave):
+        return True, f"formato certo ({len(chave)} caracteres)"
+    # DOBRADA. É o defeito do Cmd+V no macOS, que já custou um pregão: as duas
+    # ligações de colar disparam e o texto entra duas vezes. O campo mostra
+    # asteriscos, então nada denuncia — a não ser o tamanho.
+    meio = len(chave) // 2
+    if len(chave) % 2 == 0 and chave[:meio] == chave[meio:]:
+        return False, (f"a chave está COLADA DUAS VEZES ({len(chave)} "
+                       f"caracteres, o dobro de {meio}). Apague o campo por "
+                       "inteiro, cole uma vez só e salve.")
+    prefixo = chave[:9] if len(chave) > 9 else chave[:3]
+    if tamanho and len(chave) != tamanho:
+        return False, (f"a chave tem {len(chave)} caracteres e a deste "
+                       f"provedor tem {tamanho} (começa com '{prefixo}...'). "
+                       "Faltou ou sobrou pedaço na hora de copiar.")
+    return False, (f"a chave começa com '{prefixo}...' e o esperado aqui é "
+                   f"{descricao}. Pode ser chave de outro provedor no campo "
+                   "errado.")
 
 
 def carregar_chave_provedor(pid: str) -> str:
@@ -14990,11 +15049,31 @@ class SmcQuantApp(ctk.CTk):
         self.log("🧪 Testando cada uma com uma pergunta real...")
 
         def testar():
+            ja_falou_da_groq = False
             for pid in configurados:
                 info = PROVEDORES_IA[pid]
                 chave = carregar_chave_provedor(pid)
+                # OS MODELOS DA IA LOCAL SÃO OS QUE ESTÃO BAIXADOS NESTA
+                # MÁQUINA. A fila de verdade já sabia disso; este botão, não —
+                # ele testava a lista fixa e dizia "IA LOCAL NÃO respondeu"
+                # numa máquina com o Ollama de pé e dois modelos instalados.
+                # No log de 20/08 as duas linhas saíram uma embaixo da outra:
+                # os quatro 404 do teste e, logo abaixo, "✅ IA LOCAL no ar.
+                # Modelos: qwen2.5vl:3b, qwen2.5:3b". O botão estava errado, e
+                # ele passou a duvidar da parte que funcionava.
+                modelos = info["modelos"]
+                if info.get("sem_chave"):
+                    instalados = ia_local_no_ar()
+                    chave = "local"
+                    modelos = ([m for m in modelos if m in instalados]
+                               or instalados[:2])
+                    if not modelos:
+                        self.log(f"   ❌ {info['rotulo']}: o Ollama não tem "
+                                 "modelo nenhum baixado. Rode "
+                                 "'ollama pull qwen2.5:7b' no Terminal.")
+                        continue
                 ok, ultimo = False, None
-                for modelo in info["modelos"]:
+                for modelo in modelos:
                     try:
                         msg = [{"role": "user",
                                 "content": "Responda apenas: OK"}]
@@ -15017,7 +15096,25 @@ class SmcQuantApp(ctk.CTk):
                     # ficou sem saber qual das três, com a resposta na mão.
                     self.log(f"   ❌ {info['rotulo']} NÃO respondeu — "
                              f"{diagnostico_de_provedor(ultimo, info['rotulo'])}")
-                    if pid != "groq":
+                    # 401 TEM DUAS CAUSAS OPOSTAS, e mandar "copie de novo"
+                    # nas duas é o que fez ele repetir a mesma coisa seis
+                    # vezes em 20/08. Aqui eu olho a chave GRAVADA e digo de
+                    # qual das duas se trata.
+                    if "401" in str(ultimo) and not info.get("sem_chave"):
+                        formato_ok, obs = conferir_formato_da_chave(pid, chave)
+                        if formato_ok:
+                            self.log(f"   🔎 A chave que está gravada tem "
+                                     f"{obs} — ou seja, ela chegou INTEIRA "
+                                     "até aqui. Colar de novo não vai "
+                                     "resolver: quem recusou foi o provedor. "
+                                     "Ela foi revogada, apagada ou é de outra "
+                                     f"conta. Gere uma nova em "
+                                     f"{info.get('onde_pegar', 'painel do provedor')}.")
+                        else:
+                            self.log(f"   🔎 O problema está AQUI, não lá: "
+                                     f"{obs}")
+                    if pid != "groq" and not ja_falou_da_groq:
+                        ja_falou_da_groq = True
                         self.log("   💡 A Groq tem camada GRATUITA e fala o "
                                  "mesmo protocolo: console.groq.com/keys — "
                                  "cole a chave no campo Groq e teste de novo.")

@@ -251,3 +251,100 @@ class TestMemoriaQueSePodeCorrigir(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestOs401DeSeisVezesSeguidas(unittest.TestCase):
+    """"401: copie de novo do painel do provedor" é um beco sem saída.
+
+    20/08, no log dele: seis modelos do OpenRouter, seis 401, seis vezes a
+    mesma frase mandando copiar de novo. Ele copiou de novo e tomou 401 de
+    novo — porque a frase não distingue as duas causas possíveis, que são
+    OPOSTAS: a chave chegou TORTA até aqui (colada duas vezes, cortada) ou
+    chegou INTEIRA e foi recusada lá (revogada, apagada, de outra conta).
+
+    Uma se resolve colando de novo; a outra, só gerando chave nova. Mandar
+    fazer a mesma coisa nas duas é o mesmo defeito do "pode ser chave errada,
+    sem crédito ou modelo indisponível" que o diagnóstico de 12/08 matou.
+
+    O formato dá para conferir AQUI, sem rede e sem gastar cota."""
+
+    def _f(self):
+        return carregar(["conferir_formato_da_chave", "FORMATO_DAS_CHAVES"])[
+            "conferir_formato_da_chave"]
+
+    def _boa(self):
+        return "sk-or-v1-" + "4" * 64
+
+    def test_chave_no_formato_certo_passa(self):
+        ok, obs = self._f()("openrouter", self._boa())
+        self.assertTrue(ok)
+        self.assertIn("73", obs)
+
+    def test_reconhece_a_chave_COLADA_DUAS_VEZES(self):
+        """O defeito do Cmd+V no macOS, que já custou um pregão inteiro: as
+        duas ligações de colar disparam e o texto entra dobrado. O campo mostra
+        asteriscos, então nada denuncia — a não ser o tamanho."""
+        ok, obs = self._f()("openrouter", self._boa() * 2)
+        self.assertFalse(ok)
+        self.assertIn("DUAS VEZES", obs)
+
+    def test_chave_cortada_diz_quantos_caracteres_faltam(self):
+        ok, obs = self._f()("openrouter", "sk-or-v1-abc")
+        self.assertFalse(ok)
+        self.assertIn("73", obs)
+
+    def test_campo_vazio_nao_e_chave_invalida(self):
+        ok, obs = self._f()("openrouter", "")
+        self.assertFalse(ok)
+        self.assertIn("nenhuma", obs)
+
+    def test_NUNCA_devolve_a_chave_inteira_no_diagnostico(self):
+        """Mensagem de diagnóstico que vaza credencial no log é pior que não
+        ter diagnóstico nenhum — e o log dele vai para o WhatsApp."""
+        boa = self._boa()
+        for entrada in (boa, boa * 2, "sk-or-v1-abc", "gsk_" + "a" * 40):
+            _, obs = self._f()("openrouter", entrada)
+            self.assertNotIn(entrada, obs)
+            # nem o miolo: só o prefixo público (sk-or-v1-) pode aparecer
+            self.assertNotIn("4" * 20, obs)
+
+    def test_o_botao_de_testar_usa_esse_diagnostico_no_401(self):
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _salvar_e_testar_provedores")
+        corpo = fonte[i:i + 7000]
+        self.assertIn("conferir_formato_da_chave", corpo)
+        self.assertIn("Colar de novo não vai", corpo,
+                      "quando o formato está certo, o conselho tem de MUDAR")
+
+
+class TestOBotaoMentiuSobreAIALocal(unittest.TestCase):
+    """"IA LOCAL NÃO respondeu" numa máquina com o Ollama de pé.
+
+    20/08, duas linhas quase coladas no log dele:
+        "❌ IA LOCAL ... o modelo pedido não existe para esta conta (404)"
+        "✅ IA LOCAL no ar. Modelos: qwen2.5vl:3b, qwen2.5:3b"
+
+    A fila de verdade já filtrava pelos modelos BAIXADOS nesta máquina; o botão
+    de testar, não — ele tentava a lista fixa (qwen2.5:7b, llama3.1:8b...) e
+    dava quatro 404 seguidos. O botão estava errado, e o efeito foi ele passar
+    a duvidar da parte que funcionava."""
+
+    def _corpo(self):
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _salvar_e_testar_provedores")
+        return fonte[i:i + 7000]
+
+    def test_o_teste_da_local_usa_os_modelos_INSTALADOS(self):
+        corpo = self._corpo()
+        self.assertIn("ia_local_no_ar()", corpo)
+        self.assertIn('if info.get("sem_chave"):', corpo)
+
+    def test_ollama_vazio_diz_o_comando_para_resolver(self):
+        """Sem modelo baixado não é falha de chave nem de rede — é um 'ollama
+        pull' que ninguém rodou. Dizer só '404' deixa ele sem saída."""
+        self.assertIn("ollama pull", self._corpo())
+
+    def test_a_dica_da_groq_sai_UMA_vez_por_rodada(self):
+        """Ela saiu quatro vezes no mesmo teste. Conselho repetido vira ruído,
+        e ruído esconde a linha que importa."""
+        self.assertIn("ja_falou_da_groq", self._corpo())
