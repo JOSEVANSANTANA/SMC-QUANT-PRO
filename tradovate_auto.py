@@ -44,8 +44,12 @@ import base64
 import struct
 import hashlib
 import subprocess
-import unicodedata
 from urllib.request import urlopen
+
+try:
+    from tradovate_stream import TradovateStream
+except ImportError:
+    TradovateStream = None
 
 PORTA_DEBUG_PADRAO = 9222
 
@@ -452,6 +456,7 @@ class TradovateAuto:
         self.log = log
         self.ws = None
         self._proximo_id = 1
+        self.stream = TradovateStream(self, log=self.log) if TradovateStream else None
         # calib = mapeamento linear preço -> Y da página + X da coluna de clique.
         #   { "p1":preco1, "y1":Y1, "p2":preco2, "y2":Y2, "x_click":X }
         self.calib = None
@@ -517,6 +522,8 @@ class TradovateAuto:
         # habilitar domínio nenhum. Eram duas linhas que só produziam ruído,
         # e o ruído derrubou a ordem.
         self.log("✅ Conectado à aba da Tradovate via CDP.")
+        if self.stream:
+            self.stream.definir_cliente_cdp(self)
         return True
 
     def desconectar(self):
@@ -1986,6 +1993,13 @@ class TradovateAuto:
     def ler_preco(self):
         """Preço ao vivo (média bid/ask) direto do painel. None se não der.
         É o preço EXATO da plataforma — não passa por leitura de imagem."""
+        if self.stream:
+            try:
+                p_stream = self.stream.ler_preco_imediato()
+                if p_stream and p_stream > 0:
+                    return p_stream
+            except Exception:
+                pass
         d = self.ler_estado() or {}
         if d.get("conexao_perdida"):
             raise ConexaoPerdida(d.get("motivo", "conexão caiu"))

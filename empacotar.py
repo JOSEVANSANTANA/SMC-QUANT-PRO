@@ -37,6 +37,9 @@ COMUM = [
     "main_app.py",
     "plataforma.py",
     "tradovate_auto.py",
+    "tradovate_stream.py",
+    "order_flow.py",
+    "market_regime.py",
     "motor/index.js",
     "motor/package.json",
     "package.json",
@@ -80,6 +83,9 @@ COMUM = [
     "tests/test_meta.py",
     "tests/test_visao_local.py",
     "tests/test_voz.py",
+    "tests/test_tradovate_stream.py",
+    "tests/test_order_flow.py",
+    "tests/test_market_regime.py",
     "ENTREGA_AO_CLIENTE.md",
 ]
 

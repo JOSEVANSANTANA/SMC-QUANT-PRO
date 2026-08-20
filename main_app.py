@@ -167,6 +167,16 @@ try:
 except Exception:
     TRADOVATE_DISPONIVEL = False
 
+try:
+    from order_flow import OrderFlowEngine
+except Exception:
+    OrderFlowEngine = None
+
+try:
+    from market_regime import MarketRegimeClassifier, ConfluenceMatrix
+except Exception:
+    MarketRegimeClassifier, ConfluenceMatrix = None, None
+
 # --------------------------------------------------------------------
 # CONFIGURAÇÕES E PERSISTÊNCIA DE DADOS
 # --------------------------------------------------------------------
@@ -10640,6 +10650,9 @@ class SmcQuantApp(ctk.CTk):
         self._tv_sync_ok_ts = 0          # última leitura de posições bem-sucedida
         self._tv_ultimo_aviso_falha = 0  # p/ não repetir o aviso a cada ciclo
         self._ultimo_ativo_lido = None   # ticker do último gráfico analisado
+        self.order_flow = OrderFlowEngine() if OrderFlowEngine else None
+        self.regime_classifier = MarketRegimeClassifier if MarketRegimeClassifier else None
+        self.confluence_matrix = ConfluenceMatrix if ConfluenceMatrix else None
 
         # --- Plataforma de análise (qualquer uma; a Tradovate só ganha os
         #     recursos extras de ordem/posição por CDP) ---
