@@ -177,6 +177,11 @@ try:
 except Exception:
     MarketRegimeClassifier, ConfluenceMatrix = None, None
 
+try:
+    from tiger_hud import TigerHolographicHUD, TigerHUDEmbeddedFrame
+except Exception:
+    TigerHolographicHUD, TigerHUDEmbeddedFrame = None, None
+
 # --------------------------------------------------------------------
 # CONFIGURAÇÕES E PERSISTÊNCIA DE DADOS
 # --------------------------------------------------------------------
@@ -10093,6 +10098,21 @@ def interpretar_intencao(texto):
     mudancas = interpretar_configuracao(texto)
     if mudancas:
         return ("CONFIGURAR", mudancas)
+    # HUD HOLOGRÁFICO / JARVIS / AUTOMAÇÃO DE SISTEMA
+    if re.search(r"\b(abrir|mostrar|ligar|iniciar|ver)\b.*\b(hud|jarvis|hologr[aá]fic\w*|interface)\b", t) or \
+            re.search(r"\b(hud|jarvis|holograma)\b", t):
+        return "ABRIR_HUD"
+    if re.search(r"\b(fechar|encerrar|sair|desligar)\b.*\b(aplicativo|app|programa|sistema)\b", t) or \
+            re.search(r"\bfechar aplicativo\b", t):
+        return "FECHAR_APP"
+    if re.search(r"\babrir\b.*\b(tradovate|corretora)\b", t):
+        return ("ABRIR_URL", "https://trader.tradovate.com")
+    if re.search(r"\babrir\b.*\b(tradingview|gr[aá]fico|grafico)\b", t):
+        return ("ABRIR_URL", "https://www.tradingview.com")
+    if re.search(r"\babrir\b.*\b(chrome|navegador)\b", t):
+        return ("ABRIR_APP", "Google Chrome" if plataforma.E_MACOS else "chrome")
+    if re.search(r"\babrir\b.*\b(terminal)\b", t):
+        return ("ABRIR_APP", "Terminal" if plataforma.E_MACOS else "cmd")
     # "por que você não está sugerindo nada?" — quando o FREIO age, ele precisa
     # ouvir o motivo. Sem isto ela cairia no genérico e ele acharia que a
     # ferramenta travou, quando na verdade ela está protegendo a conta.
@@ -10341,8 +10361,10 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
     # ao ACATAR. Nada que apaga números do trader roda sem ele dizer "sim".
     if intencao == "ZERAR_CICLO":
         return ("PEDIR_CONFIRMACAO", "ZERAR_CICLO")
-    if intencao in ("VER_GRAFICO", "PRINT_AGORA"):
+    if intencao in ("VER_GRAFICO", "PRINT_AGORA", "ABRIR_HUD", "FECHAR_APP"):
         return (intencao, None)
+    if isinstance(intencao, tuple) and intencao[0] in ("ABRIR_URL", "ABRIR_APP"):
+        return intencao
     if intencao in ("DISPENSAR", "CANCELAR", "SAIR_EM_MERCADO", "STATUS", "META", "AJUDA",
                     "MOSTRAR_PRINT", "POSTMORTEM",
                     "LIGAR_MOTOR", "DESLIGAR_MOTOR", "ENVIAR_WHATSAPP",
@@ -10653,6 +10675,7 @@ class SmcQuantApp(ctk.CTk):
         self.order_flow = OrderFlowEngine() if OrderFlowEngine else None
         self.regime_classifier = MarketRegimeClassifier if MarketRegimeClassifier else None
         self.confluence_matrix = ConfluenceMatrix if ConfluenceMatrix else None
+        self._hud_jarvis = None
 
         # --- Plataforma de análise (qualquer uma; a Tradovate só ganha os
         #     recursos extras de ordem/posição por CDP) ---
@@ -11818,6 +11841,20 @@ class SmcQuantApp(ctk.CTk):
                                           text_color="#79c0ff",
                                           font=ctk.CTkFont(size=11, weight="bold"))
         self.lbl_ia_conta.pack(side="left", padx=10)
+
+        # Botões do HUD Holográfico
+        ctk.CTkButton(topo, text="🪟 Desacoplar HUD (Solta)", width=160, height=26,
+                      fg_color="#07324f", hover_color="#00f0ff",
+                      text_color="#00f0ff",
+                      font=ctk.CTkFont(size=11, weight="bold"),
+                      command=self._abrir_hud_jarvis).pack(side="left", padx=6)
+        self.btn_toggle_orbe = ctk.CTkButton(topo, text="👁️ Ocultar Orbe", width=105, height=26,
+                                             fg_color="#21262d", hover_color="#30363d",
+                                             text_color="#c9d1d9",
+                                             font=ctk.CTkFont(size=11),
+                                             command=self._alternar_hud_embutido)
+        self.btn_toggle_orbe.pack(side="left", padx=4)
+
         self.lbl_ia_status = ctk.CTkLabel(topo, text="pronta", text_color="#3fb950",
                                            font=ctk.CTkFont(size=11))
         self.lbl_ia_status.pack(side="right", padx=12)
@@ -11842,6 +11879,18 @@ class SmcQuantApp(ctk.CTk):
         ctk.CTkLabel(topo, text="Smart Money Concepts + análise técnica clássica",
                      text_color="#4a5163", font=ctk.CTkFont(size=10)
                      ).pack(side="right", padx=8)
+
+        # ---------- HUD Holográfico EMBUTIDO no topo da aba TIGER ----------
+        self.hud_embutido = None
+        if TigerHUDEmbeddedFrame:
+            try:
+                self.hud_embutido = TigerHUDEmbeddedFrame(raiz, largura=720, altura=175)
+                self.hud_embutido.pack(fill="x", padx=10, pady=(6, 2))
+                ativo = getattr(self, "_ultimo_ativo_lido", "") or "MNQ / NQ"
+                self.hud_embutido.renderer.ativo_smc = str(ativo)
+            except Exception as e:
+                self.log(f"Falha ao carregar HUD embutido: {e}")
+                self.hud_embutido = None
 
         # ---------- Transcript (a "tela" do terminal) ----------
         # O tk.Text NÃO é escalado pelo CustomTkinter — a fonte dele é calculada
@@ -11916,6 +11965,11 @@ class SmcQuantApp(ctk.CTk):
                         text_color="#ff9f43", fg_color="#ff9f43",
                         checkbox_width=18, checkbox_height=18,
                         font=ctk.CTkFont(size=11)).pack(side="left", padx=4)
+        ctk.CTkButton(barra, text="🔮 HUD Jarvis", width=115, height=28,
+                      fg_color="#07324f", hover_color="#00f0ff",
+                      text_color="#00f0ff",
+                      font=ctk.CTkFont(size=11, weight="bold"),
+                      command=self._abrir_hud_jarvis).pack(side="left", padx=6)
         ctk.CTkButton(barra, text="🧹 limpar", width=80, height=28,
                       fg_color="#21262d", hover_color="#30363d",
                       command=self._chat_limpar).pack(side="right")
@@ -12201,6 +12255,34 @@ class SmcQuantApp(ctk.CTk):
         if tipo == "CONF_CANCELADA":
             self._chat_responder("Certo, deixei como estava — nada foi feito.")
             return
+        if tipo == "ABRIR_HUD":
+            self._abrir_hud_jarvis()
+            self._chat_responder("Abrindo a interface holográfica do Jarvis / TIGER na tela.")
+            return
+        if tipo == "FECHAR_APP":
+            self._chat_responder("Encerrando o SMC Quant Pro. Até o próximo pregão, Josevan!")
+            self.after(1200, self.destroy)
+            return
+        if isinstance(tipo, tuple) and tipo[0] == "ABRIR_URL":
+            url = tipo[1]
+            try:
+                import webbrowser
+                webbrowser.open(url)
+                self._chat_responder(f"Abrindo {url} no seu navegador.")
+            except Exception as e:
+                self._chat_responder(f"Não consegui abrir o navegador: {e}")
+            return
+        if isinstance(tipo, tuple) and tipo[0] == "ABRIR_APP":
+            app_nome = tipo[1]
+            try:
+                if plataforma.E_MACOS:
+                    subprocess.Popen(["open", "-a", app_nome])
+                elif plataforma.E_WINDOWS:
+                    os.system(f"start {app_nome}")
+                self._chat_responder(f"Abrindo o aplicativo {app_nome}.")
+            except Exception as e:
+                self._chat_responder(f"Não consegui abrir o aplicativo: {e}")
+            return
         if tipo == "ESQUECER":
             removida = remover_licao(dado)
             if removida:
@@ -12429,6 +12511,7 @@ class SmcQuantApp(ctk.CTk):
         de status, por exemplo, é ótimo na tela e horrível lido em voz alta)."""
         registrar_msg_chat("ia", texto)
         self._chat_digitar(texto)
+        self._sincronizar_huds("FALANDO", getattr(self, "_ultimo_pedido", ""), texto)
         if texto_voz == "":
             return                 # resposta muda de propósito (ex.: 'cala')
         dito = texto_voz or texto
@@ -14850,26 +14933,31 @@ class SmcQuantApp(ctk.CTk):
         def tarefa():
             self.after(0, lambda: self._chat_status(
                 "🎤 ouvindo… (pode falar com calma)", "#ff6b6b"))
+            self.after(0, lambda: self._sincronizar_huds("OUVINDO", "Escutando...", "Microfone aberto."))
             try:
                 rec = sr.Recognizer()
                 rec.energy_threshold = 300
                 rec.dynamic_energy_threshold = True
                 audio = self._capturar_audio(rec)
                 self.after(0, lambda: self._chat_status("transcrevendo…", "#ff9f43"))
+                self.after(0, lambda: self._sincronizar_huds("PENSANDO", "Transcrevendo fala...", "Aguarde..."))
                 texto = rec.recognize_google(audio, language="pt-BR")
             except sr.WaitTimeoutError:
                 self.after(0, lambda: self._chat_status("pronta", "#3fb950"))
+                self.after(0, lambda: self._sincronizar_huds("STANDBY", "Tempo esgotado.", "Pronta."))
                 self.after(0, lambda: self._chat_escrever(
                     "sistema", "(não ouvi nada — clique no 🎤 e fale em seguida)",
                     persistir=False))
                 return
             except sr.UnknownValueError:
                 self.after(0, lambda: self._chat_status("pronta", "#3fb950"))
+                self.after(0, lambda: self._sincronizar_huds("STANDBY", "Não compreendido.", "Pronta."))
                 self.after(0, lambda: self._chat_escrever(
                     "sistema", "(não entendi o áudio — pode repetir?)", persistir=False))
                 return
             except sr.RequestError:
                 self.after(0, lambda: self._chat_status("pronta", "#3fb950"))
+                self.after(0, lambda: self._sincronizar_huds("STANDBY", "Sem conexão.", "Pronta."))
                 self.after(0, lambda: self._chat_escrever(
                     "sistema", "(transcrição indisponível — sem internet no momento)",
                     persistir=False))
@@ -14879,6 +14967,7 @@ class SmcQuantApp(ctk.CTk):
                 # nem microfone ocupado, e a mensagem tem de dizer qual é e o
                 # comando exato — não deixar o trader caçando no lugar errado.
                 self.after(0, lambda: self._chat_status("pronta", "#3fb950"))
+                self.after(0, lambda: self._sincronizar_huds("STANDBY", "Erro no microfone.", "Pronta."))
                 self.after(0, lambda er=e: self._chat_escrever(
                     "sistema", "(🎤 " + explicar_falha_do_microfone(er) + ")",
                     persistir=False))
@@ -15009,6 +15098,55 @@ class SmcQuantApp(ctk.CTk):
         texto = "\n".join(linhas)
         self.log(texto)
         return texto
+
+    def _abrir_hud_jarvis(self):
+        """Abre ou traz para frente a interface holográfica do Jarvis / TIGER."""
+        if TigerHolographicHUD is None:
+            self._chat_escrever("sistema", "(HUD holográfico indisponível)", persistir=False)
+            return
+        if self._hud_jarvis and getattr(self._hud_jarvis, "root", None) and self._hud_jarvis.root.winfo_exists():
+            self._hud_jarvis.exibir()
+            self._hud_jarvis.root.lift()
+        else:
+            def _ao_fechar():
+                self._hud_jarvis = None
+            try:
+                self._hud_jarvis = TigerHolographicHUD(root=self, on_close=_ao_fechar)
+                ativo = getattr(self, "_ultimo_ativo_lido", "") or "MNQ / NQ"
+                self._hud_jarvis.ativo_smc = str(ativo)
+                self._hud_jarvis.atualizar_estado("STANDBY", "TIGER 2.0 pronta.", "HUD Holográfico conectado ao SMC Quant Pro.")
+                self._hud_jarvis.exibir()
+            except Exception as e:
+                self.log(f"Falha ao abrir HUD holográfico: {e}")
+
+    def _alternar_hud_embutido(self):
+        """Oculta ou exibe o HUD holográfico embutido na aba TIGER."""
+        if not getattr(self, "hud_embutido", None):
+            return
+        if self.hud_embutido.winfo_viewable():
+            self.hud_embutido.pack_forget()
+            if hasattr(self, "btn_toggle_orbe"):
+                self.btn_toggle_orbe.configure(text="👁️ Mostrar Orbe")
+        else:
+            self.hud_embutido.pack(fill="x", padx=10, pady=(6, 2), before=self.txt_chat)
+            if hasattr(self, "btn_toggle_orbe"):
+                self.btn_toggle_orbe.configure(text="👁️ Ocultar Orbe")
+
+    def _sincronizar_huds(self, estado, texto_usuario="", texto_resposta=""):
+        """Atualiza a telemetria e o estado do HUD embutido e do HUD flutuante simultaneamente."""
+        ativo = getattr(self, "_ultimo_ativo_lido", "") or "MNQ / NQ"
+        if getattr(self, "hud_embutido", None):
+            try:
+                self.hud_embutido.renderer.ativo_smc = str(ativo)
+                self.hud_embutido.atualizar_estado(estado, texto_usuario, texto_resposta)
+            except Exception:
+                pass
+        if getattr(self, "_hud_jarvis", None) and getattr(self._hud_jarvis, "root", None) and self._hud_jarvis.root.winfo_exists():
+            try:
+                self._hud_jarvis.renderer.ativo_smc = str(ativo)
+                self._hud_jarvis.atualizar_estado(estado, texto_usuario, texto_resposta)
+            except Exception:
+                pass
 
     def _tiger_iniciar(self):
         if not (VOZ_SR and VOZ_SD):
@@ -15299,6 +15437,8 @@ class SmcQuantApp(ctk.CTk):
                     continue
                 self._tiger_status_ate = time.time() + 3
                 self.after(0, lambda: self._chat_status("🐯 te ouvi!", "#3fb950"))
+                if self._hud_jarvis and getattr(self._hud_jarvis, "root", None) and self._hud_jarvis.root.winfo_exists():
+                    self.after(0, lambda r=resto: self._hud_jarvis.atualizar_estado("OUVINDO", f"Olá Tiger, {r}" if r else "Olá Tiger", "Processando..."))
                 if resto:
                     # O pedido veio junto do chamado — executa direto.
                     def entregar(t=resto):
