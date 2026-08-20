@@ -40,6 +40,8 @@ COMUM = [
     "tradovate_stream.py",
     "order_flow.py",
     "market_regime.py",
+    "tiger_voice.py",
+    "jarvis.py",
     "motor/index.js",
     "motor/package.json",
     "package.json",
@@ -86,6 +88,7 @@ COMUM = [
     "tests/test_tradovate_stream.py",
     "tests/test_order_flow.py",
     "tests/test_market_regime.py",
+    "tests/test_tiger_voice.py",
     "ENTREGA_AO_CLIENTE.md",
 ]
 
