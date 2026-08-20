@@ -7270,14 +7270,13 @@ BASE_SMC = [
           "prejuízo — nesse estado o gráfico mostra o que você quer ver. O "
           "melhor trade do dia muitas vezes é o que não foi feito."},
     {"t": "Confluência",
-     "k": ["confluencia", "confluência", "quantos fatores", "juntar sinais",
-           "empilhar motivos"],
-     "r": "Confluência é o empilhamento de motivos independentes apontando para "
-          "o mesmo lugar: estrutura a favor, liquidez varrida, order block não "
-          "mitigado, FVG aberto, zona em desconto, dentro da killzone. Um motivo "
-          "sozinho é opinião; quatro juntos é cenário. Mas cuidado com a "
-          "confluência inventada: repetir o mesmo argumento com três nomes "
-          "diferentes não conta como três motivos."},
+     "k": ["confluencia", "confluência", "matriz de confluencia", "matriz de confluência",
+           "matriz", "quantos fatores", "juntar sinais", "empilhar motivos"],
+     "r": "A Matriz de Confluência é o empilhamento de múltiplos fatores técnicos e institucionais "
+          "independentes apontando para o mesmo viés: estrutura de mercado alinhada (BOS/CHoCH), "
+          "varredura de liquidez prévia (sweep), Order Block não mitigado, Fair Value Gap (FVG) aberto, "
+          "zona de prêmio ou desconto e confluência de Order Flow (CVD delta favorável). "
+          "Um motivo isolado é apenas uma pista; múltiplos fatores alinhados formam um cenário de alta probabilidade."},
     {"t": "Volume, VWAP e indicadores como apoio",
      # AS PALAVRAS QUE GANHARAM TOPICO PROPRIO SAIRAM DAQUI. 'vwap', 'rsi',
      # 'media movel' e 'perfil de volume' agora tem cada um o seu verbete, com
@@ -10125,6 +10124,10 @@ def interpretar_intencao(texto):
         return "VOZ_RAPIDA" if re.search(
             r"\b(aceler\w*|r[áa]pid\w*|aument\w*|mais r[áa]pido)\b", t) \
             else "VOZ_LENTA"
+    # SAUDAÇÃO NATURAL (olá, bom dia, boa noite, tudo bem)
+    if re.search(r"^(ol[áa]|oi|boa noite|bom dia|boa tarde|e a[íi]|fala tiger|fala jarvis|opa|tudo bem|como vai)\b", t) and len(palavras) <= 5:
+        return "SAUDACAO"
+
     # TROCA DE VOZ DA TIGER / JARVIS
     if re.search(r"\b(muda|mudar|troca|trocar|altera|alterar|coloca|colocar|usa|usar)\b.*\b(voz|audio|fala)\b", t) or \
             re.search(r"\bvoz\b.*\b(jarvis|antonio|fabio|eddy|daniel|francisca|ryan)\b", t):
@@ -10140,13 +10143,18 @@ def interpretar_intencao(texto):
             return ("TROCAR_VOZ", "Jarvis Mac Brasil (Eddy)")
         return ("TROCAR_VOZ", "Jarvis Neural (Brasil - Antonio)")
 
-    # TELEMETRIA E CONFLUÊNCIAS SMC
-    if re.search(r"\b(telemetria|conflu[êe]ncias?|order flow|fluxo de ordens?|score|matriz de conflu|leitura smc|status do fluxo)\b", t):
+    # TELEMETRIA E CONFLUÊNCIAS SMC (Apenas para consulta de status ao vivo; perguntas conceituais vão para a base/IA)
+    e_pergunta_conceito = bool(re.search(r"\b(o que [ée]|oq [ée]|oque [ée]|significa|como funciona|explica|me explica|conceito|o que quer dizer|por que|pq)\b", t))
+    if not e_pergunta_conceito and re.search(r"\b(telemetria|conflu[êe]ncias?|order flow|fluxo de ordens?|score|matriz de conflu|leitura smc|status do fluxo)\b", t):
         return "TELEMETRIA_SMC"
 
     # ABRIR TRADOVATE VIA CDP E CONFIGURAÇÕES
     if re.search(r"\babrir\b.*\b(tradovate|corretora)\b", t) or re.search(r"\b(tradovate)\b.*\b(abrir|conectar|iniciar)\b", t):
         return "ABRIR_TRADOVATE"
+
+    # TRADUTOR / GOOGLE TRANSLATE
+    if re.search(r"\b(abrir|abre|iniciar)\b.*\b(tradutor|translate|google tradutor)\b", t) or (re.search(r"\b(tradutor)\b", t) and len(palavras) <= 3):
+        return ("ABRIR_URL", "https://translate.google.com")
 
     # CONFIGURAR A PRÓPRIA FERRAMENTA — ele autorizou, e é código que faz.
     # Vem ANTES da busca na web: "o dia da conta 1 começa às 19h" é ordem de
@@ -10417,7 +10425,7 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
     # ao ACATAR. Nada que apaga números do trader roda sem ele dizer "sim".
     if intencao == "ZERAR_CICLO":
         return ("PEDIR_CONFIRMACAO", "ZERAR_CICLO")
-    if intencao in ("VER_GRAFICO", "PRINT_AGORA", "ABRIR_HUD", "FECHAR_APP", "ABRIR_TRADOVATE", "TELEMETRIA_SMC"):
+    if intencao in ("VER_GRAFICO", "PRINT_AGORA", "ABRIR_HUD", "FECHAR_APP", "ABRIR_TRADOVATE", "TELEMETRIA_SMC", "SAUDACAO"):
         return (intencao, None)
     if isinstance(intencao, tuple) and intencao[0] in ("ABRIR_URL", "ABRIR_APP", "TROCAR_VOZ"):
         return intencao
@@ -12314,6 +12322,15 @@ class SmcQuantApp(ctk.CTk):
             return
         if tipo == "CONF_CANCELADA":
             self._chat_responder("Certo, deixei como estava — nada foi feito.")
+            return
+        if tipo == "SAUDACAO":
+            nome_c = nome_conta_ativa()
+            try:
+                hora_h = int(time.strftime("%H"))
+            except Exception:
+                hora_h = 12
+            cumprimento = "Bom dia" if 5 <= hora_h < 12 else ("Boa tarde" if 12 <= hora_h < 18 else "Boa noite")
+            self._chat_responder(f"{cumprimento}, Josevan! Sistema Jarvis e TIGER operacionais na conta '{nome_c}'. Como posso ajudar?", falar_tb=True)
             return
         if tipo == "ABRIR_TRADOVATE":
             self._tv_abrir_chrome()
@@ -14382,24 +14399,15 @@ class SmcQuantApp(ctk.CTk):
             cenario = ""
 
         sistema = (
-            "Você é a TIGER / JARVIS 2.0, a IA de mesa do SMC Quant Pro, conectada em tempo real "
-            "à corretora Tradovate via CDP e aos feeds de análise institucional.\n"
-            "Responda em português do Brasil, de forma afiada, técnica e direta, como uma IA ultra-avançada "
-            "de trading institucional especializada em Smart Money Concepts, Order Flow e gerenciamento de risco.\n\n"
-            "VOCÊ TEM ACESSO EM TEMPO REAL a todos os dados da mesa fornecidos abaixo (preço de tela, posições abertas, "
-            "matriz de confluência, CVD delta, regime de mercado e automações). Use essas informações para responder com "
-            "autoridade e precisão absoluta. NUNCA diga 'sou apenas um modelo de linguagem' ou 'não tenho acesso a dados em tempo real' — "
-            "pois você está conectada diretamente ao sistema e ao DOM/Tape da Tradovate.\n\n"
-            "COMANDOS E AUTOMAÇÕES DA MESA QUE VOCÊ RECONHECE:\n"
-            "• 'abrir tradovate': Abre o Google Chrome no perfil de automação com a Tradovate pronta.\n"
-            "• 'abrir tradingview' / 'abrir grafico': Abre o TradingView no navegador.\n"
-            "• 'telemetria' / 'confluencias': Informa o score de confluência, CVD delta e regime de mercado.\n"
-            "• 'liga o motor' / 'desliga o motor': Controla a análise automática de gráficos.\n"
-            "• 'muda a voz para jarvis': Altera a síntese de voz para a voz neural do Jarvis.\n"
-            "• 'abrir hud' / 'jarvis': Dispara a interface holográfica flutuante na tela.\n\n"
+            "Você é o JARVIS / TIGER 2.0: assistente de IA ultra-inteligente, mentor institucional de trading e braço direito do Josevan no SMC Quant Pro.\n"
+            "Responda em português do Brasil, de forma afiada, flexível, prestativa, natural e inteligente.\n\n"
+            "DIRETRIZES DE COMPORTAMENTO:\n"
+            "1. CONVERSAS GERAIS E SAUDAÇÕES ('boa noite', 'olá', 'tudo bem?', etc.): Seja natural, cortês e conciso (ex: 'Boa noite, Josevan! Mesa pronta e monitorando o mercado. Como posso ajudar?'). NUNCA despeje tabelas ou estatísticas sem ele pedir.\n"
+            "2. PERGUNTAS CONCEITUAIS ('o que é matriz de confluência?', 'como funciona order block?', 'explica FVG', 'o que é liquidity sweep?'): Explique com clareza conceitual, didática e profundidade técnica de Smart Money Concepts e Order Flow.\n"
+            "3. TRADUÇÃO E ASSUNTOS GERAIS ('traduza essa frase', 'me ajude nessa questão de geografia', etc.): Ajude prontamente com altíssima qualidade, sem restrições ou desculpas de 'não está na minha stack'.\n"
+            "4. DADOS DA MESA EM TEMPO REAL: Quando o trader perguntar sobre o mercado atual, setups ou telemetria, utilize com autoridade os dados ao vivo fornecidos abaixo.\n\n"
             "O ATIVO PRINCIPAL: MES / MESU6 (Micro E-mini S&P 500 futuro na CME, US$ 5/ponto, tick 0.25).\n"
-            "SEJA DIRETO, INTELIGENTE E PRECISO.\n"
-            + (f"\nSITUAÇÃO ATUAL DA MESA (EM TEMPO REAL):\n{cenario}" if cenario else ""))
+            + (f"\nDADOS DA MESA EM TEMPO REAL (Consulte quando a pergunta for sobre a mesa/mercado):\n{cenario}" if cenario else ""))
 
         mensagens = [{"role": "system", "content": sistema}]
         for m in carregar_chat()[-10:]:
