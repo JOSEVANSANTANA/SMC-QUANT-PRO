@@ -227,7 +227,7 @@ class TestIALocalSemChave(unittest.TestCase):
     def _ns(self):
         return carregar(
             ["PROVEDORES_IA", "ORDEM_PROVEDORES", "ia_local_no_ar",
-             "provedores_configurados", "carregar_chave_provedor"],
+             "provedores_configurados", "carregar_chave_provedor", "ia_local_ligada"],
             stubs={"carregar_config": lambda: {},
                    "carregar_api_key": lambda: "",
                    "dpapi_decrypt": lambda x: x,

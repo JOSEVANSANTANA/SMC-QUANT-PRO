@@ -71,6 +71,8 @@ COMUM = [
     "tests/test_catalogo_openrouter.py",
     "tests/test_desfecho_honesto.py",
     "tests/test_duplicidade_e_aumento.py",
+    "tests/test_trail_inteligente.py",
+    "tests/test_ativo_e_acao_inventada.py",
     "tests/test_notificacao.py",
     "tests/test_piso_qualidade.py",
     "tests/test_pregao.py",

@@ -144,6 +144,156 @@ def plano_trailing(ticks_stop, ligado=False, frequencia=1):
     return {"stop": n, "acionar": n, "frequencia": max(1, int(frequencia))}
 
 
+# ======================================================================
+#  TRAILING INTELIGENTE — o stop que decide QUANDO armar, e a que distância
+# ======================================================================
+#  Ele descreveu o problema melhor do que qualquer manual, em 20/08:
+#
+#     "na mesa não posso tomar drawdown, se não, quebro a regra e posso
+#      perder a conta do mesmo jeito. (no caso, LUCROS NÃO REALIZADOS se por
+#      acaso voltar eu tomo drawdown)"
+#
+#  Numa conta de mesa o drawdown costuma ser medido contra o TOPO da conta,
+#  incluindo lucro aberto. Ou seja: um trade que sobe US$1.500 e volta ao zero
+#  não é "trade neutro" — é US$1.500 de drawdown consumidos, e pode quebrar a
+#  regra num dia que fechou no positivo. O stop fixo não protege disso, porque
+#  ele nunca sobe.
+#
+#  O QUE MUDA EM RELAÇÃO AO TRAIL ANTIGO. O de cima é um número só, igual para
+#  todo cenário: arma em 1R, segue a 1R. Ele erra dos dois lados — num alvo
+#  curto arma tarde demais (deixa devolver quase tudo) e num alvo largo aperta
+#  cedo demais (sai no ruído antes do movimento que ele veio pegar).
+#
+#  As três perguntas que este aqui responde, e de onde vem cada resposta:
+#
+#    1. QUANDO ARMAR. Do R:R do cenário. Alvo curto (R:R ≤ 2) tem pouco a
+#       ganhar esperando: arma em 1R. Alvo largo (R:R ≥ 3) precisa de espaço
+#       para respirar: arma em 1,5R. Arrastar cedo um trade de 3R é a forma
+#       clássica de ser stopado no ruído antes do movimento.
+#
+#    2. A QUE DISTÂNCIA SEGUIR. Também do R:R, pelo mesmo motivo — e a
+#       probabilidade ajusta: cenário fraco não merece corda comprida.
+#
+#    3. O TETO DA MESA, que é a regra dele e MANDA NAS OUTRAS DUAS. A
+#       devolução máxima possível a partir do topo é
+#       `ticks_trail × valor_do_tick × contratos`. Se isso passa da fatia do
+#       drawdown que ainda resta, o trail APERTA até caber. Este passo só
+#       encurta, nunca alarga: errar para o lado de proteger demais custa uma
+#       saída antecipada; errar para o outro custa a conta.
+#
+#  Função PURA, como todo o resto que decide dinheiro aqui: dá para conferir
+#  sem Chrome, sem corretora e sem mercado.
+
+# Quanto do drawdown que ainda resta pode ser devolvido a partir do topo de
+# UMA operação. 30% é folga para três trades protegidos antes de o limite
+# apertar — e não é número de gosto: com 100% um único trade poderia consumir
+# o que sobrou, que é exatamente o que se quer evitar.
+TRAIL_FRACAO_DO_DRAWDOWN = 0.30
+# Abaixo disto o trail vira ruído: qualquer respiração normal do mercado tira
+# o trade. Se o teto da mesa exigir menos que isto, o certo é dizer que não dá
+# para proteger nessa quantidade de contratos — não apertar até o absurdo.
+TRAIL_TICKS_MINIMO = 4
+
+
+def plano_trailing_inteligente(ticks_stop, rr=None, probabilidade=None,
+                               contratos=1, valor_do_tick=0.0,
+                               drawdown_restante=None, ligado=True,
+                               frequencia=1):
+    """Decide QUANDO armar o trail e a que DISTÂNCIA seguir. None = não mexer.
+
+    Devolve {stop, acionar, frequencia, motivo} — `motivo` em português, para
+    aparecer no registro: um stop que se move sozinho sem explicação é a
+    receita para ele desconfiar da ferramenta no meio do pregão.
+    """
+    if not ligado:
+        return None
+    try:
+        base = int(ticks_stop)
+    except (TypeError, ValueError):
+        return None
+    if base <= 0:
+        return None
+
+    def _f(v, padrao=None):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return padrao
+
+    rr = _f(rr)
+    prob = _f(probabilidade)
+    razoes = []
+
+    # ---- 1) QUANDO ARMAR, e 2) A QUE DISTÂNCIA ----
+    if rr is not None and rr >= 3.0:
+        acionar = int(round(base * 1.5))
+        distancia = int(round(base * 1.25))
+        razoes.append(f"R:R {rr:.1f} é largo — deixo respirar até 1,5R e sigo "
+                      "com folga, para não sair no ruído antes do movimento")
+    elif rr is not None and rr <= 2.0:
+        acionar = base
+        distancia = base
+        razoes.append(f"R:R {rr:.1f} é curto — protejo já em 1R, porque não há "
+                      "muito a ganhar esperando")
+    else:
+        acionar = base
+        distancia = base
+        razoes.append("R:R intermediário — armo em 1R com a distância do stop")
+
+    # A probabilidade só APERTA. Cenário fraco não merece corda comprida, e
+    # afrouxar por causa dela seria deixar o otimismo do modelo mexer no risco.
+    if prob is not None and prob < 65 and distancia > base:
+        distancia = base
+        razoes.append(f"probabilidade {prob:.0f}% abaixo de 65 — encurtei a "
+                      "corda de volta para a distância do stop")
+
+    # ---- 3) O TETO DA MESA. Manda nos dois de cima. ----
+    dd = _f(drawdown_restante)
+    vt = _f(valor_do_tick, 0.0) or 0.0
+    try:
+        ctr = max(1, int(contratos or 1))
+    except (TypeError, ValueError):
+        ctr = 1
+    aviso_mesa = None
+    if dd is not None and dd > 0 and vt > 0:
+        teto_usd = dd * TRAIL_FRACAO_DO_DRAWDOWN
+        ticks_que_cabem = int(teto_usd // (vt * ctr))
+        if ticks_que_cabem < distancia:
+            if ticks_que_cabem >= TRAIL_TICKS_MINIMO:
+                distancia = ticks_que_cabem
+                razoes.append(
+                    f"REGRA DA MESA: com {ctr} contrato(s), devolver "
+                    f"{distancia} ticks já custa US$ "
+                    f"{distancia * vt * ctr:,.2f} — o teto era "
+                    f"US$ {teto_usd:,.2f} ({TRAIL_FRACAO_DO_DRAWDOWN:.0%} do "
+                    f"drawdown que ainda resta, US$ {dd:,.2f}). Apertei o "
+                    "trail para o lucro aberto não virar drawdown ao voltar")
+            else:
+                # Não dá para proteger nesta quantidade de contratos sem
+                # colar o stop no preço. Dizer isso é mais útil do que armar
+                # um trail que vai tirar o trade na primeira respiração.
+                aviso_mesa = (
+                    f"com {ctr} contrato(s), proteger o lucro dentro do "
+                    f"drawdown que resta (US$ {dd:,.2f}) exigiria um trail de "
+                    f"{ticks_que_cabem} ticks — perto demais do preço para "
+                    f"não ser ruído (mínimo {TRAIL_TICKS_MINIMO}). O trail vai "
+                    "no mínimo, mas a posição está grande para o que sobrou "
+                    "de drawdown")
+                distancia = TRAIL_TICKS_MINIMO
+                razoes.append(aviso_mesa)
+        # Armar depois do que se pode devolver não protege nada: o acionamento
+        # nunca pode ficar acima da devolução que a mesa tolera.
+        if acionar > distancia * 3:
+            acionar = distancia * 3
+
+    distancia = max(TRAIL_TICKS_MINIMO, int(distancia))
+    acionar = max(1, int(acionar))
+    return {"stop": distancia, "acionar": acionar,
+            "frequencia": max(1, int(frequencia)),
+            "motivo": " · ".join(razoes),
+            "aperto_pela_mesa": bool(aviso_mesa)}
+
+
 def plano_atm(direcao, entrada, stop, alvo, tick):
     """Traduz o cenário SMC para o que o formulário ATM entende.
 
@@ -2371,8 +2521,155 @@ class TradovateAuto:
                     else " · AUTO TRAIL zerado (desligado nas configurações)"))
         return True, "todos os campos conferidos", False
 
+    # ==================================================================
+    #  O INSTRUMENTO DO TICKET — a conferência que faltava, e custou caro
+    # ==================================================================
+    #  20/08, 12:17. O cenário era MNQU6 (Micro Nasdaq, que negocia a ~29.700).
+    #  Eu preenchi preço 29630, stop 29580, alvo 29780, quantidade 2, conferi
+    #  tudo, e mandei. A Tradovate registrou:
+    #
+    #     #372662132 Comprar 2 MESU6 LMT em 29630.00 - Filled - 2/2
+    #
+    #  MESU6, não MNQU6. O ticket estava com o OUTRO instrumento selecionado, e
+    #  eu nunca olhei para esse campo — preenchi preço e quantidade num
+    #  formulário cujo ativo eu não tinha conferido. Uma compra limitada de MES
+    #  a 29.630 num mercado que está em 7.770 é uma ordem a mercado disfarçada:
+    #  preencheu na hora, e o resultado apareceu como (20.00) e depois (30.00)
+    #  no P/L da conta.
+    #
+    #  E repare no que TODAS as minhas conferências disseram: "preço conferido",
+    #  "quantidade conferida", "ATM conferida". Todas verdadeiras. Todas sobre o
+    #  formulário errado. Conferir os campos sem conferir DE QUEM são os campos
+    #  é o tipo de checagem que dá falsa segurança — a pior espécie.
+    #
+    #  Agora o ativo é o PRIMEIRO campo conferido, e a regra é dura: se eu não
+    #  consigo ler o instrumento do ticket, ou não consigo colocar o certo lá,
+    #  eu NÃO ENVIO. Ordem no instrumento errado não tem desfazer.
+    _JS_ATIVO_DO_TICKET = r"""
+    (function(alvo){
+      function vis(el){try{var r=el.getBoundingClientRect();
+        return r.width>0&&r.height>0;}catch(e){return false;}}
+      function ehSimbolo(t){
+        if(!t) return false;
+        t=t.toUpperCase().trim();
+        return /^[A-Z0-9]{1,5}[FGHJKMNQUVXZ][0-9]{1,2}$/.test(t)
+            || /^[A-Z]{2,5}[0-9]{1,2}$/.test(t);
+      }
+      // O campo do instrumento é o input de BUSCA no topo do 'Chamado do
+      // pedido': tem lupa ao lado e o valor é um ticker, nunca um número.
+      var achado=null, ins=document.querySelectorAll('input');
+      for(var i=0;i<ins.length;i++){
+        var el=ins[i];
+        if(!vis(el)) continue;
+        var v=(el.value||'').trim();
+        var ph=(el.getAttribute('placeholder')||'').toLowerCase();
+        var busca=/(symbol|s[ií]mbolo|instrumento|buscar|search)/.test(ph);
+        if(!ehSimbolo(v) && !busca) continue;
+        var r=el.getBoundingClientRect();
+        // O de mais ALTO na coluna do ticket é o do instrumento.
+        if(!achado || r.top < achado.top)
+          achado={el:el, top:r.top, valor:v,
+                  x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)};
+      }
+      if(!achado) return JSON.stringify({achou:false});
+      var res={achou:true, atual:achado.valor,
+               x:achado.x, y:achado.y};
+      if(alvo){
+        // Escreve com o setter nativo, como nos outros campos, para o React
+        // enxergar a mudança. O Enter é o que confirma a busca na Tradovate.
+        var setter=Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype,'value').set;
+        var el=achado.el;
+        el.focus();
+        setter.call(el,'');
+        el.dispatchEvent(new Event('input',{bubbles:true}));
+        setter.call(el,String(alvo));
+        el.dispatchEvent(new Event('input',{bubbles:true}));
+        el.dispatchEvent(new Event('change',{bubbles:true}));
+        res.escrito=String(el.value||'');
+      }
+      return JSON.stringify(res);
+    })(%s)
+    """
+
+    def ler_ativo_do_ticket(self):
+        """Qual instrumento está selecionado no 'Chamado do pedido'."""
+        try:
+            d = json.loads(self.avaliar_js(
+                self._JS_ATIVO_DO_TICKET % "null") or "{}")
+        except ConexaoPerdida:
+            raise
+        except Exception:
+            return None
+        return (d.get("atual") or "").strip().upper() if d.get("achou") else None
+
+    @staticmethod
+    def mesmo_instrumento(a, b):
+        """MESU6 e MES são o mesmo; MESU6 e MNQU6 NÃO são.
+
+        A comparação é pela RAIZ (as letras antes do mês/ano), e não pelos três
+        primeiros caracteres: 'MES'[:3] e 'MNQ'[:3] são diferentes, mas
+        'MESU6'[:3]='MES' e 'MNQU6'[:3]='MNQ' também — o que salvou aqui foi
+        não comparar por prefixo curto em nenhum dos dois lados."""
+        def raiz(s):
+            s = str(s or "").strip().upper()
+            # SEM DÍGITO, NÃO HÁ VENCIMENTO A REMOVER — e esta linha existe
+            # porque 'Q' e 'N' também são códigos de mês: sem ela, 'MNQ'
+            # (a raiz do Micro Nasdaq) era lida como 'MN', e deixava de casar
+            # com 'MNQU6'. Só tiro mês e ano de quem tem ano.
+            if not re.search(r"\d", s):
+                return s
+            m = re.match(r"^([A-Z]{1,5}?)[FGHJKMNQUVXZ]\d{1,2}$", s)
+            return m.group(1) if m else s
+        ra, rb = raiz(a), raiz(b)
+        return bool(ra) and bool(rb) and ra == rb
+
+    def garantir_ativo_no_ticket(self, ativo, pausa=0.8):
+        """O ticket está no instrumento CERTO? Se não, coloca — e confere.
+
+        Devolve (ok, motivo). `ok=False` significa NÃO ENVIE: ou eu não sei em
+        que instrumento o ticket está, ou não consegui trocá-lo."""
+        if not ativo:
+            # Sem saber qual deveria ser, não há o que conferir — e também não
+            # há como afirmar que está certo. Quem chama decide; aqui eu digo.
+            return False, "não sei para qual ativo é esta ordem"
+        atual = self.ler_ativo_do_ticket()
+        if atual is None:
+            return False, ("não consegui LER o instrumento no 'Chamado do "
+                           "pedido'. Sem isso eu não sei em qual contrato a "
+                           "ordem cairia — e ordem no instrumento errado não "
+                           "tem desfazer")
+        if self.mesmo_instrumento(atual, ativo):
+            self.log(f"   ✅ instrumento do ticket: {atual} (é o do cenário).")
+            return True, atual
+        self.log(f"   🔁 o ticket está em {atual} e esta ordem é de "
+                 f"{ativo.upper()} — trocando o instrumento antes de tudo.")
+        try:
+            self.avaliar_js(self._JS_ATIVO_DO_TICKET % json.dumps(str(ativo)))
+            time.sleep(pausa)
+            # ENTER confirma a busca; sem ele a Tradovate mantém o anterior.
+            self.cdp("Input.dispatchKeyEvent",
+                     {"type": "keyDown", "key": "Enter",
+                      "code": "Enter", "windowsVirtualKeyCode": 13})
+            self.cdp("Input.dispatchKeyEvent",
+                     {"type": "keyUp", "key": "Enter",
+                      "code": "Enter", "windowsVirtualKeyCode": 13})
+            time.sleep(pausa)
+        except ConexaoPerdida:
+            raise
+        except Exception as e:
+            return False, f"não consegui escrever o instrumento no ticket: {e}"
+        depois = self.ler_ativo_do_ticket()
+        if depois and self.mesmo_instrumento(depois, ativo):
+            self.log(f"   ✅ instrumento trocado e conferido: {depois}.")
+            return True, depois
+        return False, (f"tentei trocar o ticket para {ativo.upper()} e ele "
+                       f"continua em {depois or 'ilegível'}. NÃO envio: os "
+                       "preços deste cenário não fazem sentido no outro "
+                       "contrato")
+
     def _preencher_ordem_atm(self, palavra_dir, entrada, qtd, tipo, tick,
-                             t_stop, t_alvo, trailing, pausa):
+                             t_stop, t_alvo, trailing, pausa, ativo=None):
         """Deixa o ticket PRONTO e conferido. Não envia nada.
 
         Devolve (ok, erro, sem_painel). Separado do envio de propósito: enquanto só se
@@ -2380,6 +2677,18 @@ class TradovateAuto:
         separação que permite tentar de novo quando o Chrome engasga."""
         if not self._garantir_formulario():
             return False, "formulário do ticket não está à vista", False
+
+        # O ATIVO VEM ANTES DE TUDO. Preencher preço e quantidade num
+        # formulário cujo instrumento eu não conferi é o erro de 20/08: todas
+        # as conferências passaram, e a ordem foi para o contrato errado.
+        if ativo:
+            ok_ativo, motivo_ativo = self.garantir_ativo_no_ticket(ativo)
+            if not ok_ativo:
+                self.log(f"   ⛔ {motivo_ativo}")
+                # RECUSA, não indisponibilidade: mandar pelo caminho antigo
+                # não conserta o instrumento errado — só espalha o erro por
+                # três ordens em vez de uma.
+                return False, motivo_ativo, False
 
         d = self.localizar(palavra_dir)
         if not d:
@@ -2417,7 +2726,7 @@ class TradovateAuto:
 
     def enviar_ordem_com_atm(self, direcao, entrada, stop, alvo, tick,
                              qtd=None, enviar=False, tipo="LIMITE", pausa=0.5,
-                             trailing=None, tentativas=2):
+                             trailing=None, tentativas=2, ativo=None):
         """A ordem INTEIRA numa submissão só: entrada + stop + alvo + OCO.
 
         Devolve o mesmo formato do bracket antigo, para quem chama não precisar
@@ -2462,7 +2771,7 @@ class TradovateAuto:
             try:
                 ok, det, sem_painel = self._preencher_ordem_atm(
                     palavra_dir, entrada, qtd, tipo, tick, t_stop, t_alvo,
-                    trailing, pausa)
+                    trailing, pausa, ativo=ativo)
             except ConexaoPerdida as e:
                 ok, det, sem_painel = (
                     False, f"a ligação com o Chrome engasgou: {e}", False)

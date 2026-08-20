@@ -31,7 +31,7 @@ def _ns():
          "responder_por_provedor_alternativo", "carregar_chave_provedor",
          "ia_local_no_ar", "provedores_configurados", "modelos_do_provedor",
          "modelos_gratuitos_openrouter", "_CACHE_MODELOS_OPENROUTER",
-         "VALIDADE_CATALOGO_SEG", "ponteiro_do_cofre_e_de_outro"],
+         "VALIDADE_CATALOGO_SEG", "ponteiro_do_cofre_e_de_outro", "ia_local_ligada"],
         stubs={"carregar_config": lambda: {},
                "carregar_api_key": lambda: "",
                "dpapi_decrypt": lambda x: x,

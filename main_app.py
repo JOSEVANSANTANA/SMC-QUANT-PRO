@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.50.0"
+VERSAO_ATUAL = "2.52.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1695,6 +1695,23 @@ def modelos_gratuitos_openrouter(timeout=12, agora=None, forcar=False):
     return lista
 
 
+def ia_local_ligada(cfg=None):
+    """A IA local participa da fila? LIGADA por padrão — é o chão da escada.
+
+    20/08, ele: "estou considerando desligar a IA local, ela pensa muito às
+    vezes, tendo em vista que estou com API OpenRouter". Tem razão nos dois
+    motivos, e no caso dele há um terceiro: no Mac dele o Ollama nem sobe
+    ('Unable to reach MTLCompilerService'), então a fila para em cada ciclo
+    esperando um modelo que vai falhar.
+
+    Vira caixinha em vez de instrução no manual porque o motivo dele pode
+    mudar — se um dia a internet cair no meio do pregão, a IA local é a única
+    que não depende de conta em lugar nenhum, e religar tem de ser um clique.
+    """
+    cfg = carregar_config() if cfg is None else cfg
+    return bool(cfg.get("ia_local_ativa", True))
+
+
 def modelos_do_provedor(pid, info=None):
     """Os modelos a tentar para este provedor, nesta máquina, agora.
 
@@ -1705,6 +1722,11 @@ def modelos_do_provedor(pid, info=None):
     local não funcionava."""
     info = info or PROVEDORES_IA.get(pid) or {}
     if info.get("sem_chave"):
+        # DESLIGADA = FORA DA FILA, e não "na fila mas falhando". A diferença
+        # aparece no relógio dele: cada tentativa gasta o tempo de subir um
+        # modelo que não vai responder, e isso acontece a cada ciclo.
+        if not ia_local_ligada():
+            return []
         instalados = ia_local_no_ar()
         return [m for m in info.get("modelos", []) if m in instalados] \
             or instalados[:2]
@@ -1722,7 +1744,7 @@ def provedores_configurados():
     prontos = []
     for p in ORDEM_PROVEDORES:
         if PROVEDORES_IA.get(p, {}).get("sem_chave"):
-            if ia_local_no_ar():
+            if ia_local_ligada() and ia_local_no_ar():
                 prontos.append(p)
         elif carregar_chave_provedor(p):
             prontos.append(p)
@@ -9515,6 +9537,70 @@ def _valor_perto_do_rotulo(texto, padrao_rotulo, alcance=70):
     return None, None
 
 
+# FRASES EM QUE A TIGER AFIRMA TER MEXIDO NA CORRETORA.
+#
+# 20/08, 13:08, no chat dele:
+#   ❯ encerre todas operacoes agora
+#   ✳ "✅ ENVIADO: TODAS as ordens foram canceladas via API Tradovate.
+#      Posição atual: 0 contratos MESU6. Nenhuma ordem ativa na plataforma."
+#
+# Nada disso aconteceu. A posição continuou aberta, e ele só descobriu porque
+# foi olhar. Seis minutos depois o MESMO modelo dizia "não tenho acesso para
+# executar comandos na Tradovate" — as duas frases na mesma conversa.
+#
+# A REGRA JÁ ESTAVA NO PROMPT ("nunca diga que fez algo"). O modelo passou por
+# cima. E é aqui que este programa aprendeu a lição há tempos: num sistema que
+# mexe com dinheiro, instrução ao modelo é pedido, não garantia. O que garante
+# é conferir a saída — como já se faz com os NÚMEROS da conta desde 12/08.
+#
+# Não é sobre um modelo ruim: qualquer modelo, num dia ruim, completa a frase
+# mais provável depois de "encerre tudo agora". A diferença é que aqui a frase
+# mais provável é uma mentira sobre dinheiro.
+_RE_ACAO_INVENTADA = re.compile(
+    # `\W*\w*\W*` no meio porque a frase real dele veio com um adjetivo pelo
+    # caminho — "todas as ordens ATIVAS foram canceladas" — e uma regex colada
+    # demais deixa passar exatamente a variação que aconteceu de verdade.
+    r"(ordens?\s+(\w+\s+)?(foram|foi)\s+cancelad|"
+    r"\bordem\s+cancelada\b\s*[:.*]|"
+    r"cancelei\s+(as|todas|a\s+ordem)|"
+    r"encerrei\s+(a|as|todas|sua)|"
+    r"(enviei|mandei)\s+(a\s+)?ordem|"
+    r"posi[çc][aã]o\s+(foi\s+)?(zerad|encerrad|fechad)|"
+    r"fechei\s+(a|as|todas?|suas?|o|os)\s+(\w+\s+)?posi|"
+    r"executei\s+(o\s+comando|na\s+(tradovate|plataforma))|"
+    r"via\s+api\s+tradovate|"
+    r"✅\s*enviado\b)",
+    re.IGNORECASE)
+
+
+def censurar_acao_inventada(resposta):
+    """A TIGER disse que MEXEU na corretora? Devolve (texto, mentiu).
+
+    Ela não tem esse caminho: quem manda e cancela ordem é o programa, pelo
+    modo autônomo e pelos botões — nunca o texto do chat. Então qualquer frase
+    afirmando que a ordem foi cancelada, a posição foi zerada ou o comando foi
+    executado é, por construção, falsa.
+
+    O aviso vai ANEXADO e em maiúsculas, não substituindo a resposta: ele tem
+    de ler o que o modelo disse E saber que aquilo não aconteceu. Apagar a
+    frase esconderia o defeito; deixá-la sozinha seria repetir a mentira.
+
+    Função PURA — dá para conferir sem chat, sem modelo e sem corretora."""
+    texto = str(resposta or "")
+    if not texto.strip() or not _RE_ACAO_INVENTADA.search(texto):
+        return texto, False
+    aviso = (
+        "\n\n🛑 ATENÇÃO — EU NÃO FIZ NADA DISSO. O texto acima diz que uma "
+        "ordem foi cancelada, enviada ou que a posição foi encerrada. EU NÃO "
+        "TENHO ESSE CAMINHO: quem manda e cancela ordem na Tradovate é o "
+        "programa (modo autônomo e botões), nunca o que eu escrevo aqui no "
+        "chat. NADA foi executado na plataforma por causa desta conversa. "
+        "CONFIRA A TRADOVATE — e, para encerrar de verdade, use o botão "
+        "'Sair em Mkt & Cxl' na plataforma ou o cancelamento automático da "
+        "aba Configurações.")
+    return texto + aviso, True
+
+
 def conferir_numeros_da_mesa(resposta, fatos):
     """Confere os números da CONTA DELE citados na resposta contra o disco.
 
@@ -10762,6 +10848,29 @@ class SmcQuantApp(ctk.CTk):
         ctk.CTkButton(linha_local, text="🔎 Verificar", width=110,
                       fg_color=COR["borda"], hover_color=COR["input"],
                       command=self._verificar_ia_local).pack(side="left", padx=6)
+        # DESLIGAR A IA LOCAL EM UM CLIQUE.
+        # 20/08, ele: "ela pensa muito às vezes, tendo em vista que estou com
+        # API OpenRouter". É caixinha e não instrução no manual porque o
+        # motivo pode mudar: se a internet cair no meio do pregão, a local é a
+        # única que não depende de conta em lugar nenhum, e religar tem de
+        # custar um clique — não uma reinstalação.
+        self.ia_local_var = tk.BooleanVar(value=ia_local_ligada())
+        ctk.CTkCheckBox(
+            quadro_local,
+            text="Usar a IA LOCAL na fila (desmarque se ela estiver lenta ou falhando)",
+            variable=self.ia_local_var, command=self._salvar_pref_ia_local,
+            text_color=COR["texto"], fg_color="#1f8b4c",
+            border_color="#63b3ed", hover_color="#25a35a"
+            ).pack(anchor="w", padx=10, pady=(0, 4))
+        ctk.CTkLabel(
+            quadro_local, justify="left", text_color=COR["dim"],
+            font=ctk.CTkFont(size=10), wraplength=560,
+            text="   Desmarcada, ela sai da fila por completo — não é tentada e não "
+                 "gasta o seu tempo subindo um modelo a cada ciclo.\n"
+                 "   O que você perde: ela era o único degrau que funciona SEM "
+                 "internet e SEM conta em lugar nenhum. Com o OpenRouter no ar, "
+                 "isso quase nunca importa; num dia de rede caída, importa."
+        ).pack(anchor="w", padx=10, pady=(0, 8))
 
         self._campos_provedor = {}
         for pid in ORDEM_PROVEDORES:
@@ -11498,6 +11607,11 @@ class SmcQuantApp(ctk.CTk):
         res = bot.enviar_ordem_com_atm(
             "BUY", entrada, entrada - 8 * tick, entrada + 16 * tick, tick,
             qtd=1, enviar=False,
+            # O ENSAIO TAMBÉM CONFERE O INSTRUMENTO. Ele existe para responder
+            # "se um cenário sair agora, a ordem vai?" — e a resposta seria
+            # falsa se o ticket estivesse no contrato errado, que foi
+            # exatamente o que aconteceu em 20/08 com MNQU6 virando MESU6.
+            ativo=ativo or None,
             trailing=tradovate_auto.plano_trailing(
                 8, ligado=bool(getattr(self, "tv_trail_var", None)
                                and self.tv_trail_var.get())))
@@ -14601,6 +14715,16 @@ class SmcQuantApp(ctk.CTk):
         for chave, dito, real in divergencias:
             self.log(f"🛡️ TIGER: '{chave}' saiu como US$ {dito:,.2f} e o "
                      f"registrado é US$ {real:,.2f} — correção anexada.")
+        # ELA DISSE QUE MEXEU NA CORRETORA? Ela não tem esse caminho. A regra
+        # já estava no prompt e o modelo passou por cima em 20/08 ("TODAS as
+        # ordens foram canceladas via API Tradovate" — nada foi cancelado, e a
+        # posição seguiu aberta). Num sistema que mexe com dinheiro, instrução
+        # ao modelo é pedido; o que garante é conferir a saída.
+        resposta, inventou_acao = censurar_acao_inventada(resposta)
+        if inventou_acao:
+            self.log("🛑 TIGER: a resposta afirmava ter cancelado/enviado ordem "
+                     "ou encerrado posição. ELA NÃO TEM ESSE CAMINHO — aviso "
+                     "anexado à resposta. Nada foi executado na plataforma.")
         registrar_msg_chat("ia", resposta)
         self._ia_falar(resposta, forcar=bool(getattr(self, "_chat_por_voz", False)))
         self.after(0, lambda: self._chat_digitar(resposta))
@@ -15365,6 +15489,27 @@ class SmcQuantApp(ctk.CTk):
                      f"baixo e configuro tudo — {motivo}, então o modelo "
                      f"escolhido seria o {modelo}. Precisa de internet só "
                      "nesta vez, e de alguns GB de disco.")
+
+    def _salvar_pref_ia_local(self):
+        """Grava a escolha, RELÊ DO DISCO e confirma com o que ficou gravado.
+
+        Reler é o padrão da casa para qualquer interruptor que muda
+        comportamento: dizer 'salvo' sem conferir é como a chave dobrada
+        passou meses sem ser notada."""
+        salvar_config({"ia_local_ativa": bool(self.ia_local_var.get())})
+        gravado = ia_local_ligada()
+        if gravado != bool(self.ia_local_var.get()):
+            self.log("⚠️ NÃO consegui gravar a preferência da IA local.")
+            return
+        if gravado:
+            self.log("🖥 IA LOCAL de volta à fila — ela entra quando os "
+                     "provedores de nuvem falharem.")
+        else:
+            self.log("🖥 IA LOCAL FORA DA FILA. Não vou mais tentá-la nem "
+                     "esperar por ela. Lembre que ela era o único degrau que "
+                     "funciona sem internet: com a rede caída e a nuvem fora, "
+                     "sobram a base própria e o roteador offline, que "
+                     "respondem metodologia e status — mas não leem gráfico.")
 
     def _alternar_ver_chave(self, campo):
         """Mostra/esconde o conteúdo de um campo de chave.
@@ -16211,7 +16356,7 @@ class SmcQuantApp(ctk.CTk):
             salvar_posicoes(lista)
 
     def _tv_enviar_bracket(self, direcao, entry, stop, alvo, qtd, ativo=None,
-                           sinal_id=None):
+                           sinal_id=None, probabilidade=None):
         """Dispara o envio em thread separada (não trava a GUI). Usa dry-run
         conforme o interruptor. direcao: 'BUY'/'SELL'.
 
@@ -16227,6 +16372,26 @@ class SmcQuantApp(ctk.CTk):
         tick = tick_do_ativo(ativo or getattr(self, "_ultimo_ativo_lido", "") or "")
         usar_trail = bool(getattr(self, "tv_trail_var", None)
                           and self.tv_trail_var.get())
+        # OS DADOS QUE O TRAIL INTELIGENTE PRECISA, LIDOS AQUI NA THREAD DA
+        # INTERFACE. Dentro de `tarefa()` estamos noutra thread, e ler plano e
+        # diário de lá seria pedir corrida de dados justamente no caminho que
+        # manda ordem.
+        _vt = 0.0
+        try:
+            _vt = valor_por_ponto_do_ativo(ativo or "") * (tick or 0)
+        except Exception:
+            _vt = 0.0
+        try:
+            _dd_resta = drawdown_restante_hoje()
+        except Exception:
+            _dd_resta = None
+        _rr = None
+        try:
+            _risco = abs(float(entry) - float(stop))
+            if _risco > 0:
+                _rr = abs(float(alvo) - float(entry)) / _risco
+        except (TypeError, ValueError, ZeroDivisionError):
+            _rr = None
 
         def tarefa():
             try:
@@ -16240,12 +16405,29 @@ class SmcQuantApp(ctk.CTk):
                          + (" [TESTE]" if dry else ""))
                 res = None
                 if tick:
-                    trailing = tradovate_auto.plano_trailing(
+                    trailing = tradovate_auto.plano_trailing_inteligente(
                         tradovate_auto.ticks_entre(entry, stop, tick),
-                        ligado=usar_trail)
+                        rr=_rr, probabilidade=probabilidade,
+                        contratos=qtd, valor_do_tick=_vt,
+                        drawdown_restante=_dd_resta, ligado=usar_trail)
+                    if trailing:
+                        # UM STOP QUE SE MOVE SOZINHO SEM EXPLICAÇÃO É A
+                        # RECEITA PARA ELE DESCONFIAR DA FERRAMENTA NO MEIO DO
+                        # PREGÃO. O porquê sai junto com o quê.
+                        self.log(f"🪜 TRAIL: arma em {trailing['acionar']} ticks "
+                                 f"e segue a {trailing['stop']} ticks — "
+                                 f"{trailing['motivo']}.")
+                        if trailing.get("aperto_pela_mesa"):
+                            self._chat_feed(
+                                "⚠️ ATENÇÃO AO TAMANHO DA POSIÇÃO: "
+                                + trailing["motivo"].split(" · ")[-1] + ".")
                     res = bot.enviar_ordem_com_atm(
                         direcao, entry, stop, alvo, tick, qtd=qtd,
-                        enviar=not dry, trailing=trailing)
+                        enviar=not dry, trailing=trailing,
+                        # O ATIVO VAI JUNTO — sem ele o ticket pode estar em
+                        # outro contrato e a ordem cair no instrumento errado,
+                        # que foi o prejuizo de 20/08 (MNQU6 virou MESU6).
+                        ativo=ativo or getattr(self, "_ultimo_ativo_lido", None))
                     if res.get("recusa_de_seguranca"):
                         # ELA SE RECUSOU. NÃO EXISTE 'TENTAR OUTRO JEITO'.
                         # 19/08: a ATM disse "não mando assim" (unidade errada
@@ -18825,7 +19007,11 @@ class SmcQuantApp(ctk.CTk):
                         self._tv_enviar_bracket(
                             direcao, sinal["entry"], sinal["stop"], alvo,
                             sizing["contratos"] or 1,
-                            ativo=sinal.get("ativo"), sinal_id=sinal_id
+                            ativo=sinal.get("ativo"), sinal_id=sinal_id,
+                            # O trail inteligente usa a probabilidade para
+                            # decidir se dá corda ou aperta: cenário fraco não
+                            # merece corda comprida.
+                            probabilidade=sinal.get("probabilidade")
                         )
         self._atualizar_dashboard()
 

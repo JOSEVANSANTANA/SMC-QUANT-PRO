@@ -303,7 +303,7 @@ class TestOAppUSAOCaminhoNovo(unittest.TestCase):
     def test_o_envio_do_app_tenta_a_ATM_primeiro(self):
         fonte = fonte_do_arquivo()
         i = fonte.index("def _tv_enviar_bracket(")
-        bloco = fonte[i:i + 4500]
+        bloco = fonte[i:i + 7000]
         self.assertIn("enviar_ordem_com_atm(", bloco)
         j = bloco.index("enviar_ordem_com_atm(")
         k = bloco.index("enviar_bracket_ticket(")
@@ -314,7 +314,7 @@ class TestOAppUSAOCaminhoNovo(unittest.TestCase):
         duplicar posição."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def _tv_enviar_bracket(")
-        bloco = fonte[i:i + 4500]
+        bloco = fonte[i:i + 7000]
         self.assertIn('not res.get("exposto")', bloco)
 
     def test_RECUSA_nao_cai_para_o_caminho_antigo(self):
@@ -323,7 +323,7 @@ class TestOAppUSAOCaminhoNovo(unittest.TestCase):
         reserva tentou mesmo assim — é o oposto do que uma reserva serve."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def _tv_enviar_bracket(")
-        bloco = fonte[i:i + 4500]
+        bloco = fonte[i:i + 7000]
         self.assertIn('res.get("recusa_de_seguranca")', bloco)
         j = bloco.index('res.get("recusa_de_seguranca")')
         k = bloco.index("enviar_bracket_ticket(")
@@ -681,7 +681,8 @@ class TestOEnsaioNoBotaoTestarConexao(unittest.TestCase):
     def test_o_resultado_do_ensaio_e_dito_dos_dois_jeitos(self):
         fonte = self._fonte()
         i = fonte.index("def _tv_ensaio_de_ordem(")
-        bloco = fonte[i:i + 3000]
+        # A janela cresceu com a conferência do INSTRUMENTO no ensaio.
+        bloco = fonte[i:i + 4200]
         self.assertIn("ENSAIO OK", bloco)
         self.assertIn("ENSAIO FALHOU", bloco)
         self.assertIn("ANTES de deixar o modo autônomo ligado", bloco)
