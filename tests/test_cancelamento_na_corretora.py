@@ -151,7 +151,7 @@ class TestOBotaoSairEmMercado(unittest.TestCase):
         """Ordem importa: conferir depois de liquidar não conserta nada."""
         fonte = self._fonte()
         i = fonte.index("def sair_em_mercado_e_cancelar(")
-        corpo = fonte[i:i + 6000]
+        corpo = fonte[i:i + 9000]
         i_le = corpo.index("self.ler_estado()")
         i_clica = corpo.index("self.clicar_pagina(")
         self.assertLess(i_le, i_clica)
@@ -162,7 +162,7 @@ class TestOBotaoSairEmMercado(unittest.TestCase):
         a segunda desliga a atenção dele."""
         fonte = self._fonte()
         i = fonte.index("def sair_em_mercado_e_cancelar(")
-        corpo = fonte[i:i + 6000]
+        corpo = fonte[i:i + 9000]
         self.assertGreaterEqual(corpo.count("contar_ordens_vivas()"), 2)
         self.assertIn("vivas_antes", corpo)
         self.assertIn("vivas_depois", corpo)
@@ -170,7 +170,7 @@ class TestOBotaoSairEmMercado(unittest.TestCase):
     def test_ordens_ainda_vivas_depois_do_clique_NAO_e_sucesso(self):
         fonte = self._fonte()
         i = fonte.index("def sair_em_mercado_e_cancelar(")
-        corpo = fonte[i:i + 6000]
+        corpo = fonte[i:i + 9000]
         i_falha = corpo.index('if depois.get("vivas"):')
         i_ok = corpo.index('r["ok"] = True', i_falha)
         self.assertLess(i_falha, i_ok,
@@ -180,7 +180,7 @@ class TestOBotaoSairEmMercado(unittest.TestCase):
     def test_nao_saber_reler_vira_INCERTO_e_nao_sucesso(self):
         fonte = self._fonte()
         i = fonte.index("def sair_em_mercado_e_cancelar(")
-        corpo = fonte[i:i + 6000]
+        corpo = fonte[i:i + 9000]
         self.assertIn('r["incerto"] = True', corpo)
         self.assertIn("CONFIRA A PLATAFORMA", corpo)
 
@@ -190,7 +190,7 @@ class TestOBotaoSairEmMercado(unittest.TestCase):
         que se pediu. Sem confirmar a legenda, não clico."""
         fonte = self._fonte()
         i = fonte.index("def sair_em_mercado_e_cancelar(")
-        corpo = fonte[i:i + 6000]
+        corpo = fonte[i:i + 9000]
         self.assertIn('if not btn.get("cancela_ordens"):', corpo)
 
     def test_contar_ordens_distingue_ZERO_de_NAO_SEI(self):

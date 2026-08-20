@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.49.0"
+VERSAO_ATUAL = "2.50.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -3412,6 +3412,36 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
     # ordem NÃO foi preenchida — volta a PENDENTE e o P&L falso é zerado.
     # E o inverso: se a plataforma mostra posição e o diário ainda diz PENDENTE,
     # a execução é CONFIRMADA com o preço médio REAL do preenchimento.
+    # UMA POSIÇÃO NA CORRETORA CONFIRMA UMA LINHA DO DIÁRIO. UMA SÓ.
+    #
+    # 20/08, e é o "relatório duplicado" que ele viu no print. Às 10:36 saiu uma
+    # ordem de 25 contratos, executada. Às 10:57 o modo autônomo mandou OUTRA,
+    # de 1 contrato, no mesmo ativo e na mesma direção. A leitura da plataforma
+    # mostra UMA posição — 25 contratos — e a sincronização confirmou essa
+    # mesma posição contra as DUAS linhas do diário:
+    #
+    #   ABERTA [ROBO] BUY MESU6 | Entrada 7761.5 | Stop 7753.5 | 25 ctr | +1672,50
+    #   ABERTA [ROBO] BUY MESU6 | Entrada 7761.5 | Stop 7755.0 | 25 ctr | +1672,50
+    #
+    # Repare que a segunda linha, que era de 1 contrato, virou 25: ela copiou a
+    # quantidade da posição real. O mesmo dinheiro contado duas vezes, e o
+    # painel exibindo +3.032,50 de um lucro que existia uma vez só.
+    #
+    # A fusão que já existia (`gemeas`) não pegava este caso: ela só junta
+    # registro de origem PLATAFORMA com registro do ROBÔ. Aqui os dois eram do
+    # ROBÔ. Então a trava passa a ser esta — a leitura da corretora é um
+    # RECURSO que se gasta ao ser usado.
+    # PRÉ-PASSAGEM: quem JÁ ESTÁ ABERTO E CONFIRMADO tem a posse mais forte.
+    # Sem ela, quem ficasse primeiro na lista levava a posição — e a ordem do
+    # arquivo passaria a decidir de quem é o dinheiro, que é um jeito
+    # espetacularmente ruim de decidir isso.
+    consumidas = set()
+    for _p in lista:
+        if (_p.get("origem") == "ROBO" and _p.get("conta_id") == conta
+                and _p.get("status") == "ABERTA"
+                and _p.get("execucao") == "CONFIRMADA"):
+            consumidas.add((str(_p.get("ativo", "")).upper(), _p.get("direcao")))
+
     for pos in lista:
         if pos.get("origem") != "ROBO" or pos.get("conta_id") != conta:
             continue
@@ -3443,7 +3473,8 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
                 f"{pos.get('entry')} NÃO está executada na plataforma — voltei "
                 "para PENDENTE e zerei o resultado falso.")
 
-        elif pos["status"] == "PENDENTE" and mesma_direcao:
+        elif pos["status"] == "PENDENTE" and mesma_direcao \
+                and (nome, pos.get("direcao")) not in consumidas:
             # ---- UMA POSIÇÃO REAL, UM REGISTRO ----
             # O DEFEITO (log de 11/08): às 16:05 a leitura da tela criou um
             # registro PLATAFORMA de SELL MESU6 40 ctr. Às 16:10 o trader acatou
@@ -3486,6 +3517,9 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
             ctr_plan = int(pos.get("contratos") or 0)
             stop_plan = _num(pos.get("stop"))
 
+            # A LEITURA ACABA DE SER GASTA. Nenhuma outra linha do diário pode
+            # reclamar esta mesma posição no restante da varredura.
+            consumidas.add((nome, pos.get("direcao")))
             pos["status"] = "ABERTA"
             pos["execucao"] = "CONFIRMADA"
             # Preço médio REAL do preenchimento, quando a plataforma informa.
@@ -3546,8 +3580,22 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
                 pos["divergencia_execucao"] = texto
 
         elif pos["status"] == "ABERTA" and mesma_direcao:
+            chave = (nome, pos.get("direcao"))
+            ja_e_de_outro = (chave in consumidas
+                             and pos.get("execucao") != "CONFIRMADA")
+            if ja_e_de_outro:
+                # OUTRA LINHA JÁ É ESTA POSIÇÃO. Copiar o P&L aqui também é
+                # exatamente o que duplicou os +1.672,50 no painel dele: duas
+                # linhas exibindo o mesmo lucro, que existe uma vez só. Esta
+                # aqui fica sem número e declarada como duplicada, para
+                # aparecer no diário sem entrar na soma.
+                pos["duplicada_da_plataforma"] = True
+                pos["pnl_atual"] = 0.0
+                continue
             # Posição do robô que a corretora confirma: P&L real vem de lá.
+            consumidas.add(chave)
             pos["execucao"] = "CONFIRMADA"
+            pos["duplicada_da_plataforma"] = False
             if atual["pnl"] is not None:
                 pos["pnl_atual"] = round(atual["pnl"], 2)
             if atual["preco"] is not None:
@@ -20795,6 +20843,11 @@ class SmcQuantApp(ctk.CTk):
                         # nova. Sem isso, o mesmo POI era reemitido a cada ciclo, enchendo
                         # a lista de cenários idênticos que só expiravam.
                         repetido = False
+                        # ESTE CENÁRIO É AUMENTO DE UMA POSIÇÃO QUE JÁ EXISTE?
+                        # Zerado a cada ciclo, junto com `repetido`, porque um
+                        # estado destes vazando de um ciclo para o outro seria
+                        # pior do que não existir.
+                        _e_aumento = False
 
                         # LEITURA CONGELADA: entra na MESMA porta que os outros
                         # filtros (`repetido`), porque o efeito é o mesmo — não
@@ -20892,9 +20945,31 @@ class SmcQuantApp(ctk.CTk):
                                         f"⛔ Segurei o {acao} {ativo}: "
                                         f"{_motivo_pa}")
                             elif _dec == "AUMENTO":
+                                # "CONFIRA O RISCO SOMADO ANTES DE ACATAR" É UMA
+                                # FRASE ESCRITA PARA UM HUMANO — e no modo
+                                # autônomo não há humano nenhum para conferir.
+                                #
+                                # 20/08, 10:57, no log dele: às 10:36 saiu uma
+                                # ordem de 25 contratos e ela executou. Vinte
+                                # minutos depois, com a posição ABERTA, este
+                                # ramo classificou o cenário novo como AUMENTO,
+                                # imprimiu o pedido de conferência, e o
+                                # autônomo mandou a segunda ordem assim mesmo.
+                                # Ninguém conferiu risco nenhum.
+                                #
+                                # Aumentar posição é DECISÃO DE GESTÃO, não
+                                # execução de sinal: muda o risco total de uma
+                                # operação que já está correndo, e o
+                                # dimensionamento do Plano foi calculado para
+                                # UMA entrada, não para a soma de duas. Ele
+                                # ainda recebe a sugestão — ela vale — mas quem
+                                # aperta o botão é ele.
+                                _e_aumento = True
                                 self.log(f"➕ {acao} {ativo}: {_motivo_pa} Vai como "
                                          "sugestão de AUMENTO — confira o risco somado "
-                                         "antes de acatar.")
+                                         "antes de acatar. NÃO executo aumento sozinha, "
+                                         "nem com o autônomo ligado: somar risco a uma "
+                                         "posição que já está correndo é decisão sua.")
 
                         # FREIO DE SUGESTÕES: perda diária, stops seguidos e teto de
                         # operações. É a trava que impede o dia de virar sequência de
@@ -21087,7 +21162,13 @@ class SmcQuantApp(ctk.CTk):
                                 + "_Material educacional. A decisão de operar é sua._"
                             )
                             enviar_relatorio_whatsapp(mensagem_wpp, screenshot, self.log)
-                            _autonomo = self._modo_autonomo()
+                            # `_autonomo` diz se o modo está LIGADO. Só que
+                            # aumento de posição não sai sozinho nem com ele
+                            # ligado, e as mensagens abaixo anunciam o que VAI
+                            # ACONTECER — se elas olharem só o interruptor, vão
+                            # prometer uma ordem que não vai sair. Tempo verbal
+                            # é honestidade aqui, e já custou caro uma vez.
+                            _autonomo = self._modo_autonomo() and not _e_aumento
                             falar(
                                 (f"Mandando ordem sozinha: {acao} em {ativo}, "
                                  f"probabilidade {probabilidade:.0f} por cento."
@@ -21139,7 +21220,22 @@ class SmcQuantApp(ctk.CTk):
                             # ordem sai. Se algo falhar no envio, o aviso já
                             # existe — o contrário deixaria ordem na plataforma
                             # sem uma linha em lugar nenhum dizendo por quê.
-                            if _autonomo:
+                            # `_autonomo` já exclui o aumento (ver acima), então
+                            # aqui a pergunta é sobre o INTERRUPTOR: se ele está
+                            # ligado e mesmo assim eu não vou executar, ele
+                            # precisa saber POR QUE — silêncio pareceria falha.
+                            if self._modo_autonomo() and _e_aumento:
+                                aviso_aum = (
+                                    f"✋ NÃO executei sozinha o {acao} {ativo}: "
+                                    "é AUMENTO de uma posição que já está "
+                                    "aberta, e somar risco a uma operação em "
+                                    "curso é decisão sua, não minha. O "
+                                    "dimensionamento do Plano foi calculado "
+                                    "para UMA entrada. A sugestão está no "
+                                    "diário — acate se quiser somar.")
+                                self.log(aviso_aum)
+                                self._chat_feed(aviso_aum)
+                            elif _autonomo:
                                 self._acatar_sozinha(
                                     novo_sinal_id, acao, ativo,
                                     sizing.get("contratos"),

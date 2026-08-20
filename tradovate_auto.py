@@ -1872,10 +1872,29 @@ class TradovateAuto:
     """
 
     # A legenda do botão diz o que ele VAI fazer, porque o seletor ao lado troca
-    # a ação ("Sair em Mkt", "Sair em Mkt & Cancelar", "Cancelar tudo"...). Só a
-    # que fala em CANCELAR serve para o que eu quero aqui.
+    # a ação. O menu real da Tradovate, no print dele de 20/08, tem estas cinco:
+    #   Sair em Mkt & Cxl · Reverso e Cxl · Cancelar todos ·
+    #   Cancelar ofertas · Cancelar compra
+    #
+    # E AQUI EU ERREI FEIO. Eu procurava a palavra "cancel" inteira, então
+    # 'Sair em Mkt & Cxl' — que é EXATAMENTE o botão que ele mandou usar — não
+    # casava, e o robô recusou-se a clicar dizendo "não cancela ordem nenhuma".
+    # Cancelava sim: 'Cxl' é 'Cancel' abreviado, e a própria tela dele mostra o
+    # botão grande "Sair de todas as posições Cancelar todas" logo abaixo.
+    #
+    # Recusar por não reconhecer uma abreviação é o pior tipo de trava: ela
+    # tem cara de cuidado e é só ignorância. As ordens ficaram vivas na
+    # plataforma por causa disso.
     _RE_SAIR_CANCELA = re.compile(
-        r"cancel", re.IGNORECASE)
+        r"cancel|\bcxl\b|\bcxl\.|&\s*cxl", re.IGNORECASE)
+
+    # E ESTE EU NÃO CLICO NUNCA, mesmo falando em cancelar.
+    # 'Reverso e Cxl' cancela as ordens E INVERTE A POSIÇÃO — sai do BUY e
+    # entra VENDIDO, a mercado, no mesmo clique. Passou a casar com a regex
+    # nova (tem 'Cxl'), e sem esta exceção o robô poderia abrir uma posição
+    # contrária tentando limpar a tela. Abrir posição que ninguém pediu é pior
+    # do que qualquer coisa que este botão vem resolver.
+    _RE_SAIR_PROIBIDO = re.compile(r"revers", re.IGNORECASE)
 
     def localizar_sair_em_mercado(self):
         """Acha o botão 'Sair em Mkt &' e devolve o que ele diz que faz."""
@@ -1887,9 +1906,10 @@ class TradovateAuto:
             return {"achou": False}
         if not d.get("achou"):
             return {"achou": False}
-        rotulo = str(d.get("rotulo") or "")
-        d["cancela_ordens"] = bool(self._RE_SAIR_CANCELA.search(
-            unicodedata.normalize("NFD", rotulo)))
+        rotulo = unicodedata.normalize("NFD", str(d.get("rotulo") or ""))
+        d["inverte_posicao"] = bool(self._RE_SAIR_PROIBIDO.search(rotulo))
+        d["cancela_ordens"] = bool(self._RE_SAIR_CANCELA.search(rotulo)
+                                   and not d["inverte_posicao"])
         return d
 
     def sair_em_mercado_e_cancelar(self, enviar=False, exigir_zerado=True):
@@ -1951,13 +1971,21 @@ class TradovateAuto:
             self.log(f"   ⚠️ {r['motivo']}")
             return r
         r["rotulo"] = btn.get("rotulo")
+        if btn.get("inverte_posicao"):
+            r["motivo"] = (f"o botão está em '{btn.get('rotulo')}', que além de "
+                           "cancelar INVERTE A POSIÇÃO — sairia do seu lado e "
+                           "entraria no contrário, a mercado. Não encosto nele. "
+                           "Escolha 'Sair em Mkt & Cxl' na setinha ao lado.")
+            r["recusa"] = True
+            self.log(f"   ⛔ {r['motivo']}")
+            return r
         if not btn.get("cancela_ordens"):
             # A legenda não fala em cancelar: o seletor ao lado está em outra
             # opção. Clicar assim zeraria a posição e DEIXARIA as ordens — o
             # contrário do que se pediu. Não clico e digo o que ajustar.
             r["motivo"] = (f"o botão está em '{btn.get('rotulo')}', que não "
                            "cancela ordem nenhuma. Na setinha ao lado dele, "
-                           "escolha 'Sair em Mkt & Cancelar' — aí eu uso.")
+                           "escolha 'Sair em Mkt & Cxl' — aí eu uso.")
             r["recusa"] = True
             self.log(f"   ⛔ {r['motivo']}")
             return r
@@ -2264,6 +2292,26 @@ class TradovateAuto:
                     (self.ROTULO_TRAIL_ACIONAR, 0, int(trailing["acionar"])),
                     (self.ROTULO_TRAIL_FREQ, 0, int(trailing["frequencia"])),
                 ]
+            else:
+                # DESLIGADO TEM DE APAGAR, NÃO SÓ DEIXAR DE ESCREVER.
+                #
+                # 20/08, ele: "a opção trail stop, às vezes mesmo desativada ela
+                # está funcionando na plataforma". Estava mesmo, e a causa é
+                # esta: o ramo de cima escrevia os campos do AUTO TRAIL; este
+                # aqui simplesmente NÃO OS TOCAVA. O ticket da Tradovate guarda
+                # o que foi digitado antes — então bastava UMA ordem com trail
+                # ligado para todas as seguintes herdarem aquele trail, com a
+                # caixinha aqui desmarcada e ele sem entender de onde vinha.
+                #
+                # "Não mexer" parecia o comportamento conservador. Não é: num
+                # formulário com memória, não mexer é aceitar a configuração de
+                # outra pessoa — no caso, a de um cenário que já morreu. Zerar é
+                # o único jeito de a caixinha desmarcada significar o que diz.
+                pedidos += [
+                    (self.ROTULO_STOP_ATM, 1, 0),
+                    (self.ROTULO_TRAIL_ACIONAR, 0, 0),
+                    (self.ROTULO_TRAIL_FREQ, 0, 0),
+                ]
             return pedidos, self.campos_por_rotulo(pedidos)
 
         pedidos, res = _lote()
@@ -2285,17 +2333,42 @@ class TradovateAuto:
             self.log("   ⚠️ não consegui LER o seletor 'EXIBIR EM'. Confirme "
                      "que ele está em Ticks na Tradovate.")
 
-        for (rotulo, ocorrencia, valor), r in zip(pedidos[1:], res[1:]):
+        # OS TRÊS PRIMEIROS SÃO OBRIGATÓRIOS: unidade, alvo e stop do bracket.
+        # Falhar num deles é motivo para não enviar — é o risco da operação.
+        #
+        # A LIMPEZA DO AUTO TRAIL É BEST-EFFORT, e a distinção importa. Quando
+        # o trail está DESLIGADO eu escrevo 0 nos campos dele para apagar o que
+        # sobrou da ordem anterior; se esses campos não existirem neste layout
+        # (seção recolhida, versão diferente do ticket), exigir que eles
+        # confiram RECUSARIA A ORDEM INTEIRA por causa de uma limpeza — e
+        # bloquear a operação para zerar um campo opcional seria trocar um
+        # problema pequeno por um grande.
+        n_obrigatorios = 3      # unidade + alvo + stop (índices 0,1,2)
+        limpando_trail = not trailing
+        for i, ((rotulo, ocorrencia, valor), r) in enumerate(
+                zip(pedidos[1:], res[1:]), start=1):
             onde = f"{rotulo}" + (" (auto trail)" if ocorrencia else "")
+            opcional = limpando_trail and i >= n_obrigatorios
             if r.get("estado") != "OK":
+                if opcional:
+                    self.log(f"   ℹ️ não achei o campo {onde} para zerar o AUTO "
+                             "TRAIL. Se a plataforma tiver um trail guardado de "
+                             "uma ordem anterior, ele pode continuar valendo — "
+                             "confira no ticket.")
+                    continue
                 return False, f"campo {onde}: {r.get('estado', 'SEM_RESPOSTA')}", False
             if not valores_batem(valor, r.get("valor", "")):
+                if opcional:
+                    self.log(f"   ℹ️ campo {onde}: tentei zerar e ficou "
+                             f"{r.get('valor')!r}. Confira o AUTO TRAIL no ticket.")
+                    continue
                 return False, (f"campo {onde}: escrevi {valor!r} e o campo "
                                f"ficou {r.get('valor')!r}"), False
         self.log(f"   🛡️ ATM conferida na tela: alvo {int(ticks_alvo)} ticks · "
                  f"stop {int(ticks_stop)} ticks"
                  + (f" · auto trail {trailing['stop']} ticks a partir de "
-                    f"{trailing['acionar']}" if trailing else ""))
+                    f"{trailing['acionar']}" if trailing
+                    else " · AUTO TRAIL zerado (desligado nas configurações)"))
         return True, "todos os campos conferidos", False
 
     def _preencher_ordem_atm(self, palavra_dir, entrada, qtd, tipo, tick,

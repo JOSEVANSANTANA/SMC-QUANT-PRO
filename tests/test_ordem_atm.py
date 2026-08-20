@@ -503,12 +503,26 @@ class TestOAutoTrailDoTicket(unittest.TestCase):
         self.assertEqual(bot.campos["ACIONAR LUCROS"], 16)
         self.assertEqual(bot.campos["FREQUÊNCIA"], 1)
 
-    def test_sem_trailing_os_campos_do_auto_trail_NAO_sao_tocados(self):
+    def test_sem_trailing_os_campos_do_auto_trail_sao_ZERADOS(self):
+        """ESTE TESTE GARANTIA O COMPORTAMENTO ERRADO, e o pregão provou.
+
+        Ele afirmava que, com o trail desligado, os campos do AUTO TRAIL não
+        eram TOCADOS — e "não tocar" parecia a atitude conservadora.
+
+        20/08, ele: "a opção trail stop, às vezes mesmo desativada ela está
+        funcionando na plataforma". Estava mesmo. O ticket da Tradovate GUARDA
+        o que foi digitado antes, então bastava UMA ordem com trail ligado para
+        todas as seguintes herdarem aquele trail — com a caixinha desmarcada
+        aqui e ele sem entender de onde vinha o stop que perseguia o preço.
+
+        Num formulário com memória, não mexer não é conservador: é aceitar a
+        configuração de um cenário que já morreu. Zerar é o único jeito de a
+        caixinha desmarcada significar o que ela diz."""
         bot = _BotFalso({})
         bot.enviar_ordem_com_atm("SELL", 7719.0, 7723.0, 7711.0, 0.25,
                                  qtd=30, enviar=True)
-        self.assertNotIn("STOP LOSS#1", bot.campos)
-        self.assertNotIn("ACIONAR LUCROS", bot.campos)
+        self.assertEqual(str(bot.campos.get("STOP LOSS#1")), "0")
+        self.assertEqual(str(bot.campos.get("ACIONAR LUCROS")), "0")
 
     def test_campo_do_trail_que_falha_NAO_deixa_a_ordem_sair(self):
         """Metade do trailing configurado é pior que trailing nenhum."""
