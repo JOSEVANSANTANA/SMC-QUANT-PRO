@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.46.2"
+VERSAO_ATUAL = "2.47.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1022,12 +1022,30 @@ PROVEDORES_IA = {
         "onde_pegar": "https://console.anthropic.com/settings/keys",
         "modelos": ["claude-sonnet-4-5", "claude-haiku-4-5"],
     },
+    # O PRIMEIRO DA FILA, e não por gosto: é o único que não depende de um
+    # fornecedor só. Uma chave, 80 fornecedores atrás dela — se um modelo cai,
+    # o roteamento vai para outro sem eu reescrever nada. Foi exatamente uma
+    # queda de fornecedor ("You have no credits remaining", 12/08) que deixou
+    # a mesa muda; é esse tipo de queda que ele resolve.
+    #
+    # A LISTA COMEÇA PELOS GRATUITOS (sufixo ':free'). Assim a conta dele não
+    # é consumida sem ele pedir: se todos os gratuitos estiverem esgotados no
+    # momento, a fila desce sozinha para os pagos — mas nessa ordem, nunca ao
+    # contrário. Gratuito primeiro é decisão de custo, não de qualidade.
     "openrouter": {
-        "rotulo": "OpenRouter (vários modelos numa chave só)",
+        "rotulo": "OpenRouter (uma chave, dezenas de fornecedores)",
         "formato": "openai",
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "onde_pegar": "https://openrouter.ai/keys",
-        "modelos": ["openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet"],
+        "modelos": [
+            "deepseek/deepseek-chat-v3.1:free",
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "google/gemini-2.0-flash-exp:free",
+            "qwen/qwen-2.5-72b-instruct:free",
+            # Pagos, e só depois que os gratuitos falharem todos.
+            "openai/gpt-4o-mini",
+            "anthropic/claude-3.5-sonnet",
+        ],
     },
     "groq": {
         "rotulo": "Groq (rápido e com camada gratuita)",
@@ -1074,10 +1092,25 @@ KEEP_ALIVE_LOCAL = "10m"
 # alto não estava deixando a resposta melhor — só mais tarde.
 TETO_SAIDA_LOCAL = 420
 
-# A ordem em que os alternativos são tentados quando a Gemini não responde.
-# A LOCAL vem por último de propósito: quando há um modelo grande disponível,
-# ele responde melhor. Mas ela é a que NUNCA falta — é o chão da escada.
-ORDEM_PROVEDORES = ["openai", "anthropic", "openrouter", "groq", "local"]
+# A ordem da fila. A LOCAL vem por último de propósito: quando há um modelo
+# grande disponível, ele responde melhor. Mas ela é a que NUNCA falta — é o
+# chão da escada.
+#
+# O OPENROUTER SUBIU PARA O TOPO. O motivo é estrutural, não preferência: os
+# outros da lista são um fornecedor cada, e quando aquele fornecedor cai (cota,
+# crédito, manutenção), o degrau inteiro some. O OpenRouter é um roteador — a
+# mesma chave alcança dezenas de fornecedores e ele mesmo desvia o pedido
+# quando um sai do ar. Pôr o degrau mais resiliente no topo é o que faz a fila
+# quase nunca chegar ao fim.
+ORDEM_PROVEDORES = ["openrouter", "openai", "anthropic", "groq", "local"]
+
+# QUEM TENTA ANTES DA GEMINI. É a "prioridade" que ele pediu, e ela é uma
+# lista, não um `if`, porque a próxima troca de ordem tem de ser uma linha —
+# não uma cirurgia no meio do fluxo do chat.
+#
+# A Gemini continua na fila, logo atrás: ela lê imagem (o print do gráfico) e
+# os provedores de texto não. Tirá-la seria trocar um problema por outro.
+PROVEDORES_PRIORITARIOS = ["openrouter"]
 
 
 def diagnostico_de_provedor(erro, rotulo=""):
@@ -1603,7 +1636,7 @@ def pedir_ao_provedor(info, chave, modelo, mensagens, timeout=None):
     return fn(url, chave, modelo, mensagens, timeout)
 
 
-def responder_por_provedor_alternativo(mensagens, log=None):
+def responder_por_provedor_alternativo(mensagens, log=None, apenas=None):
     """Tenta os provedores alternativos, em ordem, até um responder.
 
     Devolve (texto, nome_do_provedor) ou (None, motivo). NUNCA levanta: a
@@ -1611,10 +1644,17 @@ def responder_por_provedor_alternativo(mensagens, log=None):
 
     `mensagens` é a lista no formato da OpenAI ([{role, content}]) — é o
     denominador comum; a Anthropic é adaptada dentro de `_pedir_anthropic`.
+
+    `apenas` restringe a fila a alguns provedores, na ordem em que vierem. É
+    o que permite rodar a PRIORIDADE antes da Gemini e o RESTO depois, com um
+    caminho de código só — dois caminhos para "pedir a um provedor" seria
+    exatamente o tipo de duplicação que envelhece mal.
     """
     tentados = []
-    for pid in ORDEM_PROVEDORES:
-        info = PROVEDORES_IA[pid]
+    for pid in (apenas if apenas is not None else ORDEM_PROVEDORES):
+        info = PROVEDORES_IA.get(pid)
+        if not info:
+            continue
         # A IA LOCAL NÃO TEM CHAVE — o que ela tem é o Ollama de pé. E os
         # modelos dela são os que estão BAIXADOS nesta máquina, não uma lista
         # fixa: tentar 'qwen2.5:7b' num computador que só tem 'llama3.1:8b'
@@ -1636,8 +1676,13 @@ def responder_por_provedor_alternativo(mensagens, log=None):
                 txt = pedir_ao_provedor(info, chave, modelo, mensagens)
                 if txt and txt.strip():
                     if log:
-                        log(f"🧠 Respondido por {info['rotulo']} ({modelo}) — "
-                            "a Gemini não estava disponível.")
+                        # A frase antiga era "a Gemini não estava disponível",
+                        # e ela virou mentira no dia em que a fila passou a
+                        # rodar ANTES da Gemini: quem responde primeiro não
+                        # responde por falta de ninguém.
+                        log(f"🧠 Respondido por {info['rotulo']} ({modelo})"
+                            + ("." if apenas is not None
+                               else " — a Gemini não estava disponível."))
                     return txt.strip(), info["rotulo"]
                 tentados.append(f"{info['rotulo']}/{modelo}: resposta vazia")
             except Exception as e:
@@ -2720,6 +2765,10 @@ def abrir_posicao(origem, direcao, ativo, entry, stop, tp1, tp2, contratos, stat
         "preco_atual": entry,
         "pnl_atual": 0.0,
         "data_criacao": time.strftime('%d/%m/%Y %H:%M'),
+        # O MESMO instante, em segundos. `data_criacao` é para os olhos dele;
+        # este é para a conta do PRAZO DE EXECUÇÃO, que precisa de precisão
+        # melhor que "o minuto" e não pode depender de reparsear texto.
+        "ts_criacao": time.time(),
         "data_abertura": time.strftime('%d/%m/%Y %H:%M') if status_inicial == "ABERTA" else None,
         "data_fechamento": None,
         "pnl_final": None,
@@ -3274,6 +3323,104 @@ def cancelar_pendentes_do_sinal(sinal_id, motivo="cenário invalidado"):
 # Preenchido por `cancelar_pendentes_do_sinal`: as pendentes que sumiram do
 # diário mas CONTINUAM na corretora. Quem chama tem de avisar o trader.
 _canceladas_ainda_na_corretora = []
+
+
+def decidir_cancelamento_na_corretora(autonomo, modo_teste, permitido,
+                                      pendentes_na_corretora,
+                                      leitura_de_posicao_ok=True,
+                                      posicao_aberta=False):
+    """EU CANCELO NA PLATAFORMA, OU SÓ AVISO? Devolve (decisao, motivo).
+
+    Ele resolveu isto com uma frase que não deixa margem: "se estou deixando
+    automação ligada é porque precisa ter total autonomia... se a automação
+    estiver ligada é porque não é para eu lançar ordens manuais". A objeção
+    que segurava o cancelamento automático era exatamente essa — "lá pode
+    haver ordem que VOCÊ lançou na mão". Com a automação ligada, essa ordem
+    não existe, e a objeção cai junto.
+
+    O que NÃO cai é o resto. O botão que ele indicou ('Sair em Mkt &
+    Cancelar') faz DUAS coisas num clique: cancela as ordens E zera a posição
+    a mercado. Cancelar ordem à toa custa uma oportunidade; liquidar posição à
+    toa custa dinheiro na hora. Por isso:
+
+      • 'CANCELA' -> automação ligada, de verdade (não em teste), permissão
+                     marcada, e LEITURA CONFIRMANDO que a posição está zerada.
+      • 'AVISA'   -> qualquer dúvida. Não encosto no botão e mando cancelar
+                     na mão, que é o que a versão anterior já fazia.
+      • 'NADA'    -> não sobrou ordem nenhuma na corretora; não há o que fazer.
+
+    Repare em `leitura_de_posicao_ok`: NÃO CONSEGUIR LER não é "está zerado".
+    Apertar um botão que liquida a mercado sem saber se há posição é a mesma
+    família de erro que ele já me cobrou — afirmar o que eu não sei.
+
+    Função PURA de propósito: é ela que autoriza o programa a mexer na
+    corretora sozinho, e isso tem de ser conferível sem Chrome e sem mercado.
+    """
+    if not pendentes_na_corretora:
+        return "NADA", "nenhuma ordem minha ficou viva na plataforma"
+    if not autonomo:
+        return ("AVISA", "a automação está desligada — quem manda ordem para a "
+                         "corretora agora é você, e eu não cancelo o que não fui "
+                         "eu que coloquei")
+    if modo_teste:
+        return ("AVISA", "MODO TESTE: eu não encosto na plataforma neste modo, "
+                         "nem para enviar nem para cancelar")
+    if not permitido:
+        return ("AVISA", "o cancelamento automático na plataforma está "
+                         "desmarcado nas configurações da Tradovate")
+    if not leitura_de_posicao_ok:
+        return ("AVISA", "não consegui LER a posição na plataforma, e o botão "
+                         "'Sair em Mkt & Cancelar' também zera posição a "
+                         "mercado — sem saber se você está posicionado, clicar "
+                         "nele é aposta")
+    if posicao_aberta:
+        return ("AVISA", "há posição ABERTA nesse ativo: a ordem executou. "
+                         "Posição executada se administra por stop e alvo, não "
+                         "por mudança de leitura minha")
+    return "CANCELA", "automação ligada, posição zerada conferida na tela"
+
+
+def avaliar_prazo_de_execucao(criada_em, agora, minutos_prazo,
+                              entrada_vista_no_preco=False):
+    """A ordem ficou pendente tempo demais? Devolve (estourou, motivo).
+
+    Pedido dele: "no painel do diário de trading tem o prazo para acatar,
+    deixe esse mesmo prazo configurado para o prazo de executar; se acatou
+    automaticamente mas não executou em um determinado espaço de tempo, favor
+    cancelar a ordem".
+
+    É o MESMO número ('Prazo p/ acatar (min)' do Plano de Trading), não um
+    segundo campo: o prazo diz há quanto tempo aquele cenário deixou de ser
+    novidade, e isso vale igual para a decisão dele e para a ordem que espera
+    o preço. Dois campos para a mesma ideia é a forma mais confiável de alguém
+    ajustar um e achar que ajustou os dois.
+
+    `entrada_vista_no_preco` é a trava do "tenha certeza que não tenha
+    executado mesmo antes de cancelar": se em algum ciclo eu anunciei que o
+    preço mitigou a entrada, essa ordem PODE ter preenchido, e prazo nenhum me
+    autoriza a mandar cancelar por cima de uma execução possível.
+    """
+    if entrada_vista_no_preco:
+        return False, ("o preço chegou a tocar a entrada em algum ciclo — essa "
+                       "ordem pode ter executado, e eu não cancelo por cima de "
+                       "uma execução possível")
+    try:
+        minutos = int(float(minutos_prazo))
+    except (TypeError, ValueError):
+        minutos = 10
+    minutos = max(1, minutos)
+    try:
+        idade = float(agora) - float(criada_em)
+    except (TypeError, ValueError):
+        return False, "não sei quando essa ordem foi criada"
+    if idade < 0:
+        return False, "não sei quando essa ordem foi criada"
+    if idade <= minutos * 60:
+        return False, (f"faltam {int(minutos * 60 - idade) // 60 + 1} min do "
+                       f"prazo de {minutos} min")
+    return True, (f"passou o prazo de {minutos} min sem o preço chegar à "
+                  f"entrada (já são {int(idade) // 60} min)")
+
 
 def resultados_por_dia():
     """Agrega o P&L realizado por dia (posições fechadas) + P&L aberto de hoje.
@@ -9989,6 +10136,14 @@ class SmcQuantApp(ctk.CTk):
         # persegue" são estratégias diferentes, e a segunda não pode entrar
         # por tabela junto com uma correção de outra coisa.
         self.tv_trail_var = tk.BooleanVar(value=tv_cfg.get("trailing", False))
+        # cancelar_na_corretora: quando o cenário morre e a ordem não pegou, eu
+        # aperto o 'Sair em Mkt & Cancelar' da própria Tradovate em vez de só
+        # avisar. LIGADO por padrão porque ele foi categórico — "se a automação
+        # estiver ligada é porque não é para eu lançar ordens manuais" — mas
+        # continua sendo caixinha, e só tem efeito com a automação ligada e
+        # fora do modo teste.
+        self.tv_cancelar_var = tk.BooleanVar(
+            value=tv_cfg.get("cancelar_na_corretora", True))
 
         # --- Notificação no COMPUTADOR (além do WhatsApp) ---
         self.notif_var = tk.BooleanVar(
@@ -10723,6 +10878,23 @@ class SmcQuantApp(ctk.CTk):
                  "   preenche o AUTO TRAIL do ticket com a MESMA distância do stop, começando\n"
                  "   quando o trade paga 1R. É outra gestão de trade — ligue sabendo disso."
         ).pack(pady=(0, 6), padx=12, anchor="w")
+        ctk.CTkCheckBox(
+            frame,
+            text="CANCELAR na plataforma quando o cenário morre (botão 'Sair em Mkt & Cancelar')",
+            variable=self.tv_cancelar_var, command=self._tv_salvar_prefs,
+            text_color=COR["texto"], fg_color="#1f8b4c",
+            border_color="#63b3ed", hover_color="#25a35a"
+            ).pack(pady=3, padx=12, anchor="w")
+        ctk.CTkLabel(
+            frame, justify="left", text_color=COR["dim"],
+            font=ctk.CTkFont(size=11),
+            text="   Cenário invalidado, stop rompido antes da entrada ou prazo de execução\n"
+                 "   vencido: eu aperto o 'Sair em Mkt & Cancelar' e CONFIRO que as ordens\n"
+                 "   saíram. Só funciona com a automação LIGADA e fora do modo teste — e\n"
+                 "   NUNCA com posição aberta: aí a ordem executou, e quem manda é o stop.\n"
+                 "   Deixe o seletor da plataforma em 'Sair em Mkt & Cancelar'; se ele\n"
+                 "   estiver em outra opção, eu não clico e aviso."
+        ).pack(pady=(0, 6), padx=12, anchor="w")
 
         linha = ctk.CTkFrame(frame, fg_color="transparent")
         linha.pack(pady=(4, 4), padx=8, anchor="w")
@@ -10767,6 +10939,7 @@ class SmcQuantApp(ctk.CTk):
             "dry_run": self.tv_dry_var.get(),
             "sync_posicoes": self.tv_sync_var.get(),
             "trailing": self.tv_trail_var.get(),
+            "cancelar_na_corretora": self.tv_cancelar_var.get(),
         }})
         if self.tv_auto_var.get():
             modo = "TESTE (não envia)" if self.tv_dry_var.get() else "REAL (envia ordem)"
@@ -13511,6 +13684,39 @@ class SmcQuantApp(ctk.CTk):
         # inválida, por exemplo), a mensagem de erro lá embaixo ainda cita a
         # lista — sem isso ela quebraria com NameError e ele não receberia nada.
         modelos = []
+
+        # ---- PRIORIDADE: O OPENROUTER FALA PRIMEIRO ----
+        # Ele pediu isto por escrito, e o argumento é bom: uma chave que
+        # alcança dezenas de fornecedores cai muito menos do que qualquer
+        # fornecedor sozinho.
+        #
+        # SÓ EM TURNO SEM ANEXO, e essa ressalva é a parte importante. Quando
+        # há um print do gráfico, quem lê imagem aqui é a Gemini; mandar a
+        # pergunta para um provedor de texto sem a imagem produziria uma
+        # resposta confiante sobre um gráfico que ele não viu — que é a
+        # família de erro que este programa passou meses eliminando.
+        #
+        # E A BASE CONTINUA GANHANDO DE TODO MODELO. Isto não é detalhe: a
+        # regra "verbete curado ganha de geração plausível" nasceu de um erro
+        # concreto — "O QUE É SMC?" foi parar num modelo que respondeu que
+        # E-mini de índice é forex. Subir um provedor na fila não pode
+        # reabrir essa porta, então a prioridade só vale para pergunta que a
+        # base NÃO sabe responder.
+        if not anexo:
+            try:
+                _prio = ([p for p in PROVEDORES_PRIORITARIOS
+                          if carregar_chave_provedor(p)]
+                         if not buscar_base_smc(pergunta) else [])
+                if _prio:
+                    _txt, _quem = responder_por_provedor_alternativo(
+                        self._mensagens_para_provedor(pergunta), self.log,
+                        apenas=_prio)
+                    if _txt:
+                        resposta = _txt
+                        self._provedor_da_resposta = _quem
+            except Exception as e:
+                self.log(f"(provedor prioritário falhou: {str(e)[:120]})")
+
         try:
             # Com anexo o tempo é maior (upload + vídeo processando). Sem anexo
             # o limite subiu de 15 s para 60 s: com busca na internet ligada a
@@ -13531,7 +13737,10 @@ class SmcQuantApp(ctk.CTk):
             # casas de mercado. É a coleira contra invenção — com o número na
             # mão, o modelo não tem por que chutar um motivo para o movimento.
             bloco_web = ""
-            if not anexo:
+            # `not resposta`: se o prioritário já respondeu, nada abaixo daqui
+            # vai ser usado — e buscar preço e manchetes na internet para
+            # montar um prompt que ninguém vai mandar é gastar o tempo dele.
+            if not anexo and not resposta:
                 try:
                     bloco_web = bloco_web_para_prompt(pergunta)
                 except Exception:
@@ -13617,6 +13826,11 @@ class SmcQuantApp(ctk.CTk):
             else:
                 orcamento = ORCAMENTO_CHAT_SEG
             estourou = False
+            # O PRIORITÁRIO JÁ RESPONDEU: a fila da Gemini não tem por onde
+            # entrar. É o freio mais barato — nenhum outro ramo do bloco
+            # precisa saber que ele existe.
+            if resposta:
+                modelos = []
             for modelo in modelos:
                 if orcamento and (time.time() - inicio_espera) > orcamento:
                     estourou = True
@@ -15340,6 +15554,157 @@ class SmcQuantApp(ctk.CTk):
         # dashboard, e Tk não aceita isso vindo da thread do motor.
         self.after(0, lambda: self._registrar_decisao(sinal_id, decisao))
         return True
+
+    def _varrer_prazo_de_execucao(self):
+        """A ordem foi acatada, foi para a corretora, e o preço nunca chegou.
+
+        Ele juntou as duas pontas: "no painel do diário de trading tem o prazo
+        para acatar, deixe esse mesmo prazo configurado para o prazo de
+        executar". O prazo de acatar já existia e cuidava do cenário que ELE
+        não decidiu; não havia nada cuidando do cenário que EU decidi sozinha e
+        que ficou pendurado na plataforma esperando um preço que não veio.
+
+        E a ressalva dele é a parte séria: "tenha certeza que não tenha
+        executado mesmo antes de cancelar". São TRÊS travas antes do clique,
+        não uma:
+          1. se em algum ciclo eu anunciei que o preço mitigou a entrada, essa
+             ordem não é candidata — `avaliar_prazo_de_execucao` barra;
+          2. se o diário tem posição ABERTA no ativo, ela executou — barra;
+          3. na hora do clique, o robô LÊ a posição na Tradovate e só aperta
+             com ela zerada — `sair_em_mercado_e_cancelar(exigir_zerado=True)`.
+        Nenhuma das três sozinha me satisfaz; as três juntas, sim."""
+        try:
+            prazo_min = int(float(
+                plano_da_conta_ativa().get("timeout_acatar_min", 10)))
+        except (TypeError, ValueError):
+            prazo_min = 10
+        agora = time.time()
+        vencidas = {}
+        for p in carregar_posicoes():
+            if not _e_da_conta_ativa(p) or p.get("status") != "PENDENTE":
+                continue
+            # Só o que ESTÁ na corretora: uma pendente que nunca foi enviada
+            # não ocupa lugar lá, e não há o que cancelar.
+            if not p.get("enviada_plataforma"):
+                continue
+            estourou, motivo = avaliar_prazo_de_execucao(
+                p.get("ts_criacao"), agora, prazo_min,
+                entrada_vista_no_preco=bool(p.get("entrada_vista_no_preco")))
+            if not estourou:
+                continue
+            sid = p.get("sinal_id")
+            if sid:
+                vencidas[sid] = motivo
+        for sid, motivo in vencidas.items():
+            # Uma última conferência no diário antes de mexer em qualquer
+            # coisa: se ele mostra posição aberta nesse ativo, a ordem pegou.
+            n = cancelar_pendentes_do_sinal(sid, f"prazo de execução: {motivo}")
+            if not n:
+                continue
+            atualizar_decisao_sinal(sid, "EXPIRADO")
+            self.log(f"⏱️ PRAZO DE EXECUÇÃO: {motivo}. Tirando a ordem do "
+                     "diário (é o mesmo prazo do 'Prazo p/ acatar' do seu "
+                     "Plano de Trading).")
+            self._resolver_ordens_orfas_na_corretora(
+                f"prazo de execução vencido — {motivo}")
+        return len(vencidas)
+
+    def _resolver_ordens_orfas_na_corretora(self, contexto=""):
+        """As ordens que saíram do meu diário mas ficaram vivas na Tradovate.
+
+        UM LUGAR SÓ, e por um motivo concreto: até aqui só o ramo de "cenário
+        mudou" avisava sobre a ordem órfã. Stop rompido antes da entrada e
+        cenário expirado cancelavam no diário e NÃO falavam nada — os dois
+        buracos por onde uma ordem viva sumia da conversa.
+
+        Agora os três passam por aqui, e aqui há duas saídas possíveis:
+        cancelar de verdade na plataforma (automação ligada, posição zerada
+        conferida) ou avisar para você cancelar na mão. O que não existe mais
+        é a terceira: sumir com a ordem do diário e não dizer nada.
+
+        Lê `_canceladas_ainda_na_corretora`, que `cancelar_pendentes_do_sinal`
+        acabou de preencher."""
+        orfas = list(_canceladas_ainda_na_corretora)
+        if not orfas:
+            return
+        permitido = bool(getattr(self, "tv_cancelar_var", None)
+                         and self.tv_cancelar_var.get())
+        # A posição na plataforma: `None` = não sei (e não saber vira AVISA).
+        leitura_ok, tem_posicao = True, False
+        try:
+            pos_ab = posicao_aberta_no_ativo(orfas[0].get("ativo"))
+            tem_posicao = bool(pos_ab)
+        except Exception:
+            leitura_ok = False
+        decisao, motivo = decidir_cancelamento_na_corretora(
+            self._modo_autonomo(), bool(self.tv_dry_var.get()), permitido,
+            orfas, leitura_de_posicao_ok=leitura_ok, posicao_aberta=tem_posicao)
+        quais = "; ".join(
+            f"{p.get('direcao')} {p.get('ativo')} {p.get('contratos')} ctr @ "
+            f"{p.get('entry')}" for p in orfas)
+        if decisao == "NADA":
+            return
+        if decisao == "AVISA":
+            aviso = (f"⚠️ ATENÇÃO: {quais} JÁ ESTAVA NA TRADOVATE"
+                     + (f" ({contexto})" if contexto else "")
+                     + f". Tirei do meu diário, mas NÃO cancelei na corretora: "
+                       f"{motivo}. CANCELE ESSA ORDEM NA PLATAFORMA.")
+            self.log(aviso)
+            self._chat_feed(aviso)
+            try:
+                enviar_relatorio_whatsapp(aviso, None, self.log)
+            except Exception:
+                pass
+            return
+        # CANCELA — e o anúncio vem DEPOIS do resultado, nunca antes.
+        # É a mesma lição do envio: "não pode falar que fez e não ter feito".
+        self.log(f"🧹 CANCELANDO NA PLATAFORMA: {quais}"
+                 + (f" ({contexto})" if contexto else "")
+                 + f" — {motivo}. Confirmo em seguida.")
+        self._tv_cancelar_na_plataforma(quais, contexto)
+
+    def _tv_cancelar_na_plataforma(self, quais, contexto=""):
+        """Aperta o 'Sair em Mkt & Cancelar' em thread separada e CONFERE.
+
+        A conferência é o ponto todo: `sair_em_mercado_e_cancelar` só devolve
+        ok=True depois de reler o painel e ver as ordens fora. Sem isso eu
+        estaria trocando uma frase que não posso provar ('cancele na mão') por
+        outra ('cancelei') — e a segunda é pior, porque desliga a sua atenção."""
+        if not TRADOVATE_DISPONIVEL:
+            return
+
+        def tarefa():
+            try:
+                bot = self._tv_conectar()
+                if not bot:
+                    aviso = ("❌ NÃO CANCELEI: sem conexão com a Tradovate. As "
+                             f"ordens ({quais}) CONTINUAM VIVAS na plataforma. "
+                             "Cancele na mão.")
+                else:
+                    res = bot.sair_em_mercado_e_cancelar(
+                        enviar=True, exigir_zerado=True)
+                    if res.get("ok"):
+                        aviso = (f"✅ ORDENS CANCELADAS NA PLATAFORMA: {quais}"
+                                 + (f" ({contexto})" if contexto else "")
+                                 + f". {res.get('motivo')}")
+                    elif res.get("incerto"):
+                        aviso = (f"⚠️ {quais}: {res.get('motivo')} NÃO SEI "
+                                 "dizer se saíram. CONFIRA A PLATAFORMA AGORA.")
+                    else:
+                        aviso = (f"❌ NÃO CANCELEI {quais}: {res.get('motivo')} "
+                                 "As ordens CONTINUAM VIVAS na plataforma — "
+                                 "cancele na mão.")
+            except Exception as e:
+                aviso = (f"❌ NÃO CANCELEI {quais}: deu erro no caminho ({e}). "
+                         "As ordens CONTINUAM VIVAS — cancele na mão.")
+            self.log(aviso)
+            self._chat_feed(aviso)
+            try:
+                enviar_relatorio_whatsapp(aviso, None, self.log)
+            except Exception:
+                pass
+
+        threading.Thread(target=tarefa, daemon=True).start()
 
     def _marcar_ordem_na_corretora(self, sinal_id):
         """Carimba a posição como ENVIADA À PLATAFORMA.
@@ -19735,6 +20100,18 @@ class SmcQuantApp(ctk.CTk):
                             sinal_ativo = {"estado": "ENCERRADA"}
                             self.after(0, self._atualizar_dashboard)
 
+                        # ------- PRAZO DE EXECUÇÃO (o MESMO do acatar) -------
+                        # O bloco acima cuida do cenário que ELE não decidiu. Este
+                        # cuida do que EU decidi sozinha e que ficou pendurado na
+                        # corretora esperando um preço que não veio. Mesmo número,
+                        # duas pontas do mesmo problema: cenário que envelheceu.
+                        try:
+                            if self._varrer_prazo_de_execucao():
+                                self.after(0, self._atualizar_dashboard)
+                        except Exception as _e_prazo:
+                            self.log(f"⚠️ prazo de execução: não consegui varrer "
+                                     f"as pendentes ({_e_prazo}).")
+
                         # ---------------- MÁQUINA DE ESTADOS ----------------
                         # Exige preço VÁLIDO (>0). Quando a captura falha, a IA devolve
                         # preço 0 — processar isso disparava stop/alvo fantasma (ex.:
@@ -19763,6 +20140,11 @@ class SmcQuantApp(ctk.CTk):
                                         atualizar_decisao_sinal(_sid_rs, "CANCELADO_STOP")
                                         cancelar_pendentes_do_sinal(
                                             _sid_rs, "stop rompido antes da entrada")
+                                        # Este ramo cancelava no diário e ficava
+                                        # MUDO sobre a ordem que continuava na
+                                        # corretora. Era um dos dois buracos.
+                                        self._resolver_ordens_orfas_na_corretora(
+                                            "stop rompido antes da entrada")
                                     sinal_ativo = {"estado": "ENCERRADA"}
                                     self.log("🚫 SINAL CANCELADO: Stop rompido antes de mitigar a entrada.")
                                     self.after(0, self._atualizar_dashboard)
@@ -19803,6 +20185,10 @@ class SmcQuantApp(ctk.CTk):
                                         atualizar_decisao_sinal(_sid_mc, "EXPIRADO")
                                         cancelar_pendentes_do_sinal(
                                             _sid_mc, "preço não voltou à zona de entrada")
+                                        # O outro buraco: cenário expirado
+                                        # também deixava ordem viva em silêncio.
+                                        self._resolver_ordens_orfas_na_corretora(
+                                            "preço não voltou à zona de entrada")
                                     sinal_ativo = {"estado": "ENCERRADA"}
                                     self.log("⌛ SINAL EXPIRADO: Nenhuma mitigação no tempo limite.")
                                     self.after(0, self._atualizar_dashboard)
@@ -19931,26 +20317,15 @@ class SmcQuantApp(ctk.CTk):
                                 f"um setup de {acao} com qualidade)."
                                 + (f" {n_canc} ordem(ns) pendente(s) cancelada(s)." if n_canc else "")
                             )
-                            # O CANCELAMENTO ACIMA É NO MEU DIÁRIO, NÃO NA
-                            # CORRETORA. Se a ordem chegou a ir para lá, ela
-                            # continua viva — e "cancelada" no meu registro
-                            # com a ordem viva na plataforma é a pior mentira
-                            # que eu poderia contar aqui.
-                            for _p in _canceladas_ainda_na_corretora:
-                                aviso_viva = (
-                                    f"⚠️ ATENÇÃO: a ordem {_p.get('direcao')} "
-                                    f"{_p.get('ativo')} {_p.get('contratos')} ctr @ "
-                                    f"{_p.get('entry')} JÁ ESTAVA NA TRADOVATE. Eu a "
-                                    "tirei do meu diário, mas NÃO cancelo ordem na "
-                                    "corretora — lá pode haver ordem sua, lançada na "
-                                    "mão, e cancelar a errada é pior que não cancelar "
-                                    "nenhuma. CANCELE ESSA ORDEM NA PLATAFORMA.")
-                                self.log(aviso_viva)
-                                self._chat_feed(aviso_viva)
-                                try:
-                                    enviar_relatorio_whatsapp(aviso_viva, None, self.log)
-                                except Exception:
-                                    pass
+                            # O CANCELAMENTO ACIMA É NO MEU DIÁRIO. Se a ordem
+                            # chegou a ir para a corretora, ela continua viva
+                            # lá — e "cancelada" no meu registro com a ordem
+                            # viva na plataforma é a pior mentira que eu
+                            # poderia contar aqui. Com a automação ligada eu
+                            # agora RESOLVO isso apertando o botão da própria
+                            # Tradovate; sem ela, aviso. Nunca fico calado.
+                            self._resolver_ordens_orfas_na_corretora(
+                                f"cenário mudou para {acao}")
                             if sid_inv in getattr(self, "_sinais_notificados", set()):
                                 self._sinais_notificados.discard(sid_inv)
                             sinal_ativo = {"estado": "ENCERRADA"}

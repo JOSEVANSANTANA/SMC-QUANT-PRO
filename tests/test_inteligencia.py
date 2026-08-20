@@ -111,15 +111,35 @@ class TestSegundaInteligencia(unittest.TestCase):
         segunda IA nunca seria usada — que era o defeito da 2.23."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def _chat_worker")
-        corpo = fonte[i:i + 14000]
+        corpo = fonte[i:i + 20000]
         i_base = corpo.index("da_base = responder_offline(")
-        i_alt = corpo.index("responder_por_provedor_alternativo")
+        # O PRIORITÁRIO (OpenRouter) roda ANTES da Gemini e, portanto, antes
+        # da base no texto do arquivo. Ele não fura o degrau 1 por outro
+        # caminho: é guardado por `buscar_base_smc`, testado logo abaixo.
+        i_alt = corpo.index("responder_por_provedor_alternativo",
+                            corpo.index("if not resposta and not anexo:"))
         i_generico = corpo.index("local = responder_offline(")
         self.assertLess(i_base, i_alt,
                         "com a IA local sempre de pé, a base nunca seria "
                         "alcançada se viesse depois dela")
         self.assertLess(i_alt, i_generico,
                         "se o despejo vier primeiro, a segunda IA nunca é usada")
+
+    def test_o_prioritario_NAO_atropela_a_base(self):
+        """O OpenRouter subiu para antes da Gemini — e o único jeito de isso
+        ser seguro é ele não alcançar a pergunta que a base sabe responder.
+
+        Sem esta guarda, "O QUE É SMC?" voltaria a ser respondido por um
+        modelo generalista em vez do verbete escrito e revisado — que é
+        exatamente o erro de 12/08 ("E-mini de índice é forex"), só que por
+        uma porta nova."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _chat_worker")
+        corpo = fonte[i:i + 20000]
+        i_prio = corpo.index("PROVEDORES_PRIORITARIOS")
+        trecho = corpo[i_prio - 400:i_prio + 400]
+        self.assertIn("buscar_base_smc(pergunta)", trecho,
+                      "a chamada prioritária tem de ser guardada pela base")
 
     def test_a_base_so_ganha_QUANDO_TEM_VERBETE(self):
         """A base não pode sequestrar toda pergunta: sem verbete, quem responde

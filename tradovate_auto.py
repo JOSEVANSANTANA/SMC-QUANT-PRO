@@ -36,6 +36,7 @@
 # ============================================================================
 
 import os
+import re
 import json
 import time
 import socket
@@ -43,6 +44,7 @@ import base64
 import struct
 import hashlib
 import subprocess
+import unicodedata
 from urllib.request import urlopen
 
 PORTA_DEBUG_PADRAO = 9222
@@ -1703,6 +1705,345 @@ class TradovateAuto:
         self.log("────────────────────────────────────────────")
         return dados
 
+    # ==================================================================
+    #  ORDENS VIVAS NA PLATAFORMA — contar ANTES e DEPOIS de cancelar
+    # ==================================================================
+    #  Sem isto, "cancelei" seria mais uma frase que eu não posso provar. O
+    #  painel "Chamado do pedido" mostra cada ordem numa linha com o número
+    #  dela e o estado: "#344367004 Comprar 16 MESU6 LMT em 7712.50 -
+    #  Funcionando - 0/16", e os brackets logo abaixo como "Suspenso".
+    #
+    #  A âncora é o NÚMERO DA ORDEM (#seguido de dígitos), e ele resolve dois
+    #  problemas de uma vez: separa a linha da ordem do contêiner que engloba
+    #  todas (o contêiner traz vários números, a linha traz um só), e não
+    #  confunde com a tabela de eventos embaixo, cujo ID vem sem o '#'.
+    #
+    #  E a diferença que mais importa: NÃO ACHAR NADA não é "zero ordens". Se
+    #  o painel não estiver aberto, a tela fica igual à de uma conta limpa.
+    #  Por isso 'ok' só é True quando eu vi o painel; senão devolvo o motivo e
+    #  quem chamou que decida — nunca "está tudo cancelado" por não ter visto.
+    _JS_ORDENS_VIVAS = r"""
+    (function(){
+      function vis(el){try{var r=el.getBoundingClientRect();
+        return r.width>0&&r.height>0;}catch(e){return false;}}
+      function txt(el){try{return (el.innerText||el.textContent||'')
+        .replace(/\s+/g,' ').trim();}catch(e){return '';}}
+      function norm(s){return (s||'').toString().normalize('NFD')
+        .replace(/[̀-ͯ]/g,'').toLowerCase();}
+      // Estados em que a ordem AINDA OCUPA LUGAR na corretora. 'Suspenso' é o
+      // bracket esperando a entrada preencher: ele some sozinho se a entrada
+      // for cancelada, mas enquanto está lá, está lá.
+      var reVivo=/(funcionando|working|suspenso|suspended|aceito|accepted|pendente|pending|em execucao|na execucao)/;
+      var reMorto=/(cancelad|cancell?ed|preenchid|filled|executad|rejeitad|rejected|expirad|expired|recusad)/;
+      var vivas={}, mortas={}, amostras=[], viuPainel=false;
+      var els=document.querySelectorAll('div,span,li,td,tr,p');
+      for(var i=0;i<els.length;i++){
+        var el=els[i];
+        if(!vis(el)) continue;
+        var t=txt(el);
+        if(!t||t.length>240) continue;
+        var ids=t.match(/#\d{4,}/g);
+        if(!ids||ids.length!==1) continue;   // linha de UMA ordem só
+        viuPainel=true;
+        var n=norm(t);
+        if(reMorto.test(n)){ mortas[ids[0]]=1; continue; }
+        if(!reVivo.test(n)) continue;
+        if(!vivas[ids[0]]){
+          vivas[ids[0]]=1;
+          if(amostras.length<8) amostras.push(t.slice(0,140));
+        }
+      }
+      if(!viuPainel){
+        // Nem uma linha de ordem na tela. Pode ser conta limpa COM o painel
+        // aberto, ou painel fechado — e as duas leituras são idênticas daqui.
+        var titulo=false, cab=document.querySelectorAll('div,span,h1,h2,h3,label');
+        for(var c=0;c<cab.length;c++){
+          if(!vis(cab[c])) continue;
+          var tc=norm(txt(cab[c]));
+          if(tc.length<40 && /(chamado do pedido|order ticket|orders|pedidos)/.test(tc)){
+            titulo=true; break;
+          }
+        }
+        if(!titulo) return JSON.stringify({ok:false, vivas:null,
+          motivo:'nao achei o painel de ordens na tela — nao da para dizer se ha ordem viva'});
+      }
+      return JSON.stringify({ok:true, vivas:Object.keys(vivas).length,
+                             ids:Object.keys(vivas), amostras:amostras,
+                             mortas:Object.keys(mortas).length});
+    })()
+    """
+
+    def contar_ordens_vivas(self):
+        """Quantas ordens minhas/suas ainda estão de pé na Tradovate.
+
+        Devolve {ok, vivas, ids, amostras, motivo}. `ok=False` significa NÃO SEI
+        — e não zero. Quem chama tem de tratar as duas coisas de forma
+        diferente: "zero ordens" libera; "não sei" só permite avisar."""
+        try:
+            d = json.loads(self.avaliar_js(self._JS_ORDENS_VIVAS) or "{}")
+        except ConexaoPerdida as e:
+            return {"ok": False, "vivas": None, "conexao_perdida": True,
+                    "motivo": f"a ligação com o Chrome caiu: {e}"}
+        except Exception as e:
+            return {"ok": False, "vivas": None, "motivo": str(e)}
+        return d or {"ok": False, "vivas": None, "motivo": "sem resposta da página"}
+
+    # ==================================================================
+    #  "SAIR EM MKT &" — O BOTÃO QUE ZERA A POSIÇÃO E CANCELA AS ORDENS
+    # ==================================================================
+    #  Ele pediu isto por escrito: "se estou deixando automação ligada é porque
+    #  precisa ter total autonomia... ali no topo tem a opção Sair em MKT &,
+    #  essa opção zera a posição atual e cancela todas as ordens".
+    #
+    #  E é PRECISAMENTE por zerar a posição que este botão não pode ser tratado
+    #  como um "cancelar ordens". São duas ações num clique só, e uma delas é
+    #  irreversível: se houver posição executada, ela é liquidada a mercado. Uma
+    #  ordem cancelada por engano custa uma oportunidade; uma posição liquidada
+    #  por engano custa dinheiro na hora.
+    #
+    #  Daí a trava: eu só encosto neste botão depois de LER na tela que a
+    #  posição está ZERADA. Não "supor que está" — ler. Se a leitura falhar, eu
+    #  não clico: com posição desconhecida, este botão é uma aposta, e o
+    #  caminho honesto é avisar você para cancelar na mão.
+    #
+    #  Isso também casa com a regra que já existia no diário: posição JÁ
+    #  EXECUTADA é gerida por stop e alvo, nunca cancelada por mudança de
+    #  leitura. Quando a ordem não pegou (posição 0), este botão faz só o que se
+    #  quer dele — varrer as ordens que sobraram.
+    _JS_BOTAO_SAIR = r"""
+    (function(){
+      function vis(el){try{var r=el.getBoundingClientRect();
+        return r.width>0&&r.height>0;}catch(e){return false;}}
+      function txt(el){try{return (el.innerText||el.textContent||'')
+        .replace(/\s+/g,' ').trim();}catch(e){return '';}}
+      function norm(s){return (s||'').toString().normalize('NFD')
+        .replace(/[̀-ͯ]/g,'').toLowerCase();}
+      var re=/(sair em (mkt|mercado))|(exit at m(k|ar)?[kt])|(flatten)/;
+      var achados=[];
+      var els=document.querySelectorAll('button,[role=button],div,span,a,li');
+      for(var i=0;i<els.length;i++){
+        var el=els[i];
+        if(!vis(el)) continue;
+        var t=txt(el);
+        if(!t||t.length>60) continue;
+        if(!re.test(norm(t))) continue;
+        var r=el.getBoundingClientRect();
+        achados.push({t:t, r:r, area:r.width*r.height,
+                      titulo:(el.getAttribute('title')||''),
+                      aria:(el.getAttribute('aria-label')||''),
+                      // texto cortado pelo CSS: o DOM tem a legenda inteira,
+                      // mas a tela mostra reticências
+                      cortado:(el.scrollWidth > el.clientWidth + 2)});
+      }
+      if(!achados.length) return JSON.stringify({achou:false});
+      // O MENOR é o controle; os maiores são as barras que o contêm.
+      achados.sort(function(a,b){return a.area-b.area;});
+      var m=achados[0];
+      // A legenda COMPLETA pode estar no title/aria quando a tela corta.
+      var rotulo=(m.titulo||m.aria||m.t);
+      return JSON.stringify({achou:true, rotulo:rotulo, texto_na_tela:m.t,
+        cortado:!!m.cortado, quantos:achados.length,
+        x:Math.round(m.r.x+m.r.width/2), y:Math.round(m.r.y+m.r.height/2)});
+    })()
+    """
+
+    # A legenda do botão diz o que ele VAI fazer, porque o seletor ao lado troca
+    # a ação ("Sair em Mkt", "Sair em Mkt & Cancelar", "Cancelar tudo"...). Só a
+    # que fala em CANCELAR serve para o que eu quero aqui.
+    _RE_SAIR_CANCELA = re.compile(
+        r"cancel", re.IGNORECASE)
+
+    def localizar_sair_em_mercado(self):
+        """Acha o botão 'Sair em Mkt &' e devolve o que ele diz que faz."""
+        try:
+            d = json.loads(self.avaliar_js(self._JS_BOTAO_SAIR) or "{}")
+        except ConexaoPerdida:
+            raise
+        except Exception:
+            return {"achou": False}
+        if not d.get("achou"):
+            return {"achou": False}
+        rotulo = str(d.get("rotulo") or "")
+        d["cancela_ordens"] = bool(self._RE_SAIR_CANCELA.search(
+            unicodedata.normalize("NFD", rotulo)))
+        return d
+
+    def sair_em_mercado_e_cancelar(self, enviar=False, exigir_zerado=True):
+        """Clica em 'Sair em Mkt & Cancelar': zera a posição e limpa as ordens.
+
+        `exigir_zerado=True` (o padrão, e o único modo que a automação usa) só
+        deixa clicar depois de LER na tela que a posição está em 0 — o botão
+        liquida a mercado, e liquidar por engano não tem desfazer.
+
+        Devolve {ok, clicou, motivo, vivas_antes, vivas_depois, recusa}. `ok`
+        só é True quando eu CONFERI que as ordens sumiram."""
+        r = {"ok": False, "clicou": False, "motivo": None, "recusa": False,
+             "vivas_antes": None, "vivas_depois": None, "rotulo": None}
+
+        # 1) A POSIÇÃO ESTÁ ZERADA? Tem de ser LEITURA, não suposição.
+        if exigir_zerado:
+            try:
+                estado = self.ler_estado() or {}
+            except ConexaoPerdida as e:
+                r["motivo"] = f"a ligação com o Chrome caiu antes de eu ler a posição: {e}"
+                r["recusa"] = True
+                return r
+            if not estado.get("ok"):
+                r["motivo"] = ("não consegui LER a posição na tela ("
+                               + str(estado.get("motivo") or "motivo não informado")
+                               + "). Este botão liquida a mercado: sem saber se "
+                                 "você está posicionado, clicar nele é aposta.")
+                r["recusa"] = True
+                self.log(f"   ⛔ não clico em 'Sair em Mkt': {r['motivo']}")
+                return r
+            abertas = [l for l in (estado.get("linhas") or [])
+                       if l.get("qtd_liquida")]
+            if abertas:
+                quais = ", ".join(
+                    f"{l.get('ativo') or '?'} {l.get('qtd_liquida')}"
+                    for l in abertas)
+                r["motivo"] = (f"você ESTÁ posicionado ({quais}). Este botão "
+                               "zeraria a posição a mercado, e posição executada "
+                               "se administra por stop e alvo — não por mudança "
+                               "de leitura minha.")
+                r["recusa"] = True
+                self.log(f"   ⛔ não clico em 'Sair em Mkt': {r['motivo']}")
+                return r
+
+        # 2) QUANTAS ORDENS HÁ AGORA — é o "antes" que dá sentido ao "depois".
+        antes = self.contar_ordens_vivas()
+        r["vivas_antes"] = antes.get("vivas")
+
+        # 3) O BOTÃO, E O QUE A LEGENDA DELE DIZ QUE ELE FAZ.
+        try:
+            btn = self.localizar_sair_em_mercado()
+        except ConexaoPerdida as e:
+            r["motivo"] = f"a ligação com o Chrome caiu: {e}"
+            return r
+        if not btn.get("achou"):
+            r["motivo"] = ("não achei o botão 'Sair em Mkt &' na tela da "
+                           "Tradovate. Ele fica no topo do painel do "
+                           "instrumento — deixe-o visível.")
+            self.log(f"   ⚠️ {r['motivo']}")
+            return r
+        r["rotulo"] = btn.get("rotulo")
+        if not btn.get("cancela_ordens"):
+            # A legenda não fala em cancelar: o seletor ao lado está em outra
+            # opção. Clicar assim zeraria a posição e DEIXARIA as ordens — o
+            # contrário do que se pediu. Não clico e digo o que ajustar.
+            r["motivo"] = (f"o botão está em '{btn.get('rotulo')}', que não "
+                           "cancela ordem nenhuma. Na setinha ao lado dele, "
+                           "escolha 'Sair em Mkt & Cancelar' — aí eu uso.")
+            r["recusa"] = True
+            self.log(f"   ⛔ {r['motivo']}")
+            return r
+
+        if not enviar:
+            r["ok"] = True
+            r["motivo"] = (f"MODO TESTE: achei o botão '{btn.get('rotulo')}' e "
+                           f"NÃO cliquei. Havia {r['vivas_antes']} ordem(ns) "
+                           "viva(s) — continuam todas lá.")
+            self.log(f"   🧪 {r['motivo']}")
+            return r
+
+        # 4) O CLIQUE.
+        self.log(f"   🧹 Clicando em '{btn.get('rotulo')}' "
+                 f"({r['vivas_antes']} ordem(ns) viva(s), posição zerada).")
+        try:
+            self.clicar_pagina(btn["x"], btn["y"])
+        except ConexaoPerdida as e:
+            r["motivo"] = (f"a ligação caiu no clique ({e}) — NÃO SEI se o "
+                           "cancelamento saiu. CONFIRA A PLATAFORMA.")
+            r["incerto"] = True
+            self.log(f"   ⚠️ {r['motivo']}")
+            return r
+        r["clicou"] = True
+        time.sleep(0.6)
+        # A Tradovate costuma pedir confirmação para liquidar/cancelar. Esta é
+        # a ÚNICA confirmação que o robô responde com SIM — e só porque o
+        # clique foi dele, agora, e a caixa fala do que ele acabou de pedir.
+        try:
+            self._confirmar_dialogo_de_cancelamento()
+        except ConexaoPerdida:
+            pass
+        time.sleep(0.9)
+
+        # 5) A CONFERÊNCIA. É ela que transforma "cliquei" em "cancelei".
+        depois = self.contar_ordens_vivas()
+        r["vivas_depois"] = depois.get("vivas")
+        if not depois.get("ok"):
+            r["motivo"] = ("cliquei, mas não consegui reler as ordens ("
+                           + str(depois.get("motivo") or "motivo não informado")
+                           + "). NÃO SEI dizer se elas saíram. CONFIRA A "
+                             "PLATAFORMA.")
+            r["incerto"] = True
+            self.log(f"   ⚠️ {r['motivo']}")
+            return r
+        if depois.get("vivas"):
+            r["motivo"] = (f"cliquei em '{btn.get('rotulo')}' e AINDA HÁ "
+                           f"{depois['vivas']} ordem(ns) viva(s) na plataforma. "
+                           "NÃO cancelei. Cancele na mão.")
+            self.log(f"   ❌ {r['motivo']}")
+            return r
+        r["ok"] = True
+        r["motivo"] = (f"ordens canceladas na plataforma "
+                       f"({r['vivas_antes']} → 0), com a posição zerada.")
+        self.log(f"   ✅ {r['motivo']}")
+        return r
+
+    def _confirmar_dialogo_de_cancelamento(self):
+        """Confirma a caixa de 'tem certeza?' do cancelamento — e SÓ ela.
+
+        `dispensar_dialogo_perigoso` existe pela regra oposta: confirmação que
+        o robô não pediu se responde com NÃO. Aqui o robô pediu, um segundo
+        atrás, e a caixa fala do que ele pediu. Por isso o reconhecimento é
+        estreito: o texto tem de falar em cancelar ordens / sair de posições.
+        Qualquer outra coisa na tela continua recebendo 'não'."""
+        js = r"""
+        (function(){
+          function vis(el){try{var r=el.getBoundingClientRect();
+            return r.width>0&&r.height>0;}catch(e){return false;}}
+          function txt(el){try{return (el.innerText||el.textContent||'')
+            .replace(/\s+/g,' ').trim();}catch(e){return '';}}
+          function norm(s){return (s||'').toString().normalize('NFD')
+            .replace(/[̀-ͯ]/g,'').toLowerCase();}
+          var reAssunto=new RegExp('cancelar (todas|as|todos)|cancel all|'+
+            'sair (de|das) posic|exit .*position|liquidar|liquidate|'+
+            'zerar posic|flatten');
+          var achou=false;
+          var els=document.querySelectorAll('div,p,span,h1,h2,h3,label,td');
+          for(var i=0;i<els.length;i++){
+            var e=els[i];
+            if(!vis(e)) continue;
+            var t=txt(e);
+            if(!t||t.length>300) continue;
+            if(reAssunto.test(norm(t))){ achou=true; break; }
+          }
+          if(!achou) return JSON.stringify({achou:false});
+          var bts=document.querySelectorAll('button,[role=button],a,div,span');
+          for(var k=0;k<bts.length;k++){
+            var b=bts[k];
+            if(!vis(b)) continue;
+            var tb=norm(txt(b));
+            if(!/^(ok|sim|yes|confirmar|confirm|continuar|continue)$/.test(tb)) continue;
+            var rb=b.getBoundingClientRect();
+            if(rb.width>240||rb.height>90) continue;
+            try{ b.click(); return JSON.stringify({achou:true, via:'confirmou'}); }catch(err){}
+          }
+          return JSON.stringify({achou:true, via:'sem botao'});
+        })()
+        """
+        try:
+            d = json.loads(self.avaliar_js(js) or "{}")
+        except ConexaoPerdida:
+            raise
+        except Exception:
+            return False
+        if d.get("via") == "confirmou":
+            self.log("   ☑️ confirmei a caixa de cancelamento que EU acabei de "
+                     "abrir (é a única que respondo com sim).")
+            return True
+        return False
 
     def _formulario_visivel(self):
         """True se o FORMULÁRIO de ordem está à vista. Indicador confiável: o
