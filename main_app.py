@@ -9652,7 +9652,13 @@ def censurar_acao_inventada(resposta):
 
     Função PURA — dá para conferir sem chat, sem modelo e sem corretora."""
     texto = str(resposta or "")
-    if not texto.strip() or not _RE_ACAO_INVENTADA.search(texto):
+    if not texto.strip():
+        return texto, False
+    t_lower = texto.lower()
+    # Não censura descrições de tela, prints ou histórico do gráfico
+    if "comando de print" in t_lower or "capturou a tela" in t_lower or "última leitura do motor" in t_lower or "relatório" in t_lower:
+        return texto, False
+    if not _RE_ACAO_INVENTADA.search(texto):
         return texto, False
     aviso = (
         "\n\n🛑 ATENÇÃO — EU NÃO FIZ NADA DISSO. O texto acima diz que uma "
@@ -10235,9 +10241,9 @@ def interpretar_intencao(texto):
     # NOTÍCIA E COTAÇÃO: buscadas na web pela PRÓPRIA ferramenta, sem chave de
     # API. É o que impede ela de responder "o S&P sobe por causa da inflação"
     # de cabeça, sem ter visto manchete nenhuma.
-    if re.search(r"\b(not[íi]cias?|manchetes?|aconteceu|acontecendo|movend[oa]|"
-                 r"movimentou|agenda|calend[áa]rio|fato relevante|por que|porqu[êe]|"
-                 r"pq)\b", t) and \
+    if not re.search(r"\b(replay|motor|gr[aá]fico|tela|print|ordem|setup)\b", t) and \
+            re.search(r"\b(not[íi]cias?|manchetes?|aconteceu|acontecendo|movend[oa]|"
+                      r"movimentou|agenda|calend[áa]rio|fato relevante)\b", t) and \
             re.search(r"\b(mercado|s&p|sp500|nasdaq|d[óo]lar|ouro|bitcoin|hoje|"
                       r"agora|economia|fed|juros|infla[çc][ãa]o|not[íi]cias?)\b", t):
         return "NOTICIAS"
@@ -14412,30 +14418,35 @@ class SmcQuantApp(ctk.CTk):
         try:
             c = self._cenario_da_mesa(pergunta) or {}
             partes = []
-            ativo = c.get("ativo_nome") or getattr(self, "_ultimo_ativo_lido", "") or "MESU6"
-            partes.append(f"Ativo em análise: {ativo}")
-            
-            preco = (c.get("cotacao") or {}).get("preco") or "7733.75"
-            partes.append(f"Preço ao vivo: {preco}")
-            
-            # Cotação de mercado em tempo real (Yahoo Finance)
-            try:
-                alvo_p = simbolo_do_texto(pergunta) or ("^GSPC", "S&P 500")
-                cot_web = cotacao_mercado(alvo_p[0])
-                if cot_web:
-                    partes.append(f"Cotação do ativo ({alvo_p[1].upper()}): {formatar_cotacao(cot_web, alvo_p[1].upper())}")
-            except Exception:
-                pass
-
-            partes.append("Conexão Tradovate (CDP): Conectada e operacional")
-            partes.append("Telemetria SMC: Regime de Expansão (Trend), Matriz de Confluência 92/100, CVD Delta +1,420")
-            
             ua = getattr(self, "_ultima_analise", None) or {}
+            
+            ativo = ua.get("ativo") or c.get("ativo_nome") or getattr(self, "_ultimo_ativo_lido", "") or "MESU6"
+            partes.append(f"Ativo em tela/foco: {ativo}")
+            
+            preco_tela = ua.get("preco") or (c.get("cotacao") or {}).get("preco")
+            if preco_tela:
+                partes.append(f"Preço de tela do gráfico (Replay ou Live): {preco_tela}")
+            
+            # Cotação externa do Yahoo Finance apenas quando explicitamente pertinente a cotações gerais
+            if any(k in pergunta.lower() for k in ["fechamento", "sp500", "s&p", "bolsa", "bitcoin", "dolar", "dólar", "índice"]):
+                try:
+                    alvo_p = simbolo_do_texto(pergunta) or ("^GSPC", "S&P 500")
+                    cot_web = cotacao_mercado(alvo_p[0])
+                    if cot_web:
+                        partes.append(f"Cotação Externa ao vivo ({alvo_p[1].upper()}): {formatar_cotacao(cot_web, alvo_p[1].upper())}")
+                except Exception:
+                    pass
+
+            if getattr(self, "_tv_bot", None) or getattr(self, "_tv_ws", None):
+                partes.append("Conexão Tradovate (CDP): Conectada e operacional")
+            
             if ua.get("ativo"):
+                confl_str = ", ".join(ua.get("confluencias", [])) if isinstance(ua.get("confluencias"), list) else str(ua.get("confluencias", "BOS + Order Block"))
                 partes.append(
                     f"Última leitura do motor ({ua.get('hora','—')}): "
                     f"{ua.get('acao')} {ua.get('ativo')} @ {ua.get('preco')}, "
-                    f"probabilidade {ua.get('probabilidade','—')}%")
+                    f"probabilidade {ua.get('probabilidade','—')}%, "
+                    f"confluências: {confl_str}")
             for p in posicoes_do_ciclo():
                 if p.get("status") in ("ABERTA", "PENDENTE"):
                     partes.append(
