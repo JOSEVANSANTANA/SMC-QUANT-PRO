@@ -5428,16 +5428,20 @@ def ajustar_velocidade_da_voz(passo):
 _TTS_ENGINE = None
 _TTS_LOCK = threading.Lock()
 _TTS_TEXTO = ""              # o que ela está dizendo agora (para ignorar o eco)
+_TTS_HISTORICO = collections.deque(maxlen=15) # histórico de falas recentes da IA (ts, texto)
+_TTS_ULTIMO_FIM = 0.0         # timestamp de quando a IA terminou de falar
 
 def parar_fala():
     """Cala a TIGER imediatamente. Pode ser chamada de qualquer thread —
     do botão 🎤, do 'Olá Tiger' ouvido por cima, ou do comando 'para de falar'.
     Devolve True se havia mesmo algo sendo falado."""
-    global _TTS_ENGINE
+    global _TTS_ENGINE, TTS_FALANDO, _TTS_ULTIMO_FIM
     with _TTS_LOCK:
         engine, _TTS_ENGINE = _TTS_ENGINE, None
     if engine is None:
         return False
+    TTS_FALANDO = False
+    _TTS_ULTIMO_FIM = time.time()
     try:
         # No macOS o "engine" é o processo do `say`: calar é matá-lo.
         if plataforma.VOZ_NATIVA:
@@ -5449,7 +5453,7 @@ def parar_fala():
     return True
 
 def falar(texto: str):
-    global TTS_FALANDO, _TTS_ENGINE, _TTS_TEXTO
+    global TTS_FALANDO, _TTS_ENGINE, _TTS_TEXTO, _TTS_ULTIMO_FIM
     try:
         texto = limpar_para_voz(texto)
         if not texto:
@@ -5458,6 +5462,7 @@ def falar(texto: str):
         parar_fala()
         TTS_FALANDO = True
         _TTS_TEXTO = texto
+        _TTS_HISTORICO.append((time.time(), _norm_busca(texto)))
         # Velocidade ajustável pelo trader ("acelere a fala" / "fala mais
         # devagar"). 165 é o padrão; a faixa evita ficar ininteligível.
         if plataforma.VOZ_NATIVA:
@@ -5496,6 +5501,7 @@ def falar(texto: str):
         pass
     finally:
         TTS_FALANDO = False
+        _TTS_ULTIMO_FIM = time.time()
         _TTS_TEXTO = ""
         with _TTS_LOCK:
             if _TTS_ENGINE is not None:
@@ -15351,21 +15357,48 @@ class SmcQuantApp(ctk.CTk):
 
     @staticmethod
     def _tiger_eco(texto):
-        """O que o microfone captou é a VOZ DELA saindo do alto-falante?
-        Enquanto fala, o mic ouve o próprio programa; sem este filtro ela
-        transcreveria a si mesma e responderia à própria fala."""
-        dito = _norm_busca(_TTS_TEXTO)
-        ouvido = _norm_busca(texto)
-        if not dito or not ouvido:
+        """Descarta qualquer frase que seja eco ou resquício da fala da IA pelo alto-falante.
+        Verifica a fala atual, o histórico recente das falas da IA e as mensagens do chat."""
+        if not texto:
             return False
-        if ouvido in dito:
-            return True
-        # Trecho do meio da fala: compara palavra a palavra.
-        palavras = [p for p in re.findall(r"[a-z0-9]+", ouvido) if len(p) > 3]
-        if not palavras:
+        ouvido = _norm_busca(texto).strip()
+        if not ouvido:
             return False
-        dentro = sum(1 for p in palavras if p in dito)
-        return dentro >= max(2, len(palavras) * 0.6)
+
+        # 1. Fala atual da IA
+        dito_atual = _norm_busca(_TTS_TEXTO)
+        if dito_atual:
+            if ouvido in dito_atual or dito_atual in ouvido:
+                return True
+
+        # 2. Histórico recente de falas da IA (últimos 45 segundos)
+        agora = time.time()
+        for ts, fala_norm in list(_TTS_HISTORICO):
+            if agora - ts > 45:
+                continue
+            if ouvido in fala_norm or fala_norm in ouvido:
+                return True
+            # Comparação por palavras-chave longas (>3 caracteres)
+            palavras_ouvidas = [p for p in re.findall(r"[a-z0-9]+", ouvido) if len(p) > 3]
+            if palavras_ouvidas:
+                dentro = sum(1 for p in palavras_ouvidas if p in fala_norm)
+                if dentro >= max(2, int(len(palavras_ouvidas) * 0.45)):
+                    return True
+                # Match de similaridade difflib
+                import difflib
+                if difflib.SequenceMatcher(None, ouvido, fala_norm[:max(len(ouvido)*2, 50)]).ratio() > 0.55:
+                    return True
+
+        # 3. Verifica se é repetição de mensagens recentes do chat
+        try:
+            for m in carregar_chat()[-3:]:
+                txt_m = _norm_busca(m.get("texto", ""))
+                if txt_m and (ouvido == txt_m or (len(ouvido) > 10 and ouvido in txt_m)):
+                    return True
+        except Exception:
+            pass
+
+        return False
 
     def _tiger_capturar_frase(self, stream, rms):
         """Escuta pelo stream JÁ ABERTO até pegar uma FRASE completa.
@@ -15529,7 +15562,8 @@ class SmcQuantApp(ctk.CTk):
                     continue
                 self._tiger_avisou_erro = False     # transcreveu: zera o aviso
 
-                if TTS_FALANDO and self._tiger_eco(texto):
+                # CANCELAMENTO DE ECO ACÚSTICO: se o microfone captou a própria voz da IA, descarta!
+                if self._tiger_eco(texto):
                     continue
 
                 em_dialogo = time.time() < getattr(self, "_tiger_dialogo_ate", 0)
@@ -15538,10 +15572,15 @@ class SmcQuantApp(ctk.CTk):
                 # Se não usou wake-word, mas estamos num diálogo contínuo ativo:
                 if not acordou and em_dialogo:
                     t_baixo = texto.lower().strip()
-                    # Se o trader está se despedindo ou mandando calar, fecha o diálogo
-                    if re.search(r"\b(tchau|obrigad[oa]|era s[oó] isso|valeu|sil[êe]ncio|chega|calar|parar|cancela)\b", t_baixo):
+                    # Se o trader está se despedindo ou pausando, fecha o diálogo
+                    if re.search(r"\b(tchau|obrigad[oa]|era s[oó] isso|valeu|sil[êe]ncio|chega|calar|parar|cancela|depois|pausa|fui)\b", t_baixo):
                         self._tiger_dialogo_ate = 0
                         self.after(0, lambda: self._chat_status("🐯 diálogo concluído", "#8a92a5"))
+                        continue
+                    # Filtra ruídos curtos/palavras soltas de 1 palavra a menos que seja comando
+                    palavras_t = t_baixo.split()
+                    eh_cmd = bool(re.search(r"\b(sim|n[ãa]o|stop|alvo|compra|vende|acatar|dispensar|status|pre[çc]o|fechou|zera|liga|desliga|traduz|ajuda)\b", t_baixo))
+                    if len(palavras_t) < 2 and not eh_cmd:
                         continue
                     # Trata o que foi dito diretamente como pergunta/comando
                     acordou = True
