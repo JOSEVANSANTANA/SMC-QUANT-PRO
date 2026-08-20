@@ -27,9 +27,7 @@ python-dotenv>=1.0.0
 # ------------------------------------------------------------------
 # VOZ
 # ------------------------------------------------------------------
-# No macOS a TIGER FALA pelo comando `say` do próprio sistema (nativo, não
-# precisa de biblioteca). O pyttsx3 continua na lista porque o import existe
-# no código e porque no Windows é ele quem fala.
+edge-tts>=7.0.0
 pyttsx3>=2.90
 
 # Comando por voz ("Olá Tiger"). Opcional: sem eles o programa funciona

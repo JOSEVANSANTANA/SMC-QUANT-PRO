@@ -1442,44 +1442,73 @@ def analisar_lista_de_vozes(saida):
     return vozes
 
 
+VOZES_NEURAIS_JARVIS = [
+    ("Jarvis Neural (Brasil - Antonio)", "pt-BR-AntonioNeural", "pt_BR (Neural)", "Olá Josevan, sistema Jarvis e TIGER 2.0 online."),
+    ("Jarvis Neural (Executivo - Fabio)", "pt-BR-FabioNeural", "pt_BR (Neural)", "Olá Josevan, telemetria e ordens da mesa prontas."),
+    ("Jarvis Neural (Feminina - Francisca)", "pt-BR-FranciscaNeural", "pt_BR (Neural)", "Olá Josevan, acompanhamento de mercado ativo."),
+    ("Jarvis Original (UK - Ryan)", "en-GB-RyanNeural", "en_GB (Neural)", "Hello sir, Jarvis neural engine online."),
+    ("Jarvis Original (UK - Thomas)", "en-GB-ThomasNeural", "en_GB (Neural)", "Hello sir, all systems nominal."),
+]
+
+def sintetizar_e_tocar_neural(texto, voz_id="pt-BR-AntonioNeural"):
+    """Sintetiza via Edge-TTS e executa reprodução de áudio neural."""
+    try:
+        import asyncio, tempfile
+        import edge_tts
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            caminho_mp3 = f.name
+
+        async def _gerar():
+            com = edge_tts.Communicate(str(texto), voz_id)
+            await com.save(caminho_mp3)
+
+        asyncio.run(_gerar())
+        if os.path.exists(caminho_mp3) and os.path.getsize(caminho_mp3) > 100:
+            if E_MACOS:
+                return subprocess.Popen(["afplay", caminho_mp3], **_sem_console())
+            else:
+                return subprocess.Popen(["powershell", "-c", f'(New-Object Media.SoundPlayer "{caminho_mp3}").PlaySync();'], **_sem_console())
+    except Exception:
+        pass
+    return None
+
 def vozes_disponiveis(so_portugues=False):
-    """TODAS as vozes instaladas neste Mac, com uma amostra de cada.
+    """TODAS as vozes disponíveis: Vozes Neurais do Jarvis em primeiro lugar,
+    seguidas pelas vozes nativas de português e do sistema."""
+    vozes_saida = []
+    
+    # 1. Vozes Neurais Jarvis de Alta Fidelidade (Sempre no topo)
+    for rotulo, voz_id, idioma, exemplo in VOZES_NEURAIS_JARVIS:
+        if so_portugues and not idioma.lower().startswith("pt"):
+            continue
+        vozes_saida.append((rotulo, idioma, exemplo))
 
-    Pedido dele, 13/08: "uma biblioteca de opções de voz para não ser apenas
-    essa chata". A lista sai do SISTEMA (`say -v ?`), não de uma tabela
-    escrita à mão.
+    # 2. Vozes nativas do sistema macOS (say -v ?)
+    if E_MACOS:
+        ok, saida = _rodar(["say", "-v", "?"], timeout=8)
+        if ok and saida:
+            vozes_mac = analisar_lista_de_vozes(saida)
+            # Prioriza Daniel, Eddy, Luciana e vozes PT
+            def _ordem(v):
+                n = v[0].lower()
+                idioma = v[1].lower()
+                if "daniel" in n:
+                    return (-2, idioma, n)
+                if "eddy" in n or "luciana" in n or "reed" in n or "rocko" in n:
+                    return (-1, idioma, n)
+                return (0 if idioma.startswith("pt_br") else (1 if idioma.startswith("pt") else 2), idioma, n)
+            
+            vozes_mac_ordenadas = sorted(vozes_mac, key=_ordem)
+            for v in vozes_mac_ordenadas:
+                if so_portugues and not v[1].lower().startswith("pt"):
+                    continue
+                vozes_saida.append(v)
 
-    DEFEITO CORRIGIDO EM 14/08: esta função só devolvia as vozes de
-    PORTUGUÊS. Num Mac recém-instalado existe UMA voz pt-BR (às vezes
-    nenhuma, porque as boas são download separado) — então a "biblioteca"
-    aparecia com um item só, e ele escreveu, com razão: "a biblioteca de voz
-    não está ativa para selecionar outras, não tem outras disponíveis".
-    Agora vem tudo, com as de português PRIMEIRO, porque é nelas que a
-    pronúncia dos números da mesa sai certa.
-
-    Devolve [(nome, idioma, exemplo)]."""
-    if not E_MACOS:
-        return []
-    ok, saida = _rodar(["say", "-v", "?"], timeout=8)
-    if not ok or not saida:
-        return []
-    vozes = analisar_lista_de_vozes(saida)
-    if so_portugues:
-        return [v for v in vozes if v[1].lower().startswith("pt")]
-    # Português primeiro (pt_BR antes de pt_PT), depois o resto por idioma.
-    def _ordem(v):
-        idioma = v[1].lower()
-        return (0 if idioma.startswith("pt_br") else
-                1 if idioma.startswith("pt") else 2, idioma, v[0].lower())
-    return sorted(vozes, key=_ordem)
+    return vozes_saida
 
 
 def abrir_ajustes_de_voz():
-    """Abre o painel do macOS onde se BAIXAM mais vozes.
-
-    As vozes boas de português (Premium e Aprimorada) não vêm instaladas:
-    são download do sistema. Mandar o trader "procurar em Ajustes" é o mesmo
-    roteiro de seis passos que já falhou com o Node e com o Ollama."""
+    """Abre o painel do macOS onde se BAIXAM mais vozes."""
     if not E_MACOS:
         return False
     for alvo in ("x-apple.systempreferences:com.apple.preference.universalaccess"
@@ -1495,67 +1524,75 @@ def abrir_ajustes_de_voz():
 
 
 def voz_escolhida_ou_melhor(preferida=None):
-    """A voz que o trader escolheu, se ela EXISTE nesta máquina; senão a
-    melhor disponível. Voz configurada que foi desinstalada não pode deixar a
-    ferramenta muda — cai para a melhor e segue."""
-    if not E_MACOS:
-        return None
+    """A voz que o trader escolheu ou Jarvis Neural padrão."""
     if preferida:
-        for nome, _i, _e in vozes_disponiveis():
-            if nome.lower() == str(preferida).lower():
-                return nome
-    return voz_portugues_macos()
+        for rotulo, voz_id, _i, _e in VOZES_NEURAIS_JARVIS:
+            if rotulo.lower() == str(preferida).lower() or voz_id.lower() == str(preferida).lower():
+                return rotulo
+        if E_MACOS:
+            for nome, _i, _e in vozes_disponiveis():
+                if nome.lower() == str(preferida).lower():
+                    return nome
+    return "Jarvis Neural (Brasil - Antonio)"
 
 
 def experimentar_voz(nome, velocidade=165, texto=None):
-    """Fala UMA frase com a voz escolhida, para ele ouvir antes de decidir.
-    Escolher voz por NOME, sem ouvir, é escolher no escuro."""
-    if not E_MACOS:
-        return False
-    frase = texto or ("Josevan, é assim que eu vou falar com você na mesa.")
-    try:
-        subprocess.Popen(
-            ["say", "-r", str(int(max(90, min(velocidade, 320)))),
-             "-v", str(nome), "--", frase], **_sem_console())
-        return True
-    except Exception:
-        return False
+    """Fala UMA frase com a voz escolhida, para ele ouvir antes de decidir."""
+    frase = texto or ("Josevan, sistema Jarvis e TIGER 2.0 online e operacional na sua mesa.")
+    
+    # 1. Checa se é voz Neural do Jarvis
+    for rotulo, voz_id, _i, _e in VOZES_NEURAIS_JARVIS:
+        if rotulo.lower() == str(nome).lower() or voz_id.lower() == str(nome).lower():
+            p = sintetizar_e_tocar_neural(frase, voz_id)
+            if p:
+                return True
+
+    # 2. Fallback para voz nativa do macOS
+    if E_MACOS:
+        try:
+            subprocess.Popen(
+                ["say", "-r", str(int(max(90, min(velocidade, 320)))),
+                 "-v", str(nome), "--", frase], **_sem_console())
+            return True
+        except Exception:
+            return False
+    return False
 
 
 def voz_portugues_macos():
-    """Nome da melhor voz de português instalada, ou None. Só fatos: lê a
-    lista real do sistema, não presume que 'Luciana' está instalada."""
-    if not E_MACOS:
-        return None
-    # UMA leitura só, pela mesma função que a biblioteca usa. Antes havia um
-    # segundo analisador aqui, com `linha.split()`, que quebrava em nomes com
-    # espaço ("Eddy (English (UK))" virava a voz "Eddy"). Duas cópias da
-    # mesma leitura são duas chances de discordarem.
-    disponiveis = vozes_disponiveis(so_portugues=True)
-    for preferida in _VOZES_PT_MACOS:
-        for nome, _i, _e in disponiveis:
-            if nome.lower() == preferida.lower():
-                return nome
-    for marca in ("pt_br", "pt"):
-        for nome, idioma, _e in disponiveis:
-            if idioma.lower().startswith(marca):
-                return nome
-    return None
+    """Nome da melhor voz instalada."""
+    return "Jarvis Neural (Brasil - Antonio)"
 
 
 def falar_nativo(texto, palavras_por_minuto=165, voz_preferida=None):
-    """Fala pelo sistema e devolve o processo (para poder ser interrompido).
-    None se este sistema não usa fala nativa ou se não deu para iniciar."""
-    if not E_MACOS or not texto:
+    """Fala pelo motor Neural Jarvis ou pelo sistema e devolve o processo."""
+    if not texto:
         return None
-    args = ["say", "-r", str(int(max(90, min(palavras_por_minuto, 320))))]
-    voz = voz_escolhida_ou_melhor(voz_preferida)
-    if voz:
-        args += ["-v", voz]
-    try:
-        return subprocess.Popen(args + ["--", str(texto)], **_sem_console())
-    except Exception:
-        return None
+        
+    voz = str(voz_preferida or "").strip()
+    # 1. Tenta sintetizar com voz Neural Jarvis
+    for rotulo, voz_id, _i, _e in VOZES_NEURAIS_JARVIS:
+        if rotulo.lower() == voz.lower() or voz_id.lower() == voz.lower():
+            p = sintetizar_e_tocar_neural(texto, voz_id)
+            if p:
+                return p
+                
+    # Se nenhuma voz foi escolhida ou Jarvis padrão
+    if not voz or "jarvis neural" in voz.lower():
+        p = sintetizar_e_tocar_neural(texto, "pt-BR-AntonioNeural")
+        if p:
+            return p
+
+    # 2. Fallback para macOS say
+    if E_MACOS:
+        args = ["say", "-r", str(int(max(90, min(palavras_por_minuto, 320))))]
+        if voz and not voz.startswith("Jarvis Neural"):
+            args += ["-v", voz]
+        try:
+            return subprocess.Popen(args + ["--", str(texto)], **_sem_console())
+        except Exception:
+            return None
+    return None
 
 
 # ====================================================================

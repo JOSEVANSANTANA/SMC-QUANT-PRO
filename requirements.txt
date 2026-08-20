@@ -29,7 +29,7 @@ python-dotenv>=1.0.0
 # ------------------------------------------------------------------
 # VOZ
 # ------------------------------------------------------------------
-# No Windows quem FALA é o pyttsx3 (SAPI5 do próprio sistema).
+edge-tts>=7.0.0
 pyttsx3>=2.90
 
 # Comando por voz ("Olá Tiger"). Opcional: sem eles o programa funciona
