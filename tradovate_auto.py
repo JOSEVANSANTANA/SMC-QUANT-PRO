@@ -2182,9 +2182,35 @@ class TradovateAuto:
             self.log(f"   ⚠️ {r['motivo']}")
             return r
         if depois.get("vivas"):
-            r["motivo"] = (f"cliquei em '{btn.get('rotulo')}' e AINDA HÁ "
-                           f"{depois['vivas']} ordem(ns) viva(s) na plataforma. "
-                           "NÃO cancelei. Cancele na mão.")
+            # AINDA HÁ ORDEM VIVA — E EXISTE UMA SEGUNDA ROTA.
+            # Em 20/08 eu parei aqui e mandei cancelar na mão, com o botão
+            # 'Cancelar todas' visível na tela dele o tempo todo: ele aparecia
+            # no MEU PRÓPRIO diagnóstico, na lista de textos com "posi"
+            # ('Sair de todas as posições Cancelar todas'). Desistir tendo uma
+            # rota inteira sem tentar não é cautela, é preguiça — a cautela
+            # está em conferir DE NOVO depois, que é o que vem abaixo.
+            self.log(f"   ↩️ ainda há {depois['vivas']} ordem(ns) viva(s) — "
+                     "tentando o botão 'Cancelar todas' antes de desistir.")
+            try:
+                ok2, det2 = self.cancelar_todas_as_ordens()
+            except ConexaoPerdida as e:
+                ok2, det2 = False, str(e)
+            if ok2:
+                terceira = self.contar_ordens_vivas()
+                r["vivas_depois"] = terceira.get("vivas")
+                if terceira.get("ok") and not terceira.get("vivas"):
+                    r["ok"] = True
+                    r["motivo"] = (f"ordens canceladas na plataforma "
+                                   f"({r['vivas_antes']} → 0) pelo botão "
+                                   f"'{det2}', depois de o "
+                                   f"'{btn.get('rotulo')}' não ter bastado.")
+                    self.log(f"   ✅ {r['motivo']}")
+                    return r
+            r["motivo"] = (f"cliquei em '{btn.get('rotulo')}'"
+                           + (f" e também em '{det2}'" if ok2 else "")
+                           + f" e AINDA HÁ {r['vivas_depois']} ordem(ns) "
+                             "viva(s) na plataforma. NÃO cancelei. "
+                             "Cancele na mão.")
             self.log(f"   ❌ {r['motivo']}")
             return r
         r["ok"] = True
@@ -2192,6 +2218,91 @@ class TradovateAuto:
                        f"({r['vivas_antes']} → 0), com a posição zerada.")
         self.log(f"   ✅ {r['motivo']}")
         return r
+
+    # ==================================================================
+    #  A SEGUNDA ROTA: "Sair de todas as posições / Cancelar todas"
+    # ==================================================================
+    #  20/08, 12:26: eu cliquei em 'Sair em Mkt & Cxl' e as TRÊS ordens
+    #  continuaram vivas. Relatei isso corretamente ("NÃO cancelei, cancele na
+    #  mão") — mas parar ali era desistir cedo demais, porque o próprio
+    #  diagnóstico de leitura que eu imprimo a cada ciclo trazia, na lista de
+    #  textos com "posi" na tela:
+    #
+    #      · 'Sair de todas as posições Cancelar todas'
+    #
+    #  Ou seja: existia um segundo botão, explícito, visível, no DOM dele, e eu
+    #  nunca tentei. Estava escrito no meu próprio log.
+    #
+    #  Por que o primeiro clique falha às vezes: o 'Sair em Mkt & Cxl' fica num
+    #  seletor combinado, e o alvo do clique pode cair na parte do menu em vez
+    #  da parte do botão. Este aqui é um botão inteiro, sem seletor.
+    _JS_CANCELAR_TODAS = r"""
+    (function(){
+      function vis(el){try{var r=el.getBoundingClientRect();
+        return r.width>0&&r.height>0;}catch(e){return false;}}
+      function txt(el){try{return (el.innerText||el.textContent||'')
+        .replace(/\s+/g,' ').trim();}catch(e){return '';}}
+      function norm(s){return (s||'').toString().normalize('NFD')
+        .replace(/[̀-ͯ]/g,'').toLowerCase();}
+      // "Cancelar todas", "Cancelar todos", "Cancel All", e o botão duplo
+      // "Sair de todas as posicoes Cancelar todas".
+      var re=/(cancelar tod[oa]s|cancel all)/;
+      // REVERTER/INVERTER continua proibido pelo mesmo motivo de sempre:
+      // abrir posicao contraria e pior do que nao cancelar.
+      var proibido=/(revers|inverter)/;
+      var melhor=null;
+      var els=document.querySelectorAll('button,[role=button],a,div,span');
+      for(var i=0;i<els.length;i++){
+        var el=els[i];
+        if(!vis(el)) continue;
+        var t=txt(el);
+        if(!t || t.length>60) continue;
+        var n=norm(t);
+        if(!re.test(n) || proibido.test(n)) continue;
+        var r=el.getBoundingClientRect();
+        // O MENOR elemento que contem o texto e o proprio botao; os maiores
+        // sao os paineis em volta, e clicar no centro de um painel erra o alvo
+        // — foi o que aconteceu com o clique em (1400, 79).
+        var a=r.width*r.height;
+        if(a < 40) continue;                 // pequeno demais para ser botao
+        if(!melhor || a < melhor.area)
+          melhor={el:el, area:a, texto:t,
+                  x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)};
+      }
+      if(!melhor) return JSON.stringify({achou:false});
+      try{
+        var alvo=(melhor.el.closest && melhor.el.closest('button,[role=button],a'))
+                 || melhor.el;
+        alvo.click();
+      }catch(e){}
+      return JSON.stringify({achou:true, texto:melhor.texto,
+                             x:melhor.x, y:melhor.y});
+    })()
+    """
+
+    def cancelar_todas_as_ordens(self):
+        """Clica no botão 'Cancelar todas' da Tradovate. Devolve (ok, detalhe).
+
+        É a SEGUNDA rota, e ela não zera posição: cancela ordem. Por isso é
+        mais segura que o 'Sair em Mkt & Cxl' — mas continua vindo depois
+        dele, porque o que ele pediu foi o primeiro."""
+        try:
+            d = json.loads(self.avaliar_js(self._JS_CANCELAR_TODAS) or "{}")
+        except ConexaoPerdida:
+            raise
+        except Exception as e:
+            return False, str(e)
+        if not d.get("achou"):
+            return False, "não achei o botão 'Cancelar todas' na tela"
+        self.log(f"   🧹 cliquei também em '{d.get('texto')}' "
+                 f"({d.get('x')},{d.get('y')}).")
+        time.sleep(0.6)
+        try:
+            self._confirmar_dialogo_de_cancelamento()
+        except ConexaoPerdida:
+            pass
+        time.sleep(0.9)
+        return True, d.get("texto")
 
     def _confirmar_dialogo_de_cancelamento(self):
         """Confirma a caixa de 'tem certeza?' do cancelamento — e SÓ ela.

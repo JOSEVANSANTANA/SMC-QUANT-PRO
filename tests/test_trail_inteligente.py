@@ -184,11 +184,21 @@ class TestDesligarAIALocal(unittest.TestCase):
         self.assertIn("ia_local_ligada() and ia_local_no_ar()",
                       fonte[i:i + 900])
 
-    def test_ligada_por_padrao(self):
-        """Quem nunca mexeu na caixinha não pode perder um degrau da escada."""
+    def test_DESLIGADA_por_padrao_desde_20_08(self):
+        """O padrão virou de lado, e a decisão foi dele: "LEMBRA DE DESLIGA A
+        LHAMA, NAO QUERO, É MUITO PESADA E SÓ ATRAPALHA, TRABALHAREMOS COM
+        OPENROUTER MESMO".
+
+        Este teste dizia o contrário até 20/08 — "quem nunca mexeu na caixinha
+        não pode perder um degrau da escada" — e o argumento estava certo
+        ENQUANTO a premissa valia: a IA local era o degrau que nunca falta
+        quando a nuvem cai. Com o OpenRouter roteando entre dezenas de
+        fornecedores, "a nuvem inteira cair" deixou de ser o caso comum; e no
+        Mac dele o Ollama nem sobe, então cada ciclo pagava a espera de um
+        modelo que ia falhar. Premissa mudou, padrão muda junto."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def ia_local_ligada")
-        self.assertIn('cfg.get("ia_local_ativa", True)', fonte[i:i + 1200])
+        self.assertIn('cfg.get("ia_local_ativa", False)', fonte[i:i + 1800])
 
     def test_a_caixinha_existe_e_grava_relendo_do_disco(self):
         fonte = fonte_do_arquivo()

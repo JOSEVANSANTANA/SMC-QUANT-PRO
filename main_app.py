@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.52.0"
+VERSAO_ATUAL = "2.53.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1709,7 +1709,20 @@ def ia_local_ligada(cfg=None):
     que não depende de conta em lugar nenhum, e religar tem de ser um clique.
     """
     cfg = carregar_config() if cfg is None else cfg
-    return bool(cfg.get("ia_local_ativa", True))
+    # DESLIGADA POR PADRÃO desde 20/08, e a decisão é dele: "LEMBRA DE DESLIGA
+    # A LHAMA, NAO QUERO, É MUITO PESADA E SÓ ATRAPALHA, TRABALHAREMOS COM
+    # OPENROUTER MESMO, NO FUTURO, CASO NECESSARIO RETOMAMOS".
+    #
+    # O padrão mudou de mão porque a premissa mudou: ela existia para ser o
+    # degrau que nunca falta quando a nuvem cai. Com o OpenRouter roteando
+    # entre dezenas de fornecedores, "a nuvem inteira cair" deixou de ser o
+    # caso comum — e no Mac dele o Ollama nem sobe (MTLCompilerService),
+    # então cada ciclo pagava a espera de um modelo que ia falhar.
+    #
+    # A caixinha continua ali, e religar é um clique. Este comentário fica
+    # para que a volta seja uma DECISÃO, e não alguém achando que o padrão
+    # sempre foi este.
+    return bool(cfg.get("ia_local_ativa", False))
 
 
 def modelos_do_provedor(pid, info=None):
@@ -18038,9 +18051,20 @@ class SmcQuantApp(ctk.CTk):
                 # e a verdade que produziu "+US$2.212,20 / win rate 100%" com a
                 # corretora marcando (2.113,97).
                 _inc = stats.get("incertas") or 0
+                # A HORA DO ÚLTIMO REDESENHO.
+                # 20/08, ele: "não estou vendo nada sendo atualizado no ciclo
+                # do painel". Eu não consigo reproduzir isso daqui, e chutar
+                # uma correção num painel que talvez esteja certo é como
+                # trocar peça de carro no escuro. Este carimbo transforma a
+                # dúvida em fato: se o horário anda, o painel está vivo e o
+                # que não muda são os NÚMEROS (o que tem outra explicação —
+                # operações sem desfecho confirmado, por exemplo); se o
+                # horário congela, o problema é o redesenho, e aí eu sei
+                # exatamente onde procurar.
                 self.lbl_conta_resumo.configure(
                     text=f"Exibindo: {nome_conta_ativa()}  ·  {stats['abertas']} posição(ões) aberta(s)"
                          f"  ·  {total_contas} conta(s) cadastrada(s)"
+                         f"  ·  painel atualizado {time.strftime('%H:%M:%S')}"
                          + (f"  ·  ⚠️ {_inc} operação(ões) SEM desfecho confirmado — "
                             "o resultado abaixo está INCOMPLETO, confira o extrato"
                             if _inc else ""),

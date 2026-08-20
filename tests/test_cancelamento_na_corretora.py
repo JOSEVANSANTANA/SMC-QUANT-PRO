@@ -336,3 +336,87 @@ class TestAVoltaAoFormularioDe20_08(unittest.TestCase):
         corpo = fonte[i:i + 2000]
         self.assertIn("[class]", corpo, "o seletor tem de alcançar quem só tem classe")
         self.assertIn("baseVal", corpo, "em <svg> o className é objeto, não string")
+
+
+class TestASegundaRotaDeCancelamento(unittest.TestCase):
+    """20/08, 12:26: cliquei em 'Sair em Mkt & Cxl' e as TRÊS ordens
+    continuaram vivas. Relatei isso corretamente — mas parei ali.
+
+    E o botão que resolveria estava no MEU PRÓPRIO diagnóstico, impresso a
+    cada ciclo, na lista de textos com "posi" na tela dele:
+
+        · 'Sair de todas as posições Cancelar todas'
+
+    Existia um segundo botão, explícito, visível, e eu nunca tentei. Desistir
+    tendo uma rota inteira sem usar não é cautela — é preguiça. A cautela está
+    em conferir DE NOVO depois de clicar, que é o que continua acontecendo."""
+
+    def _fonte(self):
+        return fonte_do_arquivo(os.path.join(RAIZ, "tradovate_auto.py"))
+
+    def test_existe_a_rota_cancelar_todas(self):
+        self.assertIn("def cancelar_todas_as_ordens", self._fonte())
+
+    def test_ela_e_tentada_ANTES_de_desistir(self):
+        fonte = self._fonte()
+        i = fonte.index("def sair_em_mercado_e_cancelar(")
+        corpo = fonte[i:i + 8000]
+        i_falha = corpo.index('if depois.get("vivas"):')
+        trecho = corpo[i_falha:i_falha + 1800]
+        self.assertIn("cancelar_todas_as_ordens()", trecho)
+        self.assertIn("Cancele na mão", trecho,
+                      "e continua havendo desistência honesta no fim")
+
+    def test_a_terceira_contagem_e_quem_declara_sucesso(self):
+        """Clicar não é cancelar. Só a releitura com zero ordens autoriza o
+        'ok' — a mesma regra do primeiro botão."""
+        fonte = self._fonte()
+        i = fonte.index("def sair_em_mercado_e_cancelar(")
+        corpo = fonte[i:i + 8000]
+        self.assertIn("terceira = self.contar_ordens_vivas()", corpo)
+        i_t = corpo.index("terceira = self.contar_ordens_vivas()")
+        self.assertIn('if terceira.get("ok") and not terceira.get("vivas")',
+                      corpo[i_t:i_t + 400])
+
+    def test_reverter_continua_proibido_na_segunda_rota(self):
+        """A rota nova não pode reabrir o buraco que a primeira fechou: abrir
+        posição contrária é pior do que não cancelar."""
+        fonte = self._fonte()
+        i = fonte.index("_JS_CANCELAR_TODAS")
+        corpo = fonte[i:i + 2500]
+        self.assertIn("revers", corpo)
+        self.assertIn("proibido.test(n)", corpo)
+
+    def test_escolhe_o_MENOR_elemento_com_o_texto(self):
+        """Clicar no centro de um painel erra o alvo — foi o que produziu o
+        clique em (1400, 79) que não cancelou nada."""
+        fonte = self._fonte()
+        i = fonte.index("_JS_CANCELAR_TODAS")
+        corpo = fonte[i:i + 2500]
+        self.assertIn("a < melhor.area", corpo)
+
+
+class TestALhamaDesligadaPorPadrao(unittest.TestCase):
+    """"LEMBRA DE DESLIGA A LHAMA, NAO QUERO, É MUITO PESADA E SÓ ATRAPALHA,
+    TRABALHAREMOS COM OPENROUTER MESMO, NO FUTURO, CASO NECESSARIO RETOMAMOS".
+
+    O padrão mudou de mão porque a premissa mudou: a IA local existia para ser
+    o degrau que nunca falta quando a nuvem cai. Com o OpenRouter roteando
+    entre dezenas de fornecedores, "a nuvem inteira cair" deixou de ser o caso
+    comum — e no Mac dele o Ollama nem sobe."""
+
+    def test_desligada_por_padrao(self):
+        ns = carregar(["ia_local_ligada"], stubs={"carregar_config": lambda: {}})
+        self.assertFalse(ns["ia_local_ligada"]())
+
+    def test_mas_a_caixinha_continua_religando(self):
+        ns = carregar(["ia_local_ligada"],
+                      stubs={"carregar_config": lambda: {"ia_local_ativa": True}})
+        self.assertTrue(ns["ia_local_ligada"]())
+
+    def test_o_motivo_da_volta_fica_escrito(self):
+        """Para que religar seja uma DECISÃO, e não alguém achando que o
+        padrão sempre foi este."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def ia_local_ligada")
+        self.assertIn("religar é um clique", fonte[i:i + 1600])
