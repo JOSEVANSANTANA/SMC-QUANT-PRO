@@ -29,7 +29,9 @@ def _ns():
     return carregar(
         ["PROVEDORES_IA", "ORDEM_PROVEDORES", "_pedir_openai", "_pedir_anthropic",
          "responder_por_provedor_alternativo", "carregar_chave_provedor",
-         "ia_local_no_ar", "provedores_configurados"],
+         "ia_local_no_ar", "provedores_configurados", "modelos_do_provedor",
+         "modelos_gratuitos_openrouter", "_CACHE_MODELOS_OPENROUTER",
+         "VALIDADE_CATALOGO_SEG", "ponteiro_do_cofre_e_de_outro"],
         stubs={"carregar_config": lambda: {},
                "carregar_api_key": lambda: "",
                "dpapi_decrypt": lambda x: x,
@@ -335,8 +337,10 @@ class TestOBotaoMentiuSobreAIALocal(unittest.TestCase):
         return fonte[i:i + 7000]
 
     def test_o_teste_da_local_usa_os_modelos_INSTALADOS(self):
+        """A correção foi unificar: o botão passou a pedir a MESMA função que
+        a fila usa, em vez de manter a sua própria ideia do que tentar."""
         corpo = self._corpo()
-        self.assertIn("ia_local_no_ar()", corpo)
+        self.assertIn("modelos_do_provedor(pid, info)", corpo)
         self.assertIn('if info.get("sem_chave"):', corpo)
 
     def test_ollama_vazio_diz_o_comando_para_resolver(self):

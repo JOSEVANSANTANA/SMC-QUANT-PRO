@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.48.0"
+VERSAO_ATUAL = "2.48.1"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1034,23 +1034,37 @@ PROVEDORES_IA = {
     # queda de fornecedor ("You have no credits remaining", 12/08) que deixou
     # a mesa muda; é esse tipo de queda que ele resolve.
     #
-    # A LISTA COMEÇA PELOS GRATUITOS (sufixo ':free'). Assim a conta dele não
-    # é consumida sem ele pedir: se todos os gratuitos estiverem esgotados no
-    # momento, a fila desce sozinha para os pagos — mas nessa ordem, nunca ao
-    # contrário. Gratuito primeiro é decisão de custo, não de qualidade.
+    # A LISTA VEM DA PRÓPRIA OPENROUTER, e esta linha é a correção de 20/08.
+    #
+    # Eu tinha escrito quatro nomes de modelo aqui de cabeça
+    # ('deepseek/deepseek-chat-v3.1:free' e companhia). NENHUM DOS QUATRO
+    # EXISTE — conferi contra o catálogo dela, que hoje tem 414 modelos. Os
+    # quatro 404 no log dele ("o modelo pedido não existe para esta conta")
+    # eram isso: a chave estava boa, autenticou, e eu pedi coisas que não
+    # existem. Nome de modelo escrito de cabeça envelhece entre a hora em que
+    # eu escrevo e a hora em que ele usa.
+    #
+    # `descobrir` diz de onde vem a lista de verdade. O catálogo da OpenRouter
+    # é PÚBLICO — nem precisa de chave para consultar —, então dá para saber os
+    # nomes certos antes mesmo de tentar a primeira pergunta.
+    #
+    # E a lista descoberta é só de GRATUITOS, de propósito. A conta dele nunca
+    # comprou crédito (o log traz o 402 dizendo isso com todas as letras), e
+    # gastar dinheiro dele sem ele ter pedido não é papel deste programa. Os
+    # pagos saíram daqui: quando ele quiser, coloca crédito e escolhe.
     "openrouter": {
         "rotulo": "OpenRouter (uma chave, dezenas de fornecedores)",
         "formato": "openai",
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "onde_pegar": "https://openrouter.ai/keys",
+        "descobrir": "openrouter",
+        # Reserva, para quando o catálogo não responder. Conferidos no
+        # catálogo real em 20/08 — mas mesmo assim são reserva, não a fonte.
         "modelos": [
-            "deepseek/deepseek-chat-v3.1:free",
-            "meta-llama/llama-3.3-70b-instruct:free",
-            "google/gemini-2.0-flash-exp:free",
-            "qwen/qwen-2.5-72b-instruct:free",
-            # Pagos, e só depois que os gratuitos falharem todos.
-            "openai/gpt-4o-mini",
-            "anthropic/claude-3.5-sonnet",
+            "openrouter/free",
+            "openai/gpt-oss-20b:free",
+            "google/gemma-4-31b-it:free",
+            "nvidia/nemotron-nano-9b-v2:free",
         ],
     },
     "groq": {
@@ -1133,11 +1147,19 @@ def diagnostico_de_provedor(erro, rotulo=""):
     quem = f"{rotulo}: " if rotulo else ""
     if not e:
         return f"{quem}não veio resposta nem erro. Tente de novo em instantes."
-    if "NO CREDITS" in E or "INSUFFICIENT_QUOTA" in E or "BILLING" in E:
-        return (f"{quem}a chave é VÁLIDA, mas a conta está SEM CRÉDITO. "
-                "Não é erro de digitação nem de configuração — é saldo. "
-                "Adicione crédito no painel do provedor, ou use um provedor "
-                "com camada gratuita.")
+    # "402" e "INSUFFICIENT CREDITS" entraram em 20/08. A OpenRouter respondeu,
+    # com todas as letras, "Insufficient credits. This account never purchased
+    # credits" — e nenhum dos três padrões antigos casava com essa frase, então
+    # o programa caía no fim da função e repetia o texto cru. Pior: o resumo
+    # final dizia "o modelo não existe (404)", que era o erro de OUTRO modelo.
+    # A conta dele estava sem crédito, que é uma informação acionável, e ele
+    # nunca a recebeu em português.
+    if ("NO CREDITS" in E or "INSUFFICIENT_QUOTA" in E or "BILLING" in E
+            or "INSUFFICIENT CREDITS" in E or "402" in E):
+        return (f"{quem}a chave é VÁLIDA e foi ACEITA, mas este modelo é PAGO "
+                "e a conta está SEM CRÉDITO. Não é erro de digitação nem de "
+                "configuração — é saldo. Use os modelos gratuitos (é o que eu "
+                "faço sozinha) ou adicione crédito no painel do provedor.")
     if "429" in E or "RATE LIMIT" in E or "RESOURCE_EXHAUSTED" in E:
         return (f"{quem}limite de uso atingido agora (429). A chave funciona; "
                 "espere alguns minutos e teste de novo.")
@@ -1235,6 +1257,39 @@ def ponteiro_do_cofre_e_de_outro(pid: str, guardado: str) -> bool:
         return False          # blob do DPAPI ou texto: carrega o próprio dado
     nome = str(guardado)[len(marca):].strip()
     return bool(nome) and nome != f"chave_{pid}"
+
+
+def erro_mais_informativo(erros):
+    """De vários erros de uma tentativa, qual MERECE ser o resumo.
+
+    Vinha sendo o ÚLTIMO, por acaso — e em 20/08 isso escondeu a única linha
+    útil da rodada. A OpenRouter devolveu 404 em quatro modelos (nomes que eu
+    tinha errado), 402 em um ("Insufficient credits", que é um fato sobre a
+    CONTA dele) e 404 no último. O resumo copiou o último e anunciou "o modelo
+    pedido não existe" — enterrando o 402 no meio da lista.
+
+    A ordem aqui é por quanto o erro diz sobre o que FAZER: saldo e credencial
+    são coisas dele; nome de modelo errado é coisa minha e ele não pode
+    resolver."""
+    erros = [e for e in (erros or []) if e is not None]
+    if not erros:
+        return None
+
+    def peso(e):
+        E = str(e).upper()
+        if "402" in E or "INSUFFICIENT CREDITS" in E or "NO CREDITS" in E:
+            return 0        # saldo: fato sobre a conta dele, acionável
+        if "401" in E or "UNAUTHORIZED" in E or "INVALID_API_KEY" in E:
+            return 1        # credencial: também dele
+        if "403" in E or "PERMISSION" in E:
+            return 2
+        if any(x in E for x in ("TIMEOUT", "CONNECTION", "SSL")):
+            return 3        # rede: dele, mas passageiro
+        if "404" in E:
+            return 5        # nome de modelo: problema MEU, ele não resolve
+        return 4
+
+    return sorted(erros, key=peso)[0]
 
 
 def carregar_chave_provedor(pid: str) -> str:
@@ -1563,6 +1618,82 @@ def ia_local_no_ar(timeout=1.5):
         return []
 
 
+# O catálogo da OpenRouter muda toda semana — modelo entra, modelo sai, modelo
+# deixa de ser gratuito. Guardar por algumas horas evita uma consulta por
+# pergunta sem deixar a lista envelhecer dentro do pregão.
+_CACHE_MODELOS_OPENROUTER = {"quando": 0.0, "lista": []}
+VALIDADE_CATALOGO_SEG = 6 * 3600
+
+
+def modelos_gratuitos_openrouter(timeout=12, agora=None, forcar=False):
+    """Quais modelos a OpenRouter tem AGORA, e quais deles custam zero.
+
+    POR QUE PERGUNTAR EM VEZ DE ESCREVER A LISTA. Eu escrevi quatro nomes de
+    cabeça e os quatro estavam errados — o log dele mostrou quatro 404
+    seguidos, com a chave já autenticando. O catálogo tem 414 modelos e muda
+    sozinho; qualquer lista que eu digite aqui começa a apodrecer no mesmo dia.
+
+    SÓ OS GRATUITOS. A conta dele nunca comprou crédito, e o 402 do log diz
+    isso com todas as letras ("This account never purchased credits"). Mais do
+    que isso: gastar dinheiro dele sem ele ter pedido não é papel do programa.
+    Quando ele quiser os pagos, põe crédito e escolhe.
+
+    Devolve [] quando não der para consultar — e [] significa 'não sei', não
+    'não existe nenhum'. Quem chama cai na reserva."""
+    agora = time.time() if agora is None else agora
+    if (not forcar and _CACHE_MODELOS_OPENROUTER["lista"]
+            and agora - _CACHE_MODELOS_OPENROUTER["quando"] < VALIDADE_CATALOGO_SEG):
+        return list(_CACHE_MODELOS_OPENROUTER["lista"])
+    try:
+        # SEM CHAVE DE PROPÓSITO: o catálogo é público. Assim eu já sei os
+        # nomes certos antes da primeira pergunta — e um erro aqui nunca é
+        # confundido com "a chave dele não presta".
+        r = requests.get("https://openrouter.ai/api/v1/models", timeout=timeout)
+        if r.status_code != 200:
+            return []
+        dados = (r.json() or {}).get("data") or []
+    except Exception:
+        return []
+
+    def custa_zero(m):
+        p = m.get("pricing") or {}
+        try:
+            return (float(p.get("prompt") or 0) == 0
+                    and float(p.get("completion") or 0) == 0)
+        except (TypeError, ValueError):
+            return False
+
+    lista = [m.get("id") for m in dados
+             if m.get("id") and custa_zero(m)]
+    # O ROTEADOR AUTOMÁTICO NA FRENTE. 'openrouter/free' não é um modelo: é a
+    # própria OpenRouter escolhendo entre os gratuitos que estiverem de pé no
+    # momento. É exatamente a resiliência que fez este provedor ser o primeiro
+    # da fila — e ela não serve de nada se eu insistir num nome fixo.
+    lista.sort(key=lambda i: (i != "openrouter/free", i))
+    if lista:
+        _CACHE_MODELOS_OPENROUTER["lista"] = list(lista)
+        _CACHE_MODELOS_OPENROUTER["quando"] = agora
+    return lista
+
+
+def modelos_do_provedor(pid, info=None):
+    """Os modelos a tentar para este provedor, nesta máquina, agora.
+
+    Um lugar só para a pergunta "o que eu tento?", porque ela já tinha duas
+    respostas diferentes no programa — a fila filtrava os modelos da IA local
+    pelos que estão baixados, e o botão de testar tentava a lista fixa. Isso
+    virou quatro 404 num Mac com o Ollama de pé, e ele acreditando que a IA
+    local não funcionava."""
+    info = info or PROVEDORES_IA.get(pid) or {}
+    if info.get("sem_chave"):
+        instalados = ia_local_no_ar()
+        return [m for m in info.get("modelos", []) if m in instalados] \
+            or instalados[:2]
+    if info.get("descobrir") == "openrouter":
+        return modelos_gratuitos_openrouter() or list(info.get("modelos", []))
+    return list(info.get("modelos", []))
+
+
 def provedores_configurados():
     """Quais alternativos estão USÁVEIS agora. Lista vazia = só a Gemini.
 
@@ -1754,17 +1885,15 @@ def responder_por_provedor_alternativo(mensagens, log=None, apenas=None):
         # fixa: tentar 'qwen2.5:7b' num computador que só tem 'llama3.1:8b'
         # falharia quatro vezes antes de acertar por acaso.
         if info.get("sem_chave"):
-            instalados = ia_local_no_ar()
-            if not instalados:
-                continue
             chave = "local"          # o Ollama ignora o Bearer; precisa existir
-            modelos = ([m for m in info["modelos"] if m in instalados]
-                       or instalados[:2])
+            modelos = modelos_do_provedor(pid, info)
+            if not modelos:
+                continue
         else:
             chave = carregar_chave_provedor(pid)
             if not chave:
                 continue
-            modelos = info["modelos"]
+            modelos = modelos_do_provedor(pid, info)
         for modelo in modelos:
             try:
                 txt = pedir_ao_provedor(info, chave, modelo, mensagens)
@@ -15127,18 +15256,21 @@ class SmcQuantApp(ctk.CTk):
                 # os quatro 404 do teste e, logo abaixo, "✅ IA LOCAL no ar.
                 # Modelos: qwen2.5vl:3b, qwen2.5:3b". O botão estava errado, e
                 # ele passou a duvidar da parte que funcionava.
-                modelos = info["modelos"]
+                modelos = modelos_do_provedor(pid, info)
                 if info.get("sem_chave"):
-                    instalados = ia_local_no_ar()
                     chave = "local"
-                    modelos = ([m for m in modelos if m in instalados]
-                               or instalados[:2])
                     if not modelos:
                         self.log(f"   ❌ {info['rotulo']}: o Ollama não tem "
                                  "modelo nenhum baixado. Rode "
                                  "'ollama pull qwen2.5:7b' no Terminal.")
                         continue
-                ok, ultimo = False, None
+                elif info.get("descobrir") == "openrouter":
+                    self.log(f"   📚 {len(modelos)} modelo(s) GRATUITO(S) no "
+                             f"catálogo da OpenRouter agora. Vou pelo "
+                             f"'{modelos[0]}'." if modelos else
+                             "   ⚠️ não consegui ler o catálogo da OpenRouter — "
+                             "vou pela lista de reserva.")
+                ok, erros = False, []
                 for modelo in modelos:
                     try:
                         msg = [{"role": "user",
@@ -15150,9 +15282,11 @@ class SmcQuantApp(ctk.CTk):
                             ok = True
                             break
                     except Exception as e:
-                        ultimo = e
+                        erros.append(e)
                         self.log(f"   ⚠️ {info['rotulo']} / {modelo}: "
                                  f"{diagnostico_de_provedor(e, info['rotulo'])}")
+                # O RESUMO PEGA O ERRO QUE MAIS DIZ, não o último por acaso.
+                ultimo = erro_mais_informativo(erros)
                 if not ok:
                     # A CAUSA REAL VEM NA RESPOSTA DA API — e estava sendo
                     # trocada por um palpite triplo. No log de 12/08 a OpenAI

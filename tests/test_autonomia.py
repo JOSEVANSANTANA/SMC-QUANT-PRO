@@ -274,11 +274,18 @@ class TestIALocalSemChave(unittest.TestCase):
     def test_os_modelos_tentados_sao_os_que_estao_baixados(self):
         """Tentar 'qwen2.5:7b' numa máquina que só tem 'llama3.1:8b' falharia
         quatro vezes antes de acertar por acaso."""
+        # O filtro mudou de CASA, não de comportamento: saiu de dentro de
+        # `responder_por_provedor_alternativo` para `modelos_do_provedor`,
+        # que agora responde a pergunta "o que eu tento?" para a fila E para
+        # o botão de testar. Eram duas respostas diferentes, e a do botão
+        # estava errada — quatro 404 num Mac com o Ollama de pé.
         fonte = fonte_do_arquivo()
-        i = fonte.index("def responder_por_provedor_alternativo")
-        bloco = fonte[i:i + 2200]
+        i = fonte.index("def modelos_do_provedor")
+        bloco = fonte[i:i + 1400]
         self.assertIn("instalados = ia_local_no_ar()", bloco)
         self.assertIn("or instalados[:2]", bloco)
+        i2 = fonte.index("def responder_por_provedor_alternativo")
+        self.assertIn("modelos_do_provedor(pid, info)", fonte[i2:i2 + 2200])
 
 
 if __name__ == "__main__":
