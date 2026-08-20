@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.45.1"
+VERSAO_ATUAL = "2.46.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -4095,6 +4095,126 @@ def progresso_do_aprendizado(minimo=3):
     return prontos, faltando, len(db)
 
 
+def relatorio_de_acerto(db=None, total_sugestoes=None):
+    """A TAXA DE ACERTO DO MOTOR, contada dos desfechos REAIS.
+
+    19/08, ele: "futuramente eu preciso ter em registro a media de acertos do
+    motor, portanto, preciso que comece a registrar de forma bem criteriosa
+    todas as sugestoes que me enviar, confrontando posteriormente em
+    conferencia com o preco se de fato a sugestao foi uma sugestao valida".
+
+    O REGISTRO JÁ EXISTE, e é bom: toda sugestão que sai vira uma linha no
+    diário de sinais, e o motor ACOMPANHA cada cenário contra o preço da tela
+    até ele resolver — no alvo ou no stop —, gravando o desfecho com entrada,
+    saída, R-múltiplo, P&L e as confluências que estavam na leitura. Isso vale
+    inclusive para o que ele NÃO acatou: é o desempenho do MOTOR, não o dele.
+
+    O que faltava era a conta, e ela precisa incluir o que ainda não resolveu.
+    Uma taxa de acerto calculada só sobre o que fechou é a estatística mais
+    fácil de enganar que existe: se metade das sugestões continua em aberto,
+    "70% de acerto" não quer dizer nada. Por isso `pendentes` sai junto, e o
+    texto do relatório se recusa a cravar número com amostra pequena.
+
+    Função PURA. Devolve um dicionário; sem histórico, devolve zeros — nunca
+    um palpite."""
+    db = carregar_performance() if db is None else list(db)
+    resolvidas = [op for op in db if op.get("resultado") in ("WIN", "LOSS")]
+    total = len(resolvidas)
+    wins = [op for op in resolvidas if op.get("resultado") == "WIN"]
+    losses = [op for op in resolvidas if op.get("resultado") == "LOSS"]
+
+    def _r(op):
+        try:
+            return float(op.get("r_multiplo") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _usd(op):
+        try:
+            return float(op.get("pnl_usd") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    soma_r = sum(_r(op) for op in resolvidas)
+    por_direcao = {}
+    for lado in ("BUY", "SELL"):
+        do_lado = [op for op in resolvidas if str(op.get("direcao")) == lado]
+        if do_lado:
+            g = sum(1 for op in do_lado if op.get("resultado") == "WIN")
+            por_direcao[lado] = (g, len(do_lado), g / len(do_lado) * 100.0)
+
+    pendentes = None
+    if total_sugestoes is not None:
+        try:
+            pendentes = max(0, int(total_sugestoes) - total)
+        except (TypeError, ValueError):
+            pendentes = None
+
+    return {
+        "resolvidas": total,
+        "acertos": len(wins),
+        "erros": len(losses),
+        "taxa": (len(wins) / total * 100.0) if total else 0.0,
+        "r_total": round(soma_r, 2),
+        # EXPECTATIVA em R por sugestão: é o número que diz se a coisa paga.
+        # Taxa de acerto sozinha mente — 90% de acerto com 1:0,1 perde dinheiro.
+        "r_medio": round(soma_r / total, 3) if total else 0.0,
+        "usd_total": round(sum(_usd(op) for op in resolvidas), 2),
+        "melhor_r": round(max((_r(op) for op in resolvidas), default=0.0), 2),
+        "pior_r": round(min((_r(op) for op in resolvidas), default=0.0), 2),
+        "por_direcao": por_direcao,
+        "pendentes": pendentes,
+    }
+
+
+# Abaixo disto, taxa de acerto é ruído com cara de estatística. Não é número
+# escolhido no chute: com menos de 20 amostras, uma sequência de sorte move a
+# taxa em dezenas de pontos, e cravar um número ali é convidar a decidir
+# dinheiro em cima de acaso.
+AMOSTRA_MINIMA_ACERTO = 20
+
+
+def texto_do_relatorio_de_acerto(rel=None, minimo=AMOSTRA_MINIMA_ACERTO):
+    """O relatório em palavras. Nunca fica mudo, e nunca crava número que a
+    amostra não sustenta."""
+    if rel is None:
+        try:
+            rel = relatorio_de_acerto(
+                total_sugestoes=len(carregar_sinais_log()))
+        except Exception:
+            rel = relatorio_de_acerto()
+    n = rel.get("resolvidas", 0)
+    pend = rel.get("pendentes")
+    if not n:
+        return ("Ainda não tenho taxa de acerto: nenhum cenário meu chegou ao "
+                "fim. Cada sugestão fica sendo acompanhada contra o preço até "
+                "bater o alvo ou o stop, e é aí que ela vira estatística."
+                + (f" Há {pend} sugestão(ões) ainda em acompanhamento."
+                   if pend else ""))
+    linhas = [
+        f"ACERTO DO MOTOR — {n} cenário(s) resolvido(s): "
+        f"{rel['acertos']} no alvo, {rel['erros']} no stop "
+        f"({rel['taxa']:.0f}%).",
+        f"Resultado acumulado: {rel['r_total']:+.2f}R "
+        f"(US$ {rel['usd_total']:+,.2f}) · expectativa {rel['r_medio']:+.2f}R "
+        "por sugestão.",
+    ]
+    if rel.get("por_direcao"):
+        linhas.append("Por lado: " + " · ".join(
+            f"{lado} {pct:.0f}% ({g}/{t})"
+            for lado, (g, t, pct) in sorted(rel["por_direcao"].items())))
+    if pend:
+        linhas.append(f"Ainda em acompanhamento: {pend} sugestão(ões) — elas "
+                      "ainda não contam.")
+    if n < minimo:
+        linhas.append(
+            f"⚠️ AMOSTRA PEQUENA: {n} de {minimo}. Abaixo disso a taxa balança "
+            "dezenas de pontos por sorte, e eu não vou te deixar decidir "
+            "dinheiro em cima disso. O número está aqui para ser acompanhado, "
+            "não para ser usado ainda.")
+    return "\n".join(linhas)
+
+
 def resumo_do_aprendizado(minimo=3, quantos=4):
     """A mesma coisa em uma frase, para caber no registro e na conversa.
 
@@ -5758,6 +5878,12 @@ def responder_offline(pergunta, cenario=None):
     # responde bonito: inventa que aprendeu. Numa ferramenta que promete
     # aprender com as operações dele, aprendizado inventado é a pior mentira
     # possível — e é justamente a pergunta que ele fez em 19/08.
+    # A TAXA DE ACERTO VEM ANTES DO APRENDIZADO: "o que você aprendeu" e
+    # "quanto você acerta" são perguntas próximas, e a segunda é mais
+    # específica. Deixá-la depois faria "qual a taxa de acerto das suas
+    # sugestões" cair no relatório de padrões, que não responde isso.
+    if pergunta_sobre_acerto(pergunta):
+        return texto_do_relatorio_de_acerto()
     if pergunta_sobre_aprendizado(pergunta):
         return resumo_do_aprendizado()
     # HISTÓRICO DE SUGESTÕES: dado que está no disco dela. Vem antes da base
@@ -7252,6 +7378,30 @@ _RE_APRENDIZADO = re.compile(
     r"|\b(seu|teu)\s+aprendizado\b"
     r"|\baprendizado\s+(ate\s+agora|atual|da\s+ferramenta)\b",
     re.IGNORECASE)
+
+
+# "QUAL A SUA TAXA DE ACERTO?" — a pergunta que ele vai fazer todo dia a
+# partir de agora, e que precisa ser respondida com o número do disco, nunca
+# com uma frase simpática. Exige a palavra de MEDIDA (taxa, media, percentual,
+# quantas, quantos) junto de ACERTO/ERRO — "acertou o alvo?" sobre um trade
+# específico não é pedido de estatística.
+_RE_ACERTO = re.compile(
+    r"\b(taxa|media|médias?|percentual|porcentagem|indice|quantas|quantos|"
+    r"quanto)\b[^.?!]{0,40}\b(acert\w+|err\w+|win\s*rate|assertiv\w+)\b"
+    r"|\bwin\s*rate\b"
+    r"|\b(taxa|media)\s+de\s+acerto\b"
+    r"|\bacert\w+\s+do\s+(motor|rob[oô]|ferramenta)\b"
+    r"|\bdesempenho\s+(do\s+)?(motor|rob[oô]|das\s+sugest\w+)\b"
+    r"|\bsuas?\s+sugest\w+\s+(acert\w+|funcion\w+|d[aã]o?\s+certo)\b",
+    re.IGNORECASE)
+
+
+def pergunta_sobre_acerto(texto):
+    """Ele está pedindo a ESTATÍSTICA das sugestões, não o resultado de uma.
+
+    Função PURA. O número existe no disco; mandar essa pergunta para o modelo
+    seria pedir a ele que estimasse o próprio desempenho — e ele estimaria."""
+    return bool(_RE_ACERTO.search(_norm_busca(texto) or ""))
 
 
 def pergunta_sobre_aprendizado(texto):
@@ -10632,15 +10782,66 @@ class SmcQuantApp(ctk.CTk):
                 unidade = bot.ler_campo_por_rotulo("EXIBIR EM")
                 self.log(f"   ✅ painel ATM à vista — OBTER LUCRO {alvo!r} · "
                          f"STOP LOSS {stop!r} · EXIBIR EM {unidade!r}.")
-                if unidade and "TICK" not in str(unidade).upper():
-                    self.log("   ⚠️ 'EXIBIR EM' NÃO está em Ticks. Deixe em "
-                             "Ticks: em Preço, o mesmo número vira outra ordem.")
             else:
                 self.log("   ⚠️ painel de ATMs não está à vista. Sem ele eu "
                          "mando as três ordens separadas (entrada, stop e "
                          "alvo), que é o caminho antigo e mais frágil. Abra a "
                          "aba ATMs no 'Chamado do pedido'.")
+            self._tv_ensaio_de_ordem(bot)
+
         threading.Thread(target=tarefa, daemon=True).start()
+
+    def _tv_ensaio_de_ordem(self, bot):
+        """O ENSAIO: monta uma ordem de verdade, preenche tudo, confere — e
+        NÃO envia.
+
+        POR QUE ISTO EXISTE, e por que ele pediu no botão certo.
+        19/08, ele: "adicione nas configuracoes da automacao a opcao de
+        calibrar no momento em que clicar testar conexao, afim de nao errar no
+        momento de enviar ordens independentemente da localizacao que estiver
+        na tela".
+
+        A resposta honesta sobre CALIBRAR: este caminho não usa calibração de
+        pixel. Ele acha cada campo pelo RÓTULO, do zero, em toda ordem — então
+        já é imune a mover a janela, mudar o zoom ou trocar de monitor. O que
+        faltava não era calibrar: era ENSAIAR. Ler os campos um a um diz que
+        eles existem; só o ensaio inteiro prova que a ordem SAIRIA — e teria
+        pego, na máquina dele, o falso positivo que bloqueou a ordem de 20:50.
+
+        Não envia nada: `enviar=False`. O que fica é o ticket preenchido com um
+        cenário de teste, e isso é dito por extenso no fim."""
+        try:
+            preco = bot.ler_preco()
+        except Exception:
+            preco = None
+        if not preco:
+            self.log("   ⚠️ não consegui ler o preço ao vivo da plataforma — "
+                     "sem ele não dá para montar o ensaio. O resto do "
+                     "diagnóstico acima continua valendo.")
+            return
+        ativo = getattr(self, "_ultimo_ativo_lido", "") or ""
+        tick = tick_do_ativo(ativo) or 0.25
+        self.log(f"   🧪 ENSAIO (não envia nada): montando uma ordem de teste "
+                 f"a partir do preço ao vivo {preco}…")
+        # Cenário de teste coerente e curto: 8 ticks de stop, 16 de alvo.
+        entrada = round(preco / tick) * tick
+        res = bot.enviar_ordem_com_atm(
+            "BUY", entrada, entrada - 8 * tick, entrada + 16 * tick, tick,
+            qtd=1, enviar=False,
+            trailing=tradovate_auto.plano_trailing(
+                8, ligado=bool(getattr(self, "tv_trail_var", None)
+                               and self.tv_trail_var.get())))
+        if res.get("ok"):
+            self.log("   ━━━ ✅ ENSAIO OK. Todos os campos foram preenchidos e "
+                     "CONFERIDOS na tela. Se um cenário sair agora, a ordem "
+                     "vai. ━━━")
+            self.log("   ℹ️ O ticket ficou com o cenário de teste (1 contrato, "
+                     "8 ticks de stop). Nada foi enviado; a próxima ordem "
+                     "reescreve tudo.")
+        else:
+            self.log(f"   ━━━ ❌ ENSAIO FALHOU: {res.get('erro')} ━━━")
+            self.log("   Resolva isto ANTES de deixar o modo autônomo ligado — "
+                     "é exatamente o que impediria a ordem de sair.")
 
     # ------------------------------------------------------------------
     # PLATAFORMA DE ANÁLISE — detecção automática + ajuste manual
@@ -12550,6 +12751,13 @@ class SmcQuantApp(ctk.CTk):
         # fora, "ainda não tenho dados" e "isto não funciona" são a mesma tela.
         try:
             partes.append("• " + resumo_do_aprendizado())
+        except Exception:
+            pass
+        # A TAXA DE ACERTO DO MOTOR, do disco, no contexto da conversa.
+        # Sem ela aqui, perguntar "as suas sugestões funcionam?" no meio de um
+        # papo levaria o modelo a ESTIMAR o próprio desempenho — e ele estima.
+        try:
+            partes.append("• " + texto_do_relatorio_de_acerto().replace("\n", " "))
         except Exception:
             pass
         ua = getattr(self, "_ultima_analise", None) or {}
@@ -15046,11 +15254,22 @@ class SmcQuantApp(ctk.CTk):
                     res = bot.enviar_ordem_com_atm(
                         direcao, entry, stop, alvo, tick, qtd=qtd,
                         enviar=not dry, trailing=trailing)
-                    if not res.get("ok") and res.get("erro") and not res.get("exposto"):
-                        # A ATM não conseguiu montar a ordem e NADA foi enviado
-                        # — este é o único momento em que cair para o caminho
-                        # antigo é seguro, justamente porque não há posição.
-                        self.log(f"↩️ ATM não montou a ordem ({res['erro']}). "
+                    if res.get("recusa_de_seguranca"):
+                        # ELA SE RECUSOU. NÃO EXISTE 'TENTAR OUTRO JEITO'.
+                        # 19/08: a ATM disse "não mando assim" (unidade errada
+                        # na tela) e o programa caiu para o caminho antigo —
+                        # que manda a entrada primeiro e a proteção depois.
+                        # A trava disse não e a reserva tentou mesmo assim.
+                        self.log("⛔ Não vou tentar por outro caminho: o motivo "
+                                 "da recusa vale para qualquer caminho, e o "
+                                 "antigo ainda manda a entrada antes da "
+                                 "proteção. Resolva o que está no aviso acima "
+                                 "e o próximo ciclo já vai.")
+                    elif not res.get("ok") and not res.get("exposto"):
+                        # Aqui é FALTA DE RECURSO (sem painel de ATMs), não
+                        # recusa: o caminho antigo é a alternativa legítima, e
+                        # é seguro porque nada foi enviado.
+                        self.log(f"↩️ ATM indisponível ({res.get('erro')}). "
                                  "Tentando pelo caminho antigo, com as três "
                                  "ordens separadas.")
                         res = None
@@ -18282,6 +18501,10 @@ class SmcQuantApp(ctk.CTk):
         # aprendizado funcionando.
         try:
             self.log("📚 " + resumo_do_aprendizado())
+        except Exception:
+            pass
+        try:
+            self.log("🎯 " + texto_do_relatorio_de_acerto().replace("\n", " "))
         except Exception:
             pass
         # EM QUE MODO ELE ESTÁ SUBINDO. Ligar o motor sem saber se ele vai

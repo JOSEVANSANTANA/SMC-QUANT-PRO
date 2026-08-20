@@ -669,6 +669,21 @@ class TradovateAuto:
           // Preço) muda o SIGNIFICADO do número que eu escrevo logo abaixo.
           // Para LEITURA, então, vale o texto do controle vizinho.
           if (p.valor === null || p.valor === undefined){
+            // O MAIS PRÓXIMO DO RÓTULO — e este critério me custou uma ordem.
+            //
+            // 19/08, 20:50: a linha do 'EXIBIR EM' tem o seletor "Ticks"
+            // logo ao lado E, mais à direita, o cabeçalho "PREÇO" da coluna
+            // de preços do ATM. Eu desempatava pela MENOR ÁREA, e o
+            // cabeçalho "PREÇO" (um texto solto) é menor que a caixa do
+            // seletor. Resultado: o robô leu 'Preço' onde a tela dizia
+            // 'Ticks', bloqueou a própria ordem por uma regra certa aplicada
+            // a um dado errado, e ainda mandou o trader "deixar em Ticks" —
+            // que já estava.
+            //
+            // A distância é o critério certo: quem responde por um rótulo é
+            // o controle ao lado dele, não o texto mais magro da linha. A
+            // área só desempata entre elementos que começam no mesmo ponto
+            // (o contêiner e o texto dentro dele).
             var textoMelhor = null;
             for (var q=0;q<els.length;q++){
               var e2 = els[q];
@@ -678,9 +693,13 @@ class TradovateAuto:
               var r2 = e2.getBoundingClientRect();
               if (Math.abs(r2.top + r2.height/2 - meio) > tolerancia) continue;
               if (r2.left < lr.right) continue;
+              var d2 = r2.left - lr.right;
               var a2 = r2.width * r2.height;
-              if (!textoMelhor || a2 < textoMelhor.area)
-                textoMelhor = {texto:t2, area:a2};
+              if (!textoMelhor
+                  || d2 < textoMelhor.dist - 4
+                  || (Math.abs(d2 - textoMelhor.dist) <= 4
+                      && a2 < textoMelhor.area))
+                textoMelhor = {texto:t2, dist:d2, area:a2};
             }
             if (textoMelhor)
               return {estado:'OK', valor:textoMelhor.texto, tipo:'texto'};
@@ -1852,8 +1871,16 @@ class TradovateAuto:
         `trailing` é None (não mexe no AUTO TRAIL) ou um dict com
         {stop, acionar, frequencia} em ticks.
 
-        Devolve (ok, detalhe). A conferência é por leitura de volta, campo a
-        campo: é ela que separa 'escrevi' de 'entrou'."""
+        Devolve (ok, detalhe, sem_painel). A conferência é por leitura de
+        volta, campo a campo: é ela que separa 'escrevi' de 'entrou'.
+
+        `sem_painel` separa DUAS coisas que não podem ser confundidas:
+          • "não tem painel de ATMs aqui"  -> não dá para usar este caminho;
+            quem chama pode tentar outro.
+          • "tem, e eu me RECUSO a enviar" -> unidade errada, campo que não
+            confere, cenário incoerente. Aqui NÃO existe 'tentar outro
+            caminho': o outro caminho manda a entrada primeiro e a proteção
+            depois, que é exatamente o risco de que a recusa está fugindo."""
         def _lote():
             pedidos = [
                 # A UNIDADE VEM PRIMEIRO, E É LIDA, NÃO ESCRITA.
@@ -1880,12 +1907,15 @@ class TradovateAuto:
         if res[1].get("estado") != "OK" or res[2].get("estado") != "OK":
             if self.abrir_painel_atm():
                 pedidos, res = _lote()
+            else:
+                return False, ("o painel de ATMs não está à vista no 'Chamado "
+                               "do pedido'"), True
 
         unidade = res[0].get("valor") if res[0].get("estado") == "OK" else None
         if unidade and "TICK" not in str(unidade).upper():
             return False, (f"'EXIBIR EM' está em {unidade!r}, não em Ticks — "
                            "nessa unidade o número que eu escrevo vira PREÇO, "
-                           "não distância. Não envio assim")
+                           "não distância. Não envio assim"), False
         if not unidade:
             self.log("   ⚠️ não consegui LER o seletor 'EXIBIR EM'. Confirme "
                      "que ele está em Ticks na Tradovate.")
@@ -1893,29 +1923,29 @@ class TradovateAuto:
         for (rotulo, ocorrencia, valor), r in zip(pedidos[1:], res[1:]):
             onde = f"{rotulo}" + (" (auto trail)" if ocorrencia else "")
             if r.get("estado") != "OK":
-                return False, f"campo {onde}: {r.get('estado', 'SEM_RESPOSTA')}"
+                return False, f"campo {onde}: {r.get('estado', 'SEM_RESPOSTA')}", False
             if not valores_batem(valor, r.get("valor", "")):
                 return False, (f"campo {onde}: escrevi {valor!r} e o campo "
-                               f"ficou {r.get('valor')!r}")
+                               f"ficou {r.get('valor')!r}"), False
         self.log(f"   🛡️ ATM conferida na tela: alvo {int(ticks_alvo)} ticks · "
                  f"stop {int(ticks_stop)} ticks"
                  + (f" · auto trail {trailing['stop']} ticks a partir de "
                     f"{trailing['acionar']}" if trailing else ""))
-        return True, "todos os campos conferidos"
+        return True, "todos os campos conferidos", False
 
     def _preencher_ordem_atm(self, palavra_dir, entrada, qtd, tipo, tick,
                              t_stop, t_alvo, trailing, pausa):
         """Deixa o ticket PRONTO e conferido. Não envia nada.
 
-        Devolve (ok, erro). Separado do envio de propósito: enquanto só se
+        Devolve (ok, erro, sem_painel). Separado do envio de propósito: enquanto só se
         preenche, repetir é seguro — nenhuma ordem foi para o mercado. É essa
         separação que permite tentar de novo quando o Chrome engasga."""
         if not self._garantir_formulario():
-            return False, "formulário do ticket não está à vista"
+            return False, "formulário do ticket não está à vista", False
 
         d = self.localizar(palavra_dir)
         if not d:
-            return False, f"botão '{palavra_dir}' não encontrado"
+            return False, f"botão '{palavra_dir}' não encontrado", False
         self.clicar_pagina(d["x"], d["y"])
         time.sleep(pausa)
 
@@ -1930,18 +1960,18 @@ class TradovateAuto:
             pedidos.append((self.ROTULO_QTD, 0, int(qtd)))
         res = self.campos_por_rotulo(pedidos)
         if res[0].get("estado") != "OK":
-            return False, f"campo PREÇO: {res[0].get('estado', 'SEM_RESPOSTA')}"
+            return False, f"campo PREÇO: {res[0].get('estado', 'SEM_RESPOSTA')}", False
         if not valores_batem(entrada, res[0].get("valor", ""), float(tick) / 2):
             return False, (f"campo PREÇO: escrevi {entrada!r} e o campo ficou "
-                           f"{res[0].get('valor')!r}")
+                           f"{res[0].get('valor')!r}"), False
         self.log(f"   ✏️ preço {entrada} conferido no campo "
                  f"({res[0].get('valor')}).")
         if qtd is not None:
             if res[1].get("estado") != "OK":
-                return False, f"campo QTD: {res[1].get('estado', 'SEM_RESPOSTA')}"
+                return False, f"campo QTD: {res[1].get('estado', 'SEM_RESPOSTA')}", False
             if not valores_batem(int(qtd), res[1].get("valor", "")):
                 return False, (f"campo QTD: escrevi {int(qtd)} e o campo ficou "
-                               f"{res[1].get('valor')!r}")
+                               f"{res[1].get('valor')!r}"), False
             self.log(f"   ✏️ quantidade {int(qtd)} conferida no campo.")
         time.sleep(pausa)
 
@@ -1963,6 +1993,9 @@ class TradovateAuto:
         if erro:
             resultado["erro"] = erro
             resultado["faltando"] = ["ENTRADA", "STOP", "ALVO"]
+            # Cenário incoerente é RECUSA, não falta de recurso: mandar o
+            # mesmo cenário por outro caminho não o torna coerente.
+            resultado["recusa_de_seguranca"] = True
             self.log(f"   ⛔ não envio: {erro}")
             return resultado
         resultado["ticks_stop"], resultado["ticks_alvo"] = t_stop, t_alvo
@@ -1986,14 +2019,15 @@ class TradovateAuto:
         # perdeu por um engasgo de socket, com o ticket praticamente pronto.
         # Enquanto NADA foi enviado, tentar de novo (reconectando) não tem
         # risco nenhum — e é a diferença entre operar e não operar.
-        ok, det = False, "não tentei"
+        ok, det, sem_painel = False, "não tentei", False
         for tentativa in range(max(1, int(tentativas))):
             try:
-                ok, det = self._preencher_ordem_atm(
+                ok, det, sem_painel = self._preencher_ordem_atm(
                     palavra_dir, entrada, qtd, tipo, tick, t_stop, t_alvo,
                     trailing, pausa)
             except ConexaoPerdida as e:
-                ok, det = False, f"a ligação com o Chrome engasgou: {e}"
+                ok, det, sem_painel = (
+                    False, f"a ligação com o Chrome engasgou: {e}", False)
             if ok:
                 break
             if tentativa + 1 < max(1, int(tentativas)):
@@ -2008,6 +2042,14 @@ class TradovateAuto:
         if not ok:
             resultado["erro"] = det
             resultado["faltando"] = ["ENTRADA", "STOP", "ALVO"]
+            resultado["sem_atm"] = bool(sem_painel)
+            # RECUSA NÃO É INDISPONIBILIDADE, e confundir as duas quase custou
+            # caro em 19/08: a ATM se recusou a enviar (por um motivo que era
+            # meu, mas ainda assim uma recusa) e o programa CAIU PARA O CAMINHO
+            # ANTIGO, que manda a entrada primeiro e a proteção depois. Ou
+            # seja: a trava disse "não mando assim" e a reserva tentou mandar
+            # assim mesmo. Só há reserva quando o painel de ATMs não existe.
+            resultado["recusa_de_seguranca"] = not sem_painel
             self.log(f"   ⛔ {det}. NÃO enviei a entrada: entrada sem proteção "
                      "anexada é exatamente o que este caminho veio eliminar.")
             return resultado

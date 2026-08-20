@@ -303,7 +303,7 @@ class TestOAppUSAOCaminhoNovo(unittest.TestCase):
     def test_o_envio_do_app_tenta_a_ATM_primeiro(self):
         fonte = fonte_do_arquivo()
         i = fonte.index("def _tv_enviar_bracket(")
-        bloco = fonte[i:i + 3500]
+        bloco = fonte[i:i + 4500]
         self.assertIn("enviar_ordem_com_atm(", bloco)
         j = bloco.index("enviar_ordem_com_atm(")
         k = bloco.index("enviar_bracket_ticket(")
@@ -314,8 +314,20 @@ class TestOAppUSAOCaminhoNovo(unittest.TestCase):
         duplicar posição."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def _tv_enviar_bracket(")
-        bloco = fonte[i:i + 3500]
+        bloco = fonte[i:i + 4500]
         self.assertIn('not res.get("exposto")', bloco)
+
+    def test_RECUSA_nao_cai_para_o_caminho_antigo(self):
+        """19/08: a ATM disse 'não mando assim' e o programa tentou pelo
+        caminho que manda a entrada ANTES da proteção. A trava disse não e a
+        reserva tentou mesmo assim — é o oposto do que uma reserva serve."""
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _tv_enviar_bracket(")
+        bloco = fonte[i:i + 4500]
+        self.assertIn('res.get("recusa_de_seguranca")', bloco)
+        j = bloco.index('res.get("recusa_de_seguranca")')
+        k = bloco.index("enviar_bracket_ticket(")
+        self.assertLess(j, k, "a recusa tem de ser testada ANTES da reserva")
 
     def test_o_ativo_e_repassado_para_achar_o_tick(self):
         fonte = fonte_do_arquivo()
@@ -516,3 +528,152 @@ class TestOAutoTrailDoTicket(unittest.TestCase):
                       "tem de vir DESLIGADO por padrão")
         j = fonte.index('"trailing": self.tv_trail_var.get()')
         self.assertGreater(j, 0, "a escolha precisa ser gravada em disco")
+
+
+class TestOFalsoPositivoDoEXIBIR_EM(unittest.TestCase):
+    """19/08, 20:50 — o robô bloqueou a PRÓPRIA ordem por um dado que ele
+    mesmo leu errado:
+
+        ✅ painel ATM à vista — OBTER LUCRO '2' · STOP LOSS '2' ·
+           EXIBIR EM 'Preço'
+        ⚠️ 'EXIBIR EM' NÃO está em Ticks. Deixe em Ticks
+
+    E o print da tela dele mostrava, com todas as letras: **Ticks**.
+
+    A linha do 'EXIBIR EM' tem o seletor "Ticks" logo ao lado E, mais à
+    direita, o cabeçalho "PREÇO" da coluna de preços do ATM. Eu desempatava
+    pela MENOR ÁREA, e um cabeçalho de texto solto é menor que a caixa de um
+    seletor. Li 'Preço' onde estava escrito 'Ticks', bloqueei a ordem por uma
+    regra certa aplicada a um dado errado — e ainda mandei ele "deixar em
+    Ticks", que já estava. Nada é pior que uma trava que dispara sozinha e
+    manda o dono consertar o que não está quebrado."""
+
+    def _fonte(self):
+        with open(os.path.join(RAIZ, "tradovate_auto.py"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_o_desempate_e_por_DISTANCIA_do_rotulo(self):
+        fonte = self._fonte()
+        i = fonte.index("var textoMelhor = null;")
+        bloco = fonte[i:i + 1200]
+        self.assertIn("d2 = r2.left - lr.right", bloco,
+                      "sem medir a distância, volta o falso positivo")
+        self.assertIn("d2 < textoMelhor.dist", bloco)
+
+    def test_a_area_so_desempata_entre_quem_comeca_no_mesmo_ponto(self):
+        """O contêiner e o texto dentro dele começam juntos; aí sim vale o
+        menor. O que não pode é o texto magro do outro lado da linha ganhar
+        do controle que está colado no rótulo."""
+        fonte = self._fonte()
+        i = fonte.index("var textoMelhor = null;")
+        bloco = fonte[i:i + 1200]
+        self.assertIn("Math.abs(d2 - textoMelhor.dist) <= 4", bloco)
+
+    def test_a_historia_fica_escrita_junto_do_codigo(self):
+        fonte = self._fonte()
+        i = fonte.index("var textoMelhor = null;")
+        self.assertIn("EXIBIR EM", fonte[i - 1500:i])
+
+
+class TestRecusaNaoEIndisponibilidade(unittest.TestCase):
+    """A distinção que faltava, e que fez o robô contornar a própria trava."""
+
+    def test_unidade_errada_e_RECUSA(self):
+        bot = _BotFalso({"_exibir_em": "Preço"})
+        r = bot.enviar_ordem_com_atm("SELL", 7709.5, 7712.5, 7702.5, 0.25,
+                                     qtd=40, enviar=True)
+        self.assertFalse(r["ok"])
+        self.assertTrue(r.get("recusa_de_seguranca"))
+        self.assertFalse(r.get("sem_atm"))
+
+    def test_cenario_incoerente_e_RECUSA(self):
+        """Mandar o mesmo cenário por outro caminho não o torna coerente."""
+        bot = _BotFalso({})
+        r = bot.enviar_ordem_com_atm("BUY", 7732.5, 7742.5, 7752.5, 0.25,
+                                     qtd=2, enviar=True)
+        self.assertTrue(r.get("recusa_de_seguranca"))
+
+    def test_campo_que_nao_confere_e_RECUSA(self):
+        bot = _BotFalso({"_campos_que_mentem": ("PREÇO",)})
+        r = bot.enviar_ordem_com_atm("SELL", 7709.5, 7712.5, 7702.5, 0.25,
+                                     qtd=40, enviar=True)
+        self.assertTrue(r.get("recusa_de_seguranca"))
+
+    def test_painel_de_ATM_ausente_e_INDISPONIBILIDADE(self):
+        """Aqui sim o caminho antigo é a alternativa legítima."""
+        class _SemPainel(_BotFalso):
+            def abrir_painel_atm(self, pausa=0.5):
+                return False
+
+        bot = _SemPainel({"_campos_que_falham": ("OBTER LUCRO", "STOP LOSS")})
+        r = bot.enviar_ordem_com_atm("SELL", 7709.5, 7712.5, 7702.5, 0.25,
+                                     qtd=40, enviar=True)
+        self.assertFalse(r["ok"])
+        self.assertTrue(r.get("sem_atm"))
+        self.assertFalse(r.get("recusa_de_seguranca"))
+
+    def test_os_ticks_do_caso_de_20_50(self):
+        """entrada 7709.5 · stop 7712.5 · alvo 7702.5 no MES = 12 e 28."""
+        t_stop, t_alvo, erro = tv.plano_atm("SELL", 7709.5, 7712.5, 7702.5, 0.25)
+        self.assertIsNone(erro)
+        self.assertEqual((t_stop, t_alvo), (12, 28))
+
+
+class TestOEnsaioNoBotaoTestarConexao(unittest.TestCase):
+    """19/08, ele: "adicione nas configuracoes da automacao a opcao de calibrar
+    no momento em que clicar testar conexao, afim de nao errar no momento de
+    enviar ordens independentemente da localizacao que estiver na tela".
+
+    A resposta honesta sobre CALIBRAR: este caminho não usa calibração de
+    pixel. Ele acha cada campo pelo RÓTULO, do zero, em toda ordem — então já é
+    imune a mover a janela, mudar o zoom ou trocar de monitor. Calibrar seria
+    voltar atrás.
+
+    O que faltava não era calibrar: era ENSAIAR. Ler os campos um a um diz que
+    eles existem; só o ensaio inteiro prova que a ordem SAIRIA — e teria pego,
+    na máquina dele, o falso positivo que bloqueou a ordem das 20:50."""
+
+    def _fonte(self):
+        return fonte_do_arquivo()
+
+    def test_o_botao_faz_o_ensaio(self):
+        fonte = self._fonte()
+        i = fonte.index("def _tv_testar_conexao(")
+        self.assertIn("_tv_ensaio_de_ordem(bot)", fonte[i:i + 3000])
+
+    def test_o_ensaio_NAO_envia(self):
+        """O botão de teste não pode mandar ordem. Nunca."""
+        fonte = self._fonte()
+        i = fonte.index("def _tv_ensaio_de_ordem(")
+        bloco = fonte[i:i + 3000]
+        self.assertIn("enviar=False", bloco)
+        self.assertNotIn("enviar=True", bloco)
+
+    def test_o_ensaio_usa_o_PRECO_AO_VIVO_da_plataforma(self):
+        """Um cenário inventado longe do preço seria recusado pela própria
+        plataforma e o ensaio não provaria nada."""
+        fonte = self._fonte()
+        i = fonte.index("def _tv_ensaio_de_ordem(")
+        bloco = fonte[i:i + 3000]
+        self.assertIn("bot.ler_preco()", bloco)
+        self.assertIn("tick_do_ativo(", bloco)
+
+    def test_sem_preco_ele_DIZ_que_nao_ensaiou(self):
+        fonte = self._fonte()
+        i = fonte.index("def _tv_ensaio_de_ordem(")
+        bloco = fonte[i:i + 3000]
+        self.assertIn("não consegui ler o preço ao vivo", bloco)
+
+    def test_o_resultado_do_ensaio_e_dito_dos_dois_jeitos(self):
+        fonte = self._fonte()
+        i = fonte.index("def _tv_ensaio_de_ordem(")
+        bloco = fonte[i:i + 3000]
+        self.assertIn("ENSAIO OK", bloco)
+        self.assertIn("ENSAIO FALHOU", bloco)
+        self.assertIn("ANTES de deixar o modo autônomo ligado", bloco)
+
+    def test_avisa_que_o_ticket_fica_com_o_cenario_de_teste(self):
+        """Deixar o ticket preenchido sem avisar seria a próxima surpresa."""
+        fonte = self._fonte()
+        i = fonte.index("def _tv_ensaio_de_ordem(")
+        self.assertIn("ficou com o cenário de teste", fonte[i:i + 3000])
