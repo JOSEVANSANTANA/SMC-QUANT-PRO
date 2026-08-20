@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.48.1"
+VERSAO_ATUAL = "2.49.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -1128,9 +1128,28 @@ ORDEM_PROVEDORES = ["openrouter", "openai", "anthropic", "groq", "local"]
 # lista, não um `if`, porque a próxima troca de ordem tem de ser uma linha —
 # não uma cirurgia no meio do fluxo do chat.
 #
-# A Gemini continua na fila, logo atrás: ela lê imagem (o print do gráfico) e
-# os provedores de texto não. Tirá-la seria trocar um problema por outro.
+# 20/08, ele: "favor adicionar openrouter como inteligencia principal, em vez
+# da gemini". Feito — e com UMA ressalva que não é negociável, explicada em
+# `PRECISA_DE_VISAO` logo abaixo.
 PROVEDORES_PRIORITARIOS = ["openrouter"]
+
+# A RESSALVA: A GEMINI NÃO SAI, PORQUE ELA É QUEM LÊ O GRÁFICO.
+#
+# "Principal" aqui vale para CONVERSA, e é o que ele pediu. Só que o motor não
+# conversa: ele manda um PRINT do gráfico e pede níveis de volta. Um modelo de
+# texto que recebesse essa pergunta sem enxergar a imagem responderia com toda
+# a confiança sobre um gráfico que não viu — e devolveria entrada, stop e alvo
+# inventados, que virariam ordem de verdade no modo autônomo.
+#
+# Não é hipótese: é a mesma família de erro que este programa passou semanas
+# eliminando, e a única com dinheiro do outro lado. Então a regra é de código,
+# não de bom senso: turno COM anexo não passa pelos prioritários de texto.
+#
+# Quando houver modelo de visão gratuito estável no catálogo da OpenRouter, o
+# caminho já está aberto — basta ele entrar aqui. Enquanto não houver, quem lê
+# imagem é a Gemini, e trocar isso por preferência seria trocar leitura por
+# invenção.
+PRECISA_DE_VISAO = "o print do gráfico"
 
 
 def diagnostico_de_provedor(erro, rotulo=""):
@@ -3012,6 +3031,77 @@ MARGEM_CONFIRMA_FILL = 0.15
 # confirmando. Duas leituras evitam "preencher" por um único preço mal lido.
 CONFIRMACOES_FILL = 2
 
+def decidir_desfecho_da_posicao(pos, preco, exigir_confirmacao_plataforma=False):
+    """UMA POSIÇÃO ABERTA CHEGOU AO FIM? E EU TENHO COMO SABER QUAL FOI?
+
+    Devolve (desfecho, motivo), com desfecho em:
+      'NADA'    -> o preço não tocou stop nem alvo; segue aberta
+      'ALVO'    -> bateu o alvo, e eu posso AFIRMAR isso
+      'STOP'    -> bateu o stop, e eu posso AFIRMAR isso
+      'INCERTO' -> chegou ao fim, mas QUAL fim eu não sei dizer
+
+    ---------------------------------------------------------------------
+    POR QUE 'INCERTO' PRECISOU EXISTIR — 20/08, e é a terceira vez.
+
+    O painel dele mostrava RESULTADO DO DIA +US$2.212,20 e WIN RATE 100%
+    (2 operações). A Tradovate, na mesma hora, mostrava P/L TOTAL (2.113,97)
+    e o capital caído de 50.000 para 47.886,03. Duas vitórias inventadas de
+    +2.071,20 e +141,00 num dia que foi de PERDA.
+
+    A conta que produziu esse número: a posição fechava aqui quando o PREÇO
+    LIDO passava do alvo. Só que o preço é lido de 5 em 5 minutos, e o
+    desfecho da operação não acontece na leitura — acontece entre elas. Uma
+    das "vitórias" foi registrada 15 minutos depois da entrada: três ciclos
+    cegos. O preço podia ter tocado 7762,50 (stop), a ordem OCO da corretora
+    ter fechado a operação ali, e o preço depois subir até 7785. Eu veria só a
+    última leitura e cravaria ALVO.
+
+    E O PONTO CENTRAL: quando a ordem foi para a plataforma, o par stop/alvo
+    é um OCO DELA. Quem sabe qual perna preencheu é a corretora — nunca eu,
+    olhando o gráfico. Declarar 'ALVO' nesse caso não é leitura errada: é
+    afirmação sobre coisa que eu não tenho como saber, que é exatamente o que
+    ele já me cobrou duas vezes.
+
+    Isso não é um detalhe de relatório. O resultado daqui alimenta o freio de
+    perda diária, o limite de stops seguidos e o dimensionamento. Um dia de
+    perda registrado como ganho DESARMA as três travas ao mesmo tempo, no
+    momento em que elas mais precisavam agir.
+
+    Função PURA para poder ser conferida sem gráfico, sem corretora e sem
+    mercado — como todo o resto que decide dinheiro neste programa.
+    """
+    direcao = pos.get("direcao")
+    stop, tp2 = pos.get("stop"), pos.get("tp2")
+    if stop in (None, "") or direcao not in ("BUY", "SELL"):
+        return "NADA", ""
+    bateu_stop = ((direcao == "BUY" and preco <= stop) or
+                  (direcao == "SELL" and preco >= stop))
+    bateu_alvo = tp2 is not None and (
+        (direcao == "BUY" and preco >= tp2) or
+        (direcao == "SELL" and preco <= tp2))
+    if not bateu_stop and not bateu_alvo:
+        return "NADA", ""
+    if bateu_stop:
+        # STOP eu posso afirmar mesmo com a ordem na corretora: o stop é o
+        # pior desfecho possível deste cenário, e registrar a perda quando
+        # ela talvez não tenha acontecido erra para o lado SEGURO — freia
+        # cedo demais, nunca tarde demais. É a assimetria que importa aqui.
+        return "STOP", "o preço passou do stop"
+    # A partir daqui: bateu o ALVO. É a afirmação cara, e a que exige prova.
+    if pos.get("tocou_stop_em_algum_ciclo"):
+        return ("INCERTO",
+                "o preço já tinha passado do STOP num ciclo anterior e agora "
+                "está além do alvo — a operação pode ter sido encerrada no "
+                "stop antes de o mercado subir. NÃO SEI qual dos dois valeu")
+    if exigir_confirmacao_plataforma and pos.get("enviada_plataforma"):
+        return ("INCERTO",
+                "a ordem está na plataforma com stop e alvo em OCO: quem sabe "
+                "QUAL das duas pernas preencheu é a corretora, e entre duas "
+                "leituras minhas cabe a operação inteira. NÃO SEI dizer se "
+                "foi alvo ou stop")
+    return "ALVO", "o preço alcançou o alvo"
+
+
 def atualizar_posicoes_com_preco(preco, ativo=None, exigir_confirmacao_plataforma=False,
                                   preco_confiavel=False):
     """
@@ -3145,22 +3235,43 @@ def atualizar_posicoes_com_preco(preco, ativo=None, exigir_confirmacao_plataform
         pos["preco_atual"] = preco
         pos["pnl_atual"] = calcular_pnl_posicao(pos, preco)
 
-        bateu_tp2 = pos.get("tp2") is not None and (
-            (direcao == "BUY" and preco >= pos["tp2"]) or
-            (direcao == "SELL" and preco <= pos["tp2"])
-        )
-        if bateu_stop or bateu_tp2:
-            # Realiza o P&L no NÍVEL DA ORDEM (stop ou alvo), NUNCA no preço lido.
-            # Um preço com overshoot (ou leitura tardia) além do stop inflaria a
-            # perda para além do risco planejado — foi o que gerou o -US$325 acima
-            # do teto. O resultado agora é o valor exato e determinístico do plano.
-            preco_saida = pos["stop"] if bateu_stop else pos["tp2"]
-            pos["status"] = "FECHADA"
-            pos["data_fechamento"] = time.strftime('%d/%m/%Y %H:%M')
-            pos["preco_atual"] = preco_saida
-            pos["pnl_atual"] = calcular_pnl_posicao(pos, preco_saida)
-            pos["pnl_final"] = pos["pnl_atual"]
-            eventos.append(("STOP" if bateu_stop else "ALVO", dict(pos)))
+        # MEMÓRIA DE QUE O PREÇO JÁ ESTEVE ALÉM DO STOP. Um carimbo barato que
+        # sobrevive entre ciclos e desmente a "vitória" que aparecer depois:
+        # se o mercado já passou pelo stop, o alvo alcançado mais tarde pode
+        # ter chegado com a operação JÁ ENCERRADA na corretora.
+        if bateu_stop:
+            pos["tocou_stop_em_algum_ciclo"] = True
+
+        desfecho, motivo = decidir_desfecho_da_posicao(
+            pos, preco, exigir_confirmacao_plataforma)
+        if desfecho == "NADA":
+            continue
+
+        pos["status"] = "FECHADA"
+        pos["data_fechamento"] = time.strftime('%d/%m/%Y %H:%M')
+
+        if desfecho == "INCERTO":
+            # SEM NÚMERO. `pnl_final = None` é o que impede este desfecho de
+            # entrar no resultado do dia, no win rate e no freio — e é
+            # deliberado: melhor um buraco declarado no relatório do que um
+            # lucro inventado alimentando a gestão de risco.
+            pos["pnl_final"] = None
+            pos["pnl_atual"] = 0.0
+            pos["desfecho_incerto"] = True
+            pos["motivo_desfecho"] = motivo
+            eventos.append(("INCERTO", dict(pos)))
+            continue
+
+        # Realiza o P&L no NÍVEL DA ORDEM (stop ou alvo), NUNCA no preço lido.
+        # Um preço com overshoot (ou leitura tardia) além do stop inflaria a
+        # perda para além do risco planejado — foi o que gerou o -US$325 acima
+        # do teto. O resultado agora é o valor exato e determinístico do plano.
+        preco_saida = pos["stop"] if desfecho == "STOP" else pos["tp2"]
+        pos["preco_atual"] = preco_saida
+        pos["pnl_atual"] = calcular_pnl_posicao(pos, preco_saida)
+        pos["pnl_final"] = pos["pnl_atual"]
+        pos["motivo_desfecho"] = motivo
+        eventos.append((desfecho, dict(pos)))
     salvar_posicoes(lista)
     return eventos
 
@@ -15667,6 +15778,35 @@ class SmcQuantApp(ctk.CTk):
                     [f"O preço rompeu o stop antes de tocar {pos['entry']}.",
                      "Ela não chegou a ir para a plataforma."],
                     cor="#a0a0a0")
+        elif tipo == "INCERTO":
+            # A OPERAÇÃO ACABOU E EU NÃO SEI COMO. Esta mensagem existe porque
+            # o silêncio aqui é o que virou "+US$2.212,20 e win rate 100%" num
+            # dia em que a Tradovate mostrava (2.113,97) de prejuízo.
+            #
+            # Sem número, de propósito: `pnl_final` fica None e este desfecho
+            # não entra no resultado do dia, no win rate nem no freio. Um
+            # buraco declarado no relatório é gerenciável; um lucro inventado
+            # alimentando a gestão de risco, não.
+            aviso = (
+                f"⚠️ NÃO SEI COMO ESTA OPERAÇÃO TERMINOU: {pos['direcao']} "
+                f"{pos['ativo']} @ {pos['entry']} ({pos.get('contratos')} ctr). "
+                f"{pos.get('motivo_desfecho') or ''} "
+                "NÃO registrei resultado nenhum — nem ganho nem perda. "
+                "PEGUE O NÚMERO NO EXTRATO DA TRADOVATE e lance pelo diário, "
+                "porque enquanto isso o resultado do dia está incompleto.")
+            self.log(aviso)
+            self._chat_feed(aviso)
+            self._notificar_desktop(
+                f"⚠️ Desfecho incerto — {pos['direcao']} {pos['ativo']}",
+                [f"Entrada {pos['entry']} · stop {pos.get('stop')} · "
+                 f"alvo {pos.get('tp2')}",
+                 "Não sei se fechou no alvo ou no stop.",
+                 "CONFIRA o extrato na Tradovate."],
+                cor="#e0a458", segundos=300)
+            try:
+                enviar_relatorio_whatsapp(aviso, None, self.log)
+            except Exception:
+                pass
         else:
             emoji = "🔴" if tipo == "STOP" else "🟢"
             msg = (f"{emoji} *Operação encerrada ({tipo})*\n"
@@ -17478,6 +17618,14 @@ class SmcQuantApp(ctk.CTk):
         posicoes = posicoes_do_ciclo()
         fechadas = [p for p in posicoes if p.get("status") == "FECHADA" and p.get("pnl_final") is not None]
         abertas = [p for p in posicoes if p.get("status") == "ABERTA"]
+        # O BURACO PRECISA APARECER. Uma operação de desfecho incerto fica de
+        # fora de todas as contas (é o certo — sem número real, ela não pode
+        # entrar), mas OMITIR EM SILÊNCIO é a mesma doença por outro caminho:
+        # o painel mostraria um total limpo enquanto a corretora mostra outro,
+        # e ele não teria como saber por quê. Este número é o que explica a
+        # diferença antes de ela virar desconfiança.
+        incertas = [p for p in posicoes
+                    if p.get("desfecho_incerto") or p.get("execucao_incerta")]
 
         curva = []
         acumulado = 0.0
@@ -17532,6 +17680,11 @@ class SmcQuantApp(ctk.CTk):
             "risco_usd": risco_usd, "dias_passados": dias_passados,
             "dias_restantes": dias_restantes, "falta": falta, "abertas": len(abertas),
             "meta_diaria": meta_diaria, "total_ops": total, "meta": meta,
+            # Quantas operações do ciclo estão FORA destes números por eu não
+            # saber o desfecho delas. Enquanto for > 0, o resultado exibido é
+            # PARCIAL — e ele precisa ler isso no painel, não descobrir
+            # comparando com o extrato da corretora.
+            "incertas": len(incertas),
             "resultado_hoje": resultado_hoje, "dias_meta": dias_meta,
             # O NÚMERO DO DIA DE HOJE, para a trilha marcar onde ele está e
             # para os botões saberem qual quadradinho está aceso.
@@ -17650,9 +17803,18 @@ class SmcQuantApp(ctk.CTk):
             # Resumo ao lado do seletor: deixa explícito de QUAL conta é o painel.
             if hasattr(self, "lbl_conta_resumo"):
                 total_contas = len(carregar_contas())
+                # O AVISO DE RESULTADO PARCIAL FICA AO LADO DO NÚMERO, não
+                # escondido num log. Foi exatamente a distância entre o painel
+                # e a verdade que produziu "+US$2.212,20 / win rate 100%" com a
+                # corretora marcando (2.113,97).
+                _inc = stats.get("incertas") or 0
                 self.lbl_conta_resumo.configure(
                     text=f"Exibindo: {nome_conta_ativa()}  ·  {stats['abertas']} posição(ões) aberta(s)"
-                         f"  ·  {total_contas} conta(s) cadastrada(s)")
+                         f"  ·  {total_contas} conta(s) cadastrada(s)"
+                         + (f"  ·  ⚠️ {_inc} operação(ões) SEM desfecho confirmado — "
+                            "o resultado abaixo está INCOMPLETO, confira o extrato"
+                            if _inc else ""),
+                    text_color=COR["amarelo"] if _inc else COR["texto"])
             if hasattr(self, "lbl_titulo_plano"):
                 self.lbl_titulo_plano.configure(
                     text=f"PLANO DE TRADING — {nome_conta_ativa().upper()}")

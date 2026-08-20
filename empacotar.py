@@ -69,6 +69,7 @@ COMUM = [
     "tests/test_cancelamento_na_corretora.py",
     "tests/test_cofre_por_provedor.py",
     "tests/test_catalogo_openrouter.py",
+    "tests/test_desfecho_honesto.py",
     "tests/test_notificacao.py",
     "tests/test_piso_qualidade.py",
     "tests/test_pregao.py",
