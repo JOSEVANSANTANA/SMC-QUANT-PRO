@@ -41,6 +41,7 @@ COMUM = [
     "order_flow.py",
     "market_regime.py",
     "tiger_voice.py",
+    "tiger_hud.py",
     "jarvis.py",
     "motor/index.js",
     "motor/package.json",

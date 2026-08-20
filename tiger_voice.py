@@ -337,57 +337,96 @@ class TigerVoiceAssistant:
         return False, ""
 
     # =========================================================================
-    #  Módulo 5: Loop de Execução Contínuo (Jarvis / Tiger Loop)
+    #  Módulo 5: Loop de Execução Contínuo (Jarvis / Tiger Loop com HUD)
     # =========================================================================
-    def loop_principal(self):
+    def loop_principal(self, com_hud: bool = True):
         """Inicia o loop infinito de escuta e processamento da IA TIGER."""
         self.executando = True
         logger.info("🐯 [TIGER VOICE ASSISTANT INICIADO] — 100% OpenRouter Cloud Engine")
-        self.falar_texto("Olá Josevan! Assistente Tiger online e conectado ao OpenRouter. Como posso ajudar você agora?")
-
-        while self.executando:
+        
+        hud = None
+        if com_hud:
             try:
-                # 1. Escuta por comando ou wake word
-                fala = self.ouvir_microfone(timeout=4, frase_limite=8)
-                if not fala:
-                    continue
+                from tiger_hud import TigerHolographicHUD
+                hud = TigerHolographicHUD()
+                hud.atualizar_estado("STANDBY", "Pronto para ouvir...", "TIGER 2.0 online via OpenRouter.")
+            except Exception as e:
+                logger.warning(f"Não foi possível abrir o HUD gráfico ({e}). Executando em modo texto.")
+                hud = None
 
-                # 2. Verifica se contém wake word ou se é comando direto
-                eh_chamado = any(w in fala for w in WAKE_WORDS)
-                comando_util = fala
-                for w in WAKE_WORDS:
-                    comando_util = comando_util.replace(w, "").strip()
+        def _rotina_voz():
+            self.falar_texto("Olá Josevan! Assistente Tiger online e conectado ao OpenRouter. Como posso ajudar você agora?")
+            if hud:
+                hud.atualizar_estado("STANDBY", "Aguardando 'Olá Tiger'...", "Pronto para operar.")
 
-                # Se a frase contiver apenas o wake word, saúda e escuta a instrução
-                if eh_chamado and not comando_util:
-                    self.falar_texto("Sim, estou ouvindo.")
-                    fala_seguinte = self.ouvir_microfone(timeout=6, frase_limite=10)
-                    if fala_seguinte:
-                        comando_util = fala_seguinte
-                    else:
+            while self.executando:
+                try:
+                    if hud:
+                        hud.atualizar_estado("OUVINDO", "Escutando...", "Microfone aberto.")
+                    fala = self.ouvir_microfone(timeout=4, frase_limite=8)
+                    if not fala:
+                        if hud:
+                            hud.atualizar_estado("STANDBY", "Aguardando...", "Diga 'Olá Tiger' ou 'Jarvis'.")
                         continue
 
-                if not comando_util:
-                    continue
+                    eh_chamado = any(w in fala for w in WAKE_WORDS)
+                    comando_util = fala
+                    for w in WAKE_WORDS:
+                        comando_util = comando_util.replace(w, "").strip()
 
-                # 3. Tenta automação local primeiro
-                executou, msg_auto = self.executar_comando(comando_util)
-                if executou:
-                    self.falar_texto(msg_auto)
-                    continue
+                    if eh_chamado and not comando_util:
+                        if hud:
+                            hud.atualizar_estado("FALANDO", "Olá Tiger", "Sim, estou ouvindo.")
+                        self.falar_texto("Sim, estou ouvindo.")
+                        if hud:
+                            hud.atualizar_estado("OUVINDO", "Aguardando pedido...", "Pode falar agora.")
+                        fala_seguinte = self.ouvir_microfone(timeout=6, frase_limite=10)
+                        if fala_seguinte:
+                            comando_util = fala_seguinte
+                        else:
+                            continue
 
-                # 4. Processa com OpenRouter LLM
-                logger.info(f"🤖 Enviando para OpenRouter ({self.modelo})...")
-                resposta_ia = self.consultar_openrouter(comando_util)
-                self.falar_texto(resposta_ia)
+                    if not comando_util:
+                        continue
 
+                    if hud:
+                        hud.atualizar_estado("PENSANDO", comando_util, "Processando...")
+
+                    executou, msg_auto = self.executar_comando(comando_util)
+                    if executou:
+                        if hud:
+                            hud.atualizar_estado("FALANDO", comando_util, msg_auto)
+                        self.falar_texto(msg_auto)
+                        continue
+
+                    logger.info(f"🤖 Enviando para OpenRouter ({self.modelo})...")
+                    resposta_ia = self.consultar_openrouter(comando_util)
+                    if hud:
+                        hud.atualizar_estado("FALANDO", comando_util, resposta_ia)
+                    self.falar_texto(resposta_ia)
+                    if hud:
+                        hud.atualizar_estado("STANDBY", comando_util, resposta_ia)
+
+                except Exception as e:
+                    logger.error(f"Erro no loop de voz: {e}")
+                    time.sleep(1)
+
+        t_voz = threading.Thread(target=_rotina_voz, daemon=True)
+        t_voz.start()
+
+        if hud:
+            try:
+                hud.root.mainloop()
             except KeyboardInterrupt:
-                logger.info("Encerrando por interrupção de teclado.")
+                pass
+            finally:
                 self.executando = False
-                break
-            except Exception as e:
-                logger.error(f"Erro inesperado no loop de voz: {e}")
-                time.sleep(1)
+        else:
+            try:
+                while self.executando:
+                    time.sleep(0.5)
+            except KeyboardInterrupt:
+                self.executando = False
 
 
 # =============================================================================
@@ -400,11 +439,12 @@ def main():
     ║   Controle de Voz Inteligente para Mesas Proprietárias (SMC)   ║
     ╚════════════════════════════════════════════════════════════════╝
     """)
+    com_hud = "--sem-hud" not in sys.argv
     assistente = TigerVoiceAssistant()
     if not assistente.api_key:
         print("⚠️ AVISO: Nenhuma chave do OpenRouter encontrada.")
         print("Defina a variável de ambiente OPENROUTER_API_KEY ou configure no painel do SMC Quant Pro.")
-    assistente.loop_principal()
+    assistente.loop_principal(com_hud=com_hud)
 
 
 if __name__ == "__main__":
