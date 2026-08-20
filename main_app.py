@@ -5324,27 +5324,46 @@ def _sem_acento(texto):
     plano = unicodedata.normalize("NFD", texto)
     return "".join(c for c in plano if unicodedata.category(c) != "Mn")
 
+WAKE_WORDS_ALVOS = (
+    "tiger", "tigre", "taiguer", "tayger", "tyger", "taiga", "tagger",
+    "jarvis", "javis", "jarves", "jarvi", "jarvisx", "zarvis", "jarvis2"
+)
+
 def _parece_tiger(palavra):
-    """A palavra transcrita parece 'tiger'? Aceita variações e transcrições
-    imperfeitas via similaridade (difflib), não só igualdade exata."""
-    p = _sem_acento((palavra or "").lower()).strip(",.!?;:-()\"'")
-    if len(p) < 4:
+    """A palavra transcrita parece 'tiger' ou 'jarvis'? Aceita variações e transcrições
+    imperfeitas via prefixo e similaridade (difflib)."""
+    p = _sem_acento((palavra or "").lower()).strip(",.!?;:-()\"' ")
+    if len(p) < 3:
         return False
-    if p.startswith(("tig", "taig", "tayg", "tyg")):
+    if p.startswith(("tig", "taig", "tayg", "tyg", "jarv", "jav", "jarf", "zarv")):
         return True
     import difflib
-    return any(difflib.SequenceMatcher(None, p, alvo).ratio() >= 0.72
-               for alvo in ("tiger", "tigre", "taiguer", "tigrer"))
+    return any(difflib.SequenceMatcher(None, p, alvo).ratio() >= 0.65
+               for alvo in WAKE_WORDS_ALVOS)
 
 def extrair_comando_tiger(texto):
-    """Detecta o chamado 'Olá Tiger' (ou variações) numa fala transcrita.
-    Devolve (acordou, resto): 'acordou' diz se a TIGER foi chamada, e 'resto'
-    é o pedido que veio junto na MESMA frase ("olá tiger, qual o status?" →
-    resto = "qual o status?"). Resto vazio = só chamou, aguardar o pedido.
-    O resto preserva o texto ORIGINAL (acentos e pontuação das palavras)."""
+    """Detecta o chamado 'Olá Tiger', 'Jarvis', 'Tiger' ou variações numa fala transcrita.
+    Devolve (acordou, resto): 'acordou' diz se foi chamada, e 'resto'
+    é o pedido que veio junto na MESMA frase ("olá tiger, qual o status?" → resto = "qual o status?")."""
     t = (texto or "").strip()
     if not t:
         return (False, "")
+    t_sem = _sem_acento(t.lower())
+    
+    # 1. Expressões compostas explícitas
+    termos_busca = (
+        "ola tiger", "olá tiger", "ei tiger", "hey tiger", "oi tiger",
+        "ola jarvis", "olá jarvis", "ei jarvis", "hey jarvis", "oi jarvis",
+        "ola javis", "olá javis", "ei javis", "hey javis", "oi javis",
+        "jarvis", "javis", "tiger", "tigre", "taiguer"
+    )
+    for prefixo in termos_busca:
+        if prefixo in t_sem:
+            idx = t_sem.find(prefixo)
+            resto = t[idx + len(prefixo):].strip(" ,.!?:;-")
+            return (True, resto)
+            
+    # 2. Busca palavra a palavra com tolerância fonética
     palavras = t.split()
     for i, palavra in enumerate(palavras):
         if _parece_tiger(palavra):
@@ -15258,7 +15277,7 @@ class SmcQuantApp(ctk.CTk):
         for _ in range(5):
             bloco, _ov = stream.read(BLOCO)
             ambiente.append(rms(bytes(bloco)))
-        limiar = min(max(min(ambiente) * 2.5, 90), 400)
+        limiar = min(max(min(ambiente) * 1.4, 30), 200)
         prerolo = collections.deque(maxlen=6)      # 0,6 s antes do 1º som
         frase, silencio, falando = [], 0, False
         while True:
@@ -15288,7 +15307,7 @@ class SmcQuantApp(ctk.CTk):
                     silencio = 0
                 else:
                     silencio += 1
-                    if silencio >= 12:             # ~1,2 s calado = frase completa
+                    if silencio >= 8:              # ~0,8 s calado = frase completa
                         return b"".join(frase)
                 if len(frase) >= 80:               # teto de 8 s por frase
                     return b"".join(frase)
