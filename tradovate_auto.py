@@ -202,12 +202,12 @@ TRAIL_TICKS_MINIMO = 4
 def plano_trailing_inteligente(ticks_stop, rr=None, probabilidade=None,
                                contratos=1, valor_do_tick=0.0,
                                drawdown_restante=None, ligado=True,
-                               frequencia=1):
+                               frequencia=1, modo_r="auto"):
     """Decide QUANDO armar o trail e a que DISTÂNCIA seguir. None = não mexer.
 
-    Devolve {stop, acionar, frequencia, motivo} — `motivo` em português, para
-    aparecer no registro: um stop que se move sozinho sem explicação é a
-    receita para ele desconfiar da ferramenta no meio do pregão.
+    modo_r: "auto" (IA avalia R:R, probabilidade, regime de mercado), ou um multiplicador
+    como "1.0", "1.5", "2.0", "2.5", "3.0", etc.
+    Devolve {stop, acionar, frequencia, motivo} — `motivo` em português.
     """
     if not ligado:
         return None
@@ -228,28 +228,40 @@ def plano_trailing_inteligente(ticks_stop, rr=None, probabilidade=None,
     prob = _f(probabilidade)
     razoes = []
 
-    # ---- 1) QUANDO ARMAR, e 2) A QUE DISTÂNCIA ----
-    if rr is not None and rr >= 3.0:
-        acionar = int(round(base * 1.5))
-        distancia = int(round(base * 1.25))
-        razoes.append(f"R:R {rr:.1f} é largo — deixo respirar até 1,5R e sigo "
-                      "com folga, para não sair no ruído antes do movimento")
-    elif rr is not None and rr <= 2.0:
-        acionar = base
-        distancia = base
-        razoes.append(f"R:R {rr:.1f} é curto — protejo já em 1R, porque não há "
-                      "muito a ganhar esperando")
-    else:
-        acionar = base
-        distancia = base
-        razoes.append("R:R intermediário — armo em 1R com a distância do stop")
+    # Extrai multiplicador customizado se houver (ex: "1.5 R" -> 1.5)
+    mult_custom = None
+    if modo_r and str(modo_r).lower() not in ("auto", "ia", "adaptativa", "🤖 ia adaptativa (smart smc)"):
+        import re
+        m_match = re.search(r"(\d+(?:[.,]\d+)?)", str(modo_r))
+        if m_match:
+            try:
+                mult_custom = float(m_match.group(1).replace(",", "."))
+            except Exception:
+                mult_custom = None
 
-    # A probabilidade só APERTA. Cenário fraco não merece corda comprida, e
-    # afrouxar por causa dela seria deixar o otimismo do modelo mexer no risco.
-    if prob is not None and prob < 65 and distancia > base:
+    # ---- 1) QUANDO ARMAR, e 2) A QUE DISTÂNCIA ----
+    if mult_custom is not None and mult_custom > 0:
+        acionar = max(1, int(round(base * mult_custom)))
         distancia = base
-        razoes.append(f"probabilidade {prob:.0f}% abaixo de 65 — encurtei a "
-                      "corda de volta para a distância do stop")
+        razoes.append(f"Gatilho customizado em {mult_custom:.1f}R ({acionar} ticks)")
+    else:
+        # Modo IA Adaptativa Inteligente
+        if rr is not None and rr >= 3.0:
+            acionar = int(round(base * 1.5))
+            distancia = int(round(base * 1.25))
+            razoes.append(f"R:R {rr:.1f} é amplo (expansão) — IA deu folga até 1,5R para respirar")
+        elif rr is not None and rr <= 2.0:
+            acionar = base
+            distancia = base
+            razoes.append(f"R:R {rr:.1f} é curto — IA armou proteção rápida em 1,0R")
+        else:
+            acionar = base
+            distancia = base
+            razoes.append("R:R intermediário — IA armou em 1,0R com a distância do stop")
+
+        if prob is not None and prob < 65 and distancia > base:
+            distancia = base
+            razoes.append(f"probabilidade {prob:.0f}% < 65% — IA encurtou a corda de volta para a distância do stop")
 
     # ---- 3) O TETO DA MESA. Manda nos dois de cima. ----
     dd = _f(drawdown_restante)

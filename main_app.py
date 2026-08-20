@@ -10163,7 +10163,14 @@ def interpretar_intencao(texto):
     if re.search(r"\b(abrir|abre|iniciar)\b.*\b(tradutor|translate|google tradutor)\b", t) or (re.search(r"\b(tradutor)\b", t) and len(palavras) <= 3):
         return ("ABRIR_URL", "https://translate.google.com")
 
-    # TRAILING STOP INTELIGENTE
+    # TRAILING STOP INTELIGENTE (Ligar, Desligar e Ajustar Modo R / IA)
+    m_tr_val = re.search(r"(?:trailing|trail|auto trail|stop m[oó]vel).*?(\d+(?:[.,]\d+)?)\s*r\b", t) or \
+               re.search(r"(\d+(?:[.,]\d+)?)\s*r\b.*?(?:trailing|trail|stop m[oó]vel)", t)
+    if m_tr_val:
+        v_num = m_tr_val.group(1)
+        return ("CONFIGURAR_TRAILING_MODO", f"{float(v_num.replace(',', '.')):.1f} R")
+    if re.search(r"\b(trailing|trail|auto trail|stop m[oó]vel)\b.*\b(autom[aá]tic\w*|ia|adaptativ\w*|smart)\b", t):
+        return ("CONFIGURAR_TRAILING_MODO", "🤖 IA Adaptativa (Smart SMC)")
     if re.search(r"\b(liga|ligar|ativa|ativar|habilita|habilitar)\b.*\b(trailing|trail|auto trail|stop m[oó]vel)\b", t):
         return "LIGAR_TRAILING"
     if re.search(r"\b(desliga|desligar|desativa|desativar|desabilita|desabilitar)\b.*\b(trailing|trail|auto trail|stop m[oó]vel)\b", t):
@@ -10440,7 +10447,7 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
         return ("PEDIR_CONFIRMACAO", "ZERAR_CICLO")
     if intencao in ("VER_GRAFICO", "PRINT_AGORA", "ABRIR_HUD", "FECHAR_APP", "ABRIR_TRADOVATE", "TELEMETRIA_SMC", "SAUDACAO", "LIGAR_TRAILING", "DESLIGAR_TRAILING"):
         return (intencao, None)
-    if isinstance(intencao, tuple) and intencao[0] in ("ABRIR_URL", "ABRIR_APP", "TROCAR_VOZ"):
+    if isinstance(intencao, tuple) and intencao[0] in ("ABRIR_URL", "ABRIR_APP", "TROCAR_VOZ", "CONFIGURAR_TRAILING_MODO"):
         return intencao
     if intencao in ("DISPENSAR", "CANCELAR", "SAIR_EM_MERCADO", "STATUS", "META", "AJUDA",
                     "MOSTRAR_PRINT", "POSTMORTEM",
@@ -10731,6 +10738,7 @@ class SmcQuantApp(ctk.CTk):
         # persegue" são estratégias diferentes, e a segunda não pode entrar
         # por tabela junto com uma correção de outra coisa.
         self.tv_trail_var = tk.BooleanVar(value=tv_cfg.get("trailing", False))
+        self.tv_trail_modo_var = tk.StringVar(value=tv_cfg.get("trailing_modo", "🤖 IA Adaptativa (Smart SMC)"))
         # cancelar_na_corretora: quando o cenário morre e a ordem não pegou, eu
         # aperto o 'Sair em Mkt & Cancelar' da própria Tradovate em vez de só
         # avisar. LIGADO por padrão porque ele foi categórico — "se a automação
@@ -11504,18 +11512,23 @@ class SmcQuantApp(ctk.CTk):
                         text_color=COR["texto"], fg_color="#1f8b4c",
                         border_color="#63b3ed", hover_color="#25a35a"
                         ).pack(pady=3, padx=12, anchor="w")
-        ctk.CTkCheckBox(frame,
-                        text="AUTO TRAIL (o stop passa a perseguir o preço a partir de 1R)",
+        frame_trail = ctk.CTkFrame(frame, fg_color="transparent")
+        frame_trail.pack(pady=3, padx=12, fill="x", anchor="w")
+        ctk.CTkCheckBox(frame_trail,
+                        text="AUTO TRAIL Inteligente",
                         variable=self.tv_trail_var, command=self._tv_salvar_prefs,
                         text_color=COR["texto"], fg_color="#1f8b4c",
                         border_color="#63b3ed", hover_color="#25a35a"
-                        ).pack(pady=3, padx=12, anchor="w")
+                        ).pack(side="left")
+        ctk.CTkOptionMenu(frame_trail, variable=self.tv_trail_modo_var,
+                          values=["🤖 IA Adaptativa (Smart SMC)", "1.0 R (Breakeven)", "1.5 R", "2.0 R", "2.5 R", "3.0 R"],
+                          width=210, command=lambda _v: self._tv_salvar_prefs()
+                          ).pack(side="left", padx=10)
         ctk.CTkLabel(
             frame, justify="left", text_color=COR["dim"],
             font=ctk.CTkFont(size=11),
-            text="   Desligado, o stop fica onde o cenário mandou até o alvo. Ligado, ele\n"
-                 "   preenche o AUTO TRAIL do ticket com a MESMA distância do stop, começando\n"
-                 "   quando o trade paga 1R. É outra gestão de trade — ligue sabendo disso."
+            text="   🤖 IA Adaptativa: a IA avalia volatilidade, R:R e liquidez para dar folga (1.5R) ou proteger rápido (1.0R).\n"
+                 "   Valores Fixos (1.0R a 3.0R): arma o stop móvel exatamente no múltiplo R escolhido por você."
         ).pack(pady=(0, 6), padx=12, anchor="w")
         ctk.CTkCheckBox(
             frame,
@@ -11578,6 +11591,7 @@ class SmcQuantApp(ctk.CTk):
             "dry_run": self.tv_dry_var.get(),
             "sync_posicoes": self.tv_sync_var.get(),
             "trailing": self.tv_trail_var.get(),
+            "trailing_modo": getattr(self, "tv_trail_modo_var", None).get() if getattr(self, "tv_trail_modo_var", None) else "🤖 IA Adaptativa (Smart SMC)",
             "cancelar_na_corretora": self.tv_cancelar_var.get(),
         }})
         if self.tv_auto_var.get():
@@ -12352,12 +12366,24 @@ class SmcQuantApp(ctk.CTk):
         if tipo == "LIGAR_TRAILING":
             self.tv_trail_var.set(True)
             self._tv_salvar_prefs()
-            self._chat_responder("✅ AUTO TRAIL Inteligente ATIVADO: quando uma operação pagar 1R (ou 1.5R em cenários largos), o stop passa a perseguir o preço dinamicamente protegendo o lucro.", falar_tb=True)
+            modo_atual = self.tv_trail_modo_var.get() if hasattr(self, "tv_trail_modo_var") else "IA"
+            self._chat_responder(f"✅ AUTO TRAIL Inteligente ATIVADO ({modo_atual}): o stop passará a perseguir o preço protegendo o lucro conforme o plano.", falar_tb=True)
             return
         if tipo == "DESLIGAR_TRAILING":
             self.tv_trail_var.set(False)
             self._tv_salvar_prefs()
             self._chat_responder("AUTO TRAIL desativado: as operações seguirão com stop fixo no nível estrutural até o alvo.", falar_tb=True)
+            return
+        if isinstance(tipo, tuple) and tipo[0] == "CONFIGURAR_TRAILING_MODO":
+            novo_modo = tipo[1]
+            if hasattr(self, "tv_trail_modo_var"):
+                self.tv_trail_modo_var.set(novo_modo)
+            self.tv_trail_var.set(True) # Se configurou o valor, já ativa o trailing
+            self._tv_salvar_prefs()
+            if "IA" in novo_modo or "Smart" in novo_modo:
+                self._chat_responder("🤖 Trailing Stop configurado para MODO IA ADAPTATIVA: o motor avaliará volatilidade, R:R e liquidez para definir dinamicamente o disparo (1.0R ou 1.5R).", falar_tb=True)
+            else:
+                self._chat_responder(f"✅ Trailing Stop configurado para disparar em {novo_modo} de lucro. Auto Trail ativado na Tradovate.", falar_tb=True)
             return
         if tipo == "TELEMETRIA_SMC":
             rel = self._montar_relatorio_telemetria()
@@ -16772,7 +16798,8 @@ class SmcQuantApp(ctk.CTk):
                         tradovate_auto.ticks_entre(entry, stop, tick),
                         rr=_rr, probabilidade=probabilidade,
                         contratos=qtd, valor_do_tick=_vt,
-                        drawdown_restante=_dd_resta, ligado=usar_trail)
+                        drawdown_restante=_dd_resta, ligado=usar_trail,
+                        modo_r=getattr(self, "tv_trail_modo_var", None).get() if getattr(self, "tv_trail_modo_var", None) else "auto")
                     if trailing:
                         # UM STOP QUE SE MOVE SOZINHO SEM EXPLICAÇÃO É A
                         # RECEITA PARA ELE DESCONFIAR DA FERRAMENTA NO MEIO DO
