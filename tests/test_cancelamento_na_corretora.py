@@ -250,3 +250,89 @@ class TestNenhumaOrdemSOMEEMSILENCIO(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAVoltaAoFormularioDe20_08(unittest.TestCase):
+    """A seta ← estava na tela e o robô não a achou. A ordem não saiu.
+
+    20/08, 00:15, no log dele:
+        "🤖 Vou executar sozinha: BUY MESU6 — entrada 7771.0, stop 7764.0..."
+        "❌ NÃO ENVIEI ...: formulário do ticket não está à vista."
+    e a observação: "NOTE QUE NAO FOI ENVIADO JUSTAMENTE PORQUE NAO CONSEGUIU
+    VOLTAR ALI NO CHAMADO DO PEDIDO".
+
+    A CAUSA. A busca da seta era feita dentro da subárvore de um ancestral do
+    comprovante, alcançado SUBINDO cinco níveis a partir do menor bloco que
+    contivesse "Funcionando/Filled/...". Naquele comprovante os brackets
+    traziam os próprios estados ("- Filled", "- Cancelado"), então o menor
+    bloco marcado virou uma LINHA DE BRACKET, vários níveis mais fundo do que
+    a tabela de eventos de antes. Cinco níveis não chegavam mais ao painel, e
+    `querySelectorAll` só enxerga descendentes: a seta, que fica ACIMA na
+    linha do título, não era descendente de nada disso.
+
+    A LIÇÃO. Contar níveis de aninhamento de um app React é apostar numa coisa
+    que muda sozinha — e foi a segunda vez que essa aposta custou uma ordem. A
+    âncora passou a ser a POSIÇÃO NA TELA, que é o que um humano usa."""
+
+    def _fonte(self):
+        return fonte_do_arquivo(os.path.join(RAIZ, "tradovate_auto.py"))
+
+    def _corpo(self):
+        fonte = self._fonte()
+        i = fonte.index("def voltar_ticket(")
+        return fonte[i:i + 9000]
+
+    def test_a_busca_NAO_sobe_a_arvore_do_DOM(self):
+        """Se voltar a contar parentesco, volta a quebrar quando a Tradovate
+        mexer no aninhamento — que ela mexe sem avisar."""
+        corpo = self._corpo()
+        self.assertNotIn("parentElement", corpo,
+                         "a âncora tem de ser geométrica, não de parentesco")
+
+    def test_o_escopo_da_busca_e_o_documento_inteiro(self):
+        """Preso a uma subárvore, o que está ACIMA dela é invisível — e a seta
+        está sempre acima do corpo do comprovante."""
+        corpo = self._corpo()
+        self.assertIn("var escopo = document;", corpo)
+
+    def test_a_faixa_cobre_ACIMA_do_comprovante(self):
+        """A seta fica na linha do título, acima do recibo. Uma faixa que só
+        olhasse para baixo do núcleo nunca a alcançaria."""
+        corpo = self._corpo()
+        i = corpo.index("var faixa=null;")
+        trecho = corpo[i:i + 700]
+        self.assertIn("rn.y - 220", trecho,
+                      "a faixa precisa subir acima do topo do comprovante")
+
+    def test_desempate_prefere_o_icone_MAIS_A_ESQUERDA(self):
+        """Na linha do título pode haver mais de um ícone. A seta de voltar é
+        a primeira, encostada na margem; só o tamanho não separava."""
+        corpo = self._corpo()
+        self.assertIn("mx*4", corpo)
+
+    def test_a_falha_diz_QUANTOS_icones_foram_avaliados(self):
+        """'não achei o botão de voltar' não permite investigar nada. Com o
+        número de candidatos dá para separar 'não vi ícone nenhum' de 'vi e
+        barrei todos por segurança'."""
+        fonte = self._fonte()
+        i = fonte.index("não achei o botão de voltar")
+        self.assertIn("candidatos", fonte[i - 400:i + 400])
+
+    def test_as_travas_de_seguranca_continuam_de_pe(self):
+        """Alargar a busca não pode reabrir o clique que fechou o módulo dele
+        no pregão de 06/08. A barreira vale para o ícone E para o botão em
+        volta dele."""
+        corpo = self._corpo()
+        self.assertIn("PROIBIDO", corpo)
+        self.assertIn("chamado do pedido|order ticket", corpo)
+        self.assertIn("if(alvo2 && !seguro(alvo2)) continue;", corpo)
+
+    def test_a_rota_por_atributo_tambem_olha_a_CLASSE(self):
+        """Ícone de app React costuma se declarar pela classe e não ter
+        aria-label nenhum. Era uma rota inteira de recuperação ficando de fora
+        por não olhar o atributo mais óbvio."""
+        fonte = self._fonte()
+        i = fonte.index("def _voltar_por_atributo")
+        corpo = fonte[i:i + 2000]
+        self.assertIn("[class]", corpo, "o seletor tem de alcançar quem só tem classe")
+        self.assertIn("baseVal", corpo, "em <svg> o className é objeto, não string")

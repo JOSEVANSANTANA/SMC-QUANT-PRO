@@ -938,45 +938,39 @@ class TradovateAuto:
             if(a<menorArea){ menorArea=a; nucleo=el; }
           }
 
-          // 2) SOBE do núcleo até o painel do ticket.
-          //    Por que isto é necessário: o menor bloco que contém "Funcionando"
-          //    é a TABELA DE EVENTOS da ordem — e a setinha ← NÃO está dentro
-          //    dela, está na linha do título, um nível acima ("← MESU6"). Com o
-          //    escopo preso à tabela, a seta ficava fora da busca e o robô
-          //    concluía que ela não existia, mesmo estando visível na tela.
-          //    Subimos enquanto o bloco continuar sendo um PAINEL (estreito):
-          //    o ticket tem ~330px; passar disso é sair para o layout inteiro.
-          var painel=nucleo;
+          // 2) A ÂNCORA É GEOMÉTRICA, NÃO DE PARENTESCO — e esta troca é a
+          //    correção de 20/08, 00:15. O robô não conseguiu voltar, a ordem
+          //    de BUY MESU6 @ 7771 não saiu, e a seta ← estava na tela o
+          //    tempo todo.
+          //
+          //    O QUE ESTAVA ERRADO: a busca era feita dentro do subárvore de
+          //    um ancestral do comprovante, alcançado SUBINDO cinco níveis a
+          //    partir do menor bloco que contivesse "Funcionando/Filled/...".
+          //    Naquele comprovante os BRACKETS traziam os próprios estados
+          //    ("Vender 17 LMT 7772.00 - Filled", "STP 7766.25 - Cancelado"),
+          //    então o menor bloco marcado passou a ser uma linha de bracket —
+          //    vários níveis mais FUNDO do que a tabela de eventos de antes. A
+          //    subida de cinco níveis não chegava mais ao painel, o escopo
+          //    ficou preso lá embaixo, e `querySelectorAll` só enxerga
+          //    DESCENDENTES: a seta, que fica ACIMA, na linha do título, não
+          //    era descendente de nada disso. Ela não existia para a busca.
+          //
+          //    Contar níveis de aninhamento de um app React é apostar numa
+          //    coisa que muda sozinha — foi a segunda vez que essa aposta
+          //    custou uma ordem. A posição na TELA, não. A seta do ticket fica
+          //    na COLUNA do comprovante e um pouco ACIMA dele; é isso que se
+          //    procura agora, varrendo o documento inteiro. Profundidade de
+          //    DOM deixou de importar.
+          var faixa=null;
           if(nucleo){
             var rn=nucleo.getBoundingClientRect();
-            var c=nucleo.parentElement;
-            for(var s=0; s<5 && c; s++){
-              var rc=c.getBoundingClientRect();
-              if(rc.width > Math.min(560, window.innerWidth*0.45)) break;
-              if(rc.height <= 0) break;
-              // O ancestral só vira âncora se ELE CONTIVER o comprovante.
-              // Sem esta conferência, um wrapper de geometria degenerada
-              // (display:contents, inline vazio, painel fora de fluxo) era
-              // aceito mesmo sendo MENOR que o ticket: o "topo do painel"
-              // passava a ser outro lugar da tela, a setinha ← caía fora da
-              // janela de busca e o robô concluía que ela não existia —
-              // entrada enviada, stop e alvo não. Já aconteceu com o ticket
-              // desenhado na parte de BAIXO da tela.
-              if(rc.x > rn.x+1 || rc.y > rn.y+1 ||
-                 rc.x+rc.width  < rn.x+rn.width-1 ||
-                 rc.y+rc.height < rn.y+rn.height-1) break;
-              painel=c;
-              c=c.parentElement;
-            }
+            faixa={ x1: rn.x - 40, x2: rn.x + rn.width + 40,
+                    // A linha do título fica logo acima do corpo do
+                    // comprovante. A folga para baixo cobre o layout em que a
+                    // seta divide a linha com o primeiro item do recibo.
+                    y1: rn.y - 220, y2: rn.y + 70 };
           }
-
-          // 3) Escopo da busca: o painel do ticket (ou a página toda).
-          var escopo = painel || document;
-          var cx0=0, cy0=0, larg=window.innerWidth, altura=window.innerHeight;
-          if(painel){
-            var rp=painel.getBoundingClientRect();
-            cx0=rp.x; cy0=rp.y; larg=rp.width; altura=rp.height;
-          }
+          var escopo = document;
 
           // 3b) NADA QUE FECHE MÓDULO PODE SER CLICADO. Foi um clique no título
           //     do painel que abriu "Fechar este módulo o removerá do seu espaço
@@ -997,9 +991,11 @@ class TradovateAuto:
             }catch(e){ return false; }
           }
 
-          // 4) Dentro dele, o menor ícone clicável no ALTO À ESQUERDA.
+          // 4) O menor ícone clicável na COLUNA do comprovante, na altura da
+          //    linha do título. Sem comprovante localizado, cai para o alto à
+          //    esquerda da tela, que é onde o ticket vive no layout padrão.
           var cands=escopo.querySelectorAll('button,[role=button],a,svg,i,span,div');
-          var best=null;
+          var best=null, vistos=0;
           for(var k=0;k<cands.length;k++){
             var e2=cands[k];
             if(!vis(e2)) continue;
@@ -1007,9 +1003,14 @@ class TradovateAuto:
             var r2=e2.getBoundingClientRect();
             if(r2.width>60||r2.height>60) continue;      // ícone, não bloco
             if(r2.width<8||r2.height<8) continue;
-            var relX=(r2.x+r2.width/2)-cx0, relY=(r2.y+r2.height/2)-cy0;
-            if(relX > larg*0.45) continue;               // metade esquerda
-            if(relY > Math.max(altura*0.30, 90)) continue; // topo do painel
+            var mx=r2.x+r2.width/2, my=r2.y+r2.height/2;
+            if(faixa){
+              if(mx < faixa.x1 || mx > faixa.x2) continue;
+              if(my < faixa.y1 || my > faixa.y2) continue;
+            }else{
+              if(mx > window.innerWidth*0.45) continue;
+              if(my > Math.max(window.innerHeight*0.30, 90)) continue;
+            }
             var t2=txt(e2).trim();
             var setaTexto = /^(←|<|‹|⟵|Voltar|Back)$/i.test(t2);
             var svg = temSvg(e2);
@@ -1019,13 +1020,19 @@ class TradovateAuto:
             var alvo2=null;
             try{ alvo2=e2.closest && e2.closest('button,[role=button],a'); }catch(e){}
             if(alvo2 && !seguro(alvo2)) continue;
-            var score = (r2.width*r2.height) - (svg?1e6:0) - (setaTexto?2e6:0);
+            vistos++;
+            // À ESQUERDA GANHA. Dentro da faixa pode haver mais de um ícone na
+            // linha do título (destacar painel, expandir); a seta de voltar é
+            // a primeira da linha, encostada na margem. Sem este critério o
+            // desempate ficava só no tamanho, que é quase igual entre eles.
+            var score = (r2.width*r2.height) + mx*4
+                        - (svg?1e6:0) - (setaTexto?2e6:0);
             if(!best || score<best.score)
-              best={score:score, x:Math.round(r2.x+r2.width/2),
-                    y:Math.round(r2.y+r2.height/2), el:e2,
+              best={score:score, x:Math.round(mx), y:Math.round(my), el:e2,
                     svg:svg, texto:setaTexto};
           }
-          if(!best) return JSON.stringify({achou:false, tinha_painel:!!painel});
+          if(!best) return JSON.stringify({achou:false, tinha_painel:!!nucleo,
+                                           candidatos:vistos});
           try{
             var alvo=(best.el.closest &&
                       best.el.closest('button,[role=button],a')) || best.el;
@@ -1034,7 +1041,7 @@ class TradovateAuto:
           }catch(e){}
           return JSON.stringify({achou:true, x:best.x, y:best.y,
                                  svg:best.svg, texto:best.texto,
-                                 tinha_painel:!!painel});
+                                 tinha_painel:!!nucleo, candidatos:vistos});
         })()
         """.replace("PLACEHOLDER_COMPROVANTE", self._RE_COMPROVANTE)
 
@@ -1052,10 +1059,16 @@ class TradovateAuto:
             time.sleep(0.5)
             return True
 
-        onde = ("dentro do comprovante" if d.get("tinha_painel")
-                else "na tela (comprovante não localizado)")
-        self.log(f"   ⚠️ não achei o botão de voltar (←) {onde} — tentando as "
-                 "outras saídas do comprovante.")
+        # O QUE EU VI, E NÃO SÓ QUE FALHEI. Em 20/08 a mensagem foi só "não
+        # achei o botão de voltar", e com ela não dava para saber se o
+        # comprovante tinha sido localizado, se havia ícone nenhum na faixa ou
+        # se todos tinham sido barrados por segurança. Sem esses três números
+        # a investigação vira adivinhação.
+        onde = ("na coluna do comprovante" if d.get("tinha_painel")
+                else "no alto à esquerda da tela (comprovante não localizado)")
+        self.log(f"   ⚠️ não achei o botão de voltar (←) {onde} — "
+                 f"{d.get('candidatos', 0)} ícone(s) chegaram a ser avaliados. "
+                 "Tentando as outras saídas do comprovante.")
         if dry_run:
             return False
         # ROTAS ALTERNATIVAS — todas NÃO DESTRUTIVAS.
@@ -1096,7 +1109,11 @@ class TradovateAuto:
         do pregão."""
         self.avaliar_js(r"""
         (function(){
-          var els=document.querySelectorAll('[aria-label],[title],[data-testid]');
+          // '[class]' entrou junto: sem ele, o ícone que se declara só pela
+          // classe nunca chegava a ser examinado, por mais que a regra abaixo
+          // soubesse reconhecê-lo.
+          var els=document.querySelectorAll(
+            '[aria-label],[title],[data-testid],[class]');
           var quero=/(voltar|back|retornar|previous|anterior|arrow.?left|chevron.?left)/i;
           // Barreira de segurança: nada que cheire a fechar/remover é clicado,
           // mesmo que também diga "voltar" em algum outro atributo.
@@ -1108,9 +1125,16 @@ class TradovateAuto:
             var r=e.getBoundingClientRect();
             if(r.width<=0||r.height<=0) continue;
             if(r.width>80||r.height>80) continue;
+            // A CLASSE TAMBÉM CONTA. Ícone de app React costuma se declarar
+            // pelo nome da classe ('icon-arrow-left', 'chevronLeft') e não ter
+            // aria-label nenhum — era uma rota inteira de recuperação ficando
+            // de fora por não olhar o atributo mais óbvio. `baseVal` porque em
+            // <svg> o className é objeto, não string.
+            var cls=(e.className&&e.className.baseVal!==undefined
+                     ? e.className.baseVal : (e.className||''));
             var a=(e.getAttribute('aria-label')||'')+' '+
                   (e.getAttribute('title')||'')+' '+
-                  (e.getAttribute('data-testid')||'');
+                  (e.getAttribute('data-testid')||'')+' '+String(cls);
             if(!quero.test(a)) continue;
             if(proibidoRe.test(a)) continue;
             try{ e.click(); return 'ok'; }catch(err){}
