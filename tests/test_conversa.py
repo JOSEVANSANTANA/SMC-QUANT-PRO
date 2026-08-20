@@ -187,6 +187,18 @@ class TestTurnoDoChat(unittest.TestCase):
         self.assertEqual(ns["processar_turno_chat"]("acatar"),
                          ("PEDIR_CONFIRMACAO", "ACATAR"))
 
+    def test_comandos_de_saida_de_emergencia_sao_executados_direto(self):
+        ns = _ns_intencao()
+        for frase in ("encerre todas operacoes agora",
+                      "sai de todas as operacoes agora na tradovate",
+                      "sair em mkt & cxl",
+                      "sair em mkt",
+                      "sair em mercado",
+                      "fechar todas as posicoes",
+                      "cancelar todas as ordens"):
+            self.assertEqual(ns["processar_turno_chat"](frase),
+                             ("EXECUTAR", "SAIR_EM_MERCADO"), frase)
+
 
 def _tipo(intencao):
     return intencao[0] if isinstance(intencao, tuple) else intencao

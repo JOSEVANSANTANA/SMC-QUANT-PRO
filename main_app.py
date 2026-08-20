@@ -4250,14 +4250,12 @@ def freio_de_sugestoes(plano=None, agora=None):
 _MODELOS_PREFERENCIA = [
     "gemini-2.0-flash",          # estável, rápido, amplamente disponível
     "gemini-2.0-flash-001",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-2.0-flash-lite-001",
     "gemini-2.0-flash-lite",
-    "gemini-3-flash-preview",
-    "gemini-flash-latest",
-    "gemini-flash-lite-latest",
-    "gemini-3.5-flash",
+    "gemini-2.0-flash-lite-001",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-pro",
+    "gemini-1.5-pro-latest",
 ]
 COOLDOWN_COTA_SEG = 900        # 429 (cota esgotada): estaciona por 15 min
 COOLDOWN_SOBRECARGA_SEG = 120  # 503/timeout: estaciona por 2 min
@@ -10032,6 +10030,11 @@ def interpretar_intencao(texto):
     # "pode acatar essa" vira SIM (por causa do "pode") em vez de ACATAR.
     # E nada de gírias ambíguas no ACATAR: "topo" dispararia numa conversa
     # sobre "topo duplo" do gráfico.
+    if re.search(r"\b(sai[ar]?|encerr\w*|fech\w*|zer\w*|liquid\w*)\b.{0,40}\b(todas?|opera[çc][õo]es?|posi[çc][õo]es?|tudo|ordens?)\b", t) or \
+            re.search(r"\b(sair em mkt|sair no mkt|sair em mercado|sair no mercado|sair em mkt\s*&\s*cxl|sair em mkt\s*&\s*cancelar)\b", t) or \
+            re.search(r"\b(sai|saia|sair)\b.{0,20}\b(todas|tudo)\b", t) or \
+            re.search(r"\bcancel\w*\b.{0,30}\b(todas as ordens|todas as posi|todas)\b", t):
+        return "SAIR_EM_MERCADO"
     if re.search(r"\b(dispens\w*|não opero|nao opero|não vou operar|nao vou operar|"
                  r"passo essa|fico de fora)\b", t):
         return "DISPENSAR"
@@ -10330,7 +10333,7 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
         return ("PEDIR_CONFIRMACAO", "ZERAR_CICLO")
     if intencao in ("VER_GRAFICO", "PRINT_AGORA"):
         return (intencao, None)
-    if intencao in ("DISPENSAR", "CANCELAR", "STATUS", "META", "AJUDA",
+    if intencao in ("DISPENSAR", "CANCELAR", "SAIR_EM_MERCADO", "STATUS", "META", "AJUDA",
                     "MOSTRAR_PRINT", "POSTMORTEM",
                     "LIGAR_MOTOR", "DESLIGAR_MOTOR", "ENVIAR_WHATSAPP",
                     "CONECTAR_WHATSAPP", "LISTAR_LICOES", "LISTAR_CONHECIMENTO",
@@ -10416,6 +10419,8 @@ def montar_persona_ia():
         "• 'tira um print' — captura a tela da corretora na hora.\n"
         "• 'olha o gráfico' — você analisa a última captura do motor.\n"
         "• 'acatar' / 'dispensar' / 'cancelar ordem' — decisão sobre o cenário.\n"
+        "• 'sair em mkt' / 'sair em mkt & cxl' / 'encerre todas as operacoes' — "
+        "saída de emergência na Tradovate (liquida posições a mercado e cancela ordens).\n"
         "• 'status' — o placar da conta.\n"
         "• '<a regra>, aprenda isso' — grava a regra na sua memória permanente.\n"
         "• CONFIGURAR A FERRAMENTA — ele te autorizou a isso. 'o dia da conta 1 "
@@ -11627,7 +11632,8 @@ class SmcQuantApp(ctk.CTk):
             ativo=ativo or None,
             trailing=tradovate_auto.plano_trailing(
                 8, ligado=bool(getattr(self, "tv_trail_var", None)
-                               and self.tv_trail_var.get())))
+                               and self.tv_trail_var.get())),
+            ativo=ativo)
         if res.get("ok"):
             self.log("   ━━━ ✅ ENSAIO OK. Todos os campos foram preenchidos e "
                      "CONFERIDOS na tela. Se um cenário sair agora, a ordem "
@@ -13479,6 +13485,10 @@ class SmcQuantApp(ctk.CTk):
                 f"Cancelada a ordem pendente {alvo.get('direcao')} "
                 f"{alvo.get('ativo')} @ {alvo.get('entry')} — e encerrei o "
                 "acompanhamento do cenário junto.")
+            return
+        if acao == "SAIR_EM_MERCADO":
+            self._chat_responder("🧹 Executando comando de emergência: saindo a mercado e cancelando todas as ordens na Tradovate agora...")
+            self._tv_cancelar_na_plataforma("TODAS AS ORDENS E POSIÇÕES", "solicitado no chat da Tiger", exigir_zerado=False)
             return
 
     def _fatos_da_mesa(self):
@@ -16306,7 +16316,7 @@ class SmcQuantApp(ctk.CTk):
                  + f" — {motivo}. Confirmo em seguida.")
         self._tv_cancelar_na_plataforma(quais, contexto)
 
-    def _tv_cancelar_na_plataforma(self, quais, contexto=""):
+    def _tv_cancelar_na_plataforma(self, quais, contexto="", exigir_zerado=True):
         """Aperta o 'Sair em Mkt & Cancelar' em thread separada e CONFERE.
 
         A conferência é o ponto todo: `sair_em_mercado_e_cancelar` só devolve
@@ -16325,7 +16335,7 @@ class SmcQuantApp(ctk.CTk):
                              "Cancele na mão.")
                 else:
                     res = bot.sair_em_mercado_e_cancelar(
-                        enviar=True, exigir_zerado=True)
+                        enviar=True, exigir_zerado=exigir_zerado)
                     if res.get("ok"):
                         aviso = (f"✅ ORDENS CANCELADAS NA PLATAFORMA: {quais}"
                                  + (f" ({contexto})" if contexto else "")
@@ -16413,7 +16423,8 @@ class SmcQuantApp(ctk.CTk):
                     self.log("❌ Tradovate: sem conexão. Abra o Chrome pelo botão e faça login.")
                     return
                 # ws pode ter caído entre um uso e outro — força reconferir
-                self.log(f"🎯 Tradovate: enviando bracket {direcao} "
+                rotulo_ativo = f" {ativo}" if ativo else ""
+                self.log(f"🎯 Tradovate: enviando bracket {direcao}{rotulo_ativo} "
                          f"(entrada {entry} · stop {stop} · alvo {alvo} · {qtd} ctr)"
                          + (" [TESTE]" if dry else ""))
                 res = None
@@ -16442,20 +16453,12 @@ class SmcQuantApp(ctk.CTk):
                         # que foi o prejuizo de 20/08 (MNQU6 virou MESU6).
                         ativo=ativo or getattr(self, "_ultimo_ativo_lido", None))
                     if res.get("recusa_de_seguranca"):
-                        # ELA SE RECUSOU. NÃO EXISTE 'TENTAR OUTRO JEITO'.
-                        # 19/08: a ATM disse "não mando assim" (unidade errada
-                        # na tela) e o programa caiu para o caminho antigo —
-                        # que manda a entrada primeiro e a proteção depois.
-                        # A trava disse não e a reserva tentou mesmo assim.
                         self.log("⛔ Não vou tentar por outro caminho: o motivo "
                                  "da recusa vale para qualquer caminho, e o "
                                  "antigo ainda manda a entrada antes da "
                                  "proteção. Resolva o que está no aviso acima "
                                  "e o próximo ciclo já vai.")
                     elif not res.get("ok") and not res.get("exposto"):
-                        # Aqui é FALTA DE RECURSO (sem painel de ATMs), não
-                        # recusa: o caminho antigo é a alternativa legítima, e
-                        # é seguro porque nada foi enviado.
                         self.log(f"↩️ ATM indisponível ({res.get('erro')}). "
                                  "Tentando pelo caminho antigo, com as três "
                                  "ordens separadas.")
@@ -16466,7 +16469,7 @@ class SmcQuantApp(ctk.CTk):
                              "Vou pelo caminho das três ordens separadas.")
                 if res is None:
                     res = bot.enviar_bracket_ticket(direcao, entry, stop, alvo,
-                                                     qtd=qtd, enviar=not dry)
+                                                     qtd=qtd, enviar=not dry, ativo=ativo)
                 # A ORDEM ESTÁ NA CORRETORA — a partir daqui ela ocupa lugar.
                 # Vale também para o caso incerto (a ligação caiu no clique de
                 # Enviar): se eu NÃO SEI se saiu, tenho de tratar como se
@@ -17840,6 +17843,16 @@ class SmcQuantApp(ctk.CTk):
         não mudou, não há nada para redesenhar. É o que tira o travamento —
         antes, todo tique de 5 s reconstruía KPIs, gráficos, textos e listas."""
         partes = [conta_ativa_id(), time.strftime('%d/%m/%Y')]
+        # Preço e ativo ao vivo (para atualizar flutuante e PnL imediatamente no painel)
+        partes.append(str(getattr(self, "_ultimo_preco_lido", "")))
+        partes.append(str(getattr(self, "_ultimo_ativo_lido", "")))
+        try:
+            p = plano_da_conta_ativa()
+            partes.append(str(p.get("ciclo_inicio", "")))
+            partes.append(str(p.get("data_inicio", "")))
+            partes.append(str(p.get("dia_ciclo_ancora", "")))
+        except Exception:
+            pass
         for caminho in (POSITIONS_FILE, CONFIG_FILE, SIGNALS_LOG_FILE, PERFORMANCE_FILE):
             try:
                 st = os.stat(caminho)
@@ -19334,6 +19347,15 @@ class SmcQuantApp(ctk.CTk):
                         self.log("📊 STATUS pedido pelo WhatsApp — respondendo.")
                         enviar_relatorio_whatsapp(
                             f"📊 STATUS\n{texto_status}", None, self.log)
+                        continue
+                    if tipo == "SAIR_MKT":
+                        ts_cmd = cmd.get("ts", 0)
+                        if ts_cmd and (time.time() * 1000 - ts_cmd) > 120000:
+                            self.log("⌛ Pedido de SAIR_MKT ignorado (obsoleto na fila).")
+                            continue
+                        self.log("🧹 Comando SAIR_MKT / ENCERRAR recebido via WhatsApp — executando na Tradovate.")
+                        self.after(0, lambda: self._tv_cancelar_na_plataforma(
+                            "TODAS AS ORDENS E POSIÇÕES", "solicitado via WhatsApp", exigir_zerado=False))
                         continue
                     if tipo not in ("ACATAR", "DISPENSAR"):
                         continue

@@ -336,6 +336,13 @@ class TestOAppUSAOCaminhoNovo(unittest.TestCase):
         j = fonte.index("self._tv_enviar_bracket(")
         self.assertIn("ativo=", fonte[j:j + 400])
 
+    def test_o_ativo_e_repassado_para_a_atm_e_o_bracket(self):
+        fonte = fonte_do_arquivo()
+        i = fonte.index("def _tv_enviar_bracket(")
+        bloco = fonte[i:i + 4500]
+        self.assertIn("bot.enviar_ordem_com_atm(", bloco)
+        self.assertIn("ativo=ativo", bloco)
+
 
 if __name__ == "__main__":
     unittest.main()

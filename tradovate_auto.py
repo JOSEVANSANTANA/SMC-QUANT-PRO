@@ -963,6 +963,164 @@ class TradovateAuto:
         """ % (json.dumps(papel), json.dumps(str(valor)))
         return self.avaliar_js(js)
 
+    def ler_ativo_ticket(self):
+        """Lê o ativo/símbolo atualmente selecionado no 'Chamado do pedido'."""
+        js = r"""
+        (function(){
+          function vis(el){try{var r=el.getBoundingClientRect(); return r.width>0&&r.height>0;}catch(e){return false;}}
+          function txt(el){try{return (el.innerText||el.textContent||'').trim();}catch(e){return '';}}
+          function norm(s){return (s||'').toString().replace(/\s+/g,' ').trim().toUpperCase();}
+          
+          var ins = [].slice.call(document.querySelectorAll('input, [contenteditable=true]')).filter(function(el){
+            if(!vis(el)) return false;
+            var r = el.getBoundingClientRect();
+            return r.x < 350 && r.y < 350;
+          });
+          for (var i=0; i<ins.length; i++){
+            var el = ins[i];
+            var val = norm(el.value || '');
+            if (/^[A-Z0-9]{2,8}$/.test(val) && el.getBoundingClientRect().top < 150){
+              return val;
+            }
+          }
+          var textos = document.querySelectorAll('div, span, h1, h2, h3, button');
+          for (var j=0; j<textos.length; j++){
+            var r = textos[j].getBoundingClientRect();
+            if (r.x < 350 && r.y < 120 && vis(textos[j])){
+              var t = norm(txt(textos[j]));
+              if (/^[A-Z0-9]{2,8}$/.test(t)) return t;
+            }
+          }
+          return '';
+        })()
+        """
+        try:
+            return (self.avaliar_js(js) or "").strip().strip('"').upper()
+        except Exception:
+            return ""
+
+    def selecionar_ativo_ticket(self, ativo, pausa=0.45):
+        """Seleciona e confere o ativo (ex: 'MNQU6', 'MESU6') no 'Chamado do pedido'.
+        
+        Se o ticket já estiver com o ativo desejado, não faz nada e confirma.
+        Se estiver com outro ativo (ex: 'MESU6' quando a ordem é 'MNQU6'), digita o ativo
+        no campo de busca de símbolo, envia Enter e confirma a troca.
+        """
+        if not ativo or str(ativo).strip().upper() in ("DESCONHECIDO", "", "NONE"):
+            return True, "nenhum ativo específico informado"
+        alvo = str(ativo).strip().upper()
+        
+        js = r"""
+        (function(alvo){
+          function vis(el){try{var r=el.getBoundingClientRect(); return r.width>0&&r.height>0;}catch(e){return false;}}
+          function txt(el){try{return (el.innerText||el.textContent||'').trim();}catch(e){return '';}}
+          function norm(s){return (s||'').toString().replace(/\s+/g,' ').trim().toUpperCase();}
+          
+          var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          
+          var ins = [].slice.call(document.querySelectorAll('input, [contenteditable=true]')).filter(function(el){
+            if(!vis(el)) return false;
+            var r = el.getBoundingClientRect();
+            return r.x < 350 && r.y < 350;
+          });
+          
+          var inputSimbolo = null;
+          for (var i=0; i<ins.length; i++){
+            var el = ins[i];
+            var ph = (el.placeholder || '').toLowerCase();
+            var val = norm(el.value || '');
+            if (ph.indexOf('search') >= 0 || ph.indexOf('pesquis') >= 0 || ph.indexOf('símbolo') >= 0 || ph.indexOf('symbol') >= 0 || ph.indexOf('contract') >= 0){
+              inputSimbolo = el;
+              break;
+            }
+            if (/^[A-Z0-9]{2,8}$/.test(val) && el.getBoundingClientRect().top < 150){
+              inputSimbolo = el;
+              break;
+            }
+          }
+          if (!inputSimbolo && ins.length > 0){
+            ins.sort(function(a,b){ return a.getBoundingClientRect().top - b.getBoundingClientRect().top; });
+            if (ins[0].getBoundingClientRect().top < 150){
+              inputSimbolo = ins[0];
+            }
+          }
+          
+          var atual = inputSimbolo ? norm(inputSimbolo.value) : '';
+          if (atual === alvo || (atual && alvo.startsWith(atual)) || (atual && atual.startsWith(alvo))){
+            return JSON.stringify({ok:true, mudou:false, ativo_atual:atual});
+          }
+          
+          if (!inputSimbolo){
+            var abas = document.querySelectorAll('div, span, button, a');
+            for(var a=0; a<abas.length; a++){
+              var ab = abas[a];
+              if(!vis(ab)) continue;
+              var tabTxt = norm(txt(ab));
+              if(tabTxt.indexOf(alvo) >= 0 && ab.getBoundingClientRect().top < 150){
+                ab.click();
+                return JSON.stringify({ok:true, mudou:true, via:'aba_grafico', ativo_novo:alvo});
+              }
+            }
+            return JSON.stringify({ok:false, motivo:'campo de símbolo não encontrado no ticket', ativo_atual:atual});
+          }
+          
+          inputSimbolo.focus();
+          setter.call(inputSimbolo, '');
+          inputSimbolo.dispatchEvent(new Event('input', {bubbles:true}));
+          setter.call(inputSimbolo, alvo);
+          inputSimbolo.dispatchEvent(new Event('input', {bubbles:true}));
+          inputSimbolo.dispatchEvent(new Event('change', {bubbles:true}));
+          
+          return JSON.stringify({ok:true, mudou:true, ativo_anterior:atual, ativo_novo:alvo});
+        })(%s)
+        """ % json.dumps(alvo)
+        
+        try:
+            res = json.loads(self.avaliar_js(js) or "{}")
+        except ConexaoPerdida:
+            raise
+        except Exception as e:
+            return False, f"erro ao selecionar ativo no ticket ({e})"
+        
+        if not res.get("ok"):
+            self.log(f"   ⚠️ Não consegui preencher o ativo '{alvo}' no ticket: {res.get('motivo')}")
+            return False, res.get("motivo")
+            
+        if res.get("mudou"):
+            self.cdp("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13})
+            self.cdp("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13})
+            time.sleep(pausa)
+            
+            js_dropdown = r"""
+            (function(alvo){
+              function vis(el){try{var r=el.getBoundingClientRect(); return r.width>0&&r.height>0;}catch(e){return false;}}
+              function txt(el){try{return (el.innerText||el.textContent||'').trim();}catch(e){return '';}}
+              function norm(s){return (s||'').toString().replace(/\s+/g,' ').trim().toUpperCase();}
+              var itens = document.querySelectorAll('li, tr, [role=option], [role=row], div');
+              for (var i=0; i<itens.length; i++){
+                var it = itens[i];
+                if(!vis(it)) continue;
+                var t = norm(txt(it));
+                var r = it.getBoundingClientRect();
+                if (r.x < 450 && r.y < 350 && (t === alvo || t.startsWith(alvo + ' ') || t.startsWith(alvo + '\n'))){
+                  it.click();
+                  return true;
+                }
+              }
+              return false;
+            })(%s)
+            """ % json.dumps(alvo)
+            try:
+                self.avaliar_js(js_dropdown)
+            except Exception:
+                pass
+            time.sleep(pausa)
+            self.log(f"   ✏️ Ativo alterado no ticket: {res.get('ativo_anterior', '')} → {alvo}")
+        else:
+            self.log(f"   ✏️ Ativo conferido no ticket: {alvo}")
+            
+        return True, "ativo conferido"
+
     def _selecionar_tipo(self, tipo, pausa=0.45, dry_run=False):
         """Ajusta TIPO DE PEDIDO clicando no seletor e na opção. Best-effort.
         ATENÇÃO: no Tradovate em PT-BR, STOP = 'PARAR' e STOP LIMITE = 'PARAR
@@ -2065,9 +2223,10 @@ class TradovateAuto:
     def sair_em_mercado_e_cancelar(self, enviar=False, exigir_zerado=True):
         """Clica em 'Sair em Mkt & Cancelar': zera a posição e limpa as ordens.
 
-        `exigir_zerado=True` (o padrão, e o único modo que a automação usa) só
-        deixa clicar depois de LER na tela que a posição está em 0 — o botão
-        liquida a mercado, e liquidar por engano não tem desfazer.
+        `exigir_zerado=True` (o padrão para rotinas automáticas) só deixa clicar
+        depois de LER na tela que a posição está em 0.
+        `exigir_zerado=False` (quando o trader pede explicitamente para sair/zerar)
+        executa a liquidação a mercado de posições abertas e cancela ordens pendentes.
 
         Devolve {ok, clicou, motivo, vivas_antes, vivas_depois, recusa}. `ok`
         só é True quando eu CONFERI que as ordens sumiram."""
@@ -2075,13 +2234,24 @@ class TradovateAuto:
              "vivas_antes": None, "vivas_depois": None, "rotulo": None}
 
         # 1) A POSIÇÃO ESTÁ ZERADA? Tem de ser LEITURA, não suposição.
-        if exigir_zerado:
-            try:
-                estado = self.ler_estado() or {}
-            except ConexaoPerdida as e:
+        quais_abertas = ""
+        try:
+            estado = self.ler_estado() or {}
+            abertas = [l for l in (estado.get("linhas") or [])
+                       if l.get("qtd_liquida")]
+            if abertas:
+                quais_abertas = ", ".join(
+                    f"{l.get('ativo') or '?'} {l.get('qtd_liquida')}"
+                    for l in abertas)
+        except ConexaoPerdida as e:
+            if exigir_zerado:
                 r["motivo"] = f"a ligação com o Chrome caiu antes de eu ler a posição: {e}"
                 r["recusa"] = True
                 return r
+        except Exception:
+            pass
+
+        if exigir_zerado:
             if not estado.get("ok"):
                 r["motivo"] = ("não consegui LER a posição na tela ("
                                + str(estado.get("motivo") or "motivo não informado")
@@ -2090,13 +2260,8 @@ class TradovateAuto:
                 r["recusa"] = True
                 self.log(f"   ⛔ não clico em 'Sair em Mkt': {r['motivo']}")
                 return r
-            abertas = [l for l in (estado.get("linhas") or [])
-                       if l.get("qtd_liquida")]
-            if abertas:
-                quais = ", ".join(
-                    f"{l.get('ativo') or '?'} {l.get('qtd_liquida')}"
-                    for l in abertas)
-                r["motivo"] = (f"você ESTÁ posicionado ({quais}). Este botão "
+            if quais_abertas:
+                r["motivo"] = (f"você ESTÁ posicionado ({quais_abertas}). Este botão "
                                "zeraria a posição a mercado, e posição executada "
                                "se administra por stop e alvo — não por mudança "
                                "de leitura minha.")
@@ -2130,9 +2295,6 @@ class TradovateAuto:
             self.log(f"   ⛔ {r['motivo']}")
             return r
         if not btn.get("cancela_ordens"):
-            # A legenda não fala em cancelar: o seletor ao lado está em outra
-            # opção. Clicar assim zeraria a posição e DEIXARIA as ordens — o
-            # contrário do que se pediu. Não clico e digo o que ajustar.
             r["motivo"] = (f"o botão está em '{btn.get('rotulo')}', que não "
                            "cancela ordem nenhuma. Na setinha ao lado dele, "
                            "escolha 'Sair em Mkt & Cxl' — aí eu uso.")
@@ -2149,8 +2311,12 @@ class TradovateAuto:
             return r
 
         # 4) O CLIQUE.
-        self.log(f"   🧹 Clicando em '{btn.get('rotulo')}' "
-                 f"({r['vivas_antes']} ordem(ns) viva(s), posição zerada).")
+        if quais_abertas:
+            self.log(f"   🧹 Clicando em '{btn.get('rotulo')}' "
+                     f"({r['vivas_antes']} ordem(ns) viva(s), posição aberta: {quais_abertas} — liquidando a pedido do trader).")
+        else:
+            self.log(f"   🧹 Clicando em '{btn.get('rotulo')}' "
+                     f"({r['vivas_antes']} ordem(ns) viva(s), posição zerada).")
         try:
             self.clicar_pagina(btn["x"], btn["y"])
         except ConexaoPerdida as e:
@@ -2161,16 +2327,13 @@ class TradovateAuto:
             return r
         r["clicou"] = True
         time.sleep(0.6)
-        # A Tradovate costuma pedir confirmação para liquidar/cancelar. Esta é
-        # a ÚNICA confirmação que o robô responde com SIM — e só porque o
-        # clique foi dele, agora, e a caixa fala do que ele acabou de pedir.
         try:
             self._confirmar_dialogo_de_cancelamento()
         except ConexaoPerdida:
             pass
         time.sleep(0.9)
 
-        # 5) A CONFERÊNCIA. É ela que transforma "cliquei" em "cancelei".
+        # 5) A CONFERÊNCIA.
         depois = self.contar_ordens_vivas()
         r["vivas_depois"] = depois.get("vivas")
         if not depois.get("ok"):
@@ -2215,7 +2378,9 @@ class TradovateAuto:
             return r
         r["ok"] = True
         r["motivo"] = (f"ordens canceladas na plataforma "
-                       f"({r['vivas_antes']} → 0), com a posição zerada.")
+                       f"({r['vivas_antes']} → 0)"
+                       + (f", posições fechadas ({quais_abertas})" if quais_abertas else ", com a posição zerada")
+                       + ".")
         self.log(f"   ✅ {r['motivo']}")
         return r
 
@@ -2305,13 +2470,7 @@ class TradovateAuto:
         return True, d.get("texto")
 
     def _confirmar_dialogo_de_cancelamento(self):
-        """Confirma a caixa de 'tem certeza?' do cancelamento — e SÓ ela.
-
-        `dispensar_dialogo_perigoso` existe pela regra oposta: confirmação que
-        o robô não pediu se responde com NÃO. Aqui o robô pediu, um segundo
-        atrás, e a caixa fala do que ele pediu. Por isso o reconhecimento é
-        estreito: o texto tem de falar em cancelar ordens / sair de posições.
-        Qualquer outra coisa na tela continua recebendo 'não'."""
+        """Confirma a caixa de 'tem certeza?' do cancelamento — e SÓ ela."""
         js = r"""
         (function(){
           function vis(el){try{var r=el.getBoundingClientRect();
@@ -2320,11 +2479,10 @@ class TradovateAuto:
             .replace(/\s+/g,' ').trim();}catch(e){return '';}}
           function norm(s){return (s||'').toString().normalize('NFD')
             .replace(/[̀-ͯ]/g,'').toLowerCase();}
-          var reAssunto=new RegExp('cancelar (todas|as|todos)|cancel all|'+
-            'sair (de|das) posic|exit .*position|liquidar|liquidate|'+
-            'zerar posic|flatten');
+          var reAssunto=new RegExp('cancelar|cancel|sair|exit|liquidar|liquidate|'+
+            'zerar|flatten|deseja|realmente|confirmar|fechar|close|posic|ordens|orders', 'i');
           var achou=false;
-          var els=document.querySelectorAll('div,p,span,h1,h2,h3,label,td');
+          var els=document.querySelectorAll('div,p,span,h1,h2,h3,label,td,[role=dialog]');
           for(var i=0;i<els.length;i++){
             var e=els[i];
             if(!vis(e)) continue;
@@ -2338,9 +2496,9 @@ class TradovateAuto:
             var b=bts[k];
             if(!vis(b)) continue;
             var tb=norm(txt(b));
-            if(!/^(ok|sim|yes|confirmar|confirm|continuar|continue)$/.test(tb)) continue;
+            if(!/^(ok|sim|yes|confirmar|confirm|continuar|continue|sair.*cancelar|cancelar.*todas|sair.*todas|fechar.*todas|sim.*cancelar|sim.*sair)$/i.test(tb)) continue;
             var rb=b.getBoundingClientRect();
-            if(rb.width>240||rb.height>90) continue;
+            if(rb.width>300||rb.height>120) continue;
             try{ b.click(); return JSON.stringify({achou:true, via:'confirmou'}); }catch(err){}
           }
           return JSON.stringify({achou:true, via:'sem botao'});
@@ -2414,24 +2572,26 @@ class TradovateAuto:
         return ok
 
     def enviar_ordem_ticket(self, preco, direcao, tipo="LIMITE", qtd=None,
-                            enviar=False, pausa=0.45):
+                            enviar=False, pausa=0.45, ativo=None):
         """Preenche UMA ordem no 'Chamado do pedido'. Se enviar=False (padrão),
         só preenche pra você conferir na tela — NÃO clica em Enviar."""
         long_ = str(direcao).upper() in ("BUY", "COMPRA", "COMPRAR", "C", "LONG")
         palavra_dir = "Comprar" if long_ else "Vender"
         modo = "ENVIAR" if enviar else "SÓ PREENCHER (confira na tela)"
-        self.log(f"🧾 Ordem [{modo}]: {palavra_dir} {tipo} @ {preco}"
+        rotulo_ativo = f" [{ativo}]" if ativo else ""
+        self.log(f"🧾 Ordem [{modo}]{rotulo_ativo}: {palavra_dir} {tipo} @ {preco}"
                  + (f"  x{qtd}" if qtd else ""))
         if enviar and (qtd is None):
             self.log("   ⚠️ QTD é obrigatória pra ENVIAR (o Tradovate recusa sem "
                      "quantidade). Informe a quantidade.")
             return False
-        # 0) garante que o formulário está à vista (após uma ordem, o painel vira
-        #    comprovante e precisa do ← para voltar).
+        # 0) garante que o formulário está à vista e seleciona o ativo correto
         if not self._garantir_formulario():
             self.log("   ❌ formulário do 'Chamado do pedido' não está visível. "
                      "Abra o ticket na Tradovate.")
             return False
+        if ativo:
+            self.selecionar_ativo_ticket(ativo, pausa)
         # 1) direção
         d = self.localizar(palavra_dir)
         if not d:
@@ -2860,8 +3020,9 @@ class TradovateAuto:
 
         long_ = str(direcao).upper() in ("BUY", "COMPRA", "COMPRAR", "C", "LONG")
         palavra_dir = "Comprar" if long_ else "Vender"
+        rotulo_ativo = f" [{ativo}]" if ativo else ""
         self.log(f"📦 Ordem ÚNICA com ATM [{'ENVIAR' if enviar else 'dry'}]: "
-                 f"{palavra_dir} {tipo} @ {entrada} · stop {t_stop} ticks "
+                 f"{palavra_dir} {tipo} @ {entrada}{rotulo_ativo} · stop {t_stop} ticks "
                  f"({stop}) · alvo {t_alvo} ticks ({alvo}) · qtd={qtd}"
                  + (" · com AUTO TRAIL" if trailing else ""))
 
@@ -2945,7 +3106,7 @@ class TradovateAuto:
         return resultado
 
     def enviar_bracket_ticket(self, direcao, entrada, stop, alvo, qtd=None,
-                              enviar=False, pausa=0.7):
+                              enviar=False, pausa=0.7, ativo=None):
         """Coloca a estrutura completa com PREÇOS EXATOS do SMC via ticket:
           LONG : entrada Comprar/LIMITE · stop Vender/STOP · alvo Vender/LIMITE
           SHORT: entrada Vender/LIMITE  · stop Comprar/STOP · alvo Comprar/LIMITE
@@ -2956,7 +3117,8 @@ class TradovateAuto:
         plano = [("ENTRADA", entrada, dir_entrada, "LIMITE"),
                  ("STOP",    stop,    dir_prot,    "STOP"),
                  ("ALVO",    alvo,    dir_prot,    "LIMITE")]
-        self.log(f"📦 Bracket {'LONG' if long_ else 'SHORT'} via ticket "
+        rotulo_ativo = f" [{ativo}]" if ativo else ""
+        self.log(f"📦 Bracket {'LONG' if long_ else 'SHORT'}{rotulo_ativo} via ticket "
                  f"[{'ENVIAR' if enviar else 'dry'}]  qtd={qtd}")
         resultado = {"ok": True, "enviadas": [], "faltando": [], "erro": None,
                      "exposto": False}
@@ -2986,7 +3148,7 @@ class TradovateAuto:
                              f"em {espera:.1f}s — a proteção não pode ficar de fora.")
                     time.sleep(espera)
                 try:
-                    perna_ok = self.enviar_ordem_ticket(preco, dirr, tipo, qtd, enviar)
+                    perna_ok = self.enviar_ordem_ticket(preco, dirr, tipo, qtd, enviar, pausa=pausa, ativo=ativo)
                 except ConexaoPerdida as e:
                     perna_ok = False
                     resultado["erro"] = str(e)

@@ -428,13 +428,26 @@ async function connectToWhatsApp() {
         // liga, e o comando nao existia. Existe agora, do mesmo jeito que
         // ACATAR e NOVA ANALISE: chega aqui, vira item da fila, e o app monta o
         // status com os numeros do disco e devolve pelo WhatsApp.
+        // STATUS — pedido dele em 14/08, as 10:57 e de novo as 10:58
         const CMD_STATUS    = ['STATUS', 'SITUACAO', 'SITUAÇÃO', 'RESUMO',
                                'COMO ESTAMOS', 'COMO ESTA', 'COMO ESTÁ'];
+
+        // SAÍDA EM MERCADO E CANCELAMENTO DE EMERGÊNCIA — pedido direto via WhatsApp
+        const CMD_SAIR_MKT  = ['SAIR EM MKT', 'SAIR EM MKT & CXL', 'SAIR EM MKT & CANCELAR',
+                               'SAIR EM MERCADO', 'SAIR NO MERCADO', 'ENCERRAR TODAS',
+                               'ENCERRE TODAS', 'ENCERRAR OPERACOES', 'ENCERRE OPERACOES',
+                               'ENCERRAR TODAS OPERACOES', 'ENCERRE TODAS OPERACOES',
+                               'ENCERRAR TODAS AS OPERACOES', 'ENCERRE TODAS AS OPERACOES',
+                               'SAI DE TODAS AS OPERACOES', 'SAIR DE TODAS AS OPERACOES',
+                               'FECHAR TODAS', 'FECHAR TODAS AS POSICOES', 'ZERAR TUDO',
+                               'ZERAR POSICOES', 'CANCELAR TODAS', 'CANCELAR TODAS AS ORDENS',
+                               'CANCELAR ORDENS', 'SAIR DE TODAS', 'LIQUIDAR TUDO'];
 
         const ehComando =
             CMD_STOP.includes(texto) || CMD_START.includes(texto) ||
             CMD_ACATAR.includes(texto) || CMD_DISPENSAR.includes(texto) ||
-            CMD_ANALISE.includes(texto) || CMD_STATUS.includes(texto);
+            CMD_ANALISE.includes(texto) || CMD_STATUS.includes(texto) ||
+            CMD_SAIR_MKT.some(c => texto.includes(c) || texto === c);
         if (!ehComando) return;
 
         const inscrito = lerInscritos().includes(jidAlvo);
@@ -506,6 +519,15 @@ async function connectToWhatsApp() {
             console.log(`🚪 DISPENSAR enfileirado (responde neste chat? ${inscrito}).`);
             if (inscrito) await sock.sendMessage(jidAlvo, {
                 text: "🚪 Ok: não vou fazer acompanhamento desse cenário."
+            });
+            return;
+        }
+
+        if (CMD_SAIR_MKT.some(c => texto.includes(c) || texto === c)) {
+            filaComandos.push({ tipo: 'SAIR_MKT', jid: jidAlvo, ts: Date.now() });
+            console.log(`🧹 SAIR_MKT enfileirado (responde neste chat? ${inscrito}).`);
+            if (inscrito) await sock.sendMessage(jidAlvo, {
+                text: "🧹 Comando de EMERGÊNCIA recebido: enviando instrução para SAIR EM MERCADO e CANCELAR TODAS AS ORDENS na Tradovate agora."
             });
             return;
         }
