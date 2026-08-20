@@ -10163,6 +10163,12 @@ def interpretar_intencao(texto):
     if re.search(r"\b(abrir|abre|iniciar)\b.*\b(tradutor|translate|google tradutor)\b", t) or (re.search(r"\b(tradutor)\b", t) and len(palavras) <= 3):
         return ("ABRIR_URL", "https://translate.google.com")
 
+    # TRAILING STOP INTELIGENTE
+    if re.search(r"\b(liga|ligar|ativa|ativar|habilita|habilitar)\b.*\b(trailing|trail|auto trail|stop m[oó]vel)\b", t):
+        return "LIGAR_TRAILING"
+    if re.search(r"\b(desliga|desligar|desativa|desativar|desabilita|desabilitar)\b.*\b(trailing|trail|auto trail|stop m[oó]vel)\b", t):
+        return "DESLIGAR_TRAILING"
+
     # CONFIGURAR A PRÓPRIA FERRAMENTA — ele autorizou, e é código que faz.
     # Vem ANTES da busca na web: "o dia da conta 1 começa às 19h" é ordem de
     # configuração, não pergunta de mercado (era aí que ela se perdia).
@@ -10432,7 +10438,7 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
     # ao ACATAR. Nada que apaga números do trader roda sem ele dizer "sim".
     if intencao == "ZERAR_CICLO":
         return ("PEDIR_CONFIRMACAO", "ZERAR_CICLO")
-    if intencao in ("VER_GRAFICO", "PRINT_AGORA", "ABRIR_HUD", "FECHAR_APP", "ABRIR_TRADOVATE", "TELEMETRIA_SMC", "SAUDACAO"):
+    if intencao in ("VER_GRAFICO", "PRINT_AGORA", "ABRIR_HUD", "FECHAR_APP", "ABRIR_TRADOVATE", "TELEMETRIA_SMC", "SAUDACAO", "LIGAR_TRAILING", "DESLIGAR_TRAILING"):
         return (intencao, None)
     if isinstance(intencao, tuple) and intencao[0] in ("ABRIR_URL", "ABRIR_APP", "TROCAR_VOZ"):
         return intencao
@@ -12342,6 +12348,16 @@ class SmcQuantApp(ctk.CTk):
         if tipo == "ABRIR_TRADOVATE":
             self._tv_abrir_chrome()
             self._chat_responder("Abrindo o Google Chrome com a Tradovate em modo de automação e renderização contínua.")
+            return
+        if tipo == "LIGAR_TRAILING":
+            self.tv_trail_var.set(True)
+            self._tv_salvar_prefs()
+            self._chat_responder("✅ AUTO TRAIL Inteligente ATIVADO: quando uma operação pagar 1R (ou 1.5R em cenários largos), o stop passa a perseguir o preço dinamicamente protegendo o lucro.", falar_tb=True)
+            return
+        if tipo == "DESLIGAR_TRAILING":
+            self.tv_trail_var.set(False)
+            self._tv_salvar_prefs()
+            self._chat_responder("AUTO TRAIL desativado: as operações seguirão com stop fixo no nível estrutural até o alvo.", falar_tb=True)
             return
         if tipo == "TELEMETRIA_SMC":
             rel = self._montar_relatorio_telemetria()
