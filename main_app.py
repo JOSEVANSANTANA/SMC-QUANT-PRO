@@ -11861,12 +11861,18 @@ class SmcQuantApp(ctk.CTk):
                                           font=ctk.CTkFont(size=11, weight="bold"))
         self.lbl_ia_conta.pack(side="left", padx=10)
 
-        # Botões do HUD Holográfico
+        # Botões do HUD Holográfico Futurista
         ctk.CTkButton(topo, text="🪟 Desacoplar HUD (Solta)", width=160, height=26,
                       fg_color="#07324f", hover_color="#00f0ff",
                       text_color="#00f0ff",
                       font=ctk.CTkFont(size=11, weight="bold"),
                       command=self._abrir_hud_jarvis).pack(side="left", padx=6)
+        self.btn_modo_orbe = ctk.CTkButton(topo, text="🔮 Expandir Orbe", width=125, height=26,
+                                           fg_color="#102a4a", hover_color="#00f5ff",
+                                           text_color="#00f5ff",
+                                           font=ctk.CTkFont(size=11, weight="bold"),
+                                           command=self._alternar_modo_orbe)
+        self.btn_modo_orbe.pack(side="left", padx=4)
         self.btn_toggle_orbe = ctk.CTkButton(topo, text="👁️ Ocultar Orbe", width=105, height=26,
                                              fg_color="#21262d", hover_color="#30363d",
                                              text_color="#c9d1d9",
@@ -11877,8 +11883,7 @@ class SmcQuantApp(ctk.CTk):
         self.lbl_ia_status = ctk.CTkLabel(topo, text="pronta", text_color="#3fb950",
                                            font=ctk.CTkFont(size=11))
         self.lbl_ia_status.pack(side="right", padx=12)
-        # TAMANHO DA LETRA, à mão, aqui na barra — é nesta tela que ele mais lê.
-        # Dois botões em vez de um menu: no meio do pregão, um clique resolve.
+        # TAMANHO DA LETRA
         ctk.CTkButton(topo, text="A＋", width=38, height=26,
                       fg_color="#21262d", hover_color="#30363d",
                       text_color="#e6edf3",
@@ -11901,9 +11906,10 @@ class SmcQuantApp(ctk.CTk):
 
         # ---------- HUD Holográfico EMBUTIDO no topo da aba TIGER ----------
         self.hud_embutido = None
+        self._modo_orbe_grande = False
         if TigerHUDEmbeddedFrame:
             try:
-                self.hud_embutido = TigerHUDEmbeddedFrame(raiz, largura=720, altura=175)
+                self.hud_embutido = TigerHUDEmbeddedFrame(raiz, largura=900, altura=280)
                 self.hud_embutido.pack(fill="x", padx=10, pady=(6, 2))
                 ativo = getattr(self, "_ultimo_ativo_lido", "") or "MNQ / NQ"
                 self.hud_embutido.renderer.ativo_smc = str(ativo)
@@ -11911,26 +11917,24 @@ class SmcQuantApp(ctk.CTk):
                 self.log(f"Falha ao carregar HUD embutido: {e}")
                 self.hud_embutido = None
 
-        # ---------- Transcript (a "tela" do terminal) ----------
-        # O tk.Text NÃO é escalado pelo CustomTkinter — a fonte dele é calculada
-        # aqui, com a escala de letra escolhida pelo trader (botões A− / A+ na
-        # barra acima). Sem isto, aumentar a letra deixava tudo maior MENOS a
-        # tela onde ele mais lê.
+        # ---------- Transcript (Estilização Sci-Fi / Cyberpunk) ----------
         _tam = max(8, int(round(_FONTE_BASE_CHAT * getattr(self, "_escala_letra", 1.0))))
-        self.txt_chat = tk.Text(raiz, bg="#0d1117", fg="#c9d1d9", wrap="word",
-                                 relief="flat", padx=14, pady=10,
-                                 font=("Consolas", _tam), insertbackground="#c9d1d9",
-                                 selectbackground="#264f78", state="disabled")
-        self.txt_chat.pack(fill="both", expand=True, padx=2, pady=(2, 0))
-        self.txt_chat.tag_configure("prompt", foreground="#00E676",
+        self.txt_chat = tk.Text(raiz, bg="#040813", fg="#e6f9ff", wrap="word",
+                                 relief="flat", bd=0, highlightthickness=1,
+                                 highlightbackground="#0f2c4f",
+                                 padx=16, pady=10,
+                                 font=("Consolas", _tam), insertbackground="#00f5ff",
+                                 selectbackground="#07324f", state="disabled")
+        self.txt_chat.pack(fill="both", expand=True, padx=10, pady=(2, 0))
+        self.txt_chat.tag_configure("prompt", foreground="#00f5ff",
                                      font=("Consolas", _tam, "bold"))
-        self.txt_chat.tag_configure("voce", foreground="#e6edf3")
-        self.txt_chat.tag_configure("ia_pref", foreground="#ff9f43",
+        self.txt_chat.tag_configure("voce", foreground="#ffffff")
+        self.txt_chat.tag_configure("ia_pref", foreground="#00f5ff",
                                      font=("Consolas", _tam, "bold"))
-        self.txt_chat.tag_configure("ia", foreground="#c9d1d9")
-        self.txt_chat.tag_configure("sistema", foreground="#8a92a5",
+        self.txt_chat.tag_configure("ia", foreground="#d1f2ff")
+        self.txt_chat.tag_configure("sistema", foreground="#5a82a6",
                                      font=("Consolas", max(8, _tam - 1), "italic"))
-        self.txt_chat.tag_configure("hora", foreground="#3d434f",
+        self.txt_chat.tag_configure("hora", foreground="#1c3554",
                                      font=("Consolas", max(7, _tam - 3)))
 
         # ---------- Entrada ----------
@@ -15137,6 +15141,22 @@ class SmcQuantApp(ctk.CTk):
                 self._hud_jarvis.exibir()
             except Exception as e:
                 self.log(f"Falha ao abrir HUD holográfico: {e}")
+
+    def _alternar_modo_orbe(self):
+        """Alterna entre o modo Cockpit Padrão (HUD ~280px) e o modo Orbe Expandido / Imersivo (~460px)."""
+        if not getattr(self, "hud_embutido", None):
+            return
+        if not self.hud_embutido.winfo_viewable():
+            self._alternar_hud_embutido()
+        self._modo_orbe_grande = not getattr(self, "_modo_orbe_grande", False)
+        if self._modo_orbe_grande:
+            self.hud_embutido.redimensionar(460)
+            if hasattr(self, "btn_modo_orbe"):
+                self.btn_modo_orbe.configure(text="📐 Compactar Orbe")
+        else:
+            self.hud_embutido.redimensionar(280)
+            if hasattr(self, "btn_modo_orbe"):
+                self.btn_modo_orbe.configure(text="🔮 Expandir Orbe")
 
     def _alternar_hud_embutido(self):
         """Oculta ou exibe o HUD holográfico embutido na aba TIGER."""
