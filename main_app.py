@@ -5994,6 +5994,7 @@ FONTES_NOTICIAS = [
 SIMBOLOS_MERCADO = {
     "s&p": "^GSPC", "sp500": "^GSPC", "s&p500": "^GSPC", "sp 500": "^GSPC",
     "s&p 500": "^GSPC", "sp-500": "^GSPC", "smp500": "^GSPC", "smp 500": "^GSPC",
+    "sp5": "^GSPC", "sp 5": "^GSPC", "s&p 5": "^GSPC", "s&p5": "^GSPC",
     "esse p 500": "^GSPC", "es e pe 500": "^GSPC", "s e p 500": "^GSPC",
     "spx": "^GSPC", "es": "ES=F", "mes": "ES=F", "mini indice": "^GSPC",
     "nasdaq": "^IXIC", "nasdac": "^IXIC", "nasdak": "^IXIC", "nasdaq 100": "^NDX",
@@ -10200,7 +10201,9 @@ def interpretar_intencao(texto):
                       r"agora|economia|fed|juros|infla[çc][ãa]o|not[íi]cias?)\b", t):
         return "NOTICIAS"
     if re.search(r"\b(cota[çc][ãa]o|pre[çc]o|quanto (est[áa]|vale|custa)|"
-                 r"em quanto|quanto t[áa])\b", t) and simbolo_do_texto(t):
+                 r"em quanto|quanto t[áa]|fechamento|fechou|fechando|abertura|abriu|"
+                 r"m[áa]xima|m[íi]nima|pontua[çc][ãa]o|valor|como est[áa]|como foi|como terminou)\b", t) and \
+            (simbolo_do_texto(t) or re.search(r"\b(mercado|bolsa|índice|indice|dia|hoje)\b", t)):
         return "COTACAO"
     if re.search(r"\b(pesquis(a|ar|e)|busc(a|ar|e)|procur(a|ar|e)|"
                  r"d[áa] uma olhada na (internet|web)|na internet|no google)\b", t):
@@ -12704,12 +12707,12 @@ class SmcQuantApp(ctk.CTk):
                 f"peça de novo. (detalhe técnico: {str(e)[:120]})")
 
     def _chat_web_cotacao(self, texto):
-        alvo = simbolo_do_texto(texto)
+        alvo = simbolo_do_texto(texto) or ("^GSPC", "S&P 500")
         cot = cotacao_mercado(alvo[0]) if alvo else None
         if not cot:
             self._chat_entregar_resposta(
                 "Não consegui puxar essa cotação agora — ou o ativo não está na "
-                "minha lista, ou a internet falhou. Eu acompanho S&P, Nasdaq, "
+                "minha lista, ou a internet falhou. Eu acompanho S&P 500, Nasdaq, "
                 "Dow, Russell, VIX, ouro, prata, petróleo, dólar, euro, "
                 "bitcoin, Ibovespa e juros de 10 anos. Não vou chutar um número.")
             return
@@ -14334,6 +14337,16 @@ class SmcQuantApp(ctk.CTk):
             
             preco = (c.get("cotacao") or {}).get("preco") or "7733.75"
             partes.append(f"Preço ao vivo: {preco}")
+            
+            # Cotação de mercado em tempo real (Yahoo Finance)
+            try:
+                alvo_p = simbolo_do_texto(pergunta) or ("^GSPC", "S&P 500")
+                cot_web = cotacao_mercado(alvo_p[0])
+                if cot_web:
+                    partes.append(f"Cotação do ativo ({alvo_p[1].upper()}): {formatar_cotacao(cot_web, alvo_p[1].upper())}")
+            except Exception:
+                pass
+
             partes.append("Conexão Tradovate (CDP): Conectada e operacional")
             partes.append("Telemetria SMC: Regime de Expansão (Trend), Matriz de Confluência 92/100, CVD Delta +1,420")
             
