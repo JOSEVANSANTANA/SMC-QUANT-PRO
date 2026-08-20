@@ -5933,12 +5933,9 @@ def remover_licao(alvo):
     return removida
 
 
-# "REMOVA ISSO", "ESQUECE ESSA LIÇÃO", "APAGA A 3".
+# "REMOVA A LIÇÃO 2", "ESQUECE ESSA LIÇÃO", "APAGA A 3", "APAGA A ÚLTIMA LIÇÃO".
 _RE_ESQUECER = re.compile(
-    r"\b(remov\w+|apag\w+|esquec\w+|delet\w+|tir\w+|desfa[czç]\w*|cancel\w+)\b"
-    r"[^.;\n]{0,30}?"
-    r"\b(isso|isto|essa|esse|aquela|aquele|li[çc][ãa]o|li[çc][õo]es|"
-    r"aprendizado|regra|mem[óo]ria|[uú]ltim\w+|\d{1,2}|que fala|que diz)\b",
+    r"\b(remov\w+|apag\w+|esquec\w+|delet\w+)\b\s*(?:a\s+|as\s+|da\s+)?\b(li[çc][ãa]o|li[çc][õo]es|aprendizado|regra|mem[óo]ria|[uú]ltima|essa\s+li[çc][ãa]o|\d{1,2})\b",
     re.IGNORECASE)
 
 def pedido_de_esquecer(texto):
@@ -5947,16 +5944,11 @@ def pedido_de_esquecer(texto):
     t = _norm_busca(texto or "")
     if not t or not _RE_ESQUECER.search(t):
         return False, ""
-    # "aprenda isso" com "esquece" na mesma frase é ordem de apagar, não de
-    # gravar: quem diz as duas coisas está corrigindo o que foi gravado.
-    # "apaga a LIÇÃO 2" e também "apaga a 2" — ele não vai escrever a palavra
-    # 'lição' toda vez. Sem este segundo padrão, "apaga a 2" caía no alvo vazio
-    # e apagaria a ÚLTIMA, que é a lição errada.
+    # "apaga a LIÇÃO 2" e também "apaga a 2"
     m = re.search(r"\b(li[çc][ãa]o|regra)\s*(n[úu]mero\s*)?(\d{1,2})\b", t)
     if m:
         return True, m.group(3)
-    m = re.search(r"\b(remov\w+|apag\w+|esquec\w+|delet\w+|tir\w+)\b"
-                  r"[^\d\n]{0,12}(\d{1,2})\b", t)
+    m = re.search(r"\b(remov\w+|apag\w+|esquec\w+|delet\w+)\b\s*(?:a\s+)?(\d{1,2})\b", t)
     if m:
         return True, m.group(2)
     m = re.search(r"\b(sobre|que fala de|do|da)\s+(.{3,40})$", t)
@@ -12744,22 +12736,32 @@ class SmcQuantApp(ctk.CTk):
     def _montar_relatorio_telemetria(self):
         """Monta o relatório detalhado de telemetria SMC e Order Flow em tempo real."""
         c = self._cenario_da_mesa() or {}
-        ativo = c.get("ativo_nome") or getattr(self, "_ultimo_ativo_lido", "") or "MESU6"
-        preco = (c.get("cotacao") or {}).get("preco") or (c.get("posicao") or {}).get("entry") or "7733.75"
+        ua = getattr(self, "_ultima_analise", None) or {}
+        ativo = ua.get("ativo") or c.get("ativo_nome") or getattr(self, "_ultimo_ativo_lido", "") or "MESU6"
+        preco = ua.get("preco") or (c.get("cotacao") or {}).get("preco") or (c.get("posicao") or {}).get("entry") or "—"
         
-        regime = "Expansão de Tendência (Bullish)" if "BUY" in str(c.get("analise", {}).get("acao", "")) else "Estrutura Vendedora (Bearish)"
-        score = "92/100 (Alta Confluência)"
+        acao_ua = ua.get("acao", "ANALISANDO")
+        regime = "Expansão de Tendência (Bullish)" if "BUY" in str(acao_ua) else ("Estrutura Vendedora (Bearish)" if "SELL" in str(acao_ua) else "Consolidação / Aguardando Gatilho (Neutral)")
+        prob = ua.get("probabilidade")
+        score = f"{prob}% de Probabilidade" if prob else "Em Mapeamento"
         
+        confls = ua.get("confluencias", [])
+        confl_txt = ", ".join(confls) if isinstance(confls, list) else str(confls or "Mapeando zonas de liquidez")
+        
+        stats = self._computar_stats_plano()
+        res_hoje = stats.get("resultado_hoje", 0.0)
+        tot_ciclo = stats.get("lucro_usd", 0.0)
+
         linhas = [
-            "⚡ TELEMETRIA SMC & ORDER FLOW EM TEMPO REAL",
+            "⚡ TELEMETRIA SMC & PLANO DE TRADING EM TEMPO REAL",
             "",
-            f"• Ativo Monitorado: {ativo} | Preço de Tela: {preco}",
+            f"• Ativo em Foco: {ativo} | Preço de Tela: {preco}",
             f"• Regime de Mercado: {regime}",
-            f"• Matriz de Confluência SMC: {score}",
-            "• Order Flow (CVD Delta): +1,420 contratos (Pressão Agressora)",
-            "• Estrutura: Order Block validado com FVG em 5min e liquidez mapeada",
+            f"• Confluência do Setup: {score}",
+            f"• Confluências Ativas: {confl_txt}",
             f"• Conexão Tradovate (CDP): {'Ativa e Operacional' if getattr(self, '_tv_bot', None) else 'Pronta para envio'}",
-            f"• Conta Ativa: {nome_conta_ativa()}"
+            f"• Conta Ativa: {nome_conta_ativa()}",
+            f"• Resultado do Dia: US$ {res_hoje:+,.2f} | Total do Ciclo: US$ {tot_ciclo:+,.2f}",
         ]
         pos = c.get("posicao")
         if pos:
@@ -14447,6 +14449,30 @@ class SmcQuantApp(ctk.CTk):
                     f"{ua.get('acao')} {ua.get('ativo')} @ {ua.get('preco')}, "
                     f"probabilidade {ua.get('probabilidade','—')}%, "
                     f"confluências: {confl_str}")
+            # ESTATÍSTICAS E PAINEL DO PLANO DE TRADING EM TEMPO REAL
+            try:
+                stats = self._computar_stats_plano()
+                res_hoje = stats.get("resultado_hoje", 0.0)
+                tot_ciclo = stats.get("lucro_usd", 0.0)
+                max_dd = stats.get("max_dd_usd", 0.0)
+                winrate = stats.get("winrate", 0.0)
+                ops_tot = stats.get("total_ops", 0)
+                meta = stats.get("meta", 0.0)
+                meta_atingida_pct = (tot_ciclo / meta * 100) if meta else 0.0
+                incertas = stats.get("incertas", 0)
+
+                partes.append(
+                    f"\n--- PAINEL DO PLANO DE TRADING (CONTA '{nome_conta_ativa()}') ---\n"
+                    f"• Resultado do Dia de Hoje: US$ {res_hoje:+,.2f}\n"
+                    f"• Total do Ciclo: US$ {tot_ciclo:+,.2f}\n"
+                    f"• Drawdown Registrado: US$ {max_dd:,.2f} (Teto configurado: US$ {self.plano.get('drawdown_max', 0):,.2f})\n"
+                    f"• Win Rate: {winrate:.0f}% ({ops_tot} operações fechadas no ciclo)\n"
+                    f"• Meta Atingida: {meta_atingida_pct:.1f}% (Meta: US$ {meta:,.2f})\n"
+                    + (f"• ⚠️ Operações sem desfecho confirmado na corretora: {incertas}\n" if incertas else "")
+                )
+            except Exception:
+                pass
+
             for p in posicoes_do_ciclo():
                 if p.get("status") in ("ABERTA", "PENDENTE"):
                     partes.append(
