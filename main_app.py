@@ -1,4 +1,5 @@
 import time, json, threading, customtkinter as ctk, tkinter as tk, os, subprocess, sys, webbrowser
+import collections, difflib
 import base64
 import concurrent.futures
 import copy
