@@ -12574,6 +12574,7 @@ class SmcQuantApp(ctk.CTk):
         registrar_msg_chat("ia", texto)
         self._chat_digitar(texto)
         self._sincronizar_huds("FALANDO", getattr(self, "_ultimo_pedido", ""), texto)
+        self._tiger_dialogo_ate = time.time() + 20.0
         if texto_voz == "":
             return                 # resposta muda de propósito (ex.: 'cala')
         dito = texto_voz or texto
@@ -14936,6 +14937,7 @@ class SmcQuantApp(ctk.CTk):
                      "ou encerrado posição. ELA NÃO TEM ESSE CAMINHO — aviso "
                      "anexado à resposta. Nada foi executado na plataforma.")
         registrar_msg_chat("ia", resposta)
+        self._tiger_dialogo_ate = time.time() + 20.0
         self._ia_falar(resposta, forcar=bool(getattr(self, "_chat_por_voz", False)))
         self.after(0, lambda: self._chat_digitar(resposta))
 
@@ -15384,6 +15386,9 @@ class SmcQuantApp(ctk.CTk):
                 prerolo.append(dados)
                 if energia > limiar:
                     falando = True
+                    # INTERRUPÇÃO IMEDIATA (BARGE-IN): corta a fala da IA assim que o usuário abre a boca!
+                    if TTS_FALANDO:
+                        parar_fala()
                     frase = list(prerolo)
                     silencio = 0
                 else:
@@ -15420,11 +15425,15 @@ class SmcQuantApp(ctk.CTk):
                 if self._tiger_pausada():
                     time.sleep(0.3)
                     continue
-                # Não sobrescreve na hora um aviso recente de "ouvi ..." — era
-                # por isso que o retorno visual sumia antes de você conseguir ler.
+                # Status dinâmico: mostra se está em diálogo direto ou aguardando chamado
                 if time.time() >= getattr(self, "_tiger_status_ate", 0):
-                    self.after(0, lambda: self._chat_status(
-                        "🐯 à escuta — diga 'Olá Tiger'", "#ff9f43"))
+                    em_dial = time.time() < getattr(self, "_tiger_dialogo_ate", 0)
+                    if em_dial:
+                        self.after(0, lambda: self._chat_status(
+                            "💬 diálogo contínuo ativo — pode falar direto", "#3fb950"))
+                    else:
+                        self.after(0, lambda: self._chat_status(
+                            "🐯 à escuta — diga 'Olá Tiger' ou 'Jarvis'", "#ff9f43"))
                 try:
                     with abrir_stream_microfone(TAXA, BLOCO) as stream:
                         frase = self._tiger_capturar_frase(stream, rms)
@@ -15439,22 +15448,6 @@ class SmcQuantApp(ctk.CTk):
                 if frase is None:
                     continue                       # interrompida (🎤/pensando/TTS)
                 if frase == b"":
-                    # MICROFONE ABERTO E MUDO. No macOS isto tem UMA causa
-                    # dominante, e não é o dispositivo errado: é a PERMISSÃO DE
-                    # MICROFONE. Quando o app não tem a permissão, o macOS NÃO
-                    # devolve erro — ele entrega silêncio, zeros. O stream abre,
-                    # o nome do dispositivo é lido corretamente, e não chega som
-                    # nenhum. Foi exatamente o que o log de 11/08 mostrou às
-                    # 18:32: "escutando pelo MacBook Air Microphone" seguido de
-                    # "não chega som nenhum".
-                    #
-                    # A mensagem anterior mandava trocar o dispositivo de
-                    # entrada — o lugar errado. E há uma armadilha a mais: quem
-                    # aparece na lista de permissões é o processo RESPONSÁVEL.
-                    # Abrindo pelo .command (que abre o Terminal), quem precisa
-                    # do visto é o TERMINAL, não o "SMC Quant Pro". O trader
-                    # procura pelo nome do programa, não acha, e conclui que já
-                    # autorizou.
                     if not getattr(self, "_tiger_avisou_mudo", False):
                         self._tiger_avisou_mudo = True
                         try:
@@ -15501,9 +15494,6 @@ class SmcQuantApp(ctk.CTk):
                 except sr.UnknownValueError:
                     continue                       # ruído sem fala — segue escutando
                 except Exception as e:
-                    # Falha de transcrição NUNCA fica muda: se a internet ou o
-                    # serviço do Google cair, você vê o motivo no chat (a versão
-                    # anterior engolia o erro e parecia que ela era surda).
                     self._tiger_status_ate = time.time() + 4
                     self.after(0, lambda: self._chat_status(
                         "🐯 falha ao transcrever — tentando de novo", "#ff6b6b"))
@@ -15517,20 +15507,32 @@ class SmcQuantApp(ctk.CTk):
                     time.sleep(2)
                     continue
                 self._tiger_avisou_erro = False     # transcreveu: zera o aviso
-                # ENQUANTO ELA FALA: só o chamado interessa, e o eco da própria
-                # voz é descartado. É isso que permite você cortá-la no meio.
+
                 if TTS_FALANDO and self._tiger_eco(texto):
                     continue
+
+                em_dialogo = time.time() < getattr(self, "_tiger_dialogo_ate", 0)
                 acordou, resto = extrair_comando_tiger(texto)
+
+                # Se não usou wake-word, mas estamos num diálogo contínuo ativo:
+                if not acordou and em_dialogo:
+                    t_baixo = texto.lower().strip()
+                    # Se o trader está se despedindo ou mandando calar, fecha o diálogo
+                    if re.search(r"\b(tchau|obrigad[oa]|era s[oó] isso|valeu|sil[êe]ncio|chega|calar|parar|cancela)\b", t_baixo):
+                        self._tiger_dialogo_ate = 0
+                        self.after(0, lambda: self._chat_status("🐯 diálogo concluído", "#8a92a5"))
+                        continue
+                    # Trata o que foi dito diretamente como pergunta/comando
+                    acordou = True
+                    resto = texto
+
                 if acordou and TTS_FALANDO:
                     parar_fala()
                     self._tiger_status_ate = time.time() + 3
                     self.after(0, lambda: self._chat_status(
                         "🐯 parei de falar — pode falar", "#3fb950"))
+
                 if not acordou:
-                    # TRANSPARÊNCIA TOTAL: o que ela ouviu aparece NO CHAT.
-                    # Você vê que a escuta está viva e como a fala foi
-                    # transcrita — sem adivinhação.
                     self._tiger_status_ate = time.time() + 5
                     agora = time.time()
                     if agora - getattr(self, "_tiger_ult_feedback", 0) > 6:
@@ -15538,26 +15540,26 @@ class SmcQuantApp(ctk.CTk):
                         self.after(0, lambda t=texto: self._chat_escrever(
                             "sistema",
                             f"(🐯 ouvi: “{t[:70]}” — para me chamar, diga "
-                            "'Olá Tiger')", persistir=False))
+                            "'Olá Tiger' ou 'Jarvis')", persistir=False))
                     else:
                         self.after(0, lambda t=texto: self._chat_status(
                             f"🐯 ouvi “{t[:38]}” — não era comigo", "#8a92a5"))
                     continue
+
+                # Renova a janela de diálogo contínuo para os próximos 20 segundos
+                self._tiger_dialogo_ate = time.time() + 20.0
                 self._tiger_status_ate = time.time() + 3
                 self.after(0, lambda: self._chat_status("🐯 te ouvi!", "#3fb950"))
                 if self._hud_jarvis and getattr(self._hud_jarvis, "root", None) and self._hud_jarvis.root.winfo_exists():
-                    self.after(0, lambda r=resto: self._hud_jarvis.atualizar_estado("OUVINDO", f"Olá Tiger, {r}" if r else "Olá Tiger", "Processando..."))
+                    self.after(0, lambda r=resto: self._hud_jarvis.atualizar_estado("OUVINDO", f"{r}" if r else "Olá Tiger", "Processando..."))
                 if resto:
-                    # O pedido veio junto do chamado — executa direto.
                     def entregar(t=resto):
                         self._chat_por_voz = True
-                        self._chat_escrever("voce", f"🎤 Olá Tiger, {t}")
+                        self._chat_escrever("voce", f"🎤 {t}")
                         self._chat_processar(t)
                     self.after(0, entregar)
                     time.sleep(1.5)
                 else:
-                    # Só chamou: responde (síncrono, para o mic não gravar a
-                    # própria voz) e abre a escuta do pedido.
                     falar("Oi! Pode falar.")
                     self.after(0, self._chat_ouvir)
                     time.sleep(1.0)
