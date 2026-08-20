@@ -2091,16 +2091,22 @@ def tick_do_ativo(asset_symbol: str):
 # (feitos por CDP, no Chrome). Saber QUAL plataforma está na tela também melhora
 # a leitura: cada uma escreve o símbolo e o preço de um jeito.
 PLATAFORMAS = {
-    "tradovate":   {"rotulo": "Tradovate (navegador)", "cdp": True,
+    "tradovate":   {"rotulo": "Tradovate (navegador/CDP)", "cdp": True,
                     "pistas": ["tradovate"]},
-    "tradingview": {"rotulo": "TradingView", "cdp": False,
+    "tradingview": {"rotulo": "TradingView (Web/Desktop)", "cdp": False,
                     "pistas": ["tradingview", "trading view"]},
-    "profit":      {"rotulo": "Profit / Nelogica", "cdp": False,
-                    "pistas": ["profit", "nelogica"]},
-    "ninjatrader": {"rotulo": "NinjaTrader", "cdp": False,
-                    "pistas": ["ninjatrader", "ninja trader"]},
-    "mt5":         {"rotulo": "MetaTrader 5", "cdp": False,
-                    "pistas": ["metatrader", "mt5"]},
+    "profit":      {"rotulo": "Profit Pro / Nelogica (B3)", "cdp": False,
+                    "pistas": ["profit", "nelogica", "profitpro", "chart"]},
+    "ninjatrader": {"rotulo": "NinjaTrader 8", "cdp": False,
+                    "pistas": ["ninjatrader", "ninja trader", "ninja"]},
+    "mt5":         {"rotulo": "MetaTrader 5 (MT5)", "cdp": False,
+                    "pistas": ["metatrader", "mt5", "meta trader"]},
+    "sierrachart": {"rotulo": "Sierra Chart (Order Flow)", "cdp": False,
+                    "pistas": ["sierra chart", "sierrachart", "sierra"]},
+    "bookmap":     {"rotulo": "Bookmap (Heatmap/Liquidez)", "cdp": False,
+                    "pistas": ["bookmap"]},
+    "quantower":   {"rotulo": "Quantower", "cdp": False,
+                    "pistas": ["quantower"]},
     "outra":       {"rotulo": "Outra plataforma", "cdp": False, "pistas": []},
 }
 
@@ -2133,15 +2139,22 @@ DICAS_PLATAFORMA = {
                    "ESQUERDO do gráfico, junto do timeframe. O último preço aparece "
                    "na etiqueta colorida da escala à direita. Atenção ao separador "
                    "decimal do ativo.",
-    "profit": "A plataforma é o PROFIT (Nelogica). Ativos brasileiros como WINFUT/"
-              "WDOFUT/PETR4. O ticker fica no topo da janela do gráfico e o preço na "
-              "escala à direita. O separador decimal é VÍRGULA e o milhar é PONTO — "
-              "converta corretamente (ex.: 137.500 significa cento e trinta e sete "
-              "mil e quinhentos pontos).",
+    "profit": "A plataforma é o PROFIT PRO / NELOGICA (B3 ou Internacional). Ativos: "
+              "WINFUT/WIN (Mini Índice), WDOFUT/WDO (Mini Dólar), PETR4, VALE3 ou Futuros CME. "
+              "O ticker fica no topo da janela do gráfico e o preço na escala à direita. "
+              "Se houver SuperDOM ou Livro de Ofertas: observe escoras de liquidez e ordens passivas. "
+              "Se houver Times & Trades / Volume at Price: leia as agressões e saldo delta. "
+              "O separador decimal no Brasil é VÍRGULA e o milhar é PONTO (ex.: 137.500 significa 137500 pts; 5.420,50 significa 5420.50).",
     "ninjatrader": "A plataforma é o NINJATRADER. O ticker fica na barra de título "
-                   "do gráfico e o preço na escala à direita. Decimal com PONTO.",
+                   "do gráfico e o preço na escala à direita. Se houver Footprint Chart / SuperDOM, "
+                   "analise os clusters de volume por nível e o delta de agressão. Decimal com PONTO.",
     "mt5": "A plataforma é o METATRADER 5. O ticker está na barra de título da "
-           "janela do gráfico e o preço na escala à direita.",
+           "janela do gráfico e o preço na escala à direita. Analise velas, canais, order blocks e volume tick.",
+    "sierrachart": "A plataforma é o SIERRA CHART. Foco total em Order Flow avançado, Footprint, "
+                   "CVD, delta de agressão e absorções institucionais em pontos de liquidez.",
+    "bookmap": "A plataforma é o BOOKMAP. Identifique linhas de liquidez passiva no mapa de calor "
+               "(heatmap), absorções de ordens a mercado (bolhas de volume) e varreduras de liquidez (sweeps).",
+    "quantower": "A plataforma é o QUANTOWER. Analise Volume Profile, Footprint e matriz SMC.",
     "outra": "Identifique o ticker e o preço atual onde a plataforma os exibir "
              "(normalmente no topo do gráfico e na escala de preço à direita).",
 }
