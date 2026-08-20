@@ -219,7 +219,7 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.47.2"
+VERSAO_ATUAL = "2.48.0"
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -942,11 +942,16 @@ def _e_da_conta_ativa(reg):
 # DPAPI amarra a criptografia à conta do Windows do usuário — sem precisar
 # gerar/guardar uma chave separada (que seria mais um segredo pra vazar).
 # Só o mesmo usuário, na mesma máquina, consegue descriptografar de volta.
-def dpapi_encrypt(texto: str) -> str:
+def dpapi_encrypt(texto: str, nome: str = "gemini_api_key") -> str:
     """Protege a chave da API com o cofre DO SISTEMA.
     Windows: DPAPI. macOS: Chaveiro. Os dois têm a propriedade que importa —
-    copiar o config para outra máquina NÃO leva a chave junto."""
-    return plataforma.proteger_segredo(texto)
+    copiar o config para outra máquina NÃO leva a chave junto.
+
+    `nome` diz QUAL segredo é este. Sem ele, no macOS todas as chaves do
+    programa disputavam um slot só no Chaveiro e se apagavam entre si — a
+    chave do OpenRouter sumia ao salvar a da OpenAI, e as duas passavam a
+    devolver a da Gemini. Ver o comentário em plataforma.proteger_segredo."""
+    return plataforma.proteger_segredo(texto, nome)
 
 def dpapi_decrypt(texto_cifrado: str) -> str:
     return plataforma.revelar_segredo(texto_cifrado)
@@ -962,7 +967,8 @@ def salvar_api_key(api_key_texto: str):
     """Ultima barreira antes do disco: a chave passa pela limpeza mesmo que
     tenha vindo de outro caminho que nao o campo da interface."""
     api_key_texto = limpar_chave_colada(api_key_texto)
-    salvar_config({"gemini_api_key_enc": dpapi_encrypt(api_key_texto)})
+    salvar_config({"gemini_api_key_enc":
+                   dpapi_encrypt(api_key_texto, "gemini_api_key")})
 
 
 # ====================================================================
@@ -1210,13 +1216,38 @@ def conferir_formato_da_chave(pid, chave):
                    "errado.")
 
 
+def ponteiro_do_cofre_e_de_outro(pid: str, guardado: str) -> bool:
+    """Este campo aponta para o segredo de OUTRO provedor?
+
+    LIMPANDO A SUJEIRA QUE O BUG DEIXOU. Enquanto o slot do Chaveiro era um
+    só, todo campo salvo no macOS ficou gravado no config como
+    'keychain:gemini_api_key' — inclusive o do OpenRouter e o da OpenAI.
+    Corrigir a gravação não conserta o que já está lá: esses ponteiros
+    continuam mirando o segredo da Gemini.
+
+    E devolver a chave da Gemini quando alguém pede a do OpenRouter é
+    exatamente o que produziu os seis 401 — o programa mandava, com toda a
+    confiança, uma credencial que não era daquele serviço. Ponteiro que mira
+    o slot de outro não é 'a chave deste provedor': é lixo, e o certo é
+    tratá-lo como campo vazio e pedir para colar de novo."""
+    marca = "keychain:"
+    if not guardado or not str(guardado).startswith(marca):
+        return False          # blob do DPAPI ou texto: carrega o próprio dado
+    nome = str(guardado)[len(marca):].strip()
+    return bool(nome) and nome != f"chave_{pid}"
+
+
 def carregar_chave_provedor(pid: str) -> str:
     """A chave de um provedor alternativo, do cofre do sistema (Chaveiro no
     Mac, DPAPI no Windows) — o mesmo tratamento da chave da Gemini."""
     if pid == "gemini":
         return carregar_api_key()
     cifrado = carregar_config().get(f"chave_{pid}_enc")
-    return dpapi_decrypt(cifrado) if cifrado else ""
+    if not cifrado:
+        return ""
+    if ponteiro_do_cofre_e_de_outro(pid, cifrado):
+        return ""
+    return dpapi_decrypt(cifrado)
 
 
 def salvar_chave_provedor(pid: str, chave: str):
@@ -1224,7 +1255,11 @@ def salvar_chave_provedor(pid: str, chave: str):
         return salvar_api_key(chave)
     chave = limpar_chave_colada(chave)
     if chave:
-        salvar_config({f"chave_{pid}_enc": dpapi_encrypt(chave)})
+        # O NOME DO SLOT LEVA O PROVEDOR JUNTO. Era isto que faltava: sem o
+        # nome, OpenRouter, OpenAI e Gemini gravavam no mesmo lugar do
+        # Chaveiro e se sobrescreviam.
+        salvar_config({f"chave_{pid}_enc":
+                       dpapi_encrypt(chave, f"chave_{pid}")})
     else:
         # Campo apagado = remover a chave. Guardar cifra de string vazia
         # deixaria o provedor "configurado" e ele entraria na fila para falhar.
@@ -10379,11 +10414,17 @@ class SmcQuantApp(ctk.CTk):
         self.btn_verificar = ctk.CTkButton(sec_inst, text="2. Verificar Instalação", fg_color="gray", command=self.verificar_node)
         self.btn_verificar.pack(pady=4)
 
-        self.api_entry = ctk.CTkEntry(sec_inst, placeholder_text="Cole sua Chave da API Gemini", width=420, show="*")
+        linha_api = ctk.CTkFrame(sec_inst, fg_color="transparent")
+        linha_api.pack(pady=8)
+        self.api_entry = ctk.CTkEntry(linha_api, placeholder_text="Cole sua Chave da API Gemini", width=420, show="*")
         # O campo mostra asteriscos: uma chave colada em DOBRO passaria
         # despercebida e so apareceria como 401 na hora do pregao.
         ligar_colar_sem_duplicar(self.api_entry)
-        self.api_entry.pack(pady=8)
+        self.api_entry.pack(side="left")
+        ctk.CTkButton(linha_api, text="👁", width=34,
+                      fg_color=COR["borda"], hover_color=COR["input"],
+                      command=lambda: self._alternar_ver_chave(self.api_entry)
+                      ).pack(side="left", padx=(6, 0))
 
         api_key_salva = carregar_api_key()
         if api_key_salva:
@@ -10455,6 +10496,17 @@ class SmcQuantApp(ctk.CTk):
             salva = carregar_chave_provedor(pid)
             if salva:
                 campo.insert(0, salva)
+            # 👁 VER A CHAVE. Ele pediu depois de perder uma manhã com seis
+            # 401 seguidos: "adicione também no painel a opção de ver a chave,
+            # porque atualmente ela fica somente ****** quando a gente cola".
+            # Ele tinha razão e o campo escondido não era só desconforto — era
+            # o que impedia de enxergar que ali estava a chave da Gemini, e
+            # não a do OpenRouter. Segredo que ninguém pode conferir é segredo
+            # que ninguém pode corrigir.
+            ctk.CTkButton(linha, text="👁", width=34,
+                          fg_color=COR["borda"], hover_color=COR["input"],
+                          command=lambda c=campo: self._alternar_ver_chave(c)
+                          ).pack(side="left", padx=(2, 0))
             ctk.CTkButton(linha, text="🔑 obter", width=70,
                           fg_color=COR["borda"], hover_color=COR["input"],
                           command=lambda u=info["onde_pegar"]: webbrowser.open(u)
@@ -15025,6 +15077,20 @@ class SmcQuantApp(ctk.CTk):
                      f"baixo e configuro tudo — {motivo}, então o modelo "
                      f"escolhido seria o {modelo}. Precisa de internet só "
                      "nesta vez, e de alguns GB de disco.")
+
+    def _alternar_ver_chave(self, campo):
+        """Mostra/esconde o conteúdo de um campo de chave.
+
+        Pedido dele em 20/08, e o motivo é concreto: o campo escondido foi o
+        que permitiu a chave da Gemini ficar parada no campo do OpenRouter
+        sem ninguém perceber. Asterisco protege de quem olha por cima do
+        ombro; não protege de erro — e erro em campo de credencial é o que
+        vira 401 no meio do pregão. Quem digitou a chave tem direito de
+        conferir o que digitou."""
+        try:
+            campo.configure(show="" if campo.cget("show") else "*")
+        except Exception:
+            pass
 
     def _salvar_e_testar_provedores(self):
         """Grava as chaves, RELÊ DO DISCO e TESTA de verdade — uma pergunta real

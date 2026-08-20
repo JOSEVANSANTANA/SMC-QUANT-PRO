@@ -358,26 +358,47 @@ _MARCA_CHAVEIRO = "keychain:"       # o config guarda só um ponteiro, não o se
 _MARCA_CLARO = "texto:"             # último recurso, declarado como tal
 
 
-def _keychain_gravar(segredo):
+# CADA SEGREDO NO SEU PRÓPRIO SLOT — e esta linha é a correção de 20/08.
+#
+# O QUE ACONTECIA: `_KC_CONTA` era uma CONSTANTE, "gemini_api_key", e as três
+# funções abaixo a usavam sem perguntar. Ou seja: o Chaveiro tinha UM slot para
+# TODAS as chaves do programa. Gravar a do OpenRouter APAGAVA a da Gemini e
+# escrevia a nova no lugar dela; gravar a da OpenAI apagava a do OpenRouter. E
+# na leitura, `chave_openrouter_enc`, `chave_openai_enc` e `gemini_api_key_enc`
+# apontavam todos para o mesmo slot, devolvendo a última chave salva.
+#
+# O sintoma no log dele foi exatamente esse: o campo do OpenRouter e o da
+# OpenAI, os dois, devolvendo uma chave que começa com 'AQ.Ab8RN6...' — o
+# formato da Gemini. Seis 401 seguidos porque a chave certa nunca chegou a ser
+# enviada: ela tinha sido sobrescrita no cofre.
+#
+# O desenho já previa o slot por nome (o config guarda "keychain:<nome>", e não
+# "keychain:" seco). Faltava passar o nome — de um lado e do outro.
+def _keychain_gravar(segredo, nome=_KC_CONTA):
     ok, _ = _rodar(["security", "add-generic-password", "-U",
-                    "-s", _KC_SERVICO, "-a", _KC_CONTA, "-w", segredo])
+                    "-s", _KC_SERVICO, "-a", nome, "-w", segredo])
     return ok
 
 
-def _keychain_ler():
+def _keychain_ler(nome=_KC_CONTA):
     ok, saida = _rodar(["security", "find-generic-password",
-                        "-s", _KC_SERVICO, "-a", _KC_CONTA, "-w"])
+                        "-s", _KC_SERVICO, "-a", nome, "-w"])
     return saida if ok else ""
 
 
-def _keychain_apagar():
+def _keychain_apagar(nome=_KC_CONTA):
     _rodar(["security", "delete-generic-password",
-            "-s", _KC_SERVICO, "-a", _KC_CONTA])
+            "-s", _KC_SERVICO, "-a", nome])
 
 
-def proteger_segredo(texto):
+def proteger_segredo(texto, nome=_KC_CONTA):
     """Devolve o que deve ser GRAVADO no config — nunca o segredo em claro,
-    quando houver cofre disponível."""
+    quando houver cofre disponível.
+
+    `nome` é o SLOT no Chaveiro. Sem ele, todas as chaves do programa dividiam
+    o mesmo espaço e se sobrescreviam — ver o comentário longo lá em cima. No
+    Windows não existe esse problema: o DPAPI devolve um blob que carrega o
+    próprio conteúdo, e cada campo do config guarda o seu."""
     if not texto:
         return texto
     if E_WINDOWS and PYWIN32_DISPONIVEL:
@@ -389,10 +410,11 @@ def proteger_segredo(texto):
             pass
     if E_MACOS:
         # Apaga antes de gravar: sem isso, trocar de chave deixava a antiga
-        # no chaveiro e o `find` podia devolver a errada.
-        _keychain_apagar()
-        if _keychain_gravar(texto):
-            return _MARCA_CHAVEIRO + _KC_CONTA
+        # no chaveiro e o `find` podia devolver a errada. Agora só apaga o
+        # slot DESTE segredo — apagar todos era metade do defeito de 20/08.
+        _keychain_apagar(nome)
+        if _keychain_gravar(texto, nome):
+            return _MARCA_CHAVEIRO + nome
     # Sem cofre: guarda codificado e DECLARADO como tal. Não é criptografia e
     # o programa não vai fingir que é — quem lê o config vê a marca "texto:".
     return _MARCA_CLARO + base64.b64encode(texto.encode("utf-8")).decode("utf-8")
@@ -404,7 +426,12 @@ def revelar_segredo(guardado):
     if not guardado:
         return ""
     if guardado.startswith(_MARCA_CHAVEIRO):
-        return _keychain_ler() if E_MACOS else ""
+        # O NOME DO SLOT VEM ESCRITO NO PRÓPRIO PONTEIRO, e era ele que estava
+        # sendo ignorado: lia-se sempre o slot fixo da Gemini, qualquer que
+        # fosse o campo. Ponteiro antigo, gravado antes desta correção, vem
+        # sem nome — cai no padrão, que é o comportamento de antes.
+        nome = guardado[len(_MARCA_CHAVEIRO):].strip() or _KC_CONTA
+        return _keychain_ler(nome) if E_MACOS else ""
     if guardado.startswith(_MARCA_CLARO):
         try:
             return base64.b64decode(guardado[len(_MARCA_CLARO):]).decode("utf-8")
