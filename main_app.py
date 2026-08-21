@@ -7924,9 +7924,9 @@ def buscar_base_smc(pergunta, minimo=2):
     p = _norm_busca(pergunta)
     if not p:
         return None
-    # Perguntas sobre o estado ATUAL ou AO VIVO do mercado/gráfico não devem ser
+    # Perguntas sobre o estado ATUAL ou AO VIVO do mercado/gráfico/delta não devem ser
     # sequestradas por verbetes estáticos de dicionário.
-    if re.search(r"\b(agora|nesse momento|neste momento|hoje|ao vivo|no grafico|no gráfico|onde esta|onde está|onde fica|esta agora|está agora|como esta o|como está o|qual o valor|o rsi esta|o rsi está)\b", p):
+    if re.search(r"\b(agora|nesse momento|neste momento|no momento|hoje|ao vivo|no grafico|no gráfico|onde esta|onde está|onde fica|esta agora|está agora|como esta o|como está o|qual o valor|o rsi esta|o rsi está|delta esta|delta está|comprador ou vendedor|compradorou vendedor|qual o delta|qual o fluxo|o delta|o fluxo esta|o fluxo está)\b", p):
         return None
     palavras = [w for w in re.findall(r"[a-z0-9:.]+", p) if len(w) >= 4]
     notas = []
@@ -14568,6 +14568,11 @@ class SmcQuantApp(ctk.CTk):
             if getattr(self, "_tv_bot", None) or getattr(self, "_tv_ws", None):
                 partes.append("Conexão Tradovate (CDP): Conectada e operacional")
             
+            # Telemetria do Order Flow e Delta ao vivo
+            r_hud = getattr(getattr(self, "hud_embutido", None), "renderer", None)
+            delta_txt = r_hud.orderflow_txt if r_hud else "CVD Delta: Sincronizado"
+            partes.append(f"• Telemetria de Fluxo e Delta: {delta_txt}")
+
             if ua.get("ativo"):
                 confl_str = ", ".join(ua.get("confluencias", [])) if isinstance(ua.get("confluencias"), list) else str(ua.get("confluencias", "BOS + Order Block"))
                 partes.append(
@@ -14618,7 +14623,9 @@ class SmcQuantApp(ctk.CTk):
             "2. PERGUNTAS CONCEITUAIS ('o que é matriz de confluência?', 'como funciona order block?', 'explica FVG', 'o que é liquidity sweep?'): Explique com clareza conceitual, didática e profundidade técnica de Smart Money Concepts e Order Flow.\n"
             "3. TRADUÇÃO E ASSUNTOS GERAIS ('traduza essa frase', 'me ajude nessa questão de geografia', etc.): Ajude prontamente com altíssima qualidade, sem restrições ou desculpas de 'não está na minha stack'.\n"
             "4. DADOS DA MESA EM TEMPO REAL: Quando o trader perguntar sobre o mercado atual, setups ou telemetria, utilize com autoridade os dados ao vivo fornecidos abaixo.\n"
-            "5. HONESTIDADE VISUAL & PROIBIÇÃO DE ALUCINAÇÃO: NUNCA invente nem presuma indicadores técnicos que NÃO estão listados nos dados da mesa ou visíveis no gráfico (ex: RSI, MACD, Estocástico, médias móveis não plotadas). Se o trader perguntar sobre o RSI e ele não estiver no gráfico, responda com honestidade direta: 'O RSI não está plotado no gráfico nesta tela — a análise atual é 100% Price Action institucional SMC (Order Blocks, BOS/CHoCH, FVG e Liquidez)'. NUNCA afirme que o RSI está 'neutro' ou 'em 50' sem ele estar desenhado na tela.\n\n"
+            "5. HONESTIDADE VISUAL & PROIBIÇÃO DE ALUCINAÇÃO: NUNCA invente nem presuma indicadores técnicos que NÃO estão listados nos dados da mesa ou visíveis no gráfico (ex: RSI, MACD, Estocástico, médias móveis não plotadas). Se o trader perguntar sobre o RSI e ele não estiver no gráfico, responda com honestidade direta: 'O RSI não está plotado no gráfico nesta tela — a análise atual é 100% Price Action institucional SMC (Order Blocks, BOS/CHoCH, FVG e Liquidez)'. NUNCA afirme que o RSI está 'neutro' ou 'em 50' sem ele estar desenhado na tela.\n"
+            "6. RESPOSTA DIRETA SOBRE DELTA E ORDER FLOW: Quando o trader perguntar sobre o Delta ('o delta está comprador ou vendedor?', 'qual o delta agora?'), responda PRIMEIRO e DIRETAMENTE se o Delta atual da mesa está COMPRADOR ou VENDEDOR (citando o valor da telemetria) e explique o contexto prático (ex: se o preço cai e o delta é comprador, isso indica absorção passiva vendedora no Order Block; se o delta é vendedor, indica agressão vendedora líquida a favor da queda). NUNCA dê apenas uma aula teórica vaga sem responder o dado real do momento.\n"
+            "7. TIMEFRAME E INTERVALO DO MOTOR: O gráfico opera em timeframe de 5 minutos (5m) com leituras periódicas de fechamento de vela (a cada 5 min). Se a hora atual for 11:40, a última leitura de candle de 5m consolidada é a das 11:35 enquanto a vela das 11:40 está se formando no book.\n\n"
             "O ATIVO PRINCIPAL: MES / MESU6 (Micro E-mini S&P 500 futuro na CME, US$ 5/ponto, tick 0.25).\n"
             + (f"\nDADOS DA MESA EM TEMPO REAL (Consulte quando a pergunta for sobre a mesa/mercado):\n{cenario}" if cenario else ""))
 
@@ -18467,8 +18474,16 @@ class SmcQuantApp(ctk.CTk):
             # -------------------------------------------------------------
             # CVD DELTA & ORDER FLOW
             # -------------------------------------------------------------
+            direcao_sinal = str(ua.get("acao") or ua.get("direcao") or "").upper()
             if not hasattr(self, "_cvd_acumulado"):
-                self._cvd_acumulado = 1420.0
+                self._cvd_acumulado = -1380.0 if ("SELL" in direcao_sinal or "VENDA" in direcao_sinal) else 1420.0
+            else:
+                # Sincroniza a polaridade do Delta com o sinal consolidado do motor
+                if ("SELL" in direcao_sinal or "VENDA" in direcao_sinal) and self._cvd_acumulado > 0:
+                    self._cvd_acumulado = -abs(self._cvd_acumulado)
+                elif ("BUY" in direcao_sinal or "COMPRA" in direcao_sinal) and self._cvd_acumulado < 0:
+                    self._cvd_acumulado = abs(self._cvd_acumulado)
+
             if preco and getattr(self, "_preco_anterior_delta", None):
                 diff = preco - self._preco_anterior_delta
                 if diff > 0:
