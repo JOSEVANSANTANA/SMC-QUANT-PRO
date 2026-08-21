@@ -18519,12 +18519,15 @@ class SmcQuantApp(ctk.CTk):
             modelo = cfg.get("ia_modelo_chat") or "Claude 3.5 Sonnet"
             latencia = getattr(self, "_ultima_latencia_ia", "") or "210ms (Rápida)"
 
-            ultimos_msgs = carregar_chat()[-5:]
+            ultimos_msgs = carregar_chat()[-12:]
             logs_formatados = []
             for m in ultimos_msgs:
                 hora = m.get("hora") or time.strftime("%H:%M")
-                papel = "VOCÊ" if m.get("papel") == "voce" else "TIGER"
-                txt_limpo = str(m.get("texto") or "").strip().replace("\n", " ")
+                if " " in hora:
+                    hora = hora.split(" ")[-1]
+                p_raw = str(m.get("papel") or "").lower()
+                papel = "VOCÊ" if p_raw == "voce" else ("TIGER" if p_raw == "ia" else "SISTEMA")
+                txt_limpo = str(m.get("texto") or "").strip()
                 logs_formatados.append((hora, papel, txt_limpo))
 
             r.atualizar_telemetria(

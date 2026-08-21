@@ -598,37 +598,70 @@ class CyberHUDCanvasRenderer:
         if w > 600:
             rx1, ry1, rx2, ry2 = w - 20 - pw, 48, w - 20, h - 16
 
-            h_meio = max(110, (ry2 - ry1) // 3)
-            ry_mid1 = ry1 + h_meio
-            ry_mid2 = ry1 + h_meio + 10
+            # Card Superior (Motor IA & CDP) - Compacto (88px)
+            h_sup = 88
+            ry_mid1 = ry1 + h_sup
+            ry_mid2 = ry1 + h_sup + 8
 
-            # Card Superior (Motor IA & CDP)
             self._desenhar_card(rx1, ry1, rx2, ry_mid1, "MOTOR IA CLOUD & CDP",
                                 icone="🤖", badge="🟢 ONLINE", cor_neon=COR_GREEN_CYBER)
 
-            item_y = ry1 + 38
-            item_h = max(20, min(24, (ry_mid1 - item_y - 10) // 3))
+            item_y = ry1 + 34
+            item_h = max(16, (ry_mid1 - item_y - 8) // 3)
             self._desenhar_mini_item(rx1, item_y, rx2, "PROVEDOR",
                                      f"{self.provedor_ia} ({self.modelo_ia})",
                                      COR_TEXT_BRIGHT, item_h)
-            self._desenhar_mini_item(rx1, item_y + item_h + 3, rx2, "CDP LINK",
+            self._desenhar_mini_item(rx1, item_y + item_h + 2, rx2, "CDP LINK",
                                      self.cdp_status_txt, COR_GREEN_CYBER, item_h)
-            self._desenhar_mini_item(rx1, item_y + (item_h + 3) * 2, rx2, "TRAILING",
+            self._desenhar_mini_item(rx1, item_y + (item_h + 2) * 2, rx2, "TRAILING",
                                      self.trailing_txt, COR_CYAN_GLOW, item_h)
 
-            # Card Inferior (Conversas & Logs em Tempo Real)
+            # Card Inferior (Conversas & Logs em Tempo Real) - Ocupando toda a extensão
             self._desenhar_card(rx1, ry_mid2, rx2, ry2, "CONVERSAS & LOGS",
                                 icone="⚡", badge="TEMPO REAL", cor_neon=COR_GOLD_CYBER)
 
-            log_y = ry_mid2 + 38
-            for hora, tag_l, txt_l in self.logs_recentes[-5:]:
-                if log_y + 24 < ry2:
-                    self.canvas.create_text(rx1 + 14, log_y, text=f"{hora} [{tag_l}]", anchor="w",
-                                            font=("Courier", 9, "bold"), fill=COR_CYAN_GLOW)
-                    max_chars = max(25, int((rx2 - rx1 - 28) / 7.5))
-                    self.canvas.create_text(rx1 + 14, log_y + 14, text=txt_l[:max_chars], anchor="w",
-                                            font=("Arial", 9, "bold"), fill=COR_TEXT_BRIGHT)
-                    log_y += 32
+            # Renderização Rica de Mensagens com Quebra de Linha Automática (sem corte arbitrário)
+            largura_texto = rx2 - rx1 - 24
+            log_y = ry_mid2 + 36
+
+            # Pega as mensagens mais recentes e renderiza com texto completo
+            for hora, tag_l, txt_l in self.logs_recentes[-6:]:
+                if log_y >= ry2 - 16:
+                    break
+
+                # Cores e Ícones de acordo com o autor
+                if tag_l in ("VOCÊ", "voce", "USER"):
+                    cor_header = COR_CYAN_GLOW
+                    icone_msg = "👤"
+                    cor_corpo = "#ffffff"
+                elif tag_l in ("TIGER", "ia", "IA", "JARVIS"):
+                    cor_header = COR_GOLD_CYBER
+                    icone_msg = "🐯"
+                    cor_corpo = "#c8f0ff"
+                else:
+                    cor_header = COR_GREEN_CYBER
+                    icone_msg = "⚡"
+                    cor_corpo = "#a0d0e0"
+
+                # 1. Cabeçalho da mensagem (Hora + Autor)
+                self.canvas.create_text(rx1 + 12, log_y, text=f"{icone_msg} {hora} [{tag_l}]", anchor="nw",
+                                        font=("Courier", 8, "bold"), fill=cor_header)
+                log_y += 14
+
+                # 2. Corpo da mensagem (quebra de linha automática nativa do Canvas)
+                txt_formatado = txt_l.strip().replace("\r\n", " ").replace("\n", " ")
+                if len(txt_formatado) > 160:
+                    txt_formatado = txt_formatado[:157] + "..."
+
+                item_txt = self.canvas.create_text(rx1 + 12, log_y, text=txt_formatado, width=largura_texto, anchor="nw",
+                                                   font=("Arial", 9), fill=cor_corpo)
+                bbox = self.canvas.bbox(item_txt)
+                h_msg = (bbox[3] - bbox[1]) if bbox else 14
+                log_y += h_msg + 6
+
+                # Linha sutil separadora entre interações
+                if log_y < ry2 - 20:
+                    self.canvas.create_line(rx1 + 12, log_y - 2, rx2 - 12, log_y - 2, fill="#072338", width=1)
 
 
 class TigerHUDEmbeddedFrame(tk.Frame):
