@@ -43,6 +43,7 @@ class CyberHUDCanvasRenderer:
 
         self.estado = "STANDBY"  # STANDBY, OUVINDO, PENSANDO, FALANDO
         self.angulo_rotacao = 0.0
+        self.angulo_radar = 0.0
         self.fase_onda = 0.0
         self.texto_usuario = "Aguardando chamado por voz ('Olá Tiger' ou 'Jarvis')..."
         self.texto_resposta = "TIGER 2.0 // Jarvis Neural Engine online e monitorando o mercado."
@@ -149,7 +150,7 @@ class CyberHUDCanvasRenderer:
     def desenhar(self):
         self.canvas.delete("all")
         w, h = self.largura, self.altura
-        cx, cy = w // 2, h // 2 - 10
+        cx, cy = w // 2, h // 2 - 8
 
         # -------------------------------------------------------------
         # 1. Background Grid & Grade Cibernética
@@ -189,21 +190,101 @@ class CyberHUDCanvasRenderer:
         self.canvas.create_text(w - 24, 20, text="100% OPENROUTER CLOUD & CDP LIVE", anchor="e",
                                 font=("Courier", 9, "bold"), fill=COR_TEXT_MUTED)
 
-        # Linha Laser Horizontal de Conexão de Dados passando pelo Centro
-        self.canvas.create_line(20, cy, w - 20, cy, fill="#042747", width=1, dash=(8, 4))
-        self.canvas.create_line(w // 2 - 140, cy, w // 2 + 140, cy, fill="#084f80", width=1)
-
         # -------------------------------------------------------------
-        # 2. Orbe Central Reator Holográfico — Globo Geodésico 3D & Cyber Tiger Face
+        # 2. Dimensões dos Painéis e Dimensionamento Imponente do Orbe
         # -------------------------------------------------------------
-        raio_base = min(max(h * 0.26, 50), 115) + math.sin(self.fase_onda) * 2.0
+        pw = max(260, min(360, int(w * 0.28))) if w > 600 else 0
+        largura_centro = w - 2 * pw if pw > 0 else w
+        raio_base = min(max(h * 0.34, 75), int(largura_centro * 0.42), 170) + math.sin(self.fase_onda) * 2.0
         pitch = 0.38  # ~22 graus de inclinação tridimensional
 
+        # -------------------------------------------------------------
+        # 3. Radar de Monitoramento (Sobreposição de Escaneamento Rotativo)
+        # -------------------------------------------------------------
+        r_radar = raio_base * 1.65
+        # Anéis concêntricos de radar
+        for mult_r in [0.5, 0.85, 1.25, 1.65]:
+            self.canvas.create_oval(cx - raio_base * mult_r, cy - raio_base * mult_r,
+                                    cx + raio_base * mult_r, cy + raio_base * mult_r,
+                                    outline="#06223b", width=1)
+
+        # Feixe de Escaneamento do Radar (Cone Rotativo)
+        ang_rad_deg = math.degrees(self.angulo_radar)
+        self.canvas.create_arc(cx - r_radar, cy - r_radar, cx + r_radar, cy + r_radar,
+                               start=ang_rad_deg, extent=42, fill="#032a3d",
+                               outline=COR_CYAN_GLOW, width=1.5)
+        # Linha de ponta do radar
+        rad_ponta_x = cx + r_radar * math.cos(self.angulo_radar + math.radians(42))
+        rad_ponta_y = cy - r_radar * math.sin(self.angulo_radar + math.radians(42))
+        self.canvas.create_line(cx, cy, rad_ponta_x, rad_ponta_y, fill=COR_CYAN_GLOW, width=2)
+
+        # Marcadores de Alvo Flickering no Radar
+        for i_blip, (dist_b, ang_off) in enumerate([(0.7, 1.2), (1.1, 3.4), (1.4, 4.8)]):
+            blip_ang = ang_off
+            bx = cx + raio_base * dist_b * math.cos(blip_ang)
+            by = cy + raio_base * dist_b * math.sin(blip_ang)
+            if abs((self.angulo_radar % (2 * math.pi)) - (blip_ang % (2 * math.pi))) < 0.8:
+                self.canvas.create_oval(bx - 3, by - 3, bx + 3, by + 3, fill=COR_GREEN_CYBER, outline="")
+                self.canvas.create_oval(bx - 7, by - 7, bx + 7, by + 7, outline=COR_GREEN_CYBER, width=1)
+
+        # -------------------------------------------------------------
+        # 4. Conexões Arteriais Luminosas (Data Feeds Laterais para o Orbe)
+        # -------------------------------------------------------------
+        item_y_esq = 48 + 42
+        item_h_esq = max(24, min(32, (h - 20 - item_y_esq - 20) // 5))
+        item_y_dir = 48 + 38
+        item_h_dir = max(20, min(24, (max(110, (h - 68) // 3) - item_y_dir - 10) // 3))
+
+        if pw > 0 and w > 640:
+            # Conexões da Esquerda (SMC Telemetry -> Orbe)
+            px2 = 20 + pw
+            for idx in range(5):
+                start_y = item_y_esq + idx * (item_h_esq + 5) + item_h_esq // 2
+                target_y = cy + (idx - 2) * (raio_base * 0.28)
+                target_x = cx - raio_base * 0.92
+                ctrl_x = (px2 + target_x) // 2
+                
+                # Linha arterial curva suave
+                self.canvas.create_line(px2, start_y, ctrl_x, start_y, ctrl_x, target_y, target_x, target_y,
+                                        smooth=True, fill="#073a57", width=1.5)
+                # Nó de conexão arterial brilhante
+                self.canvas.create_oval(px2 - 2, start_y - 2, px2 + 2, start_y + 2, fill=COR_CYAN_GLOW, outline="")
+                self.canvas.create_oval(target_x - 3, target_y - 3, target_x + 3, target_y + 3, fill=COR_CYAN_GLOW, outline="")
+
+                # Pacote de Dados Animado viajando na linha
+                prog = ((self.angulo_rotacao * 1.5 + idx * 0.4) % 1.0)
+                pulse_x = px2 + (target_x - px2) * prog
+                pulse_y = start_y + (target_y - start_y) * prog
+                self.canvas.create_oval(pulse_x - 2, pulse_y - 2, pulse_x + 2, pulse_y + 2,
+                                        fill=COR_CYAN_GLOW, outline="")
+
+            # Conexões da Direita (IA & Logs -> Orbe)
+            rx1 = w - 20 - pw
+            for idx in range(5):
+                start_y = item_y_dir + idx * 30 + 12
+                target_y = cy + (idx - 2) * (raio_base * 0.28)
+                target_x = cx + raio_base * 0.92
+                ctrl_x = (rx1 + target_x) // 2
+
+                self.canvas.create_line(rx1, start_y, ctrl_x, start_y, ctrl_x, target_y, target_x, target_y,
+                                        smooth=True, fill="#073a57", width=1.5)
+                self.canvas.create_oval(rx1 - 2, start_y - 2, rx1 + 2, start_y + 2, fill=COR_GOLD_CYBER, outline="")
+                self.canvas.create_oval(target_x - 3, target_y - 3, target_x + 3, target_y + 3, fill=COR_GOLD_CYBER, outline="")
+
+                prog = ((self.angulo_rotacao * 1.5 + idx * 0.45) % 1.0)
+                pulse_x = rx1 + (target_x - rx1) * prog
+                pulse_y = start_y + (target_y - start_y) * prog
+                self.canvas.create_oval(pulse_x - 2, pulse_y - 2, pulse_x + 2, pulse_y + 2,
+                                        fill=COR_GOLD_CYBER, outline="")
+
+        # -------------------------------------------------------------
+        # 5. Orbe Central Reator Holográfico — Globo Geodésico 3D & Cyber Tiger Face
+        # -------------------------------------------------------------
         # Halo Glow Radiante Externo
         for glow_r, glow_col in [
-            (raio_base + 42, "#020c18"),
-            (raio_base + 28, "#03172c"),
-            (raio_base + 15, "#062747"),
+            (raio_base + 45, "#020c18"),
+            (raio_base + 30, "#03172c"),
+            (raio_base + 16, "#062747"),
             (raio_base + 6, "#0a3a69")
         ]:
             self.canvas.create_oval(cx - glow_r, cy - glow_r, cx + glow_r, cy + glow_r,
@@ -276,45 +357,39 @@ class CyberHUDCanvasRenderer:
         # -------------------------------------------------------------
         # ROSTO E OLHOS DE TIGRE CIBERNÉTICOS (Predador Bravo e Focado)
         # -------------------------------------------------------------
-        tf_scale = max(24.0, raio_base * 0.48)
+        tf_scale = max(28.0, raio_base * 0.46)
         t_pulse = 1.0 + math.sin(self.fase_onda * 3.0) * 0.08
 
         # Fundo do Reator do Rosto do Tigre
-        self.canvas.create_oval(cx - tf_scale * 1.1, cy - tf_scale * 1.1,
-                                cx + tf_scale * 1.1, cy + tf_scale * 1.1,
-                                fill="#030c18", outline="#07324d", width=1)
+        self.canvas.create_oval(cx - tf_scale * 1.15, cy - tf_scale * 1.15,
+                                cx + tf_scale * 1.15, cy + tf_scale * 1.15,
+                                fill="#030c18", outline="#07324d", width=1.5)
 
         # 1. Olhos de Tigre Predatórios Inclinados (Foco Extremo & Bravo)
-        # Olho Esquerdo (Almôndega Angular Fina Inclinada)
         olho_e = [
-            cx - tf_scale * 0.62, cy - tf_scale * 0.22,  # Canto externo superior
-            cx - tf_scale * 0.22, cy - tf_scale * 0.14,  # Canto interno
-            cx - tf_scale * 0.38, cy - tf_scale * 0.02,  # Base inferior
-            cx - tf_scale * 0.60, cy - tf_scale * 0.12   # Canto externo inferior
+            cx - tf_scale * 0.62, cy - tf_scale * 0.22,
+            cx - tf_scale * 0.22, cy - tf_scale * 0.14,
+            cx - tf_scale * 0.38, cy - tf_scale * 0.02,
+            cx - tf_scale * 0.60, cy - tf_scale * 0.12
         ]
         self.canvas.create_polygon(olho_e, fill="#041a2f", outline=COR_CYAN_GLOW, width=1.5)
-        # Íris Dourada / Neon Cyber
         self.canvas.create_oval(cx - tf_scale * 0.48, cy - tf_scale * 0.19,
                                 cx - tf_scale * 0.30, cy - tf_scale * 0.05,
                                 fill=COR_GOLD_CYBER, outline="")
-        # Pupila Predatória Vertical
         self.canvas.create_line(cx - tf_scale * 0.39, cy - tf_scale * 0.20,
                                 cx - tf_scale * 0.39, cy - tf_scale * 0.04,
                                 fill="#000000", width=2)
 
-        # Olho Direito (Simétrico)
         olho_d = [
-            cx + tf_scale * 0.62, cy - tf_scale * 0.22,  # Canto externo superior
-            cx + tf_scale * 0.22, cy - tf_scale * 0.14,  # Canto interno
-            cx + tf_scale * 0.38, cy - tf_scale * 0.02,  # Base inferior
-            cx + tf_scale * 0.60, cy - tf_scale * 0.12   # Canto externo inferior
+            cx + tf_scale * 0.62, cy - tf_scale * 0.22,
+            cx + tf_scale * 0.22, cy - tf_scale * 0.14,
+            cx + tf_scale * 0.38, cy - tf_scale * 0.02,
+            cx + tf_scale * 0.60, cy - tf_scale * 0.12
         ]
         self.canvas.create_polygon(olho_d, fill="#041a2f", outline=COR_CYAN_GLOW, width=1.5)
-        # Íris Dourada / Neon Cyber
         self.canvas.create_oval(cx + tf_scale * 0.30, cy - tf_scale * 0.19,
                                 cx + tf_scale * 0.48, cy - tf_scale * 0.05,
                                 fill=COR_GOLD_CYBER, outline="")
-        # Pupila Predatória Vertical
         self.canvas.create_line(cx + tf_scale * 0.39, cy - tf_scale * 0.20,
                                 cx + tf_scale * 0.39, cy - tf_scale * 0.04,
                                 fill="#000000", width=2)
@@ -342,18 +417,15 @@ class CyberHUDCanvasRenderer:
 
         # 4. Focinho Cibernético e Boca com Presas
         ny = cy + tf_scale * 0.14
-        # Triângulo do Focinho
         self.canvas.create_polygon(cx - tf_scale * 0.14, ny,
                                    cx + tf_scale * 0.14, ny,
                                    cx, ny + tf_scale * 0.16,
                                    fill="#041a2f", outline=COR_CYAN_GLOW, width=1.5)
-        # Linha labial central e abertura
         self.canvas.create_line(cx, ny + tf_scale * 0.16, cx, ny + tf_scale * 0.30,
                                 fill=COR_CYAN_GLOW, width=1.5)
         self.canvas.create_line(cx - tf_scale * 0.26, ny + tf_scale * 0.30,
                                 cx + tf_scale * 0.26, ny + tf_scale * 0.30,
                                 fill=COR_CYAN_GLOW, width=1.5)
-        # Presas Neon
         self.canvas.create_line(cx - tf_scale * 0.16, ny + tf_scale * 0.30,
                                 cx - tf_scale * 0.16, ny + tf_scale * 0.42,
                                 fill=COR_GOLD_CYBER, width=2)
@@ -363,11 +435,9 @@ class CyberHUDCanvasRenderer:
 
         # 5. Bigodes Cibernéticos Radiantes (Esquerda & Direita)
         for w_off, w_ang in [(-0.06, -0.15), (0.02, 0.0), (0.10, 0.15)]:
-            # Bigodes Esquerdos
             self.canvas.create_line(cx - tf_scale * 0.24, ny + tf_scale * (0.24 + w_off),
                                     cx - tf_scale * (0.85 * t_pulse), ny + tf_scale * (0.24 + w_ang),
                                     fill=COR_CYAN_GLOW, width=1)
-            # Bigodes Direitos
             self.canvas.create_line(cx + tf_scale * 0.24, ny + tf_scale * (0.24 + w_off),
                                     cx + tf_scale * (0.85 * t_pulse), ny + tf_scale * (0.24 + w_ang),
                                     fill=COR_CYAN_GLOW, width=1)
@@ -402,7 +472,7 @@ class CyberHUDCanvasRenderer:
             self.canvas.create_line(tx, ty - len_t, tx, ty + len_t,
                                     fill=COR_CYAN_GLOW if is_card else COR_CYAN_DIM, width=1)
 
-        # Rótulos de Coordenadas Orbitais (Estilo Imagem de Referência)
+        # Rótulos de Coordenadas Orbitais
         self.canvas.create_text(cx, cy - r_orb_y - 12, text="000° // SYS.CORE",
                                 font=("Courier", 8, "bold"), fill=COR_CYAN_DIM)
         self.canvas.create_text(cx + r_orb_x + 18, cy, text="090°",
@@ -420,23 +490,27 @@ class CyberHUDCanvasRenderer:
             self.canvas.create_oval(px_dot - 3, py_dot - 3, px_dot + 3, py_dot + 3,
                                     fill=COR_CYAN_GLOW, outline="")
 
-        # Núcleo Central de Áudio / Equalizador / Botão de Ação
+        # -------------------------------------------------------------
+        # 6. Equalizador de Voz em Onda Fluida & Controles Inferiores
+        # -------------------------------------------------------------
         if h > 240:
-            # Equalizador de Pontos Pulsantes
-            n_dots = 14
-            dot_w = 12
-            dot_start_x = cx - (n_dots * dot_w) // 2
-            y_dots = cy + r_orb_y + 32
-            for d_idx in range(n_dots):
-                d_x = dot_start_x + d_idx * dot_w
-                d_amp = abs(math.sin(self.fase_onda * 2.0 + d_idx * 0.5))
-                col_d = COR_CYAN_GLOW if d_amp > 0.4 else "#04374d"
-                self.canvas.create_rectangle(d_x - 2, y_dots - (d_amp * 7), d_x + 2,
-                                             y_dots + (d_amp * 7), fill=col_d, outline="")
+            # Onda Senoidal Fluida de Voz (Waveform Speech Animation)
+            largura_onda = min(220, int(raio_base * 1.5))
+            onda_y = cy + r_orb_y + 24
+            for off_onda, col_onda, amp_mult in [(0, COR_CYAN_GLOW, 1.0), (1.2, COR_BLUE_ELECTRIC, 0.6)]:
+                pontos_onda = []
+                for px in range(int(cx - largura_onda // 2), int(cx + largura_onda // 2), 4):
+                    dist_centro = abs(px - cx) / (largura_onda / 2)
+                    envelope = max(0.0, 1.0 - dist_centro)
+                    amp = envelope * (14 if self.estado in ("FALANDO", "OUVINDO") else 6) * amp_mult
+                    py = onda_y + math.sin(self.fase_onda * 4.0 + px * 0.18 + off_onda) * amp
+                    pontos_onda.extend([px, py])
+                if len(pontos_onda) >= 4:
+                    self.canvas.create_line(pontos_onda, fill=col_onda, width=2, smooth=True)
 
             # Botão de Ação Central
-            btn_w, btn_h = 180, 28
-            btn_y = y_dots + 18
+            btn_w, btn_h = 190, 28
+            btn_y = onda_y + 16
             self.canvas.create_rectangle(cx - btn_w // 2, btn_y, cx + btn_w // 2, btn_y + btn_h,
                                          fill="#041a2f", outline=COR_CYAN_GLOW, width=1.5)
             btn_txt = "🎙️ FALAR COM A TIGER" if self.estado == "STANDBY" else (
@@ -451,13 +525,11 @@ class CyberHUDCanvasRenderer:
                                     font=("Arial", 9), fill=COR_TEXT_MUTED)
 
         # -------------------------------------------------------------
-        # 3. Painéis Laterais Sci-Fi Glassmorphism (Telemetria & IA)
+        # 7. Painéis Laterais Sci-Fi Glassmorphism (Telemetria & IA)
         # -------------------------------------------------------------
-        pw = max(260, min(360, int(w * 0.28)))
-
         # Painel Esquerdo: TELEMETRIA SMC & ORDER FLOW
         if w > 600:
-            px1, py1, px2, py2 = 20, 48, 20 + pw, h - 20
+            px1, py1, px2, py2 = 20, 48, 20 + pw, h - 16
             self._desenhar_card(px1, py1, px2, py2, "TELEMETRIA SMC & ORDER FLOW",
                                 icone="⚡", badge="🟢 ATIVO", cor_neon=COR_CYAN_GLOW)
 
@@ -477,9 +549,8 @@ class CyberHUDCanvasRenderer:
 
         # Painel Direito: MOTOR IA CLOUD & LOGS EM TEMPO REAL
         if w > 600:
-            rx1, ry1, rx2, ry2 = w - 20 - pw, 48, w - 20, h - 20
+            rx1, ry1, rx2, ry2 = w - 20 - pw, 48, w - 20, h - 16
 
-            # Dividido em 2 Cards: Superior (Motor IA & CDP) e Inferior (Conversas & Logs)
             h_meio = max(110, (ry2 - ry1) // 3)
             ry_mid1 = ry1 + h_meio
             ry_mid2 = ry1 + h_meio + 10
@@ -498,12 +569,11 @@ class CyberHUDCanvasRenderer:
             self._desenhar_mini_item(rx1, item_y + (item_h + 3) * 2, rx2, "TRAILING",
                                      self.trailing_txt, COR_CYAN_GLOW, item_h)
 
-            # Card Inferior (Conversas & Logs em Tempo Real - MAIOR E MAIS ESPAÇOSO)
+            # Card Inferior (Conversas & Logs em Tempo Real)
             self._desenhar_card(rx1, ry_mid2, rx2, ry2, "CONVERSAS & LOGS",
                                 icone="⚡", badge="TEMPO REAL", cor_neon=COR_GOLD_CYBER)
 
             log_y = ry_mid2 + 38
-            # Exibe até 5 logs recentes com formatação legível
             for hora, tag_l, txt_l in self.logs_recentes[-5:]:
                 if log_y + 24 < ry2:
                     self.canvas.create_text(rx1 + 14, log_y, text=f"{hora} [{tag_l}]", anchor="w",
@@ -555,6 +625,7 @@ class TigerHUDEmbeddedFrame(tk.Frame):
         if not self._animando:
             return
         self.renderer.angulo_rotacao += 0.04
+        self.renderer.angulo_radar += 0.035
         self.renderer.fase_onda += 0.08
         self.renderer.desenhar()
         self.after(35, self._loop_animacao)
@@ -639,6 +710,7 @@ class TigerHolographicHUD:
         if not self._animando:
             return
         self.renderer.angulo_rotacao += 0.04
+        self.renderer.angulo_radar += 0.035
         self.renderer.fase_onda += 0.08
         self.renderer.desenhar()
         self.root.after(35, self._loop_animacao)
