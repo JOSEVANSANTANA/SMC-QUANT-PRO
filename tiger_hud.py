@@ -60,11 +60,43 @@ class CyberHUDCanvasRenderer:
         self.latencia_ia = "210ms (Rápida)"
         self.trailing_txt = "Auto Trail: 1.5R (16 ticks)"
         self.wake_word = "'Olá Tiger' / 'Jarvis'"
+        self.maos_livres_ativa = False
+        self.on_falar_click = None
+        self.on_toggle_maos_livres = None
+        self._cx = 450
+        self._cy = 160
+        self._raio_base = 90
+        self._btn_falar_bounds = None
+        self._badge_ml_bounds = None
         self.logs_recentes = [
             ("09:35", "ORDEM", "BUY MESU6 6 ctr @ 7690.0 enviada"),
             ("09:40", "TRAIL", "Stop móvel armado e protegido no BE"),
             ("09:51", "CDP", "CVD Delta +1,420 confirmando fluxo comprador"),
         ]
+
+    def tratar_clique(self, x: int, y: int):
+        """Processa clique do mouse nas áreas interativas do HUD (Orbe, Botão de Voz e Mãos Livres)."""
+        # 1. Clique no Badge Mãos Livres
+        if self._badge_ml_bounds:
+            bx1, by1, bx2, by2 = self._badge_ml_bounds
+            if bx1 <= x <= bx2 and by1 <= y <= by2:
+                if callable(self.on_toggle_maos_livres):
+                    self.on_toggle_maos_livres()
+                return
+
+        # 2. Clique no Botão Central ou no Orbe
+        no_botao = False
+        if self._btn_falar_bounds:
+            bx1, by1, bx2, by2 = self._btn_falar_bounds
+            if bx1 <= x <= bx2 and by1 <= y <= by2:
+                no_botao = True
+
+        dist_centro_sq = (x - self._cx) ** 2 + (y - self._cy) ** 2
+        no_orbe = dist_centro_sq <= (self._raio_base * 1.15) ** 2
+
+        if no_botao or no_orbe:
+            if callable(self.on_falar_click):
+                self.on_falar_click()
 
     def atualizar_dimensoes(self, w: int, h: int):
         self.largura = max(400, w)
@@ -187,8 +219,17 @@ class CyberHUDCanvasRenderer:
         # Badge Central de Status
         self.canvas.create_text(w // 2, 20, text=f"SYSTEM STATUS: ⟪ {self.estado} ⟫",
                                 font=("Courier", 11, "bold"), fill=cor_st)
-        self.canvas.create_text(w - 24, 20, text="100% OPENROUTER CLOUD & CDP LIVE", anchor="e",
-                                font=("Courier", 9, "bold"), fill=COR_TEXT_MUTED)
+
+        # Badge Mãos Livres no Cabeçalho (Clicável para ativar/desativar microfone aberto)
+        ml_txt = "🎙️ MÃOS LIVRES: ATIVADA" if self.maos_livres_ativa else "🎙️ MÃOS LIVRES: DESATIVADA"
+        ml_col = COR_GREEN_CYBER if self.maos_livres_ativa else COR_TEXT_MUTED
+        ml_w = len(ml_txt) * 6 + 18
+        ml_x2 = w - 24
+        ml_x1 = ml_x2 - ml_w
+        self.canvas.create_rectangle(ml_x1, 9, ml_x2, 29, fill="#041a2f", outline=ml_col, width=1)
+        self.canvas.create_text((ml_x1 + ml_x2) // 2, 19, text=ml_txt,
+                                font=("Courier", 8, "bold"), fill=ml_col)
+        self._badge_ml_bounds = (ml_x1, 9, ml_x2, 29)
 
         # -------------------------------------------------------------
         # 2. Dimensões dos Painéis e Dimensionamento Imponente do Orbe
@@ -519,6 +560,12 @@ class CyberHUDCanvasRenderer:
             self.canvas.create_text(cx, btn_y + btn_h // 2, text=btn_txt,
                                     font=("Arial", 10, "bold"), fill=cor_st)
 
+            # Registra coordenadas interativas do Orbe e do Botão de Voz
+            self._cx = cx
+            self._cy = cy
+            self._raio_base = raio_base
+            self._btn_falar_bounds = (cx - btn_w // 2, btn_y, cx + btn_w // 2, btn_y + btn_h)
+
             # Legenda de Wake-Words
             self.canvas.create_text(cx, btn_y + btn_h + 14,
                                     text='💡 WAKE-WORDS: "Olá Tiger", "Jarvis", "Tiger..."',
@@ -598,14 +645,19 @@ class TigerHUDEmbeddedFrame(tk.Frame):
             height=self.altura,
             bg=COR_FUNDO_DEEP,
             highlightthickness=0,
+            cursor="hand2",
             bd=0
         )
         self.canvas.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
 
         self.renderer = CyberHUDCanvasRenderer(self.canvas, self.largura, self.altura, modo_compacto=False)
         self._animando = True
+        self.canvas.bind("<Button-1>", self._ao_clicar_canvas)
         self.bind("<Configure>", self._ao_redimensionar)
         self._loop_animacao()
+
+    def _ao_clicar_canvas(self, event):
+        self.renderer.tratar_clique(event.x, event.y)
 
     def _ao_redimensionar(self, event):
         if event.width > 50 and event.height > 50:

@@ -12002,6 +12002,7 @@ class SmcQuantApp(ctk.CTk):
 
         # ---------- HUD Holográfico EMBUTIDO no topo da aba TIGER ----------
         self.hud_embutido = None
+        self._orbe_visivel = True
         self._modo_orbe_grande = False
         if TigerHUDEmbeddedFrame:
             try:
@@ -12009,6 +12010,9 @@ class SmcQuantApp(ctk.CTk):
                 self.hud_embutido.pack(fill="x", padx=10, pady=(6, 2))
                 ativo = getattr(self, "_ultimo_ativo_lido", "") or "MNQ / NQ"
                 self.hud_embutido.renderer.ativo_smc = str(ativo)
+                self.hud_embutido.renderer.on_falar_click = self._chat_ouvir
+                self.hud_embutido.renderer.on_toggle_maos_livres = self._alternar_maos_livres_hud
+                self.hud_embutido.renderer.maos_livres_ativa = bool(getattr(self, "ia_tiger_var", None) and self.ia_tiger_var.get())
             except Exception as e:
                 self.log(f"Falha ao carregar HUD embutido: {e}")
                 self.hud_embutido = None
@@ -15316,11 +15320,15 @@ class SmcQuantApp(ctk.CTk):
     # Ao ouvir "Olá Tiger" ela atende — se o pedido veio na mesma frase
     # ("Olá Tiger, qual o status?"), já executa direto.
     def _tiger_alternar(self):
-        salvar_config({"ia_tiger": bool(self.ia_tiger_var.get())})
-        if self.ia_tiger_var.get():
+        ativo = bool(self.ia_tiger_var.get())
+        salvar_config({"ia_tiger": ativo})
+        if getattr(self, "hud_embutido", None) and getattr(self.hud_embutido, "renderer", None):
+            self.hud_embutido.renderer.maos_livres_ativa = ativo
+            self.hud_embutido.renderer.desenhar()
+        if ativo:
             self._tiger_iniciar()
         else:
-            self._chat_escrever("sistema", "(modo OLÁ TIGER desligado)",
+            self._chat_escrever("sistema", "(modo OLÁ TIGER / Mãos Livres desligado)",
                                  persistir=False)
 
     def _nome_da_voz_no_menu(self):
@@ -15443,43 +15451,64 @@ class SmcQuantApp(ctk.CTk):
             except Exception as e:
                 self.log(f"Falha ao abrir HUD holográfico: {e}")
 
+    def _reorganizar_layout_ia(self):
+        """Garante que o Orbe e o Chat fiquem perfeitamente posicionados sem conflitos de empacotamento."""
+        if not getattr(self, "hud_embutido", None) or not getattr(self, "txt_chat", None):
+            return
+
+        try:
+            if self.hud_embutido:
+                self.hud_embutido.pack_forget()
+        except Exception:
+            pass
+        try:
+            if self.txt_chat:
+                self.txt_chat.pack_forget()
+        except Exception:
+            pass
+
+        orbe_visivel = getattr(self, "_orbe_visivel", True)
+        modo_grande = getattr(self, "_modo_orbe_grande", False)
+
+        if orbe_visivel:
+            if modo_grande:
+                # Modo Tela Inteira: Orbe assume 100% da aba
+                self.hud_embutido.pack(fill="both", expand=True, padx=10, pady=(6, 2))
+            else:
+                # Modo Dividido: Orbe no topo e Chat na parte inferior
+                self.hud_embutido.redimensionar(280)
+                self.hud_embutido.pack(fill="x", padx=10, pady=(6, 2))
+                self.txt_chat.pack(fill="both", expand=True, padx=10, pady=(2, 0))
+        else:
+            # Orbe Oculto: Chat assume toda a tela
+            self.txt_chat.pack(fill="both", expand=True, padx=10, pady=(6, 0))
+
+        # Atualiza os textos dos botões da barra superior
+        if hasattr(self, "btn_toggle_orbe"):
+            self.btn_toggle_orbe.configure(text="👁️ Ocultar Orbe" if orbe_visivel else "👁️ Mostrar Orbe")
+        if hasattr(self, "btn_modo_orbe"):
+            self.btn_modo_orbe.configure(text="📐 Modo Dividido" if modo_grande else "🔮 Expandir Orbe")
+
     def _alternar_modo_orbe(self):
         """Alterna entre o modo Dividido (HUD 280px + Chat) e o modo Orbe Expandido / Tela Inteira."""
-        if not getattr(self, "hud_embutido", None):
-            return
-        if not self.hud_embutido.winfo_viewable():
-            self._alternar_hud_embutido()
+        self._orbe_visivel = True
         self._modo_orbe_grande = not getattr(self, "_modo_orbe_grande", False)
-        if self._modo_orbe_grande:
-            # Modo Tela Inteira / Imersivo (Ocupa a aba inteira)
-            if hasattr(self, "txt_chat") and self.txt_chat.winfo_viewable():
-                self.txt_chat.pack_forget()
-            self.hud_embutido.pack_forget()
-            self.hud_embutido.pack(fill="both", expand=True, padx=10, pady=(6, 2))
-            if hasattr(self, "btn_modo_orbe"):
-                self.btn_modo_orbe.configure(text="📐 Modo Dividido")
-        else:
-            # Modo Dividido / Padrão
-            self.hud_embutido.pack_forget()
-            self.hud_embutido.redimensionar(280)
-            self.hud_embutido.pack(fill="x", padx=10, pady=(6, 2))
-            if hasattr(self, "txt_chat"):
-                self.txt_chat.pack(fill="both", expand=True, padx=10, pady=(2, 0))
-            if hasattr(self, "btn_modo_orbe"):
-                self.btn_modo_orbe.configure(text="🔮 Expandir Orbe")
+        self._reorganizar_layout_ia()
 
     def _alternar_hud_embutido(self):
-        """Oculta ou exibe o HUD holográfico embutido na aba TIGER."""
-        if not getattr(self, "hud_embutido", None):
-            return
-        if self.hud_embutido.winfo_viewable():
-            self.hud_embutido.pack_forget()
-            if hasattr(self, "btn_toggle_orbe"):
-                self.btn_toggle_orbe.configure(text="👁️ Mostrar Orbe")
-        else:
-            self.hud_embutido.pack(fill="x", padx=10, pady=(6, 2), before=self.txt_chat)
-            if hasattr(self, "btn_toggle_orbe"):
-                self.btn_toggle_orbe.configure(text="👁️ Ocultar Orbe")
+        """Oculta ou exibe o HUD holográfico embutido na aba TIGER com segurança absoluta."""
+        self._orbe_visivel = not getattr(self, "_orbe_visivel", True)
+        self._reorganizar_layout_ia()
+
+    def _alternar_maos_livres_hud(self):
+        """Alterna o modo Mãos Livres (escuta contínua via wake-word) diretamente pelo HUD Cockpit."""
+        if hasattr(self, "ia_tiger_var"):
+            novo_st = not self.ia_tiger_var.get()
+            self.ia_tiger_var.set(novo_st)
+            self._tiger_alternar()
+            if getattr(self, "hud_embutido", None) and getattr(self.hud_embutido, "renderer", None):
+                self.hud_embutido.renderer.maos_livres_ativa = novo_st
+                self.hud_embutido.renderer.desenhar()
 
     def _sincronizar_huds(self, estado, texto_usuario="", texto_resposta=""):
         """Atualiza a telemetria e o estado do HUD embutido e do HUD flutuante simultaneamente."""
