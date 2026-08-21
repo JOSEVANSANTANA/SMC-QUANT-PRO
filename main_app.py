@@ -15444,18 +15444,27 @@ class SmcQuantApp(ctk.CTk):
                 self.log(f"Falha ao abrir HUD holográfico: {e}")
 
     def _alternar_modo_orbe(self):
-        """Alterna entre o modo Cockpit Padrão (HUD ~280px) e o modo Orbe Expandido / Imersivo (~460px)."""
+        """Alterna entre o modo Dividido (HUD 280px + Chat) e o modo Orbe Expandido / Tela Inteira."""
         if not getattr(self, "hud_embutido", None):
             return
         if not self.hud_embutido.winfo_viewable():
             self._alternar_hud_embutido()
         self._modo_orbe_grande = not getattr(self, "_modo_orbe_grande", False)
         if self._modo_orbe_grande:
-            self.hud_embutido.redimensionar(460)
+            # Modo Tela Inteira / Imersivo (Ocupa a aba inteira)
+            if hasattr(self, "txt_chat") and self.txt_chat.winfo_viewable():
+                self.txt_chat.pack_forget()
+            self.hud_embutido.pack_forget()
+            self.hud_embutido.pack(fill="both", expand=True, padx=10, pady=(6, 2))
             if hasattr(self, "btn_modo_orbe"):
-                self.btn_modo_orbe.configure(text="📐 Compactar Orbe")
+                self.btn_modo_orbe.configure(text="📐 Modo Dividido")
         else:
+            # Modo Dividido / Padrão
+            self.hud_embutido.pack_forget()
             self.hud_embutido.redimensionar(280)
+            self.hud_embutido.pack(fill="x", padx=10, pady=(6, 2))
+            if hasattr(self, "txt_chat"):
+                self.txt_chat.pack(fill="both", expand=True, padx=10, pady=(2, 0))
             if hasattr(self, "btn_modo_orbe"):
                 self.btn_modo_orbe.configure(text="🔮 Expandir Orbe")
 
@@ -17263,27 +17272,16 @@ class SmcQuantApp(ctk.CTk):
     # TAMANHO DA LETRA
     # ------------------------------------------------------------------
     def _aplicar_escala_letra(self, escala, avisar=True):
-        """Muda o tamanho da letra em TODAS as abas, na hora, e grava a escolha.
-
-        O `set_widget_scaling` do CustomTkinter cuida de tudo que é widget dele
-        (botões, rótulos, campos, menus) em todas as abas de uma vez. O que ele
-        NÃO alcança são os dois campos de texto puro do Tk — o terminal da TIGER
-        e o log do motor —, que são justamente onde o trader mais lê. Esses dois
-        são reconfigurados aqui, com o mesmo fator."""
+        """Muda o tamanho da letra nos textos de leitura (Chat TIGER, HUD e Logs), sem quebrar layout."""
         try:
             escala = min(max(float(escala), 1.0), 2.0)
         except (TypeError, ValueError):
             return
         self._escala_letra = escala
         salvar_config({"escala_letra": escala})
-        try:
-            ctk.set_widget_scaling(escala)
-        except Exception as e:
-            if getattr(self, "console", None) is not None:
-                self.log(f"(não consegui aplicar a escala dos widgets: {e})")
 
         # Terminal da TIGER (tk.Text) — inclusive as tags, que têm fonte própria.
-        tam = max(8, int(round(_FONTE_BASE_CHAT * escala)))
+        tam = max(9, int(round(_FONTE_BASE_CHAT * escala)))
         chat = getattr(self, "txt_chat", None)
         if chat is not None:
             try:
@@ -17300,7 +17298,7 @@ class SmcQuantApp(ctk.CTk):
             try:
                 entrada.configure(
                     font=ctk.CTkFont(family="Consolas",
-                                     size=max(9, int(round(12 * escala)))))
+                                     size=max(10, int(round(12 * escala)))))
             except Exception:
                 pass
         console = getattr(self, "console", None)
@@ -17308,22 +17306,11 @@ class SmcQuantApp(ctk.CTk):
             try:
                 console.configure(
                     font=("Consolas",
-                          max(8, int(round(_FONTE_BASE_CONSOLE * escala)))))
+                          max(9, int(round(_FONTE_BASE_CONSOLE * escala)))))
             except Exception:
                 pass
 
-        # A janela acompanha: letra maior na mesma largura corta botão.
-        try:
-            larg = int(680 * escala)
-            self.minsize(larg, min(int(800 * escala), 900))
-            if self.winfo_width() < larg:
-                self.geometry(f"{larg}x{self.winfo_height()}")
-        except Exception:
-            pass
-
-        # Os dois controles ficam em sincronia: o menu da aba Motor e o rótulo
-        # entre os botões A－ / A＋ da barra da TIGER. Um mostrando "Normal"
-        # enquanto o outro está em "Máximo" seria pior que não ter indicador.
+        # Atualiza os indicadores de escala
         rotulo = nome_da_escala(escala)
         var = getattr(self, "_var_escala_motor", None)
         if var is not None:
@@ -17338,8 +17325,7 @@ class SmcQuantApp(ctk.CTk):
             except Exception:
                 pass
         if avisar and getattr(self, "console", None) is not None:
-            self.log(f"🔠 Tamanho da letra: {rotulo} ({escala:.2f}×). "
-                     "Vale para todas as abas e fica salvo.")
+            self.log(f"🔠 Tamanho da letra ajustado: {rotulo} ({escala:.2f}×).")
 
     def _escala_por_passo(self, passo):
         """Botões A− / A+ da barra da TIGER: anda um degrau na lista."""
@@ -18504,7 +18490,7 @@ class SmcQuantApp(ctk.CTk):
             modelo = cfg.get("ia_modelo_chat") or "Claude 3.5 Sonnet"
             latencia = getattr(self, "_ultima_latencia_ia", "") or "210ms (Rápida)"
 
-            ultimos_msgs = carregar_chat()[-3:]
+            ultimos_msgs = carregar_chat()[-5:]
             logs_formatados = []
             for m in ultimos_msgs:
                 hora = m.get("hora") or time.strftime("%H:%M")

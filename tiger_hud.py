@@ -194,16 +194,16 @@ class CyberHUDCanvasRenderer:
         self.canvas.create_line(w // 2 - 140, cy, w // 2 + 140, cy, fill="#084f80", width=1)
 
         # -------------------------------------------------------------
-        # 2. Orbe Central Reator Holográfico — Globo Geodésico 3D (Wireframe Sphere)
+        # 2. Orbe Central Reator Holográfico — Globo Geodésico 3D & Cyber Tiger Face
         # -------------------------------------------------------------
-        raio_base = min(max(h * 0.26, 50), 105) + math.sin(self.fase_onda) * 2.0
+        raio_base = min(max(h * 0.26, 50), 115) + math.sin(self.fase_onda) * 2.0
         pitch = 0.38  # ~22 graus de inclinação tridimensional
 
         # Halo Glow Radiante Externo
         for glow_r, glow_col in [
-            (raio_base + 40, "#020c18"),
-            (raio_base + 26, "#03172c"),
-            (raio_base + 14, "#062747"),
+            (raio_base + 42, "#020c18"),
+            (raio_base + 28, "#03172c"),
+            (raio_base + 15, "#062747"),
             (raio_base + 6, "#0a3a69")
         ]:
             self.canvas.create_oval(cx - glow_r, cy - glow_r, cx + glow_r, cy + glow_r,
@@ -226,7 +226,6 @@ class CyberHUDCanvasRenderer:
                 th_rad = math.radians(st_deg) + rot
                 x_3d = r_lat * math.sin(th_rad)
                 y_3d = r_lat * math.cos(th_rad)
-                # Rotação pelo pitch
                 y_proj = y_3d * math.cos(pitch) - z_lat * math.sin(pitch)
                 z_proj = y_3d * math.sin(pitch) + z_lat * math.cos(pitch)
                 px = cx + x_3d
@@ -237,7 +236,6 @@ class CyberHUDCanvasRenderer:
                 else:
                     pontos_tras.append((px, py))
 
-            # Desenha anéis de latitude
             if len(pontos_frente) >= 2:
                 for idx in range(len(pontos_frente) - 1):
                     self.canvas.create_line(pontos_frente[idx][0], pontos_frente[idx][1],
@@ -250,7 +248,7 @@ class CyberHUDCanvasRenderer:
                                             pontos_tras[idx + 1][0], pontos_tras[idx + 1][1],
                                             fill="#043242", width=1)
 
-        # Desenho das Linhas de Longitude 3D (Meridianos)
+        # Desenho dos Meridianos 3D com Vértices Quânticos
         for lon_deg in longitudes:
             th_rad = math.radians(lon_deg) + rot
             pontos_merid = []
@@ -271,14 +269,126 @@ class CyberHUDCanvasRenderer:
                 p2 = pontos_merid[idx + 1]
                 cor_l = COR_CYAN_GLOW if (p1[2] + p2[2]) / 2 >= 0 else "#032938"
                 self.canvas.create_line(p1[0], p1[1], p2[0], p2[1], fill=cor_l, width=1)
-                # Nós / Vértices brilhantes na frente
                 if p1[2] > 20 and idx % 2 == 0:
                     self.canvas.create_oval(p1[0] - 2, p1[1] - 2, p1[0] + 2, p1[1] + 2,
                                             fill=COR_CYAN_GLOW, outline="")
 
+        # -------------------------------------------------------------
+        # ROSTO E OLHOS DE TIGRE CIBERNÉTICOS (Predador Bravo e Focado)
+        # -------------------------------------------------------------
+        tf_scale = max(24.0, raio_base * 0.48)
+        t_pulse = 1.0 + math.sin(self.fase_onda * 3.0) * 0.08
+
+        # Fundo do Reator do Rosto do Tigre
+        self.canvas.create_oval(cx - tf_scale * 1.1, cy - tf_scale * 1.1,
+                                cx + tf_scale * 1.1, cy + tf_scale * 1.1,
+                                fill="#030c18", outline="#07324d", width=1)
+
+        # 1. Olhos de Tigre Predatórios Inclinados (Foco Extremo & Bravo)
+        # Olho Esquerdo (Almôndega Angular Fina Inclinada)
+        olho_e = [
+            cx - tf_scale * 0.62, cy - tf_scale * 0.22,  # Canto externo superior
+            cx - tf_scale * 0.22, cy - tf_scale * 0.14,  # Canto interno
+            cx - tf_scale * 0.38, cy - tf_scale * 0.02,  # Base inferior
+            cx - tf_scale * 0.60, cy - tf_scale * 0.12   # Canto externo inferior
+        ]
+        self.canvas.create_polygon(olho_e, fill="#041a2f", outline=COR_CYAN_GLOW, width=1.5)
+        # Íris Dourada / Neon Cyber
+        self.canvas.create_oval(cx - tf_scale * 0.48, cy - tf_scale * 0.19,
+                                cx - tf_scale * 0.30, cy - tf_scale * 0.05,
+                                fill=COR_GOLD_CYBER, outline="")
+        # Pupila Predatória Vertical
+        self.canvas.create_line(cx - tf_scale * 0.39, cy - tf_scale * 0.20,
+                                cx - tf_scale * 0.39, cy - tf_scale * 0.04,
+                                fill="#000000", width=2)
+
+        # Olho Direito (Simétrico)
+        olho_d = [
+            cx + tf_scale * 0.62, cy - tf_scale * 0.22,  # Canto externo superior
+            cx + tf_scale * 0.22, cy - tf_scale * 0.14,  # Canto interno
+            cx + tf_scale * 0.38, cy - tf_scale * 0.02,  # Base inferior
+            cx + tf_scale * 0.60, cy - tf_scale * 0.12   # Canto externo inferior
+        ]
+        self.canvas.create_polygon(olho_d, fill="#041a2f", outline=COR_CYAN_GLOW, width=1.5)
+        # Íris Dourada / Neon Cyber
+        self.canvas.create_oval(cx + tf_scale * 0.30, cy - tf_scale * 0.19,
+                                cx + tf_scale * 0.48, cy - tf_scale * 0.05,
+                                fill=COR_GOLD_CYBER, outline="")
+        # Pupila Predatória Vertical
+        self.canvas.create_line(cx + tf_scale * 0.39, cy - tf_scale * 0.20,
+                                cx + tf_scale * 0.39, cy - tf_scale * 0.04,
+                                fill="#000000", width=2)
+
+        # 2. Sobrancelhas / Rugas Predatórias de Foco (V-Angulado Bravo)
+        self.canvas.create_line(cx - tf_scale * 0.70, cy - tf_scale * 0.34,
+                                cx - tf_scale * 0.18, cy - tf_scale * 0.20,
+                                fill=COR_CYAN_GLOW, width=2)
+        self.canvas.create_line(cx + tf_scale * 0.70, cy - tf_scale * 0.34,
+                                cx + tf_scale * 0.18, cy - tf_scale * 0.20,
+                                fill=COR_CYAN_GLOW, width=2)
+
+        # 3. Listras de Tigre na Testa (Chevrons Holográficos)
+        self.canvas.create_line(cx - tf_scale * 0.22, cy - tf_scale * 0.65,
+                                cx, cy - tf_scale * 0.48,
+                                cx + tf_scale * 0.22, cy - tf_scale * 0.65,
+                                fill=COR_GOLD_CYBER, width=2)
+        self.canvas.create_line(cx - tf_scale * 0.15, cy - tf_scale * 0.48,
+                                cx, cy - tf_scale * 0.36,
+                                cx + tf_scale * 0.15, cy - tf_scale * 0.48,
+                                fill=COR_CYAN_GLOW, width=1.5)
+        self.canvas.create_line(cx, cy - tf_scale * 0.36,
+                                cx, cy - tf_scale * 0.20,
+                                fill=COR_CYAN_DIM, width=1.5)
+
+        # 4. Focinho Cibernético e Boca com Presas
+        ny = cy + tf_scale * 0.14
+        # Triângulo do Focinho
+        self.canvas.create_polygon(cx - tf_scale * 0.14, ny,
+                                   cx + tf_scale * 0.14, ny,
+                                   cx, ny + tf_scale * 0.16,
+                                   fill="#041a2f", outline=COR_CYAN_GLOW, width=1.5)
+        # Linha labial central e abertura
+        self.canvas.create_line(cx, ny + tf_scale * 0.16, cx, ny + tf_scale * 0.30,
+                                fill=COR_CYAN_GLOW, width=1.5)
+        self.canvas.create_line(cx - tf_scale * 0.26, ny + tf_scale * 0.30,
+                                cx + tf_scale * 0.26, ny + tf_scale * 0.30,
+                                fill=COR_CYAN_GLOW, width=1.5)
+        # Presas Neon
+        self.canvas.create_line(cx - tf_scale * 0.16, ny + tf_scale * 0.30,
+                                cx - tf_scale * 0.16, ny + tf_scale * 0.42,
+                                fill=COR_GOLD_CYBER, width=2)
+        self.canvas.create_line(cx + tf_scale * 0.16, ny + tf_scale * 0.30,
+                                cx + tf_scale * 0.16, ny + tf_scale * 0.42,
+                                fill=COR_GOLD_CYBER, width=2)
+
+        # 5. Bigodes Cibernéticos Radiantes (Esquerda & Direita)
+        for w_off, w_ang in [(-0.06, -0.15), (0.02, 0.0), (0.10, 0.15)]:
+            # Bigodes Esquerdos
+            self.canvas.create_line(cx - tf_scale * 0.24, ny + tf_scale * (0.24 + w_off),
+                                    cx - tf_scale * (0.85 * t_pulse), ny + tf_scale * (0.24 + w_ang),
+                                    fill=COR_CYAN_GLOW, width=1)
+            # Bigodes Direitos
+            self.canvas.create_line(cx + tf_scale * 0.24, ny + tf_scale * (0.24 + w_off),
+                                    cx + tf_scale * (0.85 * t_pulse), ny + tf_scale * (0.24 + w_ang),
+                                    fill=COR_CYAN_GLOW, width=1)
+
+        # 6. Listras Laterais das Bochechas
+        self.canvas.create_line(cx - tf_scale * 0.78, cy - tf_scale * 0.05,
+                                cx - tf_scale * 0.52, cy + tf_scale * 0.02,
+                                fill=COR_CYAN_DIM, width=1.5)
+        self.canvas.create_line(cx - tf_scale * 0.72, cy + tf_scale * 0.12,
+                                cx - tf_scale * 0.48, cy + tf_scale * 0.16,
+                                fill=COR_GOLD_CYBER, width=1.5)
+        self.canvas.create_line(cx + tf_scale * 0.78, cy - tf_scale * 0.05,
+                                cx + tf_scale * 0.52, cy + tf_scale * 0.02,
+                                fill=COR_CYAN_DIM, width=1.5)
+        self.canvas.create_line(cx + tf_scale * 0.72, cy + tf_scale * 0.12,
+                                cx + tf_scale * 0.48, cy + tf_scale * 0.16,
+                                fill=COR_GOLD_CYBER, width=1.5)
+
         # Anel Orbital Maior com Coordenadas Sci-Fi
-        r_orb_x = raio_base * 1.52
-        r_orb_y = raio_base * 0.62
+        r_orb_x = raio_base * 1.54
+        r_orb_y = raio_base * 0.64
         self.canvas.create_oval(cx - r_orb_x, cy - r_orb_y, cx + r_orb_x, cy + r_orb_y,
                                 outline=COR_CYAN_DIM, width=1)
 
@@ -294,13 +404,13 @@ class CyberHUDCanvasRenderer:
 
         # Rótulos de Coordenadas Orbitais (Estilo Imagem de Referência)
         self.canvas.create_text(cx, cy - r_orb_y - 12, text="000° // SYS.CORE",
-                                font=("Courier", 7, "bold"), fill=COR_CYAN_DIM)
+                                font=("Courier", 8, "bold"), fill=COR_CYAN_DIM)
         self.canvas.create_text(cx + r_orb_x + 18, cy, text="090°",
-                                font=("Courier", 7, "bold"), fill=COR_CYAN_DIM)
+                                font=("Courier", 8, "bold"), fill=COR_CYAN_DIM)
         self.canvas.create_text(cx, cy + r_orb_y + 12, text="180° // QUANTUM.LOCK",
-                                font=("Courier", 7, "bold"), fill=COR_CYAN_DIM)
+                                font=("Courier", 8, "bold"), fill=COR_CYAN_DIM)
         self.canvas.create_text(cx - r_orb_x - 18, cy, text="270°",
-                                font=("Courier", 7, "bold"), fill=COR_CYAN_DIM)
+                                font=("Courier", 8, "bold"), fill=COR_CYAN_DIM)
 
         # Partículas Quânticas em Órbita
         for p_idx in range(4):
@@ -313,7 +423,7 @@ class CyberHUDCanvasRenderer:
         # Núcleo Central de Áudio / Equalizador / Botão de Ação
         if h > 240:
             # Equalizador de Pontos Pulsantes
-            n_dots = 12
+            n_dots = 14
             dot_w = 12
             dot_start_x = cx - (n_dots * dot_w) // 2
             y_dots = cy + r_orb_y + 32
@@ -321,65 +431,65 @@ class CyberHUDCanvasRenderer:
                 d_x = dot_start_x + d_idx * dot_w
                 d_amp = abs(math.sin(self.fase_onda * 2.0 + d_idx * 0.5))
                 col_d = COR_CYAN_GLOW if d_amp > 0.4 else "#04374d"
-                self.canvas.create_rectangle(d_x - 2, y_dots - (d_amp * 6), d_x + 2,
-                                             y_dots + (d_amp * 6), fill=col_d, outline="")
+                self.canvas.create_rectangle(d_x - 2, y_dots - (d_amp * 7), d_x + 2,
+                                             y_dots + (d_amp * 7), fill=col_d, outline="")
 
             # Botão de Ação Central
-            btn_w, btn_h = 160, 26
+            btn_w, btn_h = 180, 28
             btn_y = y_dots + 18
             self.canvas.create_rectangle(cx - btn_w // 2, btn_y, cx + btn_w // 2, btn_y + btn_h,
-                                         fill="#041a2f", outline=COR_CYAN_GLOW, width=1)
+                                         fill="#041a2f", outline=COR_CYAN_GLOW, width=1.5)
             btn_txt = "🎙️ FALAR COM A TIGER" if self.estado == "STANDBY" else (
                 "🎤 ESCUTANDO..." if self.estado == "OUVINDO" else (
                     "⚙️ PROCESSANDO..." if self.estado == "PENSANDO" else "🔊 TIGER FALANDO"))
             self.canvas.create_text(cx, btn_y + btn_h // 2, text=btn_txt,
-                                    font=("Arial", 9, "bold"), fill=cor_st)
+                                    font=("Arial", 10, "bold"), fill=cor_st)
 
             # Legenda de Wake-Words
             self.canvas.create_text(cx, btn_y + btn_h + 14,
                                     text='💡 WAKE-WORDS: "Olá Tiger", "Jarvis", "Tiger..."',
-                                    font=("Arial", 8), fill=COR_TEXT_MUTED)
+                                    font=("Arial", 9), fill=COR_TEXT_MUTED)
 
         # -------------------------------------------------------------
         # 3. Painéis Laterais Sci-Fi Glassmorphism (Telemetria & IA)
         # -------------------------------------------------------------
-        pw = max(210, min(270, int(w * 0.26)))
+        pw = max(260, min(360, int(w * 0.28)))
 
         # Painel Esquerdo: TELEMETRIA SMC & ORDER FLOW
-        if w > 580:
+        if w > 600:
             px1, py1, px2, py2 = 20, 48, 20 + pw, h - 20
             self._desenhar_card(px1, py1, px2, py2, "TELEMETRIA SMC & ORDER FLOW",
                                 icone="⚡", badge="🟢 ATIVO", cor_neon=COR_CYAN_GLOW)
 
-            item_y = py1 + 40
-            item_h = max(22, min(28, (py2 - item_y - 20) // 5))
+            item_y = py1 + 42
+            item_h = max(24, min(32, (py2 - item_y - 20) // 5))
 
             self._desenhar_mini_item(px1, item_y, px2, "ATIVO", self.ativo_smc,
                                      COR_TEXT_BRIGHT, item_h)
-            self._desenhar_mini_item(px1, item_y + item_h + 4, px2, "REGIME",
+            self._desenhar_mini_item(px1, item_y + item_h + 5, px2, "REGIME",
                                      f"{self.regime_smc}", COR_GREEN_CYBER, item_h)
-            self._desenhar_mini_item(px1, item_y + (item_h + 4) * 2, px2, "ORDER FLOW",
+            self._desenhar_mini_item(px1, item_y + (item_h + 5) * 2, px2, "ORDER FLOW",
                                      self.orderflow_txt, COR_CYAN_GLOW, item_h)
-            self._desenhar_mini_item(px1, item_y + (item_h + 4) * 3, px2, "CONFLUÊNCIAS",
+            self._desenhar_mini_item(px1, item_y + (item_h + 5) * 3, px2, "CONFLUÊNCIAS",
                                      self.confluencias_txt, COR_TEXT_BRIGHT, item_h)
-            self._desenhar_mini_item(px1, item_y + (item_h + 4) * 4, px2, "POSIÇÃO",
+            self._desenhar_mini_item(px1, item_y + (item_h + 5) * 4, px2, "POSIÇÃO",
                                      self.posicao_txt, COR_GOLD_CYBER, item_h)
 
         # Painel Direito: MOTOR IA CLOUD & LOGS EM TEMPO REAL
-        if w > 580:
+        if w > 600:
             rx1, ry1, rx2, ry2 = w - 20 - pw, 48, w - 20, h - 20
 
-            # Dividido em 2 Cards: Superior (Motor IA & CDP) e Inferior (Logs em Tempo Real)
-            h_meio = (ry2 - ry1) // 2
-            ry_mid1 = ry1 + h_meio - 6
-            ry_mid2 = ry1 + h_meio + 6
+            # Dividido em 2 Cards: Superior (Motor IA & CDP) e Inferior (Conversas & Logs)
+            h_meio = max(110, (ry2 - ry1) // 3)
+            ry_mid1 = ry1 + h_meio
+            ry_mid2 = ry1 + h_meio + 10
 
             # Card Superior (Motor IA & CDP)
             self._desenhar_card(rx1, ry1, rx2, ry_mid1, "MOTOR IA CLOUD & CDP",
                                 icone="🤖", badge="🟢 ONLINE", cor_neon=COR_GREEN_CYBER)
 
             item_y = ry1 + 38
-            item_h = max(20, min(24, (ry_mid1 - item_y - 12) // 3))
+            item_h = max(20, min(24, (ry_mid1 - item_y - 10) // 3))
             self._desenhar_mini_item(rx1, item_y, rx2, "PROVEDOR",
                                      f"{self.provedor_ia} ({self.modelo_ia})",
                                      COR_TEXT_BRIGHT, item_h)
@@ -388,18 +498,20 @@ class CyberHUDCanvasRenderer:
             self._desenhar_mini_item(rx1, item_y + (item_h + 3) * 2, rx2, "TRAILING",
                                      self.trailing_txt, COR_CYAN_GLOW, item_h)
 
-            # Card Inferior (Conversas & Logs em Tempo Real)
+            # Card Inferior (Conversas & Logs em Tempo Real - MAIOR E MAIS ESPAÇOSO)
             self._desenhar_card(rx1, ry_mid2, rx2, ry2, "CONVERSAS & LOGS",
                                 icone="⚡", badge="TEMPO REAL", cor_neon=COR_GOLD_CYBER)
 
             log_y = ry_mid2 + 38
-            for hora, tag_l, txt_l in self.logs_recentes[-3:]:
-                if log_y + 18 < ry2:
-                    self.canvas.create_text(rx1 + 12, log_y, text=f"{hora} [{tag_l}]", anchor="w",
-                                            font=("Courier", 8, "bold"), fill=COR_CYAN_DIM)
-                    self.canvas.create_text(rx1 + 12, log_y + 12, text=txt_l[:30], anchor="w",
-                                            font=("Arial", 8), fill=COR_TEXT_BRIGHT)
-                    log_y += 28
+            # Exibe até 5 logs recentes com formatação legível
+            for hora, tag_l, txt_l in self.logs_recentes[-5:]:
+                if log_y + 24 < ry2:
+                    self.canvas.create_text(rx1 + 14, log_y, text=f"{hora} [{tag_l}]", anchor="w",
+                                            font=("Courier", 9, "bold"), fill=COR_CYAN_GLOW)
+                    max_chars = max(25, int((rx2 - rx1 - 28) / 7.5))
+                    self.canvas.create_text(rx1 + 14, log_y + 14, text=txt_l[:max_chars], anchor="w",
+                                            font=("Arial", 9, "bold"), fill=COR_TEXT_BRIGHT)
+                    log_y += 32
 
 
 class TigerHUDEmbeddedFrame(tk.Frame):
