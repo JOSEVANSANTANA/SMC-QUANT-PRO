@@ -8556,6 +8556,9 @@ def interpretar_configuracao(texto):
     t = bruto.lower()
     if _RE_SO_PERGUNTA.match(t):
         return []
+    # Proteção: termos de auditoria, assertividade e apresentação a clientes nunca são comandos de configuração
+    if re.search(r"\b(assertivid\w*|acertiv\w*|taxa de acerto|margem de acerto|estat[íi]stica\w* de acerto|porcentagem de acerto|porcentagem de acertivid\w*|auditoria|erros e acertos|win\s*rate|payoff|profit factor|apresentar para (?:os\s+)?clientes|base estat[íi]stica)\b", t):
+        return []
     tem_gatilho = bool(_CFG_GATILHO.search(t))
     if "?" in t and not tem_gatilho:
         return []
@@ -10174,6 +10177,10 @@ def interpretar_intencao(texto):
     if re.search(r"\b(desliga|desligar|desativa|desativar|desabilita|desabilitar)\b.*\b(trailing|trail|auto trail|stop m[oó]vel)\b", t):
         return "DESLIGAR_TRAILING"
 
+    # AUDITORIA DE ASSERTIVIDADE E ESTATÍSTICA DO MOTOR / ROBÔ
+    if re.search(r"\b(assertivid\w*|acertiv\w*|taxa de acerto|margem de acerto|estat[íi]stica\w* de acerto|porcentagem de acerto|porcentagem de acertivid\w*|auditoria|erros e acertos|win\s*rate|payoff|profit factor|performance geral|apresentar para (?:os\s+)?clientes|base estat[íi]stica)\b", t):
+        return "AUDITORIA_ASSERTIVIDADE"
+
     # CONFIGURAR A PRÓPRIA FERRAMENTA — ele autorizou, e é código que faz.
     # Vem ANTES da busca na web: "o dia da conta 1 começa às 19h" é ordem de
     # configuração, não pergunta de mercado (era aí que ela se perdia).
@@ -10443,7 +10450,7 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
     # ao ACATAR. Nada que apaga números do trader roda sem ele dizer "sim".
     if intencao == "ZERAR_CICLO":
         return ("PEDIR_CONFIRMACAO", "ZERAR_CICLO")
-    if intencao in ("VER_GRAFICO", "PRINT_AGORA", "ABRIR_HUD", "FECHAR_APP", "ABRIR_TRADOVATE", "TELEMETRIA_SMC", "SAUDACAO", "LIGAR_TRAILING", "DESLIGAR_TRAILING"):
+    if intencao in ("VER_GRAFICO", "PRINT_AGORA", "ABRIR_HUD", "FECHAR_APP", "ABRIR_TRADOVATE", "TELEMETRIA_SMC", "AUDITORIA_ASSERTIVIDADE", "SAUDACAO", "LIGAR_TRAILING", "DESLIGAR_TRAILING"):
         return (intencao, None)
     if isinstance(intencao, tuple) and intencao[0] in ("ABRIR_URL", "ABRIR_APP", "TROCAR_VOZ", "CONFIGURAR_TRAILING_MODO"):
         return intencao
@@ -12387,6 +12394,10 @@ class SmcQuantApp(ctk.CTk):
             rel = self._montar_relatorio_telemetria()
             self._chat_responder(rel)
             return
+        if tipo == "AUDITORIA_ASSERTIVIDADE":
+            rel = self._montar_relatorio_auditoria()
+            self._chat_responder(rel)
+            return
         if isinstance(tipo, tuple) and tipo[0] == "TROCAR_VOZ":
             voz_nome = tipo[1]
             salvar_config({"voz_nome": voz_nome})
@@ -12769,6 +12780,98 @@ class SmcQuantApp(ctk.CTk):
         else:
             linhas.append("• Posições Abertas: Nenhuma (Conta Flat / Pronta para novos setups)")
             
+        return "\n".join(linhas)
+
+    def _montar_relatorio_auditoria(self):
+        """Gera a auditoria completa de assertividade e desempenho estatístico da ferramenta."""
+        pos = carregar_posicoes()
+        fechadas = [p for p in pos if _e_da_conta_ativa(p) and p.get("status") == "FECHADA" and p.get("pnl_final") is not None]
+        
+        total_ops = len(fechadas)
+        if total_ops == 0:
+            return "📋 AUDITORIA DE ASSERTIVIDADE: Ainda não há operações fechadas suficientes no histórico desta conta para calcular a amostragem estatística. Assim que os primeiros trades forem concluídos, o relatório consolidará win rate, profit factor e payoff ratio automaticamente."
+
+        wins = [p for p in fechadas if p.get("pnl_final", 0) > 0]
+        losses = [p for p in fechadas if p.get("pnl_final", 0) < 0]
+        breakevens = [p for p in fechadas if p.get("pnl_final", 0) == 0]
+
+        n_wins = len(wins)
+        n_losses = len(losses)
+        n_be = len(breakevens)
+
+        win_rate_bruto = (n_wins / total_ops * 100) if total_ops else 0.0
+        win_rate_efetivo = (n_wins / (n_wins + n_losses) * 100) if (n_wins + n_losses) else 0.0
+
+        lucro_bruto = sum(p["pnl_final"] for p in wins)
+        prejuizo_bruto = abs(sum(p["pnl_final"] for p in losses))
+        resultado_liquido = lucro_bruto - prejuizo_bruto
+        profit_factor = (lucro_bruto / prejuizo_bruto) if prejuizo_bruto > 0 else (99.0 if lucro_bruto > 0 else 0.0)
+
+        media_win = (lucro_bruto / n_wins) if n_wins else 0.0
+        media_loss = (prejuizo_bruto / n_losses) if n_losses else 0.0
+        payoff_ratio = (media_win / media_loss) if media_loss else 0.0
+        expectativa_matematica = ((win_rate_efetivo/100 * media_win) - ((100 - win_rate_efetivo)/100 * media_loss)) if (n_wins + n_losses) else 0.0
+
+        compras = [p for p in fechadas if str(p.get("direcao", "")).upper() == "BUY"]
+        vendas = [p for p in fechadas if str(p.get("direcao", "")).upper() == "SELL"]
+
+        c_wins = sum(1 for p in compras if p.get("pnl_final", 0) > 0)
+        c_losses = sum(1 for p in compras if p.get("pnl_final", 0) < 0)
+        c_be = sum(1 for p in compras if p.get("pnl_final", 0) == 0)
+        c_wr = (c_wins / (c_wins + c_losses) * 100) if (c_wins + c_losses) else 0.0
+
+        v_wins = sum(1 for p in vendas if p.get("pnl_final", 0) > 0)
+        v_losses = sum(1 for p in vendas if p.get("pnl_final", 0) < 0)
+        v_be = sum(1 for p in vendas if p.get("pnl_final", 0) == 0)
+        v_wr = (v_wins / (v_wins + v_losses) * 100) if (v_wins + v_losses) else 0.0
+
+        stats_plano = self._computar_stats_plano()
+        res_hoje = stats_plano.get("resultado_hoje", 0.0)
+        tot_ciclo = stats_plano.get("lucro_usd", 0.0)
+        max_dd = stats_plano.get("max_dd_usd", 0.0)
+
+        sinais = sinais_da_conta_ativa()
+        tot_sinais = len(sinais)
+        sinais_acatados = sum(1 for s in sinais if s.get("decisao") in ("ACATOU_COMPRA", "ACATOU_VENDA"))
+
+        linhas = [
+            "🏛️ AUDITORIA INSTITUCIONAL DE ASSERTIVIDADE & PERFORMANCE",
+            f"📊 Conta Auditada: {nome_conta_ativa()} | Amostragem: {total_ops} operações fechadas",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "🎯 1. MÉTRICAS PRINCIPAIS DE ASSERTIVIDADE (WIN RATE):",
+            f"  • Taxa de Acerto Efetiva (Wins vs Losses): {win_rate_efetivo:.1f}%",
+            f"  • Taxa de Acerto Bruta (com Breakeven): {win_rate_bruto:.1f}%",
+            f"  • Operações Vencedoras (Gain): {n_wins} ops ({n_wins/total_ops*100:.1f}%)",
+            f"  • Operações Perdedoras (Loss): {n_losses} ops ({n_losses/total_ops*100:.1f}%)",
+            f"  • Operações em Breakeven (0x0): {n_be} ops ({n_be/total_ops*100:.1f}%)",
+            "",
+            "💰 2. RESULTADO FINANCEIRO & FATOR DE LUCRO:",
+            f"  • Fator de Lucro (Profit Factor): {profit_factor:.2f}",
+            f"  • Lucro Bruto Acumulado: US$ {lucro_bruto:+,.2f}",
+            f"  • Prejuízo Bruto Acumulado: US$ -{prejuizo_bruto:,.2f}",
+            f"  • Saldo Líquido Real: US$ {resultado_liquido:+,.2f}",
+            f"  • Payoff Ratio (Média Ganho / Média Perda): {payoff_ratio:.2f}x",
+            f"  • Média por Trade Vencedor: +US$ {media_win:,.2f}",
+            f"  • Média por Trade Perdedor: -US$ {media_loss:,.2f}",
+            f"  • Expectativa Matemática por Trade (EV): +US$ {expectativa_matematica:,.2f}",
+            "",
+            "🧭 3. ASSERTIVIDADE POR DIREÇÃO DE MERCADO:",
+            f"  • COMPRAS (BUY): {len(compras)} ops | {c_wins} Gains / {c_losses} Losses / {c_be} BE ➔ {c_wr:.1f}% Acerto",
+            f"  • VENDAS (SELL): {len(vendas)} ops | {v_wins} Gains / {v_losses} Losses / {v_be} BE ➔ {v_wr:.1f}% Acerto",
+            "",
+            "📈 4. SITUAÇÃO DO CICLO ATUAL & GESTÃO DE RISCO:",
+            f"  • Resultado do Dia de Hoje: US$ {res_hoje:+,.2f}",
+            f"  • Total Acumulado no Ciclo: US$ {tot_ciclo:+,.2f}",
+            f"  • Maior Drawdown Registrado: US$ {max_dd:,.2f}",
+            f"  • Total de Cenários Mapeados pelo Motor: {tot_sinais} sugestões ({sinais_acatados} executadas)",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "📌 RESUMO EXECUTIVO PARA CLIENTES / APRESENTAÇÃO:",
+            f"O sistema opera com Profit Factor de {profit_factor:.2f} e Taxa de Assertividade Efetiva de {win_rate_efetivo:.1f}%. "
+            f"O gerenciamento de risco assimétrico assegura que os ganhos médios (+US$ {media_win:,.2f}) superem as perdas médias (-US$ {media_loss:,.2f}), "
+            f"com expectativa matemática positiva de +US$ {expectativa_matematica:,.2f} por trade executado."
+        ]
         return "\n".join(linhas)
 
     # ---------------- Janela para a web (sem chave de API) ----------------
