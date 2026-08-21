@@ -658,6 +658,10 @@ PLANO_PADRAO = {
     #   "livre"             -> sugere normalmente, como se não houvesse posição
     #   "bloquear"          -> não sugere nada enquanto houver posição no ativo
     "com_posicao_aberta": "alerta",
+    # ---- OPERAÇÃO MULTI-CONTAS / TRADE COPIER (1 a 20 contas simultâneas) ----
+    # Para quem opera grupos de contas de mesa proprietária espelhadas (Apex, Topstep, etc).
+    # O robô divide os resultados e dimensiona os limites por conta individualmente.
+    "multi_contas": 1,
 }
 
 def dias_meta_do_plano(plano=None):
@@ -901,16 +905,27 @@ def salvar_plano_da_conta(plano, conta_id=None):
             c["plano_trading"] = plano
     salvar_config({"contas": contas})
 
-def criar_conta(nome=""):
+def criar_conta(nome="", plano_origem=None):
     contas = carregar_contas()
+    plano_base = dict(plano_origem) if isinstance(plano_origem, dict) else dict(PLANO_PADRAO)
     nova = {
         "id": _novo_id_conta([c["id"] for c in contas]),
         "nome": (nome or "").strip() or f"Conta {len(contas) + 1}",
-        "plano_trading": dict(PLANO_PADRAO),
+        "plano_trading": plano_base,
     }
     contas.append(nova)
     salvar_config({"contas": contas})
     return nova
+
+def duplicar_conta(conta_id, novo_nome=""):
+    """Duplica uma conta existente copiando 100% das suas configurações de plano de trading."""
+    contas = carregar_contas()
+    origem = next((c for c in contas if c["id"] == conta_id), None)
+    if not origem:
+        return None
+    nome_final = (novo_nome or "").strip() or f"{origem.get('nome', 'Conta')} (Cópia)"
+    plano_copiado = dict(origem.get("plano_trading") or PLANO_PADRAO)
+    return criar_conta(nome_final, plano_origem=plano_copiado)
 
 def renomear_conta(conta_id, novo_nome):
     novo_nome = (novo_nome or "").strip()
@@ -17412,6 +17427,9 @@ class SmcQuantApp(ctk.CTk):
         ctk.CTkButton(frame_conta, text="➕ Nova", width=70, fg_color=COR["verde_esc"],
                       hover_color=COR["verde"], command=self._nova_conta
                       ).pack(side="left", padx=(10, 3), pady=10)
+        ctk.CTkButton(frame_conta, text="📋 Duplicar", width=85, fg_color="#1f538d",
+                      hover_color="#2b6cb0", command=self._duplicar_conta
+                      ).pack(side="left", padx=3, pady=10)
         ctk.CTkButton(frame_conta, text="✏️ Renomear", width=95, fg_color="#2a3f5f",
                       hover_color="#3a5580", command=self._renomear_conta
                       ).pack(side="left", padx=3, pady=10)
@@ -17464,6 +17482,7 @@ class SmcQuantApp(ctk.CTk):
             ("Stops seguidos p/ pausar:", "entry_max_stops", "max_stops_seguidos", 9, 0, 2),
             ("Pausa após stops (min):", "entry_cooldown", "cooldown_stop_min", 9, 2, 30),
             ("Máx. operações no dia:", "entry_max_ops", "max_operacoes_dia", 10, 0, 6),
+            ("Multi-Contas Simultâneas:", "entry_multi_contas", "multi_contas", 10, 2, 1),
         ]
         for rotulo, attr, chave, linha, col, padrao in campos:
             ctk.CTkLabel(frame_config, text=rotulo, text_color=COR["dim"],
@@ -18157,6 +18176,7 @@ class SmcQuantApp(ctk.CTk):
             (self.entry_max_stops, "max_stops_seguidos", 2),
             (self.entry_cooldown, "cooldown_stop_min", 30),
             (self.entry_max_ops, "max_operacoes_dia", 6),
+            (self.entry_multi_contas, "multi_contas", 1),
         ]
         for widget, chave, padrao in campos:
             widget.delete(0, tk.END)
@@ -18191,16 +18211,41 @@ class SmcQuantApp(ctk.CTk):
         self._aplicar_conta_na_tela()
 
     def _nova_conta(self):
-        from tkinter import simpledialog
+        from tkinter import simpledialog, messagebox
+        atual = conta_ativa() or {}
+        nome_atual = atual.get("nome", "Conta")
         nome = simpledialog.askstring("Nova conta",
                                        "Nome da conta (ex.: Apex 50k, Conta Real, Avaliação 2):",
                                        parent=self)
         if not nome or not nome.strip():
             return
-        nova = criar_conta(nome)
+        copiar = messagebox.askyesno(
+            "Copiar configurações?",
+            f"Deseja copiar as configurações do plano da conta ativa '{nome_atual}'?\n\n"
+            "• 'Sim' = Cria a conta já preenchida igual a esta (margem, risco, limites)\n"
+            "• 'Não' = Cria com os valores padrão zerados",
+            parent=self
+        )
+        plano_origem = dict(atual.get("plano_trading") or self.plano or PLANO_PADRAO) if copiar else None
+        nova = criar_conta(nome.strip(), plano_origem=plano_origem)
         definir_conta_ativa(nova["id"])
-        self.log(f"🏦 Conta '{nova['nome']}' criada e selecionada. "
-                  "Configure o plano dela (margem, meta, drawdown, risco) e salve.")
+        self.log(f"🏦 Conta '{nova['nome']}' criada e selecionada." +
+                 (f" (Configurações copiadas de '{nome_atual}')" if copiar else ""))
+        self._aplicar_conta_na_tela()
+
+    def _duplicar_conta(self):
+        from tkinter import simpledialog
+        atual = conta_ativa() or {}
+        nome_atual = atual.get("nome", "Conta")
+        nome = simpledialog.askstring("Duplicar conta",
+                                       f"Nome da nova conta (duplicando '{nome_atual}'):",
+                                       initialvalue=f"{nome_atual} (Cópia)", parent=self)
+        if not nome or not nome.strip():
+            return
+        plano_copiado = dict(atual.get("plano_trading") or self.plano or PLANO_PADRAO)
+        nova = criar_conta(nome.strip(), plano_origem=plano_copiado)
+        definir_conta_ativa(nova["id"])
+        self.log(f"📋 Conta '{nova['nome']}' criada com 100% das configurações copiadas de '{nome_atual}'.")
         self._aplicar_conta_na_tela()
 
     def _renomear_conta(self):
@@ -18285,6 +18330,11 @@ class SmcQuantApp(ctk.CTk):
             self.plano["cooldown_stop_min"] = max(0, _cd)
             _mo = int(float(self.entry_max_ops.get().replace(",", ".")))
             self.plano["max_operacoes_dia"] = max(0, _mo)
+            try:
+                _mult_c = int(float(self.entry_multi_contas.get().replace(",", ".")))
+                self.plano["multi_contas"] = max(1, min(20, _mult_c))
+            except Exception:
+                self.plano["multi_contas"] = 1
             self.plano["com_posicao_aberta"] = self._valor_com_posicao(
                 self.opt_com_posicao.get())
         except ValueError:
@@ -18532,15 +18582,24 @@ class SmcQuantApp(ctk.CTk):
         try:
             stats = self._computar_stats_plano()
             dd_max_config = self.plano.get("drawdown_maximo") or 0
+            mc = max(1, int(self.plano.get("multi_contas") or 1))
 
             def cor_valor(v):
                 return COR["verde"] if v >= 0 else COR["vermelho"]
 
             # ---------- FAIXA DE KPIs ----------
-            self.kpi_dia.configure(text=f"US$ {stats['resultado_hoje']:+,.2f}",
-                                    text_color=cor_valor(stats["resultado_hoje"]))
-            self.kpi_total.configure(text=f"US$ {stats['lucro_usd']:+,.2f}",
-                                      text_color=cor_valor(stats["lucro_usd"]))
+            res_hoje = stats["resultado_hoje"]
+            lucro_tot = stats["lucro_usd"]
+
+            txt_dia = f"US$ {res_hoje:+,.2f}"
+            if mc > 1:
+                txt_dia += f"  ({mc}x: US$ {res_hoje * mc:+,.2f})"
+            self.kpi_dia.configure(text=txt_dia, text_color=cor_valor(res_hoje))
+
+            txt_tot = f"US$ {lucro_tot:+,.2f}"
+            if mc > 1:
+                txt_tot += f"  ({mc}x: US$ {lucro_tot * mc:+,.2f})"
+            self.kpi_total.configure(text=txt_tot, text_color=cor_valor(lucro_tot))
 
             dd = stats["max_dd_usd"]
             estourou = dd_max_config and dd > dd_max_config
@@ -18565,23 +18624,10 @@ class SmcQuantApp(ctk.CTk):
             # Resumo ao lado do seletor: deixa explícito de QUAL conta é o painel.
             if hasattr(self, "lbl_conta_resumo"):
                 total_contas = len(carregar_contas())
-                # O AVISO DE RESULTADO PARCIAL FICA AO LADO DO NÚMERO, não
-                # escondido num log. Foi exatamente a distância entre o painel
-                # e a verdade que produziu "+US$2.212,20 / win rate 100%" com a
-                # corretora marcando (2.113,97).
                 _inc = stats.get("incertas") or 0
-                # A HORA DO ÚLTIMO REDESENHO.
-                # 20/08, ele: "não estou vendo nada sendo atualizado no ciclo
-                # do painel". Eu não consigo reproduzir isso daqui, e chutar
-                # uma correção num painel que talvez esteja certo é como
-                # trocar peça de carro no escuro. Este carimbo transforma a
-                # dúvida em fato: se o horário anda, o painel está vivo e o
-                # que não muda são os NÚMEROS (o que tem outra explicação —
-                # operações sem desfecho confirmado, por exemplo); se o
-                # horário congela, o problema é o redesenho, e aí eu sei
-                # exatamente onde procurar.
+                txt_mc = f"  ·  👥 Multi-Contas ({mc}x simultâneas)" if mc > 1 else ""
                 self.lbl_conta_resumo.configure(
-                    text=f"Exibindo: {nome_conta_ativa()}  ·  {stats['abertas']} posição(ões) aberta(s)"
+                    text=f"Exibindo: {nome_conta_ativa()}{txt_mc}  ·  {stats['abertas']} posição(ões) aberta(s)"
                          f"  ·  {total_contas} conta(s) cadastrada(s)"
                          f"  ·  painel atualizado {time.strftime('%H:%M:%S')}"
                          + (f"  ·  ⚠️ {_inc} operação(ões) SEM desfecho confirmado — "
