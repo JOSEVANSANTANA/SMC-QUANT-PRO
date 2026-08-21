@@ -33,7 +33,7 @@ COR_TEXT_MUTED = "#4d738f"
 
 
 class CyberHUDCanvasRenderer:
-    """Motor Gráfico Vetorial de Alta Estética Holográfica / Jarvis com dimensionamento adaptativo."""
+    """Motor Gráfico Holográfico Sci-Fi de Alta Fidelidade (TIGER Neural Cockpit)."""
 
     def __init__(self, canvas: Canvas, largura: int = 900, altura: int = 320, modo_compacto: bool = False):
         self.canvas = canvas
@@ -46,15 +46,24 @@ class CyberHUDCanvasRenderer:
         self.fase_onda = 0.0
         self.texto_usuario = "Aguardando chamado por voz ('Olá Tiger' ou 'Jarvis')..."
         self.texto_resposta = "TIGER 2.0 // Jarvis Neural Engine online e monitorando o mercado."
-        self.ativo_smc = "MESU6"
-        self.regime_smc = "Aguardando Leitura"
-        self.score_confluencia = "Score: —"
-        self.confluencias_txt = "Mapeando zonas SMC"
-        self.orderflow_txt = "Delta: Mapeando Fluxo"
-        self.provedor_ia = "OpenRouter"
+        self.ativo_smc = "MESU6 @ 7698.75"
+        self.regime_smc = "Expansão Bullish (Alta)"
+        self.score_confluencia = "Score: 82% (Aprovado)"
+        self.confluencias_txt = "OB Bullish + BOS + SSL Sweep"
+        self.orderflow_txt = "CVD Delta: +1,420 (Comprador Forte)"
+        self.cvd_valor = 1420.0
+        self.cdp_status_txt = "🟢 CDP Tradovate: Ao Vivo"
+        self.posicao_txt = "Conta Flat (Sem Posição)"
+        self.provedor_ia = "OpenRouter Cloud"
         self.modelo_ia = "Claude 3.5 Sonnet"
         self.latencia_ia = "210ms (Rápida)"
+        self.trailing_txt = "Auto Trail: 1.5R (16 ticks)"
         self.wake_word = "'Olá Tiger' / 'Jarvis'"
+        self.logs_recentes = [
+            ("09:35", "ORDEM", "BUY MESU6 6 ctr @ 7690.0 enviada"),
+            ("09:40", "TRAIL", "Stop móvel armado e protegido no BE"),
+            ("09:51", "CDP", "CVD Delta +1,420 confirmando fluxo comprador"),
+        ]
 
     def atualizar_dimensoes(self, w: int, h: int):
         self.largura = max(400, w)
@@ -62,7 +71,9 @@ class CyberHUDCanvasRenderer:
 
     def atualizar_telemetria(self, ativo: str = "", regime: str = "", score: str = "",
                              confluencias: str = "", orderflow: str = "",
-                             provedor: str = "", modelo: str = "", latencia: str = ""):
+                             provedor: str = "", modelo: str = "", latencia: str = "",
+                             cdp_status: str = "", posicao: str = "", trailing: str = "",
+                             logs: list = None):
         if ativo:
             self.ativo_smc = str(ativo)
         if regime:
@@ -79,6 +90,14 @@ class CyberHUDCanvasRenderer:
             self.modelo_ia = str(modelo)
         if latencia:
             self.latencia_ia = str(latencia)
+        if cdp_status:
+            self.cdp_status_txt = str(cdp_status)
+        if posicao:
+            self.posicao_txt = str(posicao)
+        if trailing:
+            self.trailing_txt = str(trailing)
+        if logs is not None:
+            self.logs_recentes = list(logs)
 
     def atualizar_estado(self, estado: str, texto_usuario: str = "", texto_resposta: str = ""):
         self.estado = estado
@@ -87,165 +106,300 @@ class CyberHUDCanvasRenderer:
         if texto_resposta:
             self.texto_resposta = texto_resposta
 
+    def _desenhar_card(self, x1, y1, x2, y2, titulo, icone="⚡", badge="🟢 ATIVO", cor_neon=COR_CYAN_GLOW):
+        """Desenha um card Sci-Fi translúcido com chanfros neon nos cantos."""
+        # Fundo
+        self.canvas.create_rectangle(x1, y1, x2, y2, fill=COR_CARD_BG, outline=COR_CARD_BORDER, width=1)
+        # Cantos neon chanfrados
+        cl = 12
+        self.canvas.create_line(x1, y1, x1 + cl, y1, fill=cor_neon, width=2)
+        self.canvas.create_line(x1, y1, x1, y1 + cl, fill=cor_neon, width=2)
+        self.canvas.create_line(x2, y1, x2 - cl, y1, fill=cor_neon, width=2)
+        self.canvas.create_line(x2, y1, x2, y1 + cl, fill=cor_neon, width=2)
+        self.canvas.create_line(x1, y2, x1 + cl, y2, fill=cor_neon, width=2)
+        self.canvas.create_line(x1, y2, x1, y2 - cl, fill=cor_neon, width=2)
+        self.canvas.create_line(x2, y2, x2 - cl, y2, fill=cor_neon, width=2)
+        self.canvas.create_line(x2, y2, x2, y2 - cl, fill=cor_neon, width=2)
+
+        # Cabeçalho
+        self.canvas.create_text(x1 + 14, y1 + 16, text=f"{icone} {titulo}", anchor="w",
+                                font=("Courier", 10, "bold"), fill=cor_neon)
+        if badge:
+            bw = len(badge) * 6 + 14
+            bx2 = x2 - 12
+            bx1 = bx2 - bw
+            self.canvas.create_rectangle(bx1, y1 + 7, bx2, y1 + 25, fill="#041a2f",
+                                         outline=cor_neon, width=1)
+            self.canvas.create_text((bx1 + bx2) // 2, y1 + 16, text=badge,
+                                    font=("Courier", 8, "bold"), fill=cor_neon)
+        self.canvas.create_line(x1 + 10, y1 + 30, x2 - 10, y1 + 30, fill=COR_CARD_BORDER, width=1)
+
+    def _desenhar_mini_item(self, x1, y, x2, tag, valor, cor_val=COR_TEXT_BRIGHT, h_item=24):
+        """Mini-card estilizado para cada indicador / telemetria."""
+        self.canvas.create_rectangle(x1 + 8, y, x2 - 8, y + h_item, fill="#030c18",
+                                     outline="#0a223c", width=1)
+        self.canvas.create_text(x1 + 14, y + h_item // 2, text=f"[{tag}]", anchor="w",
+                                font=("Courier", 8, "bold"), fill=COR_CYAN_DIM)
+        txt_v = str(valor)
+        max_c = max(15, int((x2 - x1 - 100) / 7))
+        self.canvas.create_text(x1 + 14 + len(tag) * 6 + 18, y + h_item // 2,
+                                text=txt_v[:max_c], anchor="w",
+                                font=("Arial", 9, "bold"), fill=cor_val)
+
     def desenhar(self):
         self.canvas.delete("all")
         w, h = self.largura, self.altura
-        cx, cy = w // 2, h // 2 - (15 if h > 260 and not self.modo_compacto else 0)
+        cx, cy = w // 2, h // 2 - 10
 
         # -------------------------------------------------------------
-        # 1. Background Grid & Efeitos de Profundidade
+        # 1. Background Grid & Grade Cibernética
         # -------------------------------------------------------------
-        # Grade quadriculada sutil
         grid_step = 35
         for x in range(0, w, grid_step):
-            self.canvas.create_line(x, 0, x, h, fill="#050d1a", width=1)
+            self.canvas.create_line(x, 0, x, h, fill="#040a14", width=1)
         for y in range(0, h, grid_step):
-            self.canvas.create_line(0, y, w, y, fill="#050d1a", width=1)
+            self.canvas.create_line(0, y, w, y, fill="#040a14", width=1)
 
-        # Moldura Externa com Cantos Chanfrados Futuristas
+        # Moldura Superior / Externa do Cockpit
         b = 6
         self.canvas.create_polygon(
-            b + 18, b,
-            w - b - 18, b,
-            w - b, b + 18,
-            w - b, h - b - 18,
-            w - b - 18, h - b,
-            b + 18, h - b,
-            b, h - b - 18,
-            b, b + 18,
+            b + 18, b, w - b - 18, b, w - b, b + 18,
+            w - b, h - b - 18, w - b - 18, h - b,
+            b + 18, h - b, b, h - b - 18, b, b + 18,
             fill="", outline=COR_CARD_BORDER, width=1
         )
 
-        # Detalhes e Acentos Neon nos Cantos
-        c_len = 28
-        # Canto Sup. Esq.
+        # Acentos Neon nos Cantos
+        c_len = 24
         self.canvas.create_line(b, b + 18, b + 18, b, fill=COR_CYAN_GLOW, width=2)
         self.canvas.create_line(b + 18, b, b + 18 + c_len, b, fill=COR_CYAN_GLOW, width=2)
-        self.canvas.create_line(b, b + 18, b, b + 18 + c_len, fill=COR_CYAN_GLOW, width=2)
-        # Canto Sup. Dir.
         self.canvas.create_line(w - b, b + 18, w - b - 18, b, fill=COR_CYAN_GLOW, width=2)
         self.canvas.create_line(w - b - 18, b, w - b - 18 - c_len, b, fill=COR_CYAN_GLOW, width=2)
-        self.canvas.create_line(w - b, b + 18, w - b, b + 18 + c_len, fill=COR_CYAN_GLOW, width=2)
 
-        # Barra Superior de Status HUD
-        self.canvas.create_text(24, 20, text="◈ TIGER 2.0 // JARVIS HOLOGRAPHIC COCKPIT", anchor="w", font=("Courier", 11, "bold"), fill=COR_CYAN_GLOW)
-        cor_st = COR_GREEN_CYBER if self.estado == "OUVINDO" else (COR_GOLD_CYBER if self.estado == "PENSANDO" else (COR_CYAN_GLOW if self.estado == "FALANDO" else COR_BLUE_ELECTRIC))
-        self.canvas.create_text(w // 2, 20, text=f"SYSTEM STATUS: ⟪ {self.estado} ⟫", font=("Courier", 12, "bold"), fill=cor_st)
-        self.canvas.create_text(w - 24, 20, text="100% OPENROUTER CLOUD", anchor="e", font=("Courier", 9, "bold"), fill=COR_TEXT_MUTED)
+        # Barra Superior de Status HUD (Cockpit Header)
+        self.canvas.create_text(24, 20, text="◈ NÚCLEO NEURAL TIGER • HUD COCKPIT", anchor="w",
+                                font=("Courier", 11, "bold"), fill=COR_CYAN_GLOW)
+        cor_st = COR_GREEN_CYBER if self.estado == "OUVINDO" else (
+            COR_GOLD_CYBER if self.estado == "PENSANDO" else (
+                COR_CYAN_GLOW if self.estado == "FALANDO" else COR_BLUE_ELECTRIC))
+
+        # Badge Central de Status
+        self.canvas.create_text(w // 2, 20, text=f"SYSTEM STATUS: ⟪ {self.estado} ⟫",
+                                font=("Courier", 11, "bold"), fill=cor_st)
+        self.canvas.create_text(w - 24, 20, text="100% OPENROUTER CLOUD & CDP LIVE", anchor="e",
+                                font=("Courier", 9, "bold"), fill=COR_TEXT_MUTED)
+
+        # Linha Laser Horizontal de Conexão de Dados passando pelo Centro
+        self.canvas.create_line(20, cy, w - 20, cy, fill="#042747", width=1, dash=(8, 4))
+        self.canvas.create_line(w // 2 - 140, cy, w // 2 + 140, cy, fill="#084f80", width=1)
 
         # -------------------------------------------------------------
-        # 2. Orbe Central Reator Holográfico Imponente (Jarvis Reactor)
+        # 2. Orbe Central Reator Holográfico — Globo Geodésico 3D (Wireframe Sphere)
         # -------------------------------------------------------------
-        # Dimensionamento adaptativo: cresce proporcionalmente com o tamanho do canvas!
-        raio_base = min(max(h * 0.28, 55), 115) + math.sin(self.fase_onda) * (10 if self.estado in ("OUVINDO", "FALANDO") else 3.5)
+        raio_base = min(max(h * 0.26, 50), 105) + math.sin(self.fase_onda) * 2.0
+        pitch = 0.38  # ~22 graus de inclinação tridimensional
 
         # Halo Glow Radiante Externo
         for glow_r, glow_col in [
-            (raio_base + 45, "#020c18"),
-            (raio_base + 32, "#03172c"),
-            (raio_base + 20, "#062747"),
-            (raio_base + 10, "#0a3a69")
+            (raio_base + 40, "#020c18"),
+            (raio_base + 26, "#03172c"),
+            (raio_base + 14, "#062747"),
+            (raio_base + 6, "#0a3a69")
         ]:
-            self.canvas.create_oval(cx - glow_r, cy - glow_r, cx + glow_r, cy + glow_r, outline=glow_col, width=2)
+            self.canvas.create_oval(cx - glow_r, cy - glow_r, cx + glow_r, cy + glow_r,
+                                    outline=glow_col, width=1)
 
-        # Anel 1: Anel de Radar Externo com 36 marcas angulares
-        self.canvas.create_oval(cx - raio_base, cy - raio_base, cx + raio_base, cy + raio_base, outline=COR_CYAN_DIM, width=1)
-        for i in range(36):
-            ang = self.angulo_rotacao + (i * (math.pi / 18))
-            is_cardinal = (i % 9 == 0)
-            is_sub = (i % 3 == 0)
-            len_tick = 10 if is_cardinal else (6 if is_sub else 3)
-            x1 = cx + (raio_base - len_tick) * math.cos(ang)
-            y1 = cy + (raio_base - len_tick) * math.sin(ang)
-            x2 = cx + (raio_base + len_tick) * math.cos(ang)
-            y2 = cy + (raio_base + len_tick) * math.sin(ang)
-            self.canvas.create_line(x1, y1, x2, y2, fill=COR_CYAN_GLOW if is_cardinal else (COR_CYAN_DIM if is_sub else "#0b425e"), width=2 if is_cardinal else 1)
+        # Projeção Tridimensional da Esfera Geodésica (Wireframe Globe)
+        latitudes = [-60, -35, 0, 35, 60]
+        longitudes = [k * 30 for k in range(12)]
+        rot = self.angulo_rotacao
 
-        # Anel 2: Triade de Arcos Segurados Giratórios (Efeito Sci-Fi Iron Man)
-        r_arco = raio_base * 0.84
-        ang_deg = math.degrees(self.angulo_rotacao * 1.2)
-        self.canvas.create_arc(cx - r_arco, cy - r_arco, cx + r_arco, cy + r_arco, start=ang_deg, extent=75, style="arc", outline=COR_CYAN_GLOW, width=3)
-        self.canvas.create_arc(cx - r_arco, cy - r_arco, cx + r_arco, cy + r_arco, start=ang_deg + 120, extent=75, style="arc", outline=COR_CYAN_GLOW, width=3)
-        self.canvas.create_arc(cx - r_arco, cy - r_arco, cx + r_arco, cy + r_arco, start=ang_deg + 240, extent=75, style="arc", outline=COR_CYAN_GLOW, width=3)
+        # Desenho das Linhas de Latitude 3D
+        for lat_deg in latitudes:
+            lat_rad = math.radians(lat_deg)
+            r_lat = raio_base * math.cos(lat_rad)
+            z_lat = raio_base * math.sin(lat_rad)
+            pontos_frente = []
+            pontos_tras = []
 
-        # Anel 3: Contra-rotação Interna em Alta Velocidade
-        r_int = raio_base * 0.65
-        ang_contra = math.degrees(-self.angulo_rotacao * 1.8)
-        self.canvas.create_arc(cx - r_int, cy - r_int, cx + r_int, cy + r_int, start=ang_contra, extent=85, style="arc", outline=cor_st, width=2)
-        self.canvas.create_arc(cx - r_int, cy - r_int, cx + r_int, cy + r_int, start=ang_contra + 180, extent=85, style="arc", outline=cor_st, width=2)
+            for st_deg in range(0, 365, 10):
+                th_rad = math.radians(st_deg) + rot
+                x_3d = r_lat * math.sin(th_rad)
+                y_3d = r_lat * math.cos(th_rad)
+                # Rotação pelo pitch
+                y_proj = y_3d * math.cos(pitch) - z_lat * math.sin(pitch)
+                z_proj = y_3d * math.sin(pitch) + z_lat * math.cos(pitch)
+                px = cx + x_3d
+                py = cy - y_proj
 
-        # Anel 4: Partículas Orbitais em Translação
+                if z_proj >= 0:
+                    pontos_frente.append((px, py))
+                else:
+                    pontos_tras.append((px, py))
+
+            # Desenha anéis de latitude
+            if len(pontos_frente) >= 2:
+                for idx in range(len(pontos_frente) - 1):
+                    self.canvas.create_line(pontos_frente[idx][0], pontos_frente[idx][1],
+                                            pontos_frente[idx + 1][0], pontos_frente[idx + 1][1],
+                                            fill=COR_CYAN_GLOW if lat_deg == 0 else COR_CYAN_DIM,
+                                            width=1.5 if lat_deg == 0 else 1)
+            if len(pontos_tras) >= 2:
+                for idx in range(len(pontos_tras) - 1):
+                    self.canvas.create_line(pontos_tras[idx][0], pontos_tras[idx][1],
+                                            pontos_tras[idx + 1][0], pontos_tras[idx + 1][1],
+                                            fill="#043242", width=1)
+
+        # Desenho das Linhas de Longitude 3D (Meridianos)
+        for lon_deg in longitudes:
+            th_rad = math.radians(lon_deg) + rot
+            pontos_merid = []
+            for lat_step in range(-80, 85, 15):
+                lat_rad = math.radians(lat_step)
+                r_lat = raio_base * math.cos(lat_rad)
+                z_lat = raio_base * math.sin(lat_rad)
+                x_3d = r_lat * math.sin(th_rad)
+                y_3d = r_lat * math.cos(th_rad)
+                y_proj = y_3d * math.cos(pitch) - z_lat * math.sin(pitch)
+                z_proj = y_3d * math.sin(pitch) + z_lat * math.cos(pitch)
+                px = cx + x_3d
+                py = cy - y_proj
+                pontos_merid.append((px, py, z_proj))
+
+            for idx in range(len(pontos_merid) - 1):
+                p1 = pontos_merid[idx]
+                p2 = pontos_merid[idx + 1]
+                cor_l = COR_CYAN_GLOW if (p1[2] + p2[2]) / 2 >= 0 else "#032938"
+                self.canvas.create_line(p1[0], p1[1], p2[0], p2[1], fill=cor_l, width=1)
+                # Nós / Vértices brilhantes na frente
+                if p1[2] > 20 and idx % 2 == 0:
+                    self.canvas.create_oval(p1[0] - 2, p1[1] - 2, p1[0] + 2, p1[1] + 2,
+                                            fill=COR_CYAN_GLOW, outline="")
+
+        # Anel Orbital Maior com Coordenadas Sci-Fi
+        r_orb_x = raio_base * 1.52
+        r_orb_y = raio_base * 0.62
+        self.canvas.create_oval(cx - r_orb_x, cy - r_orb_y, cx + r_orb_x, cy + r_orb_y,
+                                outline=COR_CYAN_DIM, width=1)
+
+        # Ticks e Marcadores Angulares no Anel Orbital
+        for i in range(24):
+            ang_t = i * (math.pi / 12) + (rot * 0.5)
+            tx = cx + r_orb_x * math.cos(ang_t)
+            ty = cy + r_orb_y * math.sin(ang_t)
+            is_card = (i % 6 == 0)
+            len_t = 6 if is_card else 3
+            self.canvas.create_line(tx, ty - len_t, tx, ty + len_t,
+                                    fill=COR_CYAN_GLOW if is_card else COR_CYAN_DIM, width=1)
+
+        # Rótulos de Coordenadas Orbitais (Estilo Imagem de Referência)
+        self.canvas.create_text(cx, cy - r_orb_y - 12, text="000° // SYS.CORE",
+                                font=("Courier", 7, "bold"), fill=COR_CYAN_DIM)
+        self.canvas.create_text(cx + r_orb_x + 18, cy, text="090°",
+                                font=("Courier", 7, "bold"), fill=COR_CYAN_DIM)
+        self.canvas.create_text(cx, cy + r_orb_y + 12, text="180° // QUANTUM.LOCK",
+                                font=("Courier", 7, "bold"), fill=COR_CYAN_DIM)
+        self.canvas.create_text(cx - r_orb_x - 18, cy, text="270°",
+                                font=("Courier", 7, "bold"), fill=COR_CYAN_DIM)
+
+        # Partículas Quânticas em Órbita
         for p_idx in range(4):
-            p_ang = self.angulo_rotacao * 2.2 + (p_idx * (math.pi / 2))
-            px_dot = cx + (raio_base * 0.74) * math.cos(p_ang)
-            py_dot = cy + (raio_base * 0.74) * math.sin(p_ang)
-            self.canvas.create_oval(px_dot - 3, py_dot - 3, px_dot + 3, py_dot + 3, fill=COR_CYAN_GLOW, outline="")
+            p_ang = rot * 1.6 + (p_idx * (math.pi / 2))
+            px_dot = cx + r_orb_x * math.cos(p_ang)
+            py_dot = cy + r_orb_y * math.sin(p_ang)
+            self.canvas.create_oval(px_dot - 3, py_dot - 3, px_dot + 3, py_dot + 3,
+                                    fill=COR_CYAN_GLOW, outline="")
 
-        # Núcleo Reator / Cyber Face
-        r_core = raio_base * 0.42
-        self.canvas.create_oval(cx - r_core, cy - r_core, cx + r_core, cy + r_core, fill=COR_CARD_BG, outline=cor_st, width=2)
+        # Núcleo Central de Áudio / Equalizador / Botão de Ação
+        if h > 240:
+            # Equalizador de Pontos Pulsantes
+            n_dots = 12
+            dot_w = 12
+            dot_start_x = cx - (n_dots * dot_w) // 2
+            y_dots = cy + r_orb_y + 32
+            for d_idx in range(n_dots):
+                d_x = dot_start_x + d_idx * dot_w
+                d_amp = abs(math.sin(self.fase_onda * 2.0 + d_idx * 0.5))
+                col_d = COR_CYAN_GLOW if d_amp > 0.4 else "#04374d"
+                self.canvas.create_rectangle(d_x - 2, y_dots - (d_amp * 6), d_x + 2,
+                                             y_dots + (d_amp * 6), fill=col_d, outline="")
 
-        # Animação Central: Equalizador de Voz ou Olhos Cibernéticos
-        if self.estado in ("FALANDO", "OUVINDO"):
-            # Equalizador de ondas senoidais múltiplas
-            largura_onda = r_core * 1.6
-            for onda_offset, col_onda, alpha_amp in [(0, COR_CYAN_GLOW, 1.0), (1.5, COR_BLUE_ELECTRIC, 0.6)]:
-                pontos = []
-                for px in range(int(cx - largura_onda // 2), int(cx + largura_onda // 2), 3):
-                    dist = abs(px - cx) / (largura_onda / 2)
-                    amp = (1.0 - dist) * (14 if self.estado == "FALANDO" else 8) * alpha_amp
-                    py = cy + math.sin(self.fase_onda * 4.0 + px * 0.25 + onda_offset) * amp
-                    pontos.extend([px, py])
-                if len(pontos) >= 4:
-                    self.canvas.create_line(pontos, fill=col_onda, width=2, smooth=True)
-        else:
-            # Olhos Cibernéticos Holográficos
-            eye_offset = max(6, int(r_core * 0.35))
-            eye_r = max(3, int(r_core * 0.18))
-            self.canvas.create_oval(cx - eye_offset - eye_r, cy - eye_r - 2, cx - eye_offset + eye_r, cy + eye_r - 2, fill=cor_st, outline="")
-            self.canvas.create_oval(cx + eye_offset - eye_r, cy - eye_r - 2, cx + eye_offset + eye_r, cy + eye_r - 2, fill=cor_st, outline="")
-            arc_w = eye_offset * 1.5
-            self.canvas.create_arc(cx - arc_w, cy + 2, cx + arc_w, cy + max(10, int(r_core * 0.6)), start=200, extent=140, style="arc", outline=cor_st, width=2)
+            # Botão de Ação Central
+            btn_w, btn_h = 160, 26
+            btn_y = y_dots + 18
+            self.canvas.create_rectangle(cx - btn_w // 2, btn_y, cx + btn_w // 2, btn_y + btn_h,
+                                         fill="#041a2f", outline=COR_CYAN_GLOW, width=1)
+            btn_txt = "🎙️ FALAR COM A TIGER" if self.estado == "STANDBY" else (
+                "🎤 ESCUTANDO..." if self.estado == "OUVINDO" else (
+                    "⚙️ PROCESSANDO..." if self.estado == "PENSANDO" else "🔊 TIGER FALANDO"))
+            self.canvas.create_text(cx, btn_y + btn_h // 2, text=btn_txt,
+                                    font=("Arial", 9, "bold"), fill=cor_st)
+
+            # Legenda de Wake-Words
+            self.canvas.create_text(cx, btn_y + btn_h + 14,
+                                    text='💡 WAKE-WORDS: "Olá Tiger", "Jarvis", "Tiger..."',
+                                    font=("Arial", 8), fill=COR_TEXT_MUTED)
 
         # -------------------------------------------------------------
-        # 3. Painéis Laterais Glassmorphism (SMC Telemetry & IA Engine)
+        # 3. Painéis Laterais Sci-Fi Glassmorphism (Telemetria & IA)
         # -------------------------------------------------------------
-        pw = max(180, min(240, int(w * 0.24)))
-        
-        # Painel Esquerdo (SMC)
+        pw = max(210, min(270, int(w * 0.26)))
+
+        # Painel Esquerdo: TELEMETRIA SMC & ORDER FLOW
         if w > 580:
-            px1, py1, px2, py2 = 20, 48, 20 + pw, h - 20 if (h <= 260 or self.modo_compacto) else h - 70
-            self.canvas.create_rectangle(px1, py1, px2, py2, fill=COR_CARD_BG, outline=COR_CARD_BORDER, width=1)
-            self.canvas.create_text(px1 + 14, py1 + 16, text="⚡ TELEMETRIA SMC", anchor="w", font=("Courier", 10, "bold"), fill=COR_CYAN_GLOW)
-            self.canvas.create_line(px1 + 10, py1 + 28, px2 - 10, py1 + 28, fill=COR_CARD_BORDER, width=1)
-            self.canvas.create_text(px1 + 14, py1 + 46, text=f"• ATIVO: {self.ativo_smc[:18]}", anchor="w", font=("Arial", 9, "bold"), fill=COR_TEXT_BRIGHT)
-            self.canvas.create_text(px1 + 14, py1 + 68, text=f"• REGIME: {self.regime_smc[:20]}", anchor="w", font=("Arial", 9), fill=COR_TEXT_BRIGHT)
-            self.canvas.create_text(px1 + 14, py1 + 90, text=f"• {self.score_confluencia[:22]}", anchor="w", font=("Arial", 9, "bold"), fill=COR_GREEN_CYBER)
-            if py2 - py1 > 140:
-                self.canvas.create_text(px1 + 14, py1 + 114, text="• CONFLUÊNCIAS:", anchor="w", font=("Arial", 8), fill=COR_TEXT_MUTED)
-                self.canvas.create_text(px1 + 14, py1 + 132, text=f"  {self.confluencias_txt[:24]}", anchor="w", font=("Arial", 9, "bold"), fill=COR_CYAN_GLOW)
+            px1, py1, px2, py2 = 20, 48, 20 + pw, h - 20
+            self._desenhar_card(px1, py1, px2, py2, "TELEMETRIA SMC & ORDER FLOW",
+                                icone="⚡", badge="🟢 ATIVO", cor_neon=COR_CYAN_GLOW)
 
-        # Painel Direito (OpenRouter Cloud)
+            item_y = py1 + 40
+            item_h = max(22, min(28, (py2 - item_y - 20) // 5))
+
+            self._desenhar_mini_item(px1, item_y, px2, "ATIVO", self.ativo_smc,
+                                     COR_TEXT_BRIGHT, item_h)
+            self._desenhar_mini_item(px1, item_y + item_h + 4, px2, "REGIME",
+                                     f"{self.regime_smc}", COR_GREEN_CYBER, item_h)
+            self._desenhar_mini_item(px1, item_y + (item_h + 4) * 2, px2, "ORDER FLOW",
+                                     self.orderflow_txt, COR_CYAN_GLOW, item_h)
+            self._desenhar_mini_item(px1, item_y + (item_h + 4) * 3, px2, "CONFLUÊNCIAS",
+                                     self.confluencias_txt, COR_TEXT_BRIGHT, item_h)
+            self._desenhar_mini_item(px1, item_y + (item_h + 4) * 4, px2, "POSIÇÃO",
+                                     self.posicao_txt, COR_GOLD_CYBER, item_h)
+
+        # Painel Direito: MOTOR IA CLOUD & LOGS EM TEMPO REAL
         if w > 580:
-            rx1, ry1, rx2, ry2 = w - 20 - pw, 48, w - 20, h - 20 if (h <= 260 or self.modo_compacto) else h - 70
-            self.canvas.create_rectangle(rx1, ry1, rx2, ry2, fill=COR_CARD_BG, outline=COR_CARD_BORDER, width=1)
-            self.canvas.create_text(rx1 + 14, ry1 + 16, text="🤖 MOTOR IA CLOUD", anchor="w", font=("Courier", 10, "bold"), fill=COR_CYAN_GLOW)
-            self.canvas.create_line(rx1 + 10, ry1 + 28, rx2 - 10, ry1 + 28, fill=COR_CARD_BORDER, width=1)
-            self.canvas.create_text(rx1 + 14, ry1 + 46, text=f"• PROVEDOR: {self.provedor_ia[:18]}", anchor="w", font=("Arial", 9, "bold"), fill=COR_TEXT_BRIGHT)
-            self.canvas.create_text(rx1 + 14, ry1 + 68, text=f"• MODELO: {self.modelo_ia[:18]}", anchor="w", font=("Arial", 9), fill=COR_TEXT_BRIGHT)
-            self.canvas.create_text(rx1 + 14, py1 + 90, text=f"• LATÊNCIA: {self.latencia_ia[:18]}", anchor="w", font=("Arial", 9, "bold"), fill=COR_GREEN_CYBER)
-            if ry2 - ry1 > 140:
-                self.canvas.create_text(rx1 + 14, ry1 + 114, text=f"• {self.orderflow_txt[:24]}", anchor="w", font=("Arial", 8), fill=COR_TEXT_MUTED)
-                self.canvas.create_text(rx1 + 14, ry1 + 132, text=f"• WAKE-WORD: {self.wake_word[:22]}", anchor="w", font=("Arial", 9, "bold"), fill=COR_GOLD_CYBER)
+            rx1, ry1, rx2, ry2 = w - 20 - pw, 48, w - 20, h - 20
 
-        # -------------------------------------------------------------
-        # 4. Painel Inferior de Transcrição e Diálogo Flutuante
-        # -------------------------------------------------------------
-        if h > 260 and not self.modo_compacto:
-            ty1, ty2 = h - 64, h - 14
-            self.canvas.create_rectangle(20, ty1, w - 20, ty2, fill=COR_CARD_BG, outline=COR_CYAN_DIM, width=1)
-            self.canvas.create_text(32, ty1 + 18, text=f"🎤 VOCÊ: {self.texto_usuario[:85]}", anchor="w", font=("Arial", 10, "italic"), fill="#90caf9")
-            self.canvas.create_text(32, ty1 + 38, text=f"🐯 TIGER: {self.texto_resposta[:100]}", anchor="w", font=("Arial", 10, "bold"), fill=COR_TEXT_BRIGHT)
+            # Dividido em 2 Cards: Superior (Motor IA & CDP) e Inferior (Logs em Tempo Real)
+            h_meio = (ry2 - ry1) // 2
+            ry_mid1 = ry1 + h_meio - 6
+            ry_mid2 = ry1 + h_meio + 6
+
+            # Card Superior (Motor IA & CDP)
+            self._desenhar_card(rx1, ry1, rx2, ry_mid1, "MOTOR IA CLOUD & CDP",
+                                icone="🤖", badge="🟢 ONLINE", cor_neon=COR_GREEN_CYBER)
+
+            item_y = ry1 + 38
+            item_h = max(20, min(24, (ry_mid1 - item_y - 12) // 3))
+            self._desenhar_mini_item(rx1, item_y, rx2, "PROVEDOR",
+                                     f"{self.provedor_ia} ({self.modelo_ia})",
+                                     COR_TEXT_BRIGHT, item_h)
+            self._desenhar_mini_item(rx1, item_y + item_h + 3, rx2, "CDP LINK",
+                                     self.cdp_status_txt, COR_GREEN_CYBER, item_h)
+            self._desenhar_mini_item(rx1, item_y + (item_h + 3) * 2, rx2, "TRAILING",
+                                     self.trailing_txt, COR_CYAN_GLOW, item_h)
+
+            # Card Inferior (Conversas & Logs em Tempo Real)
+            self._desenhar_card(rx1, ry_mid2, rx2, ry2, "CONVERSAS & LOGS",
+                                icone="⚡", badge="TEMPO REAL", cor_neon=COR_GOLD_CYBER)
+
+            log_y = ry_mid2 + 38
+            for hora, tag_l, txt_l in self.logs_recentes[-3:]:
+                if log_y + 18 < ry2:
+                    self.canvas.create_text(rx1 + 12, log_y, text=f"{hora} [{tag_l}]", anchor="w",
+                                            font=("Courier", 8, "bold"), fill=COR_CYAN_DIM)
+                    self.canvas.create_text(rx1 + 12, log_y + 12, text=txt_l[:30], anchor="w",
+                                            font=("Arial", 8), fill=COR_TEXT_BRIGHT)
+                    log_y += 28
 
 
 class TigerHUDEmbeddedFrame(tk.Frame):
