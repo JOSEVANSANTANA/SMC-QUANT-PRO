@@ -5948,9 +5948,9 @@ def remover_licao(alvo):
     return removida
 
 
-# "REMOVA A LIÇÃO 2", "ESQUECE ESSA LIÇÃO", "APAGA A 3", "APAGA A ÚLTIMA LIÇÃO".
+# "REMOVA A LIÇÃO 2", "ESQUECE ESSA LIÇÃO", "APAGA A 3", "REMOVA ISSO", "REMORA ISSO".
 _RE_ESQUECER = re.compile(
-    r"\b(remov\w+|apag\w+|esquec\w+|delet\w+)\b\s*(?:a\s+|as\s+|da\s+)?\b(li[çc][ãa]o|li[çc][õo]es|aprendizado|regra|mem[óo]ria|[uú]ltima|essa\s+li[çc][ãa]o|\d{1,2})\b",
+    r"\b(remov\w+|remor\w+|apag\w+|esquec\w+|delet\w+)\b\s*(?:a\s+|as\s+|da\s+)?\b(isso|li[çc][ãa]o|li[çc][õo]es|aprendizado|regra|mem[óo]ria|[uú]ltima|essa\s+li[çc][ãa]o|\d{1,2})\b",
     re.IGNORECASE)
 
 def pedido_de_esquecer(texto):
@@ -7923,6 +7923,10 @@ def buscar_base_smc(pergunta, minimo=2):
     pergunta é ambígua e responder qualquer um dos dois é chutar."""
     p = _norm_busca(pergunta)
     if not p:
+        return None
+    # Perguntas sobre o estado ATUAL ou AO VIVO do mercado/gráfico não devem ser
+    # sequestradas por verbetes estáticos de dicionário.
+    if re.search(r"\b(agora|nesse momento|neste momento|hoje|ao vivo|no grafico|no gráfico|onde esta|onde está|onde fica|esta agora|está agora|como esta o|como está o|qual o valor|o rsi esta|o rsi está)\b", p):
         return None
     palavras = [w for w in re.findall(r"[a-z0-9:.]+", p) if len(w) >= 4]
     notas = []
@@ -13867,15 +13871,15 @@ class SmcQuantApp(ctk.CTk):
             return
         if acao == "CANCELAR":
             pendentes = [p for p in posicoes_do_ciclo() if p.get("status") == "PENDENTE"]
-            if not pendentes:
-                self._chat_responder("Não há ordem pendente para cancelar nesta conta.")
-                return
-            alvo = pendentes[-1]
-            self.after(0, lambda i=alvo["id"]: self._cancelar_posicao_click(i))
-            self._chat_responder(
-                f"Cancelada a ordem pendente {alvo.get('direcao')} "
-                f"{alvo.get('ativo')} @ {alvo.get('entry')} — e encerrei o "
-                "acompanhamento do cenário junto.")
+            if pendentes:
+                alvo = pendentes[-1]
+                self.after(0, lambda i=alvo["id"]: self._cancelar_posicao_click(i))
+                self._chat_responder(
+                    f"Cancelada a ordem pendente {alvo.get('direcao')} "
+                    f"{alvo.get('ativo')} @ {alvo.get('entry')} — cancelamento enviado para a Tradovate.")
+            else:
+                self._tv_cancelar_na_plataforma("TODAS AS ORDENS PENDENTES", "solicitado no chat da Tiger", exigir_zerado=False)
+                self._chat_responder("Não havia ordem registrada no diário, mas enviei comando para a Tradovate cancelar qualquer ordem pendente na plataforma.")
             return
         if acao == "SAIR_EM_MERCADO":
             self._chat_responder("🧹 Executando comando de emergência: saindo a mercado e cancelando todas as ordens na Tradovate agora...")
@@ -14609,7 +14613,8 @@ class SmcQuantApp(ctk.CTk):
             "1. CONVERSAS GERAIS E SAUDAÇÕES ('boa noite', 'olá', 'tudo bem?', etc.): Seja natural, cortês e conciso (ex: 'Boa noite, Josevan! Mesa pronta e monitorando o mercado. Como posso ajudar?'). NUNCA despeje tabelas ou estatísticas sem ele pedir.\n"
             "2. PERGUNTAS CONCEITUAIS ('o que é matriz de confluência?', 'como funciona order block?', 'explica FVG', 'o que é liquidity sweep?'): Explique com clareza conceitual, didática e profundidade técnica de Smart Money Concepts e Order Flow.\n"
             "3. TRADUÇÃO E ASSUNTOS GERAIS ('traduza essa frase', 'me ajude nessa questão de geografia', etc.): Ajude prontamente com altíssima qualidade, sem restrições ou desculpas de 'não está na minha stack'.\n"
-            "4. DADOS DA MESA EM TEMPO REAL: Quando o trader perguntar sobre o mercado atual, setups ou telemetria, utilize com autoridade os dados ao vivo fornecidos abaixo.\n\n"
+            "4. DADOS DA MESA EM TEMPO REAL: Quando o trader perguntar sobre o mercado atual, setups ou telemetria, utilize com autoridade os dados ao vivo fornecidos abaixo.\n"
+            "5. HONESTIDADE VISUAL & PROIBIÇÃO DE ALUCINAÇÃO: NUNCA invente nem presuma indicadores técnicos que NÃO estão listados nos dados da mesa ou visíveis no gráfico (ex: RSI, MACD, Estocástico, médias móveis não plotadas). Se o trader perguntar sobre o RSI e ele não estiver no gráfico, responda com honestidade direta: 'O RSI não está plotado no gráfico nesta tela — a análise atual é 100% Price Action institucional SMC (Order Blocks, BOS/CHoCH, FVG e Liquidez)'. NUNCA afirme que o RSI está 'neutro' ou 'em 50' sem ele estar desenhado na tela.\n\n"
             "O ATIVO PRINCIPAL: MES / MESU6 (Micro E-mini S&P 500 futuro na CME, US$ 5/ponto, tick 0.25).\n"
             + (f"\nDADOS DA MESA EM TEMPO REAL (Consulte quando a pergunta for sobre a mesa/mercado):\n{cenario}" if cenario else ""))
 
@@ -17926,6 +17931,7 @@ class SmcQuantApp(ctk.CTk):
     def _cancelar_posicao_click(self, pos_id):
         lista = carregar_posicoes()
         sinal_id = None
+        pos_cancelada = None
         for pos in lista:
             if pos["id"] == pos_id and pos["status"] == "PENDENTE":
                 pos["status"] = "CANCELADA"
@@ -17933,9 +17939,15 @@ class SmcQuantApp(ctk.CTk):
                 pos["pnl_final"] = 0.0
                 pos["motivo_cancelamento"] = "cancelada por você"
                 sinal_id = pos.get("sinal_id")
-                self.log(f"🚫 Ordem pendente cancelada: {pos['direcao']} {pos['ativo']} @ {pos['entry']}")
+                pos_cancelada = dict(pos)
+                self.log(f"🚫 Ordem pendente cancelada no diário: {pos['direcao']} {pos['ativo']} @ {pos['entry']}")
                 break
         salvar_posicoes(lista)
+
+        # Cancela na corretora (Tradovate) imediatamente via CDP / Bot
+        if TRADOVATE_DISPONIVEL:
+            txt_alvo = f"{pos_cancelada['direcao']} {pos_cancelada['ativo']} @ {pos_cancelada['entry']}" if pos_cancelada else "ORDEM PENDENTE"
+            self._tv_cancelar_na_plataforma(txt_alvo, "cancelamento solicitado pelo usuário", exigir_zerado=False)
 
         # RELATÓRIO FIEL: cancelar a ordem TEM de encerrar o acompanhamento do
         # cenário também. Antes, o robô continuava rastreando por dentro e
@@ -17955,6 +17967,8 @@ class SmcQuantApp(ctk.CTk):
         if pos:
             self.log(f"📕 Posição FECHADA no diário: {pos['direcao']} {pos['ativo']} → "
                       f"US${pos['pnl_final']:+.2f}")
+            if TRADOVATE_DISPONIVEL:
+                self._tv_cancelar_na_plataforma(f"{pos['direcao']} {pos['ativo']}", "fechamento manual a mercado", exigir_zerado=False)
         self._atualizar_dashboard()
 
     # ------------------------------------------------------------------
@@ -18389,10 +18403,77 @@ class SmcQuantApp(ctk.CTk):
             self._atualizar_dashboard()
         except Exception as e:
             self.log(f"⚠️ Erro ao atualizar dashboard (não crítico): {e}")
+        try:
+            self._atualizar_telemetria_hud_embutido()
+        except Exception:
+            pass
         # 2 s deixa o painel BEM mais vivo. Só é viável porque o
         # _atualizar_dashboard sai na hora quando nada mudou (ver assinatura):
         # o tique custa 4 os.stat, não um redesenho inteiro.
         self.after(2000, self._loop_atualizar_dashboard)
+
+    def _atualizar_telemetria_hud_embutido(self):
+        """Alimenta o Orbe Holográfico / Cockpit TIGER com telemetria viva e real do mercado."""
+        if not getattr(self, "hud_embutido", None) or not getattr(self.hud_embutido, "renderer", None):
+            return
+        try:
+            r = self.hud_embutido.renderer
+            ua = getattr(self, "_ultima_analise", None) or {}
+            ativo = ua.get("ativo") or getattr(self, "_ultimo_ativo_lido", "") or "MESU6"
+            preco = ua.get("preco") or getattr(self, "_ultimo_preco_lido", None)
+            ativo_txt = f"{ativo}" + (f" @ {preco}" if preco else "")
+
+            acao = str(ua.get("acao") or "AGUARDANDO").upper()
+            if "BUY" in acao or "COMPRA" in acao:
+                regime_txt = "Expansão Bullish (Alta)"
+            elif "SELL" in acao or "VENDA" in acao:
+                regime_txt = "Estrutura Bearish (Baixa)"
+            elif acao in ("HOLD", "NEUTRO", "LATERAL"):
+                regime_txt = "Consolidação / Range"
+            else:
+                regime_txt = "Monitorando Mercado"
+
+            prob = ua.get("probabilidade") or ua.get("confianca") or 0
+            try:
+                prob = float(prob)
+            except Exception:
+                prob = 0
+            if prob > 0:
+                score_txt = f"Score: {prob:.0f}% ({'Aprovado' if prob >= 70 else 'Moderado'})"
+            else:
+                score_txt = "Score: Em Análise..."
+
+            conf_lista = ua.get("confluencias") or []
+            if conf_lista:
+                confluencias_txt = " · ".join(str(c) for c in conf_lista[:2])
+            else:
+                confluencias_txt = "Zonas SMC & Liquidez"
+
+            cfg = carregar_config()
+            provedor = cfg.get("ia_provedor_chat") or "OpenRouter"
+            modelo = cfg.get("ia_modelo_chat") or "Claude 3.5 Sonnet"
+            latencia = getattr(self, "_ultima_latencia_ia", "") or "210ms (Rápida)"
+
+            pos_ativas = [p for p in posicoes_do_ciclo() if p.get("status") in ("ABERTA", "PENDENTE")]
+            if pos_ativas:
+                p0 = pos_ativas[-1]
+                of_txt = f"Pos: {p0.get('direcao')} {p0.get('contratos')}ctr @ {p0.get('entry')}"
+            else:
+                of_txt = "Posição: Conta Flat"
+
+            r.atualizar_telemetria(
+                ativo=ativo_txt,
+                regime=regime_txt,
+                score=score_txt,
+                confluencias=confluencias_txt,
+                orderflow=of_txt,
+                provedor=provedor,
+                modelo=modelo,
+                latencia=latencia
+            )
+            r.desenhar()
+        except Exception:
+            pass
 
     def _assinatura_dashboard(self):
         """Impressão digital baratíssima de tudo que alimenta o painel: se ela
@@ -21240,6 +21321,7 @@ class SmcQuantApp(ctk.CTk):
                         if ativo and ativo != "DESCONHECIDO":
                             self._analises_por_ativo[str(ativo).upper()] = \
                                 dict(self._ultima_analise)
+                        self.after(0, self._atualizar_telemetria_hud_embutido)
 
                         _marca_janela = (f" | Janela: {nome_janela[:28]}"
                                          if len(_janelas_ciclo) > 1 and nome_janela else "")

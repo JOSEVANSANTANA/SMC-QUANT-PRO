@@ -45,14 +45,40 @@ class CyberHUDCanvasRenderer:
         self.angulo_rotacao = 0.0
         self.fase_onda = 0.0
         self.texto_usuario = "Aguardando chamado por voz ('Olá Tiger' ou 'Jarvis')..."
-        self.texto_resposta = "TIGER 2.0 // Jarvis Neural Engine online via OpenRouter."
-        self.ativo_smc = "MNQ / NQ Futures"
-        self.score_confluencia = "Score: 92/100 (Aprovado)"
-        self.modelo_ativo = "OpenRouter: Claude 3.5 Sonnet"
+        self.texto_resposta = "TIGER 2.0 // Jarvis Neural Engine online e monitorando o mercado."
+        self.ativo_smc = "MESU6"
+        self.regime_smc = "Aguardando Leitura"
+        self.score_confluencia = "Score: —"
+        self.confluencias_txt = "Mapeando zonas SMC"
+        self.orderflow_txt = "Delta: Mapeando Fluxo"
+        self.provedor_ia = "OpenRouter"
+        self.modelo_ia = "Claude 3.5 Sonnet"
+        self.latencia_ia = "210ms (Rápida)"
+        self.wake_word = "'Olá Tiger' / 'Jarvis'"
 
     def atualizar_dimensoes(self, w: int, h: int):
         self.largura = max(400, w)
         self.altura = max(200, h)
+
+    def atualizar_telemetria(self, ativo: str = "", regime: str = "", score: str = "",
+                             confluencias: str = "", orderflow: str = "",
+                             provedor: str = "", modelo: str = "", latencia: str = ""):
+        if ativo:
+            self.ativo_smc = str(ativo)
+        if regime:
+            self.regime_smc = str(regime)
+        if score:
+            self.score_confluencia = str(score)
+        if confluencias:
+            self.confluencias_txt = str(confluencias)
+        if orderflow:
+            self.orderflow_txt = str(orderflow)
+        if provedor:
+            self.provedor_ia = str(provedor)
+        if modelo:
+            self.modelo_ia = str(modelo)
+        if latencia:
+            self.latencia_ia = str(latencia)
 
     def atualizar_estado(self, estado: str, texto_usuario: str = "", texto_resposta: str = ""):
         self.estado = estado
@@ -192,12 +218,12 @@ class CyberHUDCanvasRenderer:
             self.canvas.create_rectangle(px1, py1, px2, py2, fill=COR_CARD_BG, outline=COR_CARD_BORDER, width=1)
             self.canvas.create_text(px1 + 14, py1 + 16, text="⚡ TELEMETRIA SMC", anchor="w", font=("Courier", 10, "bold"), fill=COR_CYAN_GLOW)
             self.canvas.create_line(px1 + 10, py1 + 28, px2 - 10, py1 + 28, fill=COR_CARD_BORDER, width=1)
-            self.canvas.create_text(px1 + 14, py1 + 46, text=f"• ATIVO: {self.ativo_smc[:16]}", anchor="w", font=("Arial", 9, "bold"), fill=COR_TEXT_BRIGHT)
-            self.canvas.create_text(px1 + 14, py1 + 68, text="• REGIME: Expansão (Trend)", anchor="w", font=("Arial", 9), fill=COR_TEXT_BRIGHT)
-            self.canvas.create_text(px1 + 14, py1 + 90, text=f"• {self.score_confluencia}", anchor="w", font=("Arial", 9, "bold"), fill=COR_GREEN_CYBER)
+            self.canvas.create_text(px1 + 14, py1 + 46, text=f"• ATIVO: {self.ativo_smc[:18]}", anchor="w", font=("Arial", 9, "bold"), fill=COR_TEXT_BRIGHT)
+            self.canvas.create_text(px1 + 14, py1 + 68, text=f"• REGIME: {self.regime_smc[:20]}", anchor="w", font=("Arial", 9), fill=COR_TEXT_BRIGHT)
+            self.canvas.create_text(px1 + 14, py1 + 90, text=f"• {self.score_confluencia[:22]}", anchor="w", font=("Arial", 9, "bold"), fill=COR_GREEN_CYBER)
             if py2 - py1 > 140:
-                self.canvas.create_text(px1 + 14, py1 + 114, text="• ORDER FLOW (CVD):", anchor="w", font=("Arial", 8), fill=COR_TEXT_MUTED)
-                self.canvas.create_text(px1 + 14, py1 + 132, text="  Delta +1,420 (Comprador)", anchor="w", font=("Arial", 9, "bold"), fill=COR_CYAN_GLOW)
+                self.canvas.create_text(px1 + 14, py1 + 114, text="• CONFLUÊNCIAS:", anchor="w", font=("Arial", 8), fill=COR_TEXT_MUTED)
+                self.canvas.create_text(px1 + 14, py1 + 132, text=f"  {self.confluencias_txt[:24]}", anchor="w", font=("Arial", 9, "bold"), fill=COR_CYAN_GLOW)
 
         # Painel Direito (OpenRouter Cloud)
         if w > 580:
@@ -205,12 +231,12 @@ class CyberHUDCanvasRenderer:
             self.canvas.create_rectangle(rx1, ry1, rx2, ry2, fill=COR_CARD_BG, outline=COR_CARD_BORDER, width=1)
             self.canvas.create_text(rx1 + 14, ry1 + 16, text="🤖 MOTOR IA CLOUD", anchor="w", font=("Courier", 10, "bold"), fill=COR_CYAN_GLOW)
             self.canvas.create_line(rx1 + 10, ry1 + 28, rx2 - 10, ry1 + 28, fill=COR_CARD_BORDER, width=1)
-            self.canvas.create_text(rx1 + 14, ry1 + 46, text="• PROVEDOR: OpenRouter", anchor="w", font=("Arial", 9, "bold"), fill=COR_TEXT_BRIGHT)
-            self.canvas.create_text(rx1 + 14, ry1 + 68, text="• MODELO: Claude 3.5 Sonnet", anchor="w", font=("Arial", 9), fill=COR_TEXT_BRIGHT)
-            self.canvas.create_text(rx1 + 14, ry1 + 90, text="• LATÊNCIA: 240ms (Rápida)", anchor="w", font=("Arial", 9, "bold"), fill=COR_GREEN_CYBER)
+            self.canvas.create_text(rx1 + 14, ry1 + 46, text=f"• PROVEDOR: {self.provedor_ia[:18]}", anchor="w", font=("Arial", 9, "bold"), fill=COR_TEXT_BRIGHT)
+            self.canvas.create_text(rx1 + 14, ry1 + 68, text=f"• MODELO: {self.modelo_ia[:18]}", anchor="w", font=("Arial", 9), fill=COR_TEXT_BRIGHT)
+            self.canvas.create_text(rx1 + 14, py1 + 90, text=f"• LATÊNCIA: {self.latencia_ia[:18]}", anchor="w", font=("Arial", 9, "bold"), fill=COR_GREEN_CYBER)
             if ry2 - ry1 > 140:
-                self.canvas.create_text(rx1 + 14, ry1 + 114, text="• IA LOCAL: Desativada (OFF)", anchor="w", font=("Arial", 8), fill=COR_TEXT_MUTED)
-                self.canvas.create_text(rx1 + 14, ry1 + 132, text="• WAKE-WORD: 'Olá Tiger'/'Jarvis'", anchor="w", font=("Arial", 9, "bold"), fill=COR_GOLD_CYBER)
+                self.canvas.create_text(rx1 + 14, ry1 + 114, text=f"• {self.orderflow_txt[:24]}", anchor="w", font=("Arial", 8), fill=COR_TEXT_MUTED)
+                self.canvas.create_text(rx1 + 14, ry1 + 132, text=f"• WAKE-WORD: {self.wake_word[:22]}", anchor="w", font=("Arial", 9, "bold"), fill=COR_GOLD_CYBER)
 
         # -------------------------------------------------------------
         # 4. Painel Inferior de Transcrição e Diálogo Flutuante
