@@ -4248,10 +4248,37 @@ def pregao_vira_o_dia(cfg=None):
         return False
 
 
-def operacoes_fechadas_hoje():
+def operacoes_fechadas_hoje(ignorar_ciclo=False):
     """Operações da conta ativa fechadas NESTE PREGÃO, em ordem cronológica.
 
-    'Neste pregão', não 'neste dia do calendário' — ver data_do_pregao."""
+    'Neste pregão', não 'neste dia do calendário' — ver data_do_pregao.
+
+    `ignorar_ciclo=True` é para QUEM CALCULA RISCO, e a distinção custou caro.
+
+    O CICLO é um conceito de RELATÓRIO: o trader clica em "reiniciar ciclo"
+    quando quer recomeçar a contagem de uma meta. O DRAWDOWN DO DIA é um
+    conceito de RISCO: pertence à mesa proprietária, e a mesa não sabe nem se
+    importa que alguém apertou um botão no app. Os dois estavam usando o mesmo
+    filtro, e por isso reiniciar o ciclo APAGAVA prejuízo realizado da conta
+    do freio de perda.
+
+    O que se viu no diário dele (22/08):
+
+        11:15  +US$137,50      (fechada)
+        11:44  -US$400,00      (fechada)
+        12:07  -US$2.000,00    (fechada)  -> total real do dia: -US$2.262,50
+        12:08  o freio anunciou "-US$2.000,00"
+        12:10  ciclo_inicio passou a ser 2026-08-22T12:10:12
+
+    O freio contou UMA operação porque `posicoes_do_ciclo()` filtra por
+    `data_criacao >= ciclo_inicio`. E na noite anterior, com prejuízo
+    acumulado de US$3.033 contra um teto de US$2.000, ele não travou nenhuma
+    vez — a mesma cegueira.
+
+    Perda realizada não se desfaz por clique. O ciclo pode reiniciar o que é
+    contagem de meta; o dinheiro perdido no dia continua perdido até o pregão
+    virar de verdade.
+    """
     hoje = data_do_pregao()
     cfg = carregar_config()
     # VIRADA MANUAL: ele pode encerrar o dia ANTES da hora configurada, com
@@ -4274,7 +4301,9 @@ def operacoes_fechadas_hoje():
             return False          # é do dia que ele encerrou na mão
         return data_do_pregao(quando, cfg) == hoje
 
-    fechadas = [p for p in posicoes_do_ciclo()
+    universo = ([p for p in carregar_posicoes() if _e_da_conta_ativa(p)]
+                if ignorar_ciclo else posicoes_do_ciclo())
+    fechadas = [p for p in universo
                 if p.get("status") == "FECHADA"
                 and p.get("pnl_final") is not None
                 and e_deste_pregao(p)]
@@ -4299,9 +4328,14 @@ def drawdown_restante_hoje(plano=None):
     if drawdown <= 0:
         return None
     try:
-        realizado = sum(p["pnl_final"] for p in operacoes_fechadas_hoje())
-        aberto = sum(p.get("pnl_atual", 0) or 0 for p in posicoes_do_ciclo()
-                     if p.get("status") == "ABERTA")
+        # RISCO NÃO ENXERGA CICLO. Ver operacoes_fechadas_hoje: reiniciar o
+        # ciclo é decisão de relatório e estava apagando prejuízo realizado
+        # do teto que dimensiona a próxima posição.
+        realizado = sum(p["pnl_final"]
+                        for p in operacoes_fechadas_hoje(ignorar_ciclo=True))
+        aberto = sum(p.get("pnl_atual", 0) or 0
+                     for p in carregar_posicoes()
+                     if _e_da_conta_ativa(p) and p.get("status") == "ABERTA")
     except Exception:
         return drawdown
     usado = min(0.0, realizado + aberto)      # lucro NÃO aumenta o limite
@@ -4387,7 +4421,10 @@ def freio_de_sugestoes(plano=None, agora=None):
     cooldown_min = _int("cooldown_stop_min", 30)
     max_ops = _int("max_operacoes_dia", 6)
 
-    fechadas = operacoes_fechadas_hoje()
+    # SEM O FILTRO DO CICLO. O freio é risco, não relatório: reiniciar o ciclo
+    # apagava dele o prejuízo já realizado no mesmo pregão. Ver a explicação
+    # inteira, com o diário de 22/08, em operacoes_fechadas_hoje.
+    fechadas = operacoes_fechadas_hoje(ignorar_ciclo=True)
 
     # 1) TETO DE PERDA DIÁRIA — o limite que o próprio trader configurou.
     #    Batido o drawdown do plano, o dia acabou. Continuar sugerindo depois
@@ -4398,8 +4435,9 @@ def freio_de_sugestoes(plano=None, agora=None):
         drawdown = 0.0
     if drawdown > 0:
         realizado = sum(p["pnl_final"] for p in fechadas)
-        aberto = sum(p.get("pnl_atual", 0) or 0 for p in posicoes_do_ciclo()
-                     if p.get("status") == "ABERTA")
+        aberto = sum(p.get("pnl_atual", 0) or 0
+                     for p in carregar_posicoes()
+                     if _e_da_conta_ativa(p) and p.get("status") == "ABERTA")
         if (realizado + aberto) <= -abs(drawdown):
             return False, (
                 f"o prejuízo de hoje (US${realizado + aberto:,.2f}) bateu o "

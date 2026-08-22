@@ -99,7 +99,11 @@ class TestDiaDoPregao(unittest.TestCase):
         que era exatamente o defeito."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def operacoes_fechadas_hoje")
-        bloco = fonte[i:i + 1500]
+        # Janela alargada de 1500 para 4500: a função ganhou em 22/08 um
+        # docstring longo explicando por que o CICLO deixou de filtrar o
+        # cálculo de risco. O invariante é a regra ESTAR no corpo, não
+        # estar nos primeiros 1500 caracteres.
+        bloco = fonte[i:i + 4500]
         self.assertIn("data_do_pregao", bloco)
         self.assertNotIn("time.strftime('%d/%m/%Y')", bloco)
         # E o resultado do dia no dashboard também.
@@ -149,7 +153,11 @@ class TestVirarODiaNaMao(unittest.TestCase):
         freio ficaria desligado para sempre depois de um único comando."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def operacoes_fechadas_hoje")
-        bloco = fonte[i:i + 1500]
+        # Janela alargada de 1500 para 4500: a função ganhou em 22/08 um
+        # docstring longo explicando por que o CICLO deixou de filtrar o
+        # cálculo de risco. O invariante é a regra ESTAR no corpo, não
+        # estar nos primeiros 1500 caracteres.
+        bloco = fonte[i:i + 4500]
         self.assertIn("timedelta(hours=24)", bloco)
 
 

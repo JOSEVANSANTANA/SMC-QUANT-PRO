@@ -99,9 +99,15 @@ class TestAsTravasCONTINUAMValendo(unittest.TestCase):
                       stubs={"plano_da_conta_ativa": lambda: {
                                  "drawdown_maximo": 100, "max_stops_seguidos": 2,
                                  "cooldown_stop_min": 30, "max_operacoes_dia": 6},
-                             "operacoes_fechadas_hoje": lambda: [
+                             "operacoes_fechadas_hoje": lambda **_: [
                                  {"pnl_final": -60.0, "data_fechamento": ""},
                                  {"pnl_final": -60.0, "data_fechamento": ""}],
+                             # O freio deixou de somar o aberto por
+                             # `posicoes_do_ciclo` em 22/08: risco não enxerga
+                             # ciclo, senão reiniciar a contagem de meta apaga
+                             # prejuízo do teto de perda diária.
+                             "carregar_posicoes": lambda: [],
+                             "_e_da_conta_ativa": lambda p: True,
                              "posicoes_do_ciclo": lambda: []})
         pode, motivo = ns["freio_de_sugestoes"]()
         self.assertFalse(pode, "o teto de perda diária tem de continuar parando o dia")

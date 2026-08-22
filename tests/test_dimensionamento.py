@@ -24,9 +24,14 @@ from harness import carregar
 
 
 def _ns(**stubs):
+    # `carregar_posicoes` + `_e_da_conta_ativa` entraram em 22/08: quem calcula
+    # RISCO parou de ler por `posicoes_do_ciclo`, porque reiniciar o ciclo
+    # apagava prejuízo realizado do teto. Ver operacoes_fechadas_hoje.
     base = {"plano_da_conta_ativa": lambda: {},
-            "operacoes_fechadas_hoje": lambda: [],
-            "posicoes_do_ciclo": lambda: []}
+            "operacoes_fechadas_hoje": lambda **_: [],
+            "posicoes_do_ciclo": lambda: [],
+            "carregar_posicoes": lambda: [],
+            "_e_da_conta_ativa": lambda p: True}
     base.update(stubs)
     return carregar(
         ["VALOR_POR_PONTO", "VALOR_POR_PONTO_PADRAO", "TICK_MINIMO",
@@ -163,14 +168,17 @@ class TestDrawdownRestante(unittest.TestCase):
 
 class TestDrawdownRestanteHoje(unittest.TestCase):
     def test_desconta_realizado_e_aberto(self):
-        ns = _ns(operacoes_fechadas_hoje=lambda: [{"pnl_final": -900.0}],
-                 posicoes_do_ciclo=lambda: [
+        # A posição ABERTA agora vem de `carregar_posicoes`, não do ciclo: o
+        # prejuízo em aberto de hoje conta contra o teto mesmo que o trader
+        # tenha reiniciado a contagem de meta no meio do pregão.
+        ns = _ns(operacoes_fechadas_hoje=lambda **_: [{"pnl_final": -900.0}],
+                 carregar_posicoes=lambda: [
                      {"status": "ABERTA", "pnl_atual": -277.50}])
         self.assertAlmostEqual(
             ns["drawdown_restante_hoje"]({"drawdown_maximo": 1400}), 222.50)
 
     def test_lucro_nao_aumenta_o_limite(self):
-        ns = _ns(operacoes_fechadas_hoje=lambda: [{"pnl_final": 5000.0}])
+        ns = _ns(operacoes_fechadas_hoje=lambda **_: [{"pnl_final": 5000.0}])
         # Ganhar não compra permissão para arriscar mais que o plano manda.
         self.assertEqual(
             ns["drawdown_restante_hoje"]({"drawdown_maximo": 1400}), 1400)
@@ -181,7 +189,7 @@ class TestDrawdownRestanteHoje(unittest.TestCase):
         self.assertIsNone(ns["drawdown_restante_hoje"]({"drawdown_maximo": 0}))
 
     def test_nunca_devolve_negativo(self):
-        ns = _ns(operacoes_fechadas_hoje=lambda: [{"pnl_final": -9000.0}])
+        ns = _ns(operacoes_fechadas_hoje=lambda **_: [{"pnl_final": -9000.0}])
         self.assertEqual(
             ns["drawdown_restante_hoje"]({"drawdown_maximo": 1400}), 0.0)
 
@@ -218,7 +226,7 @@ class TestDimensionarPeloPlano(unittest.TestCase):
         plano = {"margem": 1400, "risco_pct": 20, "drawdown_maximo": 1400,
                  "max_contratos": 0, "min_ticks_stop": 8}
         ns = _ns(plano_da_conta_ativa=lambda: plano,
-                 operacoes_fechadas_hoje=lambda: [{"pnl_final": -1177.50}],
+                 operacoes_fechadas_hoje=lambda **_: [{"pnl_final": -1177.50}],
                  posicoes_do_ciclo=lambda: [])
         # Stop de 1,87 ponto: barrado pelo piso, mesmo com drawdown sobrando.
         r = ns["dimensionar_pelo_plano"](7772.43, 7770.56, "MESU6")
