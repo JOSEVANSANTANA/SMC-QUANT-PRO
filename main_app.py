@@ -5948,9 +5948,12 @@ def remover_licao(alvo):
     return removida
 
 
-# "REMOVA A LIÇÃO 2", "ESQUECE ESSA LIÇÃO", "APAGA A 3", "REMOVA ISSO", "REMORA ISSO".
+# "REMOVA ISSO", "ESQUECE ESSA LIÇÃO", "APAGA A 3".
 _RE_ESQUECER = re.compile(
-    r"\b(remov\w+|remor\w+|apag\w+|esquec\w+|delet\w+)\b\s*(?:a\s+|as\s+|da\s+)?\b(isso|li[çc][ãa]o|li[çc][õo]es|aprendizado|regra|mem[óo]ria|[uú]ltima|essa\s+li[çc][ãa]o|\d{1,2})\b",
+    r"\b(remov\w+|remor\w+|apag\w+|esquec\w+|delet\w+|tir\w+|desfa[czç]\w*|cancel\w+)\b"
+    r"[^.;\n]{0,30}?"
+    r"\b(isso|isto|essa|esse|aquela|aquele|li[çc][ãa]o|li[çc][õo]es|"
+    r"aprendizado|regra|mem[óo]ria|[uú]ltim\w+|\d{1,2}|que fala|que diz|sobre)\b",
     re.IGNORECASE)
 
 def pedido_de_esquecer(texto):
@@ -14543,6 +14546,9 @@ class SmcQuantApp(ctk.CTk):
         senão a resposta de reserva sairia genérica, sem saber de que conta,
         de que posição e de que plano se está falando. E leva a regra da casa
         junto: trocar de provedor não autoriza inventar número."""
+        # REGRAS DA CASA (ficam no topo para manter a honestidade em qualquer provedor)
+        # NUNCA invente número. Ausência de dado não é conclusão.
+        # NÃO é forex, NÃO é câmbio, NÃO é cripto. US$ 5 por ponto. PORTUGUÊS DO BRASIL, E SÓ.
         cenario = ""
         try:
             c = self._cenario_da_mesa(pergunta) or {}
