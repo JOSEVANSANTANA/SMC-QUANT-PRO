@@ -1055,8 +1055,19 @@ class TestDefeitoDoProgramaNaoSeDisfarcaDeErroDaIA(unittest.TestCase):
         self.assertEqual(ns["onde_quebrou"](None), "")
 
     def test_o_motor_ANUNCIA_defeito_como_defeito(self):
-        """E, principalmente, para de dizer que é a IA quando não é."""
-        fonte = fonte_do_arquivo()
+        """E, principalmente, para de dizer que é a IA quando não é.
+
+        SEM COMENTÁRIOS: em 22/08 este teste falhou sem que nada tivesse
+        quebrado. Um comentário passou a CITAR a mensagem de log — porque o
+        defeito de `eventos_macro` apareceu no pregão e a lição foi escrita
+        ali junto — e a busca achou a citação antes do código.
+
+        O que ele mede é o que o programa DIZ ao trader, não o que o código
+        comenta sobre si mesmo. Descartar as linhas de comentário faz o teste
+        medir exatamente isso, e para de punir quem documenta.
+        """
+        fonte = "\n".join(l for l in fonte_do_arquivo().splitlines()
+                           if not l.lstrip().startswith("#"))
         self.assertIn("DEFEITO DO PROGRAMA em", fonte)
         i = fonte.index("DEFEITO DO PROGRAMA em")
         bloco = fonte[i:i + 700]

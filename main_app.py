@@ -21414,6 +21414,33 @@ class SmcQuantApp(ctk.CTk):
                             _amb_tv = {}
 
                         _eh_replay = bool(_amb_tv.get("eh_replay") or (_amb_tv.get("conta", "").startswith("RPL")))
+
+                        # OS TRÊS NASCEM DEFINIDOS, ANTES DE QUALQUER RAMO.
+                        #
+                        # 22/08, 15:39, com ele rodando um Market Replay:
+                        #
+                        #   🐞 DEFEITO DO PROGRAMA em main_app.py:22200: cannot
+                        #      access local variable 'eventos_macro' where it
+                        #      is not associated with a value.
+                        #
+                        # E aí NENHUMA sugestão saiu, ciclo após ciclo — a
+                        # leitura da IA chegava inteira (BUY, 72%, com as
+                        # confluências) e morria na linha seguinte.
+                        #
+                        # O ramo do replay definia `bloco_macro = ""` e parava
+                        # aí; `eventos_macro` só nascia no `else`, onde as
+                        # notícias são buscadas. Lá embaixo o código usa a
+                        # variável SEM condição. Em mercado ao vivo o `else`
+                        # rodava e ninguém via nada; em replay, o programa
+                        # parava de sugerir.
+                        #
+                        # Inicializar antes do `if` é o que torna isso
+                        # impossível de voltar: cada ramo passa a SOBRESCREVER
+                        # o que precisa, e um ramo novo — de outro modo de
+                        # simulação, por exemplo — já nasce seguro sem que
+                        # ninguém tenha de lembrar desta lição.
+                        bloco_macro, eventos_macro, contexto_replay = "", [], ""
+
                         if _eh_replay:
                             _rpl_conta = _amb_tv.get("conta") or "RPL"
                             _rpl_vel = _amb_tv.get("velocidade") or "400%"
