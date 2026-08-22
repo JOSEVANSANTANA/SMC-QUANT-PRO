@@ -32,6 +32,35 @@ set -u
 cd "$(dirname "$0")" || { echo "❌ não consegui entrar na pasta do script"; exit 1; }
 PASTA="$(pwd)"
 
+# ---------------------------------------------------------------------
+# AUTO-CURA DA QUARENTENA E AVISO DO iCLOUD
+#
+# Todo arquivo vindo de um zip baixado leva a marca de quarentena, e script
+# sem assinatura da Apple e bloqueado com "A Apple nao pode verificar se o
+# item esta livre de algum malware" — e um botao "Mover para o Lixo" ao lado.
+# Se ESTE script conseguiu rodar, a marca ja foi vencida aqui: entao ele
+# limpa a PASTA INTEIRA, e os outros .command passam a abrir com dois
+# cliques. Sem isto, o mesmo susto se repete uma vez por arquivo.
+xattr -dr com.apple.quarantine "$(pwd)" 2>/dev/null || true
+
+# O iCLOUD TIRA ARQUIVO DO DISCO PARA POUPAR ESPACO e deixa so um marcador.
+# Quando o programa vai ler o que foi retirado, ele nao esta la — e a falha
+# aparece no meio do pregao, num arquivo que funcionava ontem. No print de
+# 18/08 a pasta estava no iCloud Drive e o Finder ja mostrava "Nao foi
+# possivel concluir a sincronizacao do iCloud".
+case "$(pwd)" in
+  *"/Library/Mobile Documents/"*|*"/com~apple~CloudDocs/"*)
+    echo ""
+    echo "======================================================================"
+    echo "  AVISO: esta pasta esta dentro do iCLOUD DRIVE."
+    echo ""
+    echo "  Mova o projeto para um lugar que NAO sincroniza, por exemplo:"
+    echo "      $HOME/SMC-QUANT-PRO"
+    echo "======================================================================"
+    echo ""
+    ;;
+esac
+
 echo ""
 echo "======================================================"
 echo "  SMC QUANT PRO — atualizar e abrir"
