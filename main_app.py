@@ -888,14 +888,72 @@ def conta_ativa():
     return next((c for c in carregar_contas() if c["id"] == cid), None)
 
 def nome_conta_ativa():
-    c = conta_ativa() or {}
+    """O nome da conta selecionada.
+
+    O fallback "Conta 1" foi o que denunciou o ponteiro orfao: o titulo do
+    painel dizia "PLANO DE TRADING — CONTA 1" enquanto o seletor, logo acima,
+    mostrava 'testes zero'. Duas partes da mesma tela discordando e uma delas
+    lendo o vazio. Agora o fallback e a primeira conta cadastrada, a mesma que
+    `plano_da_conta_ativa` adota — para o nome e o plano nunca virem de
+    lugares diferentes.
+    """
+    c = conta_ativa()
+    if c is None:
+        contas = carregar_contas()
+        c = contas[0] if contas else {}
     return c.get("nome", "Conta 1")
 
 def plano_da_conta_ativa():
-    """Plano de trading da conta selecionada (com os padrões preenchidos)."""
+    """Plano de trading da conta selecionada (com os padrões preenchidos).
+
+    A CONTA ATIVA QUE NÃO EXISTE MAIS NÃO PODE VIRAR UM PLANO DE ZEROS.
+
+    22/08, 16:10. Ele tinha acabado de excluir a conta 'TESTES SMC QUANT' e
+    ativar a 'testes zero', com Margem US$2.000 e Risco 5% salvos e visíveis
+    na tela. Saíram estas três linhas, uma atrás da outra:
+
+        🤖 MODO AUTÔNOMO: acatando BUY MESU6 sozinha (3 ctr)
+        ⚠️ Acatado, mas o plano dimensionou 0 contrato: Margem não
+           configurada no Plano de Trading.
+        ⏳ Ordem PENDENTE registrada: BUY MESU6 @ 7544.0 (1 ctr)
+
+    Três números para a mesma posição, no mesmo instante.
+
+    A causa está aqui: `conta_ativa()` devolve None quando o ponteiro da conta
+    ativa aponta para um id que não está mais na lista — e `(None or {})` faz
+    o plano cair inteiro no PLANO_PADRAO, onde margem, meta e drawdown valem
+    ZERO. O programa então anuncia "Margem não configurada" enquanto a tela
+    mostra US$2.000, porque a tela lê de outro lugar.
+
+    E o estrago não para no dimensionamento: com drawdown 0, o freio de perda
+    passa a achar que o teto do dia é zero — foi o que produziu, às 14:44,
+    "teto configurado em US$ 0.00" numa conta cujo teto era US$150.
+
+    "Não achei a conta" é uma coisa; "o plano é todo zero" é outra. Agora,
+    quando o ponteiro está órfão e existe conta cadastrada, ele adota a
+    primeira e DIZ que fez isso. Só volta ao padrão de zeros quando não há
+    conta nenhuma — aí "margem não configurada" é a verdade.
+    """
+    conta = conta_ativa()
+    if conta is None:
+        contas = carregar_contas()
+        if contas:
+            conta = contas[0]
+            global _AVISOU_CONTA_ORFA
+            if not _AVISOU_CONTA_ORFA:
+                _AVISOU_CONTA_ORFA = True
+                print(f"⚠️ A conta ativa apontava para um cadastro que não "
+                      f"existe mais. Usando '{conta.get('nome', '?')}' e o "
+                      f"plano dela — dimensionar em cima de um plano zerado "
+                      f"mandaria ordem do tamanho errado.")
     plano = dict(PLANO_PADRAO)
-    plano.update((conta_ativa() or {}).get("plano_trading") or {})
+    plano.update((conta or {}).get("plano_trading") or {})
     return plano
+
+
+# Avisa UMA vez por execução: o ponteiro órfão se repete a cada ciclo, e um
+# alerta por minuto vira ruído que ele aprende a rolar para cima.
+_AVISOU_CONTA_ORFA = False
 
 def salvar_plano_da_conta(plano, conta_id=None):
     conta_id = conta_id or conta_ativa_id()
@@ -20182,13 +20240,34 @@ class SmcQuantApp(ctk.CTk):
                     direcao = "BUY" if decisao == "ACATOU_COMPRA" else "SELL"
                     sizing = dimensionar_pelo_plano(
                         sinal["entry"], sinal["stop"], sinal.get("ativo", ""))
-                    if sizing["contratos"] <= 0 and sizing.get("motivo_limite"):
-                        self.log(f"⚠️ Acatado, mas o plano dimensionou 0 contrato: "
-                                 f"{sizing['motivo_limite']}")
+                    # ZERO CONTRATO É "NÃO OPERO", E NÃO "OPERO UM".
+                    #
+                    # Aqui estava `sizing["contratos"] or 1`. O dimensionamento
+                    # dizia zero — que é a resposta do plano quando o risco não
+                    # cabe — e o `or 1` abria a posição assim mesmo, com um
+                    # contrato que ninguém dimensionou. Foi o terceiro número
+                    # do log de 22/08, 16:10: "(3 ctr)", "0 contrato",
+                    # "PENDENTE ... (1 ctr)".
+                    #
+                    # Um contrato de MES parece pouco, e é exatamente por isso
+                    # que passou despercebido. Mas o zero não veio de arredondar
+                    # para baixo: veio de uma trava dizendo NÃO — stop curto
+                    # demais, drawdown do dia esgotado, plano sem margem. Passar
+                    # por cima de um "não" com um número inventado é a mesma
+                    # família de todo o resto que este projeto persegue.
+                    if sizing["contratos"] <= 0:
+                        motivo = (sizing.get("motivo_limite")
+                                  or "o plano não autorizou tamanho para esta entrada")
+                        self.log(f"🚫 NÃO ABRI a posição: {motivo}")
+                        self._chat_feed(
+                            f"🚫 Não abri {direcao} {sinal.get('ativo', '')}: "
+                            f"{motivo}. Nenhuma ordem foi para a plataforma — "
+                            "a sugestão fica no diário.")
+                        return
                     pos = abrir_posicao(
                         "ROBO", direcao, sinal.get("ativo", "DESCONHECIDO"),
                         sinal["entry"], sinal["stop"], sinal.get("tp1"), sinal.get("tp2"),
-                        sizing["contratos"] or 1,
+                        sizing["contratos"],
                         status_inicial="PENDENTE"  # só executa se o preço tocar a entrada
                     )
                     # vincula ao sinal para não duplicar
@@ -20206,9 +20285,14 @@ class SmcQuantApp(ctk.CTk):
                     # cai para tp2 se não houver tp1.
                     if getattr(self, "tv_auto_var", None) and self.tv_auto_var.get():
                         alvo = sinal.get("tp1") or sinal.get("tp2")
+                        # Sem `or 1` tambem aqui: acima ja se garantiu que
+                        # `contratos` e maior que zero, e este e o ponto que
+                        # manda ordem DE VERDADE para a Tradovate. Um numero
+                        # de conveniencia neste argumento vira contrato no
+                        # mercado.
                         self._tv_enviar_bracket(
                             direcao, sinal["entry"], sinal["stop"], alvo,
-                            sizing["contratos"] or 1,
+                            sizing["contratos"],
                             ativo=sinal.get("ativo"), sinal_id=sinal_id,
                             # O trail inteligente usa a probabilidade para
                             # decidir se dá corda ou aperta: cenário fraco não

@@ -84,6 +84,7 @@ COMUM = [
     "tests/test_freio_nao_esquece.py",
     "tests/test_replay_negado.py",
     "tests/test_replay_nao_engole_sugestao.py",
+    "tests/test_conta_orfa.py",
     "tests/test_ambiente_replay.py",
     "tests/test_notificacao.py",
     "tests/test_piso_qualidade.py",
