@@ -250,7 +250,12 @@ class TestAvisosDoPlano(unittest.TestCase):
     """Aritmética sobre os números que o trader digitou — nunca opinião."""
 
     def _avisos(self, plano):
-        return carregar(["avisos_do_plano"])["avisos_do_plano"](plano)
+        # As duas tabelas vêm junto porque o aviso do teto de contratos
+        # precisa de um ativo de referência (o MES) para dizer onde o teto
+        # real está. Sem elas o teste morria de NameError no dia em que um
+        # plano com 'max_contratos' chegasse aqui.
+        return carregar(["avisos_do_plano", "TICK_MINIMO",
+                         "VALOR_POR_PONTO"])["avisos_do_plano"](plano)
 
     def test_o_plano_real_da_conta_1(self):
         # Margem 1400 · Drawdown 1400 · Risco 20% · Teto 6 operações.
@@ -281,3 +286,83 @@ class TestAvisosDoPlano(unittest.TestCase):
     def test_plano_vazio_nao_explode_nem_inventa(self):
         self.assertEqual(
             [a for a in self._avisos({}) if "stop(s) encerram" in a], [])
+
+
+class TestAMetaQueNaoCabeNoPlano(unittest.TestCase):
+    """22/08: 'ele está configurado para bater a meta em um dia, ele tem
+    margem, ele tem drawdown disponível, risco de 5% — o que explica tamanha
+    cautela?'
+
+    Não era cautela. Era a conta:
+
+        Margem US$2.000 × 5%      = US$100 de risco por operação
+        entrada 7540,0 · stop 7528,0 = 12 pontos = US$60 por contrato no MES
+        US$100 ÷ US$60               = 1 contrato
+
+    O dimensionamento era a única parte do sistema que estava obedecendo ao
+    plano à risca. O que faltava era alguém dizer que o RESTO do plano não
+    fechava: com 5 operações por dia e R:R 1:2, o melhor dia possível deste
+    plano são US$1.000 — um TERÇO da Meta de US$3.000 que estava salva na
+    mesma tela, e isso acertando 5 de 5.
+
+    Ele passou a tarde procurando defeito no dimensionamento. O defeito era o
+    silêncio sobre a meta.
+    """
+
+    def _avisos(self, plano):
+        return carregar(["avisos_do_plano", "TICK_MINIMO",
+                         "VALOR_POR_PONTO"])["avisos_do_plano"](plano)
+
+    SEU_PLANO = {"margem": 2000.0, "risco_pct": 5.0, "drawdown_maximo": 1000.0,
+                 "meta_alvo": 3000.0, "dias_meta": 1, "rr_minimo": 2.0,
+                 "max_operacoes_dia": 5, "max_stops_seguidos": 3,
+                 "max_contratos": 60, "min_ticks_stop": 8}
+
+    def test_a_meta_impossivel_e_dita_em_voz_alta(self):
+        texto = " ".join(self._avisos(self.SEU_PLANO))
+        self.assertIn("NÃO CABE", texto)
+        self.assertIn("US$1,000.00", texto)   # o melhor dia possível
+        self.assertIn("3.0x", texto)          # o tamanho do buraco
+
+    def test_o_aviso_mostra_a_saida_sem_escolher_por_ele(self):
+        """Quatro caminhos, e a decisão continua sendo dele. Um programa que
+        mexe com dinheiro informa; quem arrisca decide."""
+        texto = " ".join(self._avisos(self.SEU_PLANO))
+        for saida in ("risco/operação", "margem", "dias p/ bater a meta",
+                      "máx. operações/dia"):
+            self.assertIn(saida, texto)
+
+    def test_o_programa_promete_NAO_crescer_sozinho_atras_da_meta(self):
+        """A trava que dá sentido ao aviso.
+
+        A saída preguiçosa seria o motor aumentar a posição sozinho até a
+        Meta caber — e aí o 'Risco/operação 5%' na tela viraria enfeite,
+        exatamente como o 'Máx. contratos 60'. O tamanho sai do risco que ele
+        definiu, não do que falta para o alvo."""
+        texto = " ".join(self._avisos(self.SEU_PLANO))
+        self.assertIn("não vou aumentar posição por conta própria", texto)
+
+    def test_meta_que_cabe_nao_gera_aviso(self):
+        """US$1.000 em 1 dia CABE nos mesmos números — e aí o programa cala a
+        boca. Aviso que aparece sempre é aviso que ninguém lê."""
+        plano = dict(self.SEU_PLANO, meta_alvo=1000.0)
+        self.assertEqual(
+            [a for a in self._avisos(plano) if "NÃO CABE" in a], [])
+
+    def test_o_teto_de_contratos_decorativo_e_denunciado(self):
+        """'Máx. contratos 60' com US$100 de risco e piso de 8 ticks: o
+        dimensionamento nunca passa de 10 no MES. Um número na tela que não
+        pode acontecer é o que faz o trader procurar defeito onde não há."""
+        texto = " ".join(self._avisos(self.SEU_PLANO))
+        self.assertIn("nunca vai ser alcançado", texto)
+        self.assertIn("10 contrato(s)", texto)
+
+    def test_teto_de_contratos_alcancavel_fica_quieto(self):
+        plano = dict(self.SEU_PLANO, max_contratos=4)
+        self.assertEqual(
+            [a for a in self._avisos(plano) if "nunca vai ser" in a], [])
+
+    def test_sem_meta_configurada_nao_inventa_cobranca(self):
+        plano = dict(self.SEU_PLANO, meta_alvo=0)
+        self.assertEqual(
+            [a for a in self._avisos(plano) if "NÃO CABE" in a], [])

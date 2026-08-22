@@ -37,6 +37,7 @@ da conta desde 12/08.
 """
 
 import os
+import re
 import sys
 import unittest
 
@@ -117,6 +118,79 @@ class TestOInstrumentoDoTicket(unittest.TestCase):
         fonte = fonte_do_arquivo()
         i = fonte.index("enviar_ordem_com_atm(")
         self.assertIn("ativo=", fonte[i:i + 700])
+
+
+class TestOCampoVazioDepoisDeEnviar(unittest.TestCase):
+    """22/08, 16:57 — 'NÃO ENVIEI BUY MESU6 4 ctr: não consegui LER o
+    instrumento no Chamado do pedido'.
+
+    A recusa estava CERTA (sem saber o contrato, não se manda ordem) e mesmo
+    assim era um defeito: o instrumento estava lá, na tela, à vista. Quem não
+    enxergava era a leitura.
+
+    O padrão que ele viu e descreveu — 'após envio de ordens' — é a prova:
+
+      · ticket JÁ CARREGADO  -> o campo tem value='MESU6' -> achado pelo VALOR
+      · ticket recém-limpo   -> o campo tem value='' e placeholder='Pesquisar'
+
+    e a lista de placeholders aceitos era (symbol|símbolo|instrumento|buscar|
+    search). 'Pesquisar' — a palavra que a Tradovate em português de fato
+    escreve — não está em nenhuma delas. O campo era PULADO, ninguém achava o
+    instrumento, e a ordem seguinte morria na trava.
+
+    Por isso era intermitente, e por isso parecia 'ter voltado': dependia só
+    de o ticket estar carregado ou limpo no instante da leitura.
+    """
+
+    def _regex_do_placeholder(self):
+        """A lista de rótulos aceitos, lida do JS que roda na plataforma."""
+        fonte = _fonte_tv()
+        i = fonte.index("_JS_ATIVO_DO_TICKET")
+        js = fonte[i:i + 3000]
+        m = re.search(r"var busca=/\((.*?)\)/\.test\(ph\)", js)
+        self.assertIsNotNone(m, "não achei a regex do placeholder do instrumento")
+        return m.group(1).split("|")
+
+    def test_pesquisar_esta_na_lista_de_rotulos(self):
+        """A palavra que a plataforma REALMENTE usa em português."""
+        self.assertIn("pesquisar", self._regex_do_placeholder(),
+                      "sem 'pesquisar', o campo vazio do ticket limpo é "
+                      "invisível para o robô — e toda ordem depois de um "
+                      "envio é recusada por 'não consegui LER o instrumento'")
+
+    def test_os_rotulos_antigos_continuam_valendo(self):
+        """A correção ACRESCENTA; ela não pode trocar um idioma pelo outro —
+        o mesmo programa roda com a Tradovate em inglês."""
+        aceitos = self._regex_do_placeholder()
+        for rotulo in ("search", "symbol", "instrumento", "buscar"):
+            self.assertIn(rotulo, aceitos)
+
+    def test_um_campo_COM_ticker_ganha_de_um_campo_so_com_placeholder(self):
+        """A trava que impede a cura de virar doença.
+
+        Alargar o placeholder para 'pesquisar' faz outras caixas de busca da
+        página entrarem na disputa — inclusive a busca geral da plataforma,
+        que fica MAIS ALTA na tela e venceria no critério antigo (o de menor
+        `top`). Ler o instrumento errado é pior que não ler nenhum: não ler
+        recusa a ordem, ler errado MANDA a ordem — no contrato errado, que foi
+        o prejuízo de 20/08 registrado no topo deste arquivo.
+
+        Um campo que já mostra um ticker é PROVA; um placeholder é indício.
+        """
+        fonte = _fonte_tv()
+        i = fonte.index("_JS_ATIVO_DO_TICKET")
+        js = fonte[i:i + 3000]
+        self.assertIn("comValor || soBusca", js,
+                      "a fila do VALOR tem de vencer a do placeholder")
+
+    def test_ticket_vazio_nao_e_anunciado_como_ticket_em_nada(self):
+        """Campo achado e vazio é o estado NORMAL depois de uma ordem — a
+        Tradovate limpa o ticket. A frase tem de dizer isso, e não 'o ticket
+        está em ' seguido de espaço em branco."""
+        fonte = _fonte_tv()
+        i = fonte.index("def garantir_ativo_no_ticket")
+        corpo = fonte[i:i + 2500]
+        self.assertIn("SEM instrumento", corpo)
 
 
 class TestAAcaoQueElaNAOFEZ(unittest.TestCase):

@@ -2727,6 +2727,76 @@ def avisos_do_plano(plano):
             "stop muito curto vindo da leitura vai dimensionar uma posição "
             "grande — foi assim que um stop de 1,87 ponto no MES virou dezenas "
             "de contratos.")
+
+    # A META CABE NO RESTO DO PLANO?
+    #
+    # 22/08: Margem US$2.000 · Risco 5% · R:R 1:2 · teto de 5 operações · Meta
+    # US$3.000 em 1 dia. Ele olhou para o motor sugerindo 1 contrato e
+    # perguntou "o que explica tamanha cautela?". Não era cautela: 5% de
+    # US$2.000 são US$100 por operação, e com stop de 12 pontos no MES
+    # (US$60/contrato) cabe UM contrato. A aritmética estava certa.
+    #
+    # O que estava errado era o SILÊNCIO. O melhor dia possível deste plano —
+    # acertando 5 de 5, todas em R:R 1:2 — são US$1.000. A Meta pedia o TRIPLO,
+    # e nada na tela dizia isso. O trader ficou procurando defeito no
+    # dimensionamento, que era a única parte que estava obedecendo.
+    #
+    # Como os outros avisos daqui: aritmética sobre os números que ele mesmo
+    # digitou, sem opinião sobre se deve ou não operar assim.
+    meta = _f("meta_alvo")
+    dias_meta = int(_f("dias_meta", 1)) or 1
+    rr_min = _f("rr_minimo", 2.0)
+    if meta > 0 and risco_trade > 0 and max_ops > 0 and rr_min > 0:
+        teto_dia = risco_trade * rr_min * max_ops
+        teto_ciclo = teto_dia * dias_meta
+        if meta > teto_ciclo:
+            risco_preciso = meta / (rr_min * max_ops * dias_meta)
+            pct_preciso = (risco_preciso / margem * 100.0) if margem > 0 else 0
+            avisos.append(
+                f"⚠️ PLANO: a Meta de US${meta:,.2f} em {dias_meta} dia(s) NÃO CABE "
+                f"nos outros números. Cada operação arrisca US${risco_trade:,.2f} "
+                f"({risco_pct:g}% de US${margem:,.2f}) e ganha US${risco_trade * rr_min:,.2f} "
+                f"no R:R 1:{rr_min:g}. Com o teto de {max_ops} operação(ões) por dia, o "
+                f"MELHOR dia possível é US${teto_dia:,.2f} — acertando {max_ops} de "
+                f"{max_ops}. Em {dias_meta} dia(s) isso dá US${teto_ciclo:,.2f}, e a Meta "
+                f"pede {meta / teto_ciclo:.1f}x isso. Para a Meta caber, uma destas teria "
+                f"de mudar: risco/operação {risco_pct:g}% → {pct_preciso:.0f}%"
+                + (f", ou margem US${margem:,.2f} → US${meta / (rr_min * max_ops * dias_meta) / (risco_pct / 100.0):,.2f}"
+                   if risco_pct > 0 else "")
+                + f", ou dias p/ bater a meta {dias_meta} → {-(-meta // teto_dia):.0f}"
+                  f", ou máx. operações/dia {max_ops} → "
+                  f"{-(-meta // (risco_trade * rr_min * dias_meta)):.0f}."
+                " Eu não vou aumentar posição por conta própria para perseguir a Meta:"
+                " o tamanho sai do risco que você definiu, não do que falta para o alvo.")
+
+    # O TETO DE CONTRATOS QUE NUNCA É ALCANÇADO.
+    #
+    # Mesmo caso: 'Máx. contratos 60' na tela, e o dimensionamento entregando
+    # 1 a 4. O teto não é o que manda — o orçamento de risco é. Com o piso de
+    # stop do plano, dá para dizer exatamente onde o teto real está, e um
+    # número decorativo na tela é o tipo de coisa que faz o trader procurar
+    # defeito onde não há.
+    teto_ctr = int(_f("max_contratos"))
+    piso_ticks = int(_f("min_ticks_stop"))
+    if teto_ctr > 0 and piso_ticks > 0 and risco_trade > 0:
+        # O plano não tem ativo, e o teto real depende dele. O MES é a
+        # referência porque é o contrato da mesa — e a frase DIZ que é ele,
+        # em vez de dar um número que finge valer para tudo.
+        ref = "MES"
+        tick_ref = TICK_MINIMO[ref]
+        vpp_ref = VALOR_POR_PONTO[ref]
+        # O stop mais curto que o plano aceita é o que produz a MAIOR posição.
+        risco_min_por_contrato = piso_ticks * tick_ref * vpp_ref
+        if risco_min_por_contrato > 0:
+            maximo_real = int(risco_trade // risco_min_por_contrato)
+            if maximo_real < teto_ctr:
+                avisos.append(
+                    f"ℹ️ PLANO: 'Máx. contratos' está em {teto_ctr}, mas no {ref} ele "
+                    f"nunca vai ser alcançado. Com US${risco_trade:,.2f} de risco por "
+                    f"operação e o piso de {piso_ticks} tick(s) de stop, o máximo que o "
+                    f"dimensionamento consegue entregar é {maximo_real} contrato(s) — e só "
+                    f"no stop mais curto que o plano aceita. Quem manda no tamanho é o "
+                    f"orçamento de risco, não este teto.")
     return avisos
 
 def avaliar_piso_de_qualidade(acao, entry, stop, tp1, tp2, rr_minimo,

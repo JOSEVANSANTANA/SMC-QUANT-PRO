@@ -3156,20 +3156,38 @@ class TradovateAuto:
       }
       // O campo do instrumento é o input de BUSCA no topo do 'Chamado do
       // pedido': tem lupa ao lado e o valor é um ticker, nunca um número.
-      var achado=null, ins=document.querySelectorAll('input');
+      //
+      // 'PESQUISAR' É O ROTULO QUE A TRADOVATE EM PORTUGUES USA — e ele
+      // faltava nesta lista. O efeito só aparecia DEPOIS DE ENVIAR uma ordem:
+      // com o ticket já carregado, o campo tem valor ('MESU6') e era achado
+      // pelo valor; quando a plataforma limpa o ticket, sobra o campo VAZIO
+      // com o placeholder 'Pesquisar', que não casava com 'buscar' nem com
+      // 'search' — o campo era PULADO, ninguém achava o instrumento, e a
+      // ordem seguinte era recusada por segurança ("não consegui LER o
+      // instrumento"). A trava estava certa; a leitura é que estava cega.
+      var comValor=null, soBusca=null, ins=document.querySelectorAll('input');
       for(var i=0;i<ins.length;i++){
         var el=ins[i];
         if(!vis(el)) continue;
         var v=(el.value||'').trim();
         var ph=(el.getAttribute('placeholder')||'').toLowerCase();
-        var busca=/(symbol|s[ií]mbolo|instrumento|buscar|search)/.test(ph);
+        var busca=/(symbol|s[ií]mbolo|instrumento|buscar|pesquisar|pesquisa|search)/.test(ph);
         if(!ehSimbolo(v) && !busca) continue;
         var r=el.getBoundingClientRect();
-        // O de mais ALTO na coluna do ticket é o do instrumento.
-        if(!achado || r.top < achado.top)
-          achado={el:el, top:r.top, valor:v,
+        var cand={el:el, top:r.top, valor:v,
                   x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)};
+        // DUAS FILAS, e a do VALOR sempre ganha. Alargar o placeholder para
+        // 'pesquisar' faz outras caixas de busca da página entrarem na
+        // disputa; um campo que JÁ MOSTRA um ticker é prova, um placeholder é
+        // só indício. Sem esta separação, a correção de cegueira viraria uma
+        // troca de instrumento — que é o erro mais caro dos dois.
+        if(ehSimbolo(v)){
+          if(!comValor || cand.top < comValor.top) comValor=cand;
+        } else {
+          if(!soBusca || cand.top < soBusca.top) soBusca=cand;
+        }
       }
+      var achado = comValor || soBusca;
       if(!achado) return JSON.stringify({achou:false});
       var res={achou:true, atual:achado.valor,
                x:achado.x, y:achado.y};
@@ -3241,8 +3259,12 @@ class TradovateAuto:
         if self.mesmo_instrumento(atual, ativo):
             self.log(f"   ✅ instrumento do ticket: {atual} (é o do cenário).")
             return True, atual
-        self.log(f"   🔁 o ticket está em {atual} e esta ordem é de "
-                 f"{ativo.upper()} — trocando o instrumento antes de tudo.")
+        # Campo ACHADO e VAZIO é o estado normal logo depois de uma ordem: a
+        # Tradovate limpa o ticket. Não é erro, e a frase não pode dizer que o
+        # ticket "está em  " — o que ele está é sem instrumento nenhum.
+        self.log(f"   🔁 o ticket está {('SEM instrumento' if not atual else 'em ' + atual)}"
+                 f" e esta ordem é de {ativo.upper()} — preenchendo o "
+                 f"instrumento antes de tudo.")
         try:
             self.avaliar_js(self._JS_ATIVO_DO_TICKET % json.dumps(str(ativo)))
             time.sleep(pausa)
