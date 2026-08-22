@@ -87,6 +87,13 @@ class TestQuandoEuPossoCancelarNaPlataforma(unittest.TestCase):
         self.assertEqual(decisao, "AVISA")
         self.assertIn("stop", motivo)
 
+    def test_com_posicao_aberta_e_inversao_autorizada_CANCELA(self):
+        """Quando o trader autoriza a virada de mão (Stop & Reverse), o robô
+        pode zerar a posição a mercado e cancelar ordens na corretora."""
+        decisao, motivo = self._decidir(posicao_aberta=True, permitir_liquidar_posicao=True)
+        self.assertEqual(decisao, "CANCELA")
+        self.assertIn("virada de cenário", motivo)
+
 
 class TestPrazoDeExecucao(unittest.TestCase):
     """O MESMO prazo do acatar, aplicado à ordem que ficou esperando preço."""

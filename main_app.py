@@ -3789,7 +3789,8 @@ _canceladas_ainda_na_corretora = []
 def decidir_cancelamento_na_corretora(autonomo, modo_teste, permitido,
                                       pendentes_na_corretora,
                                       leitura_de_posicao_ok=True,
-                                      posicao_aberta=False):
+                                      posicao_aberta=False,
+                                      permitir_liquidar_posicao=False):
     """EU CANCELO NA PLATAFORMA, OU SÓ AVISO? Devolve (decisao, motivo).
 
     Ele resolveu isto com uma frase que não deixa margem: "se estou deixando
@@ -3805,7 +3806,8 @@ def decidir_cancelamento_na_corretora(autonomo, modo_teste, permitido,
     toa custa dinheiro na hora. Por isso:
 
       • 'CANCELA' -> automação ligada, de verdade (não em teste), permissão
-                     marcada, e LEITURA CONFIRMANDO que a posição está zerada.
+                     marcada, e LEITURA CONFIRMANDO que a posição está zerada
+                     (ou quando autorizado para virar a mão / Stop & Reverse).
       • 'AVISA'   -> qualquer dúvida. Não encosto no botão e mando cancelar
                      na mão, que é o que a versão anterior já fazia.
       • 'NADA'    -> não sobrou ordem nenhuma na corretora; não há o que fazer.
@@ -3835,6 +3837,8 @@ def decidir_cancelamento_na_corretora(autonomo, modo_teste, permitido,
                          "mercado — sem saber se você está posicionado, clicar "
                          "nele é aposta")
     if posicao_aberta:
+        if permitir_liquidar_posicao:
+            return "CANCELA", "virada de cenário autorizada a zerar posição e ordens a mercado"
         return ("AVISA", "há posição ABERTA nesse ativo: a ordem executou. "
                          "Posição executada se administra por stop e alvo, não "
                          "por mudança de leitura minha")
@@ -4626,12 +4630,15 @@ def politica_com_posicao_aberta(acao, ativo, plano=None):
     justamente o aviso de que o mercado virou CONTRA a posição dele. Ou seja: a
     informação mais valiosa para quem está posicionado era a que ficava calada.
 
-    Agora é regra de código, com três decisões possíveis:
+    Agora é regra de código, com quatro decisões possíveis:
       • 'LIVRE'         -> não há posição no ativo (ou você escolheu 'livre')
       • 'ALERTA_CONTRA' -> o cenário aponta contra a sua posição aberta. NÃO
                            vira sugestão de entrada nova (entrar na direção
                            oposta é hedge, não é trade): vira um ALERTA para
                            você decidir se protege, reduz ou encerra.
+      • 'INVERTER'      -> o cenário virou contra com qualidade e o trader
+                           configurou para virar a mão (Stop & Reverse). Zera a
+                           posição e ordens antigas na corretora e abre a nova.
       • 'AUMENTO'       -> o cenário aponta a favor. Vira sugestão, marcada como
                            aumento de posição — é você quem decide se acata.
       • 'BLOQUEIA'      -> você pediu silêncio total enquanto estiver posicionado.
@@ -4647,14 +4654,12 @@ def politica_com_posicao_aberta(acao, ativo, plano=None):
     pos = posicao_aberta_no_ativo(ativo)
     if not pos:
         # NADA ABERTO — MAS PODE HAVER ORDEM VIVA NA CORRETORA.
-        # Uma limitada esperando o preço tocar a entrada não é posição, e por
-        # isso passava por aqui como se o ativo estivesse livre. No modo
-        # autônomo isso empilha: 30 contratos esperando em 7704,25 e, dez
-        # minutos depois, mais 30 esperando em 7699,50 — cada uma com o seu
-        # bracket, as duas vivas. Se as duas preencherem, ele está com o dobro
-        # do risco que o Plano dimensionou, e ninguém decidiu isso.
         viva = ordem_enviada_e_viva_no_ativo(ativo)
         if viva:
+            if modo in ("inverter", "virar_mao", "flip", "reverso") and viva.get("direcao") != acao:
+                return ("INVERTER", viva,
+                        f"o cenário virou {acao} e já existia uma ordem de {viva.get('direcao')} "
+                        f"{viva.get('ativo')} pendente. Cancelando ordem antiga para virar a mão.")
             return ("ORDEM_VIVA", viva,
                     f"já existe uma ordem minha de {viva.get('direcao')} "
                     f"{viva.get('ativo')} ({viva.get('contratos')} ctr) "
@@ -4671,6 +4676,11 @@ def politica_com_posicao_aberta(acao, ativo, plano=None):
                 f"você já está {pos.get('direcao')} em {pos.get('ativo')} — este "
                 "cenário vai na MESMA direção, então é aumento de posição, não "
                 "uma operação nova.")
+    if modo in ("inverter", "virar_mao", "flip", "reverso"):
+        return ("INVERTER", pos,
+                f"o cenário virou {acao} com qualidade contra a sua posição aberta de "
+                f"{pos.get('direcao')} em {pos.get('ativo')}. Liquidando a mercado e "
+                "cancelando ordens antigas na Tradovate para virar a mão.")
     return ("ALERTA_CONTRA", pos,
             f"o cenário virou {acao} e você está {pos.get('direcao')} em "
             f"{pos.get('ativo')}. Não vou sugerir entrada contra a sua própria "
@@ -16886,7 +16896,7 @@ class SmcQuantApp(ctk.CTk):
                 f"prazo de execução vencido — {motivo}")
         return len(vencidas)
 
-    def _resolver_ordens_orfas_na_corretora(self, contexto=""):
+    def _resolver_ordens_orfas_na_corretora(self, contexto="", permitir_liquidar_posicao=False):
         """As ordens que saíram do meu diário mas ficaram vivas na Tradovate.
 
         UM LUGAR SÓ, e por um motivo concreto: até aqui só o ramo de "cenário
@@ -16896,8 +16906,8 @@ class SmcQuantApp(ctk.CTk):
 
         Agora os três passam por aqui, e aqui há duas saídas possíveis:
         cancelar de verdade na plataforma (automação ligada, posição zerada
-        conferida) ou avisar para você cancelar na mão. O que não existe mais
-        é a terceira: sumir com a ordem do diário e não dizer nada.
+        conferida ou virada de mão autorizada) ou avisar para você cancelar na mão.
+        O que não existe mais é a terceira: sumir com a ordem do diário e não dizer nada.
 
         Lê `_canceladas_ainda_na_corretora`, que `cancelar_pendentes_do_sinal`
         acabou de preencher."""
@@ -16915,7 +16925,8 @@ class SmcQuantApp(ctk.CTk):
             leitura_ok = False
         decisao, motivo = decidir_cancelamento_na_corretora(
             self._modo_autonomo(), bool(self.tv_dry_var.get()), permitido,
-            orfas, leitura_de_posicao_ok=leitura_ok, posicao_aberta=tem_posicao)
+            orfas, leitura_de_posicao_ok=leitura_ok, posicao_aberta=tem_posicao,
+            permitir_liquidar_posicao=permitir_liquidar_posicao)
         quais = "; ".join(
             f"{p.get('direcao')} {p.get('ativo')} {p.get('contratos')} ctr @ "
             f"{p.get('entry')}" for p in orfas)
@@ -16938,7 +16949,7 @@ class SmcQuantApp(ctk.CTk):
         self.log(f"🧹 CANCELANDO NA PLATAFORMA: {quais}"
                  + (f" ({contexto})" if contexto else "")
                  + f" — {motivo}. Confirmo em seguida.")
-        self._tv_cancelar_na_plataforma(quais, contexto)
+        self._tv_cancelar_na_plataforma(quais, contexto, exigir_zerado=(not permitir_liquidar_posicao))
 
     def _tv_cancelar_na_plataforma(self, quais, contexto="", exigir_zerado=True):
         """Aperta o 'Sair em Mkt & Cancelar' em thread separada e CONFERE.
@@ -17604,8 +17615,9 @@ class SmcQuantApp(ctk.CTk):
                      font=ctk.CTkFont(size=11)).grid(row=12, column=0, sticky="e",
                                                       padx=(12, 4), pady=4)
         self.opt_com_posicao = ctk.CTkOptionMenu(
-            frame_config, width=250,
+            frame_config, width=280,
             values=["Avisar quando virar contra (recomendado)",
+                    "Virar a mão (zerar posição/ordens e inverter)",
                     "Sugerir normalmente",
                     "Não sugerir nada"],
             fg_color=COR["input"], button_color=COR["borda"], text_color=COR["texto"])
@@ -18363,6 +18375,7 @@ class SmcQuantApp(ctk.CTk):
     # De/para entre o texto do menu e o valor gravado no plano.
     _COM_POSICAO_ROTULOS = {
         "alerta": "Avisar quando virar contra (recomendado)",
+        "inverter": "Virar a mão (zerar posição/ordens e inverter)",
         "livre": "Sugerir normalmente",
         "bloquear": "Não sugerir nada",
     }
@@ -21804,7 +21817,7 @@ class SmcQuantApp(ctk.CTk):
                         # Agora, se a leitura nova traz um setup VÁLIDO na direção
                         # CONTRÁRIA, a sugestão pendente é invalidada na hora e a ordem
                         # pendente ligada a ela é cancelada, liberando o robô para o
-                        # cenário novo. Posição JÁ EXECUTADA não é tocada.
+                        # cenário novo.
                         if (sinal_ativo.get("estado") == "PENDENTE"
                                 and acao in ("BUY", "SELL")
                                 and acao != sinal_ativo.get("direcao")
@@ -21823,13 +21836,11 @@ class SmcQuantApp(ctk.CTk):
                             )
                             # O CANCELAMENTO ACIMA É NO MEU DIÁRIO. Se a ordem
                             # chegou a ir para a corretora, ela continua viva
-                            # lá — e "cancelada" no meu registro com a ordem
-                            # viva na plataforma é a pior mentira que eu
-                            # poderia contar aqui. Com a automação ligada eu
-                            # agora RESOLVO isso apertando o botão da própria
-                            # Tradovate; sem ela, aviso. Nunca fico calado.
+                            # lá — com a automação ligada eu agora RESOLVO isso
+                            # apertando o botão da Tradovate (inclusive zerando posição se
+                            # o trader configurou virada de mão).
                             self._resolver_ordens_orfas_na_corretora(
-                                f"cenário mudou para {acao}")
+                                f"cenário mudou para {acao}", permitir_liquidar_posicao=True)
                             if sid_inv in getattr(self, "_sinais_notificados", set()):
                                 self._sinais_notificados.discard(sid_inv)
                             sinal_ativo = {"estado": "ENCERRADA"}
@@ -21914,8 +21925,7 @@ class SmcQuantApp(ctk.CTk):
                                 "é a armadilha que faz tomar stop nas duas pontas.")
 
                         # JÁ ESTÁ POSICIONADO NESSE ATIVO? A decisão é de CÓDIGO, não do
-                        # modelo — e o cenário contra a posição NÃO é engolido: vira
-                        # alerta, que é a informação mais útil para quem está dentro.
+                        # modelo — e o cenário contra a posição vira alerta ou virada de mão.
                         if not repetido and acao in ("BUY", "SELL") and qualidade_ok:
                             _dec, _pos_ab, _motivo_pa = politica_com_posicao_aberta(acao, ativo)
                             if _dec == "ALERTA_CONTRA":
@@ -21923,13 +21933,30 @@ class SmcQuantApp(ctk.CTk):
                                 self._alertar_cenario_contra_posicao(
                                     _pos_ab, acao, ativo, preco, probabilidade,
                                     confluencias, sinal.get("stop_loss"))
+                            elif _dec == "INVERTER":
+                                # VIRADA DE MÃO / STOP & REVERSE:
+                                # O cenário virou para o lado oposto com qualidade.
+                                # Liquida a posição oposta e cancela ordens antigas na Tradovate.
+                                quais_pos = (f"{_pos_ab.get('direcao')} {_pos_ab.get('ativo')} "
+                                             f"{_pos_ab.get('contratos', '')} ctr @ {_pos_ab.get('entry', '')}")
+                                self.log(
+                                    f"🔄 VIRADA DE MÃO: o cenário virou para {acao} com qualidade. "
+                                    f"Liquidando posição oposta e cancelando ordens antigas ({quais_pos}) na Tradovate.")
+                                self._tv_cancelar_na_plataforma(
+                                    quais_pos, contexto=f"virada de mão para {acao}", exigir_zerado=False)
+                                try:
+                                    salvar_resultado_performance(
+                                        _pos_ab.get("direcao"), _pos_ab.get("entry"), preco,
+                                        _pos_ab.get("tp1", preco), preco, "INVERSAO", ativo,
+                                        _pos_ab.get("confluencias"))
+                                except Exception:
+                                    pass
+                                sinal_ativo = {"estado": "ENCERRADA"}
+                                # Continua para criar e enviar o novo sinal de entrada com ATM!
                             elif _dec == "BLOQUEIA":
                                 repetido = True
                                 self.log(f"⏸️ {acao} {ativo}: {_motivo_pa}")
                             elif _dec == "ORDEM_VIVA":
-                                # NÃO EMPILHA. E diz o que fazer para destravar,
-                                # porque "segurei a sugestão" sem saída vira
-                                # ferramenta muda no meio do pregão.
                                 repetido = True
                                 if _motivo_pa != getattr(self, "_ultimo_motivo_viva", None):
                                     self._ultimo_motivo_viva = _motivo_pa
@@ -21942,25 +21969,6 @@ class SmcQuantApp(ctk.CTk):
                                         f"⛔ Segurei o {acao} {ativo}: "
                                         f"{_motivo_pa}")
                             elif _dec == "AUMENTO":
-                                # "CONFIRA O RISCO SOMADO ANTES DE ACATAR" É UMA
-                                # FRASE ESCRITA PARA UM HUMANO — e no modo
-                                # autônomo não há humano nenhum para conferir.
-                                #
-                                # 20/08, 10:57, no log dele: às 10:36 saiu uma
-                                # ordem de 25 contratos e ela executou. Vinte
-                                # minutos depois, com a posição ABERTA, este
-                                # ramo classificou o cenário novo como AUMENTO,
-                                # imprimiu o pedido de conferência, e o
-                                # autônomo mandou a segunda ordem assim mesmo.
-                                # Ninguém conferiu risco nenhum.
-                                #
-                                # Aumentar posição é DECISÃO DE GESTÃO, não
-                                # execução de sinal: muda o risco total de uma
-                                # operação que já está correndo, e o
-                                # dimensionamento do Plano foi calculado para
-                                # UMA entrada, não para a soma de duas. Ele
-                                # ainda recebe a sugestão — ela vale — mas quem
-                                # aperta o botão é ele.
                                 _e_aumento = True
                                 self.log(f"➕ {acao} {ativo}: {_motivo_pa} Vai como "
                                          "sugestão de AUMENTO — confira o risco somado "

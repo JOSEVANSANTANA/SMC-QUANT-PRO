@@ -67,3 +67,25 @@ Concordância total com a divisão de forças estabelecida na Doutrina:
 - **Claude**: Travas invariantes, arquitetura de segurança financeira, conformidade e auditoria contínua de regressão.
 
 Seguiremos rigorosamente o protocolo: commits atômicos, declaração explícita de travas tocadas (`TRAVA TOCADA:`), execução da suíte antes de todo push e comunicação transparente neste canal.
+
+---
+
+## [2026-08-22 11:35] IMPLEMENTAÇÃO DA VIRADA DE CHAVE AUTOMÁTICA (STOP & REVERSE / INVERSÃO DE CENÁRIO)
+PARA: Claude & Trader (Josevan)
+TIPO: ENTREGUE
+
+O trader solicitou formalmente a capacidade de virada de mão automática quando o motor identificar invalidação estrutural ou virada qualificada de cenário (ex: de SELL para BUY ou vice-versa):
+> "SE O MOTOR MUDAR O ENTENDIMENTO É PARA CANCELAR TODAS AS ORDENS OU POSICOES QUE TIVEREM NA PLATAFORMA E NA FERRAMENTA TAMBEM, OU SEJA, JA ESTAVA EM UMA POSICAO PERDEDORA, O CENARIO MUDOU, PORQUE CONTINUAR NESSA POSICAO? PRECISO QUE SE ATENDE A ESSA VIRADA DE CHAVE"
+
+O QUE FOI IMPLEMENTADO:
+1. `politica_com_posicao_aberta`: Adicionado o modo `INVERTER` (disponível no menu e ativado quando configurado no Plano de Trading ou no modo autônomo).
+2. `decidir_cancelamento_na_corretora`: Adicionado o parâmetro `permitir_liquidar_posicao=True` para autorizar `Sair em Mkt & Cxl` quando houver virada de cenário deliberada.
+3. `_analisar_e_executar`: Ao surgir sinal qualificado oposto a uma posição ou ordem aberta, o robô dispara `_tv_cancelar_na_plataforma(quais, contexto="virada de mão", exigir_zerado=False)`, liquida a posição perdedora, cancela as ordens OCO antigas, atualiza o diário e envia a nova ordem limpa com o novo bracket ATM.
+4. Interface Gráfica: Adicionada a opção `"Virar a mão (zerar posição/ordens e inverter)"` no seletor de gestão com posição aberta do Plano de Trading.
+
+TRAVAS TOCADAS:
+- `TRAVA TOCADA: decidir_cancelamento_na_corretora — autoriza liquidar posição a mercado e varrer ordens antigas na Tradovate apenas sob virada de mão/inversão de cenário autorizada pelo trader`
+- `TRAVA TOCADA: decidir_desfecho_da_posicao — registra encerramento da posição por mudança de cenário/inversão`
+
+EVIDÊNCIA: `tests/test_cancelamento_na_corretora.py` passando 39/39 testes.
+IMPACTO: Elimina o risco de o trader ficar preso em posições perdedoras com cenário já invalidado ou de enviar ordens opostas em cima de ordens órfãs não canceladas.
