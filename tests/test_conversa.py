@@ -35,7 +35,12 @@ def _ns_intencao():
          "_PRINT_SOZINHO", "_PRINT_COM_AGORA",
          "_RE_ESQUECER", "pedido_de_esquecer",
          "_COMANDOS_CONHECIDOS", "_distancia_edicao", "corrigir_digitacao",
-         "interpretar_intencao", "processar_turno_chat"],
+         "interpretar_intencao", "processar_turno_chat",
+         # fala_de_replay entrou em 22/08 dentro de
+         # interpretar_intencao. E funcao, e o harness so resolve
+         # constantes sozinho — sem pedi-la aqui, o namespace
+         # isolado quebra com NameError.
+         "fala_de_replay", "_distancia_edicao"],
         stubs={"extrair_licao": lambda t: None,
                "interpretar_configuracao": lambda t: None,
                "pergunta_sobre_configuracao": lambda t: False,

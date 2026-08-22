@@ -159,3 +159,77 @@ def pular_se_faltar(*relativos):
     if faltando:
         raise unittest.SkipTest(
             "não faz parte deste pacote: " + ", ".join(faltando))
+
+
+def modulo_requests():
+    """O `requests` de verdade, ou um de mentira com a mesma forma.
+
+    POR QUE ISTO EXISTE
+    -------------------
+    Quatro arquivos de teste faziam `stubs={"requests": __import__("requests")}`
+    só para o nome existir dentro do namespace isolado — nenhum deles chama
+    `requests` de fato: quem faz HTTP já entra stubado por outro caminho.
+
+    Só que `__import__` é executado na hora de montar o teste. Onde o
+    `requests` não está instalado, os TRINTA E DOIS testes desses arquivos
+    viram ERROR, com um traceback que parece defeito de código e não é.
+
+    Foi o que aconteceu na máquina do trader: ele rodou a suíte no Python
+    3.13, que não tinha a biblioteca, e recebeu uma parede de erros
+    vermelhos — enquanto no servidor, com 3.11 e a biblioteca instalada,
+    tudo passava. Suíte cujo resultado depende de qual máquina rodou é
+    suíte que se aprende a ignorar, e é ela que segura as travas de dinheiro
+    deste projeto.
+
+    Quando a biblioteca existe, é ela que vai — os testes que de fato
+    dependem do comportamento real continuam medindo o real.
+    """
+    try:
+        return __import__("requests")
+    except ImportError:
+        pass
+
+    class _Erro(Exception):
+        pass
+
+    class _Excecoes:
+        RequestException = _Erro
+        ConnectionError = _Erro
+        Timeout = _Erro
+        HTTPError = _Erro
+
+    def _nao_chame(*_a, **_k):
+        # Se algum teste PASSAR a depender de HTTP de verdade, é melhor
+        # falhar dizendo isso do que devolver uma resposta inventada.
+        raise AssertionError(
+            "este teste tentou usar `requests` de verdade, mas a biblioteca "
+            "não está instalada aqui. Stube a chamada HTTP no próprio teste.")
+
+    class _RequestsDeMentira:
+        exceptions = _Excecoes
+        get = staticmethod(_nao_chame)
+        post = staticmethod(_nao_chame)
+        RequestException = _Erro
+
+    return _RequestsDeMentira
+
+
+def requests_ou_pular():
+    """O `requests` de verdade — ou PULA o teste, dizendo por quê.
+
+    Diferente de `modulo_requests()`: aqui o teste realmente exerce o caminho
+    HTTP (troca `requests.post` por um servidor de mentira e confere o que foi
+    enviado). Um substituto de fachada faria o teste medir a fachada.
+
+    Sem a biblioteca, a resposta honesta é "não dá para medir isto nesta
+    máquina" — e um SKIP diz isso. Um FAIL diria que o programa está quebrado,
+    que é diferente e manda o trader caçar defeito onde não há.
+    """
+    import unittest
+    try:
+        return __import__("requests")
+    except ImportError:
+        raise unittest.SkipTest(
+            "a biblioteca `requests` não está instalada neste Python. "
+            "Este teste exercita o caminho HTTP de verdade, então ele é "
+            "pulado em vez de falhar. Para rodá-lo: pip install requests")

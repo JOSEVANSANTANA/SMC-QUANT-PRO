@@ -24,7 +24,7 @@ pelo erro que mais diz, não pelo que chegou por último.
 
 import unittest
 
-from harness import carregar, fonte_do_arquivo
+from harness import carregar, fonte_do_arquivo, modulo_requests
 
 
 def _ns():
@@ -32,7 +32,7 @@ def _ns():
         ["modelos_gratuitos_openrouter", "modelos_do_provedor", "PROVEDORES_IA",
          "erro_mais_informativo", "diagnostico_de_provedor", "ia_local_no_ar",
          "_CACHE_MODELOS_OPENROUTER", "VALIDADE_CATALOGO_SEG"],
-        stubs={"requests": __import__("requests")})
+        stubs={"requests": modulo_requests()})
 
 
 class _RespostaFalsa:

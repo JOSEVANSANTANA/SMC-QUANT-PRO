@@ -182,3 +182,46 @@ class TestODimensionamentoTambemEnxerga(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestOPainelNaoPodeSeContradizer(unittest.TestCase):
+    """22/08, 14:43. Uma mensagem só, dois números para a mesma coisa:
+
+        "Hoje na conta 'TESTES SMC QUANT': 0 operação(ões) fechada(s),
+         0 no prejuízo, resultado US$+0.00."
+        "🛑 O FREIO ESTÁ ATIVO: o prejuízo de hoje (US$-5,295.55) bateu o
+         drawdown máximo do plano (US$150.00)."
+
+    O defeito era recém-criado e era meu: o freio parou de enxergar o ciclo
+    — certo, reiniciar ciclo não desfaz perda — e a linha de resumo logo
+    acima continuou lendo pelo ciclo.
+
+    Ele perguntou, às 14:44: "mas acabamos de reiniciar o ciclo". Tinha
+    razão em não entender. Os dois números estavam certos e mediam coisas
+    diferentes, e isso não estava escrito em lugar nenhum.
+    """
+
+    def test_o_resumo_e_o_freio_leem_o_mesmo_universo(self):
+        """Contra o ciclo reiniciado no meio do pregão, os dois têm de
+        chegar ao mesmo total — senão volta a contradição."""
+        import datetime as dt
+        ns = _ns(DIA_22, dt.datetime(2026, 8, 22, 14, 43),
+                 ciclo=dt.datetime(2026, 8, 22, 12, 10, 12))
+        do_pregao = ns["operacoes_fechadas_hoje"](ignorar_ciclo=True)
+        _, motivo = ns["freio_de_sugestoes"]()
+        total = sum(p["pnl_final"] for p in do_pregao)
+        self.assertAlmostEqual(total, -2262.50, 2)
+        # O número que o freio cita tem de ser ESTE, não outro.
+        self.assertIn("2,262.50", motivo)
+
+    def test_o_ciclo_reiniciado_conta_menos_e_isso_e_esperado(self):
+        """O ciclo continua fazendo o que existe para fazer.
+
+        A correção não pode atropelar isso: quem reinicia o ciclo quer
+        recomeçar a contagem de meta, e deve vê-la recomeçada.
+        """
+        import datetime as dt
+        ns = _ns(DIA_22, dt.datetime(2026, 8, 22, 14, 43),
+                 ciclo=dt.datetime(2026, 8, 22, 12, 10, 12))
+        self.assertEqual(ns["operacoes_fechadas_hoje"](), [])
+        self.assertEqual(len(ns["operacoes_fechadas_hoje"](ignorar_ciclo=True)), 3)

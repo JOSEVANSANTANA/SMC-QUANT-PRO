@@ -6732,6 +6732,57 @@ _RE_AMBIENTE_OU_REPLAY = re.compile(
     r"modo\s+replay|conta\s+replay|qual\s+conta|qual\s+ambiente|mercado\s+real\s+ou\s+replay|"
     r"e\s+simula[çc][ãa]o|[ée]\s+simula[çc][ãa]o|e\s+backtest|[ée]\s+backtest|estou\s+na\s+conta\s+real|estou\s+em\s+replay)\b", re.I)
 
+# QUALQUER FRASE COM A PALAVRA "REPLAY", AINDA QUE MAL DIGITADA.
+#
+# 22/08, sábado, mercado fechado. Ele escreveu quatro vezes:
+#
+#   14:35  "esta no raplay?"
+#   14:36  "nao, estamos no raplay,"
+#   14:37  "sim, estamos em raplay,"
+#   14:39  "hoje é sabado, o mercado esta fechado e estou rodando um raplay"
+#
+# Nenhuma das quatro casou. Dois motivos, os dois da lista acima: "raplay"
+# não é "replay", e "esta no replay" nem sequer estava entre as formas
+# previstas — só "estou no" e "estamos no". Sem casar, a pergunta caiu no
+# modelo, que respondeu quatro vezes que NÃO era replay, citando como prova
+# um Delta e uma conexão CDP que não dizem nada sobre isso, e chegou a
+# inventar um comando ("SET MODE REPLAY ou similar") que não existe.
+#
+# Enumerar frase por frase foi o erro de projeto. Basta a PALAVRA aparecer:
+# ninguém escreve "replay" numa mesa por outro motivo. E ela passa pelo
+# mesmo corretor de digitação que o resto dos comandos usa, porque exigir
+# grafia perfeita de quem está com uma posição aberta é exigir a coisa
+# errada na hora errada.
+_REPLAY_ALVOS = ("replay", "market replay", "rpl")
+
+
+def fala_de_replay(texto):
+    """A frase menciona replay — mesmo com a mão trocando letra?
+
+    Função PURA. Devolve True para 'raplay', 'replai', 'reply', 'RPL'.
+    """
+    if not texto:
+        return False
+    t = _sem_acento(str(texto)).lower()
+    # 'RPL' sozinho, ou colado no número da conta: RPL2893430-5.
+    if "market replay" in t or re.search(r"\brpl\d*\b", t):
+        return True
+    for palavra in re.findall(r"[a-z]+", t):
+        # SÓ ERRO DE TECLA, NÃO PALAVRA DIFERENTE.
+        #
+        # O comprimento tem de bater. Com distância 1 livre, "relay" entraria
+        # — é "replay" sem o 'p' — e a frase "o relay do sinal caiu" viraria
+        # pergunta sobre ambiente. Exigindo o mesmo tamanho, sobram os erros
+        # que o dedo comete de verdade: tecla trocada ('raplay', 'replai') e
+        # letras invertidas ('relpay'), que é o que o Damerau conta.
+        #
+        # Uma trava que aceita tudo não é trava. Já custou caro neste arquivo,
+        # na regex do botão 'Sair em Mkt'.
+        if len(palavra) == len("replay") and _distancia_edicao(
+                palavra, "replay", teto=1) <= 1:
+            return True
+    return False
+
 
 def texto_do_ambiente_atual(bot_tv=None):
     """Responde se a plataforma está em Mercado Real, Demo ou Market Replay (RPL)."""
@@ -6745,6 +6796,34 @@ def texto_do_ambiente_atual(bot_tv=None):
     eh_replay = bool(amb.get("eh_replay") or (conta and str(conta).upper().startswith("RPL")))
     vel = amb.get("velocidade") or "100%"
     hora = amb.get("horario_mercado")
+
+    # NÃO LI NADA ≠ É MERCADO REAL.
+    #
+    # 22/08, um sábado, com o mercado fechado e ele rodando um replay. Ele
+    # disse quatro vezes "estamos no replay" e recebeu quatro negativas, uma
+    # delas assim: "os dados da mesa não corroboram isso". Não corroboravam
+    # nem o contrário — não havia dado nenhum sobre ambiente.
+    #
+    # Esta função tinha o mesmo defeito por baixo: sem `bot_tv`, ou com a
+    # leitura falhando, `amb` fica vazio, `eh_replay` sai False e o `else`
+    # anunciava "🔴 PREGÃO AO VIVO (MERCADO REAL)". Ou seja: o silêncio da
+    # plataforma virava a afirmação MAIS PERIGOSA que existe aqui — dizer a
+    # um trader que ele está numa conta real.
+    #
+    # Ausência de leitura é resposta, e a resposta é "não sei".
+    if not amb or (not conta and not amb.get("modo")):
+        return (
+            "❓ **NÃO CONSEGUI LER O AMBIENTE DA PLATAFORMA**\n"
+            "• Não achei a conta nem o marcador de replay na tela da "
+            "Tradovate, então **não sei** dizer se você está em Mercado "
+            "Real, Demo ou Market Replay.\n"
+            "• **Não vou chutar**: errar isso para o lado do 'é real' é o "
+            "pior chute que eu poderia dar.\n"
+            "• Quem está vendo a tela é você. No alto do painel da Tradovate, "
+            "conta começando com **RPL** é replay; **DEMO** é simulação ao "
+            "vivo; número puro é conta real.\n"
+            "• Para eu conseguir ler: deixe o seletor de conta visível e peça "
+            "de novo.")
 
     if eh_replay:
         linhas = [
@@ -10501,7 +10580,11 @@ def interpretar_intencao(texto):
     # app responde do relogio e da configuracao, sem modelo nenhum.
     if _RE_QUAL_PREGAO.search(t):
         return "QUAL_PREGAO"
-    if _RE_AMBIENTE_OU_REPLAY.search(t):
+    # A palavra "replay" sozinha basta, mesmo mal digitada. Ver fala_de_replay:
+    # as quatro tentativas dele em 22/08 saíram "raplay" e nenhuma casou com a
+    # lista de frases, então a pergunta foi parar no modelo — que negou quatro
+    # vezes, num sábado, com o mercado fechado.
+    if _RE_AMBIENTE_OU_REPLAY.search(t) or fala_de_replay(t):
         return "AMBIENTE_MERCADO"
     if pergunta_sobre_configuracao(texto):
         return "VER_CONFIG"
@@ -13758,14 +13841,49 @@ class SmcQuantApp(ctk.CTk):
         sugestões, ele precisa saber que é proteção, e não travamento."""
         plano = plano_da_conta_ativa()
         pode, motivo = freio_de_sugestoes(plano)
-        fechadas = operacoes_fechadas_hoje()
+
+        # QUEM EXPLICA O FREIO CONTA COMO O FREIO CONTA.
+        #
+        # 22/08, 14:43, saiu isto para ele NUMA MENSAGEM SÓ:
+        #
+        #   "Hoje na conta 'TESTES SMC QUANT': 0 operação(ões) fechada(s),
+        #    0 no prejuízo, resultado US$+0.00."
+        #   "🛑 O FREIO ESTÁ ATIVO: o prejuízo de hoje (US$-5,295.55) bateu
+        #    o drawdown máximo do plano (US$150.00)."
+        #
+        # Dois números para a mesma coisa, um do lado do outro. E o defeito
+        # era meu, recém-criado: eu fiz o freio parar de enxergar o ciclo —
+        # certo, porque reiniciar o ciclo não desfaz perda — e esqueci que a
+        # linha de resumo logo acima continuava lendo pelo ciclo.
+        #
+        # Painel que se contradiz é exatamente o que este programa existe
+        # para não ser. Aqui os dois passam a ler o PREGÃO, que é o universo
+        # do freio; o que o ciclo mostra vira uma linha à parte, explicada.
+        fechadas = operacoes_fechadas_hoje(ignorar_ciclo=True)
         realizado = sum(p["pnl_final"] for p in fechadas)
         perdas = sum(1 for p in fechadas if p["pnl_final"] < 0)
 
         linhas = [
-            f"Hoje na conta '{nome_conta_ativa()}': {len(fechadas)} operação(ões) "
-            f"fechada(s), {perdas} no prejuízo, resultado US${realizado:+,.2f}."
+            f"Neste pregão, na conta '{nome_conta_ativa()}': {len(fechadas)} "
+            f"operação(ões) fechada(s), {perdas} no prejuízo, resultado "
+            f"US${realizado:+,.2f}."
         ]
+
+        # "MAS ACABAMOS DE REINICIAR O CICLO" — ele perguntou, e tinha razão
+        # em não entender. O painel do ciclo zerou e o freio continuou preso.
+        # Os dois estão certos, medem coisas diferentes, e isso precisa estar
+        # escrito em vez de deduzido.
+        no_ciclo = operacoes_fechadas_hoje()
+        if len(no_ciclo) != len(fechadas):
+            realizado_ciclo = sum(p["pnl_final"] for p in no_ciclo)
+            linhas.append(
+                f"O painel do CICLO mostra {len(no_ciclo)} operação(ões) e "
+                f"US${realizado_ciclo:+,.2f} porque o ciclo foi reiniciado "
+                "depois de parte destas operações. Os dois números estão "
+                "certos e medem coisas diferentes: o ciclo é a sua contagem "
+                "de meta, e você reinicia quando quiser; o PREGÃO é o que "
+                "vale para o drawdown, e a mesa não sabe que você apertou um "
+                "botão aqui. Reiniciar o ciclo não desfaz perda.")
         if pode:
             linhas.append(
                 "O freio NÃO está segurando nada — estou livre para sugerir. Se "

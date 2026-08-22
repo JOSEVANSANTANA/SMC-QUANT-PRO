@@ -22,7 +22,7 @@ Duas causas distintas, tratadas aqui:
 
 import unittest
 
-from harness import carregar, fonte_do_arquivo
+from harness import carregar, fonte_do_arquivo, modulo_requests
 
 
 def _ns():
@@ -35,7 +35,7 @@ def _ns():
         stubs={"carregar_config": lambda: {},
                "carregar_api_key": lambda: "",
                "dpapi_decrypt": lambda x: x,
-               "requests": __import__("requests")})
+               "requests": modulo_requests()})
 
 
 class TestSegundaInteligencia(unittest.TestCase):

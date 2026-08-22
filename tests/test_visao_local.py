@@ -30,7 +30,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from io import BytesIO
 
-from harness import carregar, fonte_do_arquivo
+from harness import carregar, fonte_do_arquivo, requests_ou_pular
 
 PORTA = 11434
 
@@ -137,7 +137,11 @@ class BaseComOllamaFalso(unittest.TestCase):
         _Ollama.recebido = {}
 
     def _ns(self):
-        import requests
+        # Este arquivo TROCA `requests.post` por um servidor de mentira e
+        # confere o que foi enviado — ou seja, exercita o caminho HTTP de
+        # verdade. Sem a biblioteca, ele PULA dizendo por quê, em vez de
+        # falhar como se o programa estivesse quebrado.
+        requests = requests_ou_pular()
         return carregar(
             ["_RAM_NAO_INFORMADA", "MODELO_VISAO_LOCAL", "MODELO_VISAO_LOCAL_LEVE",
              "modelo_visao_recomendado", "LADO_MAX_VISAO_LOCAL",

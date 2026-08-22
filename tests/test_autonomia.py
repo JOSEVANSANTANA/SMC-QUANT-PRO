@@ -26,7 +26,7 @@ A legenda abaixo é a do print real da Tradovate de 12/08/2026 15:45, candle das
 
 import unittest
 
-from harness import carregar, fonte_do_arquivo, pular_se_faltar
+from harness import carregar, fonte_do_arquivo, pular_se_faltar, modulo_requests
 
 LEGENDA_REAL = """12/08/2026 13:25
 PSAR 7764.20
@@ -231,7 +231,7 @@ class TestIALocalSemChave(unittest.TestCase):
             stubs={"carregar_config": lambda: {},
                    "carregar_api_key": lambda: "",
                    "dpapi_decrypt": lambda x: x,
-                   "requests": __import__("requests")})
+                   "requests": modulo_requests()})
 
     def test_a_ia_local_existe_e_nao_pede_chave(self):
         ns = self._ns()
