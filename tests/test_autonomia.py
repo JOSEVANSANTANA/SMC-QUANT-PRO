@@ -323,10 +323,15 @@ class TestOModeloPequenoNaoPodeSequestrarABase(unittest.TestCase):
     def test_o_prompt_do_provedor_diz_o_que_o_MES_e(self):
         """O modelo pequeno chamou o Micro E-mini de forex e inventou o valor
         por ponto. Isso não se conserta com guarda depois — se conserta
-        dizendo, no prompt, o que o contrato é."""
+        dizendo, no prompt, o que o contrato é.
+
+        A janela era de 4000 caracteres, calibrada para uma função desse
+        tamanho. Ela cresceu para ~8000 com o super-contexto de telemetria e a
+        regra passou a viver depois do corte. O invariante é a regra ESTAR no
+        prompt, não estar nos primeiros 4000 caracteres."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def _mensagens_para_provedor")
-        corpo = fonte[i:i + 4000]
+        corpo = fonte[i:i + 12000]
         self.assertIn("NÃO é forex", corpo)
         self.assertIn("US$ 5 por ponto", corpo)
         self.assertIn("PORTUGUÊS DO BRASIL", corpo)

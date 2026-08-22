@@ -14653,6 +14653,27 @@ class SmcQuantApp(ctk.CTk):
             "cancelada\', \'ficou salvo\', \'está gravado\', \'foi enviada\'. "
             "Ensinar o comando certo é o desejado; afirmar que já o executou, "
             "não.\n"
+            # AS DUAS DE BAIXO NASCERAM DO TESTE DE 12/08 COM O MODELO LOCAL:
+            # ele chamou o Micro E-mini de forex e inventou o valor por ponto,
+            # e misturou alfabeto no meio da frase. Modelo grande nao erra
+            # isso; modelo pequeno erra — e o OpenRouter roteia para dezenas
+            # de fornecedores, entao qual modelo atende NAO e escolha nossa.
+            # A linha "O ATIVO PRINCIPAL" abaixo diz o que o contrato E, mas
+            # nao diz o que ele NAO E, nem proibe estimar multiplicador. Sem
+            # a proibicao, "US$ 5/ponto" e so mais um numero no meio do texto.
+            "10. PORTUGUÊS DO BRASIL, E SÓ. Nada de palavra em inglês solta "
+            "no meio da frase, nada de outro alfabeto. Termo técnico em "
+            "inglês (order block, FVG, sweep) escreve-se normalmente — o "
+            "resto da frase é português.\n"
+            "11. O QUE ELE OPERA: MES/MESU6 é o MICRO E-MINI S&P 500, um "
+            "contrato futuro de ÍNDICE de ações negociado na CME. "
+            # "NÃO é forex" e "US$ 5 por ponto" ficam INTEIROS num literal so:
+            # o teste que os protege le o CODIGO-FONTE, e uma frase quebrada
+            # na virada da linha some da busca mesmo estando certa em execucao.
+            "NÃO é forex, NÃO é câmbio, NÃO é cripto. O MES vale US$ 5 por ponto e "
+            "o tick é 0,25 ponto (US$ 1,25). Nunca escreva outro valor por "
+            "ponto: sem certeza do multiplicador de um contrato, diga que não "
+            "tem — não estime.\n"
             "O ATIVO PRINCIPAL: MES / MESU6 (Micro E-mini S&P 500 futuro na CME, US$ 5/ponto, tick 0.25).\n"
             + (f"\nDADOS DA MESA EM TEMPO REAL (Consulte quando a pergunta for sobre a mesa/mercado):\n{cenario}" if cenario else ""))
 
