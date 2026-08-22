@@ -140,7 +140,7 @@ class CyberHUDCanvasRenderer:
             self.texto_resposta = texto_resposta
 
     def _desenhar_card(self, x1, y1, x2, y2, titulo, icone="⚡", badge="🟢 ATIVO", cor_neon=COR_CYAN_GLOW):
-        """Desenha um card Sci-Fi translúcido com chanfros neon nos cantos."""
+        """Desenha um card Sci-Fi translúcido com chanfros neon nos cantos e tipografia nítida."""
         # Fundo
         self.canvas.create_rectangle(x1, y1, x2, y2, fill=COR_CARD_BG, outline=COR_CARD_BORDER, width=1)
         # Cantos neon chanfrados
@@ -154,30 +154,32 @@ class CyberHUDCanvasRenderer:
         self.canvas.create_line(x2, y2, x2 - cl, y2, fill=cor_neon, width=2)
         self.canvas.create_line(x2, y2, x2, y2 - cl, fill=cor_neon, width=2)
 
-        # Cabeçalho
-        self.canvas.create_text(x1 + 14, y1 + 16, text=f"{icone} {titulo}", anchor="w",
-                                font=("Courier", 10, "bold"), fill=cor_neon)
+        # Cabeçalho com fonte grande e nítida
+        self.canvas.create_text(x1 + 14, y1 + 17, text=f"{icone} {titulo}", anchor="w",
+                                font=("Arial", 11, "bold"), fill=cor_neon)
         if badge:
-            bw = len(badge) * 6 + 14
+            bw = len(badge) * 7 + 16
             bx2 = x2 - 12
             bx1 = bx2 - bw
-            self.canvas.create_rectangle(bx1, y1 + 7, bx2, y1 + 25, fill="#041a2f",
+            self.canvas.create_rectangle(bx1, y1 + 6, bx2, y1 + 27, fill="#041a2f",
                                          outline=cor_neon, width=1)
             self.canvas.create_text((bx1 + bx2) // 2, y1 + 16, text=badge,
-                                    font=("Courier", 8, "bold"), fill=cor_neon)
-        self.canvas.create_line(x1 + 10, y1 + 30, x2 - 10, y1 + 30, fill=COR_CARD_BORDER, width=1)
+                                    font=("Arial", 9, "bold"), fill=cor_neon)
+        self.canvas.create_line(x1 + 10, y1 + 32, x2 - 10, y1 + 32, fill=COR_CARD_BORDER, width=1)
 
-    def _desenhar_mini_item(self, x1, y, x2, tag, valor, cor_val=COR_TEXT_BRIGHT, h_item=24):
-        """Mini-card estilizado para cada indicador / telemetria."""
+    def _desenhar_mini_item(self, x1, y, x2, tag, valor, cor_val=COR_TEXT_BRIGHT, h_item=28):
+        """Mini-card estilizado de alta legibilidade para cada indicador / telemetria."""
         self.canvas.create_rectangle(x1 + 8, y, x2 - 8, y + h_item, fill="#030c18",
                                      outline="#0a223c", width=1)
         self.canvas.create_text(x1 + 14, y + h_item // 2, text=f"[{tag}]", anchor="w",
-                                font=("Courier", 8, "bold"), fill=COR_CYAN_DIM)
+                                font=("Arial", 9, "bold"), fill=COR_CYAN_DIM)
         txt_v = str(valor)
-        max_c = max(15, int((x2 - x1 - 100) / 7))
-        self.canvas.create_text(x1 + 14 + len(tag) * 6 + 18, y + h_item // 2,
+        # Mais caracteres visíveis com espaçamento confortável
+        largura_disp = (x2 - 8) - (x1 + 14 + len(tag) * 8 + 14)
+        max_c = max(18, int(largura_disp / 7.5))
+        self.canvas.create_text(x1 + 14 + len(tag) * 8 + 10, y + h_item // 2,
                                 text=txt_v[:max_c], anchor="w",
-                                font=("Arial", 9, "bold"), fill=cor_val)
+                                font=("Arial", 11, "bold"), fill=cor_val)
 
     def desenhar(self):
         self.canvas.delete("all")
@@ -234,7 +236,7 @@ class CyberHUDCanvasRenderer:
         # -------------------------------------------------------------
         # 2. Dimensões dos Painéis e Dimensionamento Imponente do Orbe
         # -------------------------------------------------------------
-        pw = max(260, min(360, int(w * 0.28))) if w > 600 else 0
+        pw = max(290, min(420, int(w * 0.30))) if w > 600 else 0
         largura_centro = w - 2 * pw if pw > 0 else w
         raio_base = min(max(h * 0.34, 75), int(largura_centro * 0.42), 170) + math.sin(self.fase_onda) * 2.0
         pitch = 0.38  # ~22 graus de inclinação tridimensional
@@ -581,16 +583,16 @@ class CyberHUDCanvasRenderer:
                                 icone="⚡", badge="🟢 ATIVO", cor_neon=COR_CYAN_GLOW)
 
             item_y = py1 + 42
-            item_h = max(24, min(32, (py2 - item_y - 20) // 5))
+            item_h = max(26, min(34, (py2 - item_y - 20) // 5))
 
             self._desenhar_mini_item(px1, item_y, px2, "ATIVO", self.ativo_smc,
-                                     COR_TEXT_BRIGHT, item_h)
+                                     "#ffffff", item_h)
             self._desenhar_mini_item(px1, item_y + item_h + 5, px2, "REGIME",
                                      f"{self.regime_smc}", COR_GREEN_CYBER, item_h)
             self._desenhar_mini_item(px1, item_y + (item_h + 5) * 2, px2, "ORDER FLOW",
                                      self.orderflow_txt, COR_CYAN_GLOW, item_h)
             self._desenhar_mini_item(px1, item_y + (item_h + 5) * 3, px2, "CONFLUÊNCIAS",
-                                     self.confluencias_txt, COR_TEXT_BRIGHT, item_h)
+                                     self.confluencias_txt, "#ffffff", item_h)
             self._desenhar_mini_item(px1, item_y + (item_h + 5) * 4, px2, "POSIÇÃO",
                                      self.posicao_txt, COR_GOLD_CYBER, item_h)
 
@@ -598,35 +600,35 @@ class CyberHUDCanvasRenderer:
         if w > 600:
             rx1, ry1, rx2, ry2 = w - 20 - pw, 48, w - 20, h - 16
 
-            # Card Superior (Motor IA & CDP) - Compacto (88px)
-            h_sup = 88
+            # Card Superior (Motor IA & CDP) - Compacto (94px)
+            h_sup = 94
             ry_mid1 = ry1 + h_sup
             ry_mid2 = ry1 + h_sup + 8
 
             self._desenhar_card(rx1, ry1, rx2, ry_mid1, "MOTOR IA CLOUD & CDP",
                                 icone="🤖", badge="🟢 ONLINE", cor_neon=COR_GREEN_CYBER)
 
-            item_y = ry1 + 34
-            item_h = max(16, (ry_mid1 - item_y - 8) // 3)
+            item_y = ry1 + 36
+            item_h = max(18, (ry_mid1 - item_y - 8) // 3)
             self._desenhar_mini_item(rx1, item_y, rx2, "PROVEDOR",
                                      f"{self.provedor_ia} ({self.modelo_ia})",
-                                     COR_TEXT_BRIGHT, item_h)
-            self._desenhar_mini_item(rx1, item_y + item_h + 2, rx2, "CDP LINK",
+                                     "#ffffff", item_h)
+            self._desenhar_mini_item(rx1, item_y + item_h + 3, rx2, "CDP LINK",
                                      self.cdp_status_txt, COR_GREEN_CYBER, item_h)
-            self._desenhar_mini_item(rx1, item_y + (item_h + 2) * 2, rx2, "TRAILING",
+            self._desenhar_mini_item(rx1, item_y + (item_h + 3) * 2, rx2, "TRAILING",
                                      self.trailing_txt, COR_CYAN_GLOW, item_h)
 
             # Card Inferior (Conversas & Logs em Tempo Real) - Ocupando toda a extensão
             self._desenhar_card(rx1, ry_mid2, rx2, ry2, "CONVERSAS & LOGS",
                                 icone="⚡", badge="TEMPO REAL", cor_neon=COR_GOLD_CYBER)
 
-            # Renderização Rica de Mensagens com Quebra de Linha Automática (sem corte arbitrário)
+            # Renderização Rica de Mensagens com Quebra de Linha Automática e Fonte 11pt Legível
             largura_texto = rx2 - rx1 - 24
-            log_y = ry_mid2 + 36
+            log_y = ry_mid2 + 38
 
-            # Pega as mensagens mais recentes e renderiza com texto completo
+            # Pega as mensagens mais recentes e renderiza com texto completo e fonte nítida
             for hora, tag_l, txt_l in self.logs_recentes[-6:]:
-                if log_y >= ry2 - 16:
+                if log_y >= ry2 - 20:
                     break
 
                 # Cores e Ícones de acordo com o autor
@@ -637,31 +639,31 @@ class CyberHUDCanvasRenderer:
                 elif tag_l in ("TIGER", "ia", "IA", "JARVIS"):
                     cor_header = COR_GOLD_CYBER
                     icone_msg = "🐯"
-                    cor_corpo = "#c8f0ff"
+                    cor_corpo = "#e0f2fe"
                 else:
                     cor_header = COR_GREEN_CYBER
                     icone_msg = "⚡"
-                    cor_corpo = "#a0d0e0"
+                    cor_corpo = "#d1fae5"
 
                 # 1. Cabeçalho da mensagem (Hora + Autor)
                 self.canvas.create_text(rx1 + 12, log_y, text=f"{icone_msg} {hora} [{tag_l}]", anchor="nw",
-                                        font=("Courier", 8, "bold"), fill=cor_header)
-                log_y += 14
+                                        font=("Arial", 9, "bold"), fill=cor_header)
+                log_y += 15
 
-                # 2. Corpo da mensagem (quebra de linha automática nativa do Canvas)
+                # 2. Corpo da mensagem (quebra de linha automática nativa com fonte 11pt)
                 txt_formatado = txt_l.strip().replace("\r\n", " ").replace("\n", " ")
-                if len(txt_formatado) > 160:
-                    txt_formatado = txt_formatado[:157] + "..."
+                if len(txt_formatado) > 200:
+                    txt_formatado = txt_formatado[:197] + "..."
 
                 item_txt = self.canvas.create_text(rx1 + 12, log_y, text=txt_formatado, width=largura_texto, anchor="nw",
-                                                   font=("Arial", 9), fill=cor_corpo)
+                                                   font=("Arial", 11), fill=cor_corpo)
                 bbox = self.canvas.bbox(item_txt)
-                h_msg = (bbox[3] - bbox[1]) if bbox else 14
-                log_y += h_msg + 6
+                h_msg = (bbox[3] - bbox[1]) if bbox else 16
+                log_y += h_msg + 8
 
                 # Linha sutil separadora entre interações
-                if log_y < ry2 - 20:
-                    self.canvas.create_line(rx1 + 12, log_y - 2, rx2 - 12, log_y - 2, fill="#072338", width=1)
+                if log_y < ry2 - 22:
+                    self.canvas.create_line(rx1 + 12, log_y - 3, rx2 - 12, log_y - 3, fill="#072338", width=1)
 
 
 class TigerHUDEmbeddedFrame(tk.Frame):

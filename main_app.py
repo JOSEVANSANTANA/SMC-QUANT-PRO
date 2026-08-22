@@ -10104,16 +10104,17 @@ def interpretar_intencao(texto):
     # "pode acatar essa" vira SIM (por causa do "pode") em vez de ACATAR.
     # E nada de gírias ambíguas no ACATAR: "topo" dispararia numa conversa
     # sobre "topo duplo" do gráfico.
-    if re.search(r"\b(sai[ar]?|encerr\w*|fech\w*|zer\w*|liquid\w*)\b.{0,40}\b(todas?|opera[çc][õo]es?|posi[çc][õo]es?|tudo|ordens?)\b", t) or \
+    if re.search(r"\b(sai[ar]?|encerr\w*|fech\w*|zer\w*|liquid\w*)\b.{0,40}\b(todas?|opera[çc][õo]es?|posi[çc][õo]es?|tudo|ordens?|opera[çc][ãa]o|posi[çc][ãa]o|trade)\b", t) or \
             re.search(r"\b(sair em mkt|sair no mkt|sair em mercado|sair no mercado|sair em mkt\s*&\s*cxl|sair em mkt\s*&\s*cancelar)\b", t) or \
-            re.search(r"\b(sai|saia|sair)\b.{0,20}\b(todas|tudo)\b", t) or \
-            re.search(r"\bcancel\w*\b.{0,30}\b(todas as ordens|todas as posi|todas)\b", t):
+            re.search(r"\b(sai|saia|sair)\b.{0,20}\b(todas|tudo|da opera[çc][ãa]o|do trade)\b", t) or \
+            re.search(r"\bcancel\w*\b.{0,30}\b(todas as ordens|todas as posi|todas|tudo)\b", t):
         return "SAIR_EM_MERCADO"
     if re.search(r"\b(dispens\w*|não opero|nao opero|não vou operar|nao vou operar|"
                  r"passo essa|fico de fora)\b", t):
         return "DISPENSAR"
-    if re.search(r"\bcancel\w*\b.*\b(ordem|pendente|entrada)\b", t) or \
-            re.search(r"\b(ordem|pendente)\b.*\bcancel\w*\b", t) or t == "cancelar":
+    if re.search(r"\bcancel\w*\b.*\b(ordens?|ordem|pendentes?|entradas?|tudo|todas?|tradovate|corretora|plataforma|gr[aá]fico)\b", t) or \
+            re.search(r"\b(ordens?|ordem|pendentes?|entradas?|tradovate|corretora|plataforma|gr[aá]fico)\b.*\bcancel\w*\b", t) or \
+            re.search(r"^\s*cancel\w*\s*$", t):
         return "CANCELAR"
     if re.search(r"\b(acat\w*|aceito|bora|entra(r)? nessa)\b", t) \
             and not re.search(r"\b(não|nao|nunca|sem)\b", t):
@@ -17023,24 +17024,13 @@ class SmcQuantApp(ctk.CTk):
                         # outro contrato e a ordem cair no instrumento errado,
                         # que foi o prejuizo de 20/08 (MNQU6 virou MESU6).
                         ativo=ativo or getattr(self, "_ultimo_ativo_lido", None))
-                    if res.get("recusa_de_seguranca"):
-                        self.log("⛔ Não vou tentar por outro caminho: o motivo "
-                                 "da recusa vale para qualquer caminho, e o "
-                                 "antigo ainda manda a entrada antes da "
-                                 "proteção. Resolva o que está no aviso acima "
-                                 "e o próximo ciclo já vai.")
-                    elif not res.get("ok") and not res.get("exposto"):
-                        self.log(f"↩️ ATM indisponível ({res.get('erro')}). "
-                                 "Tentando pelo caminho antigo, com as três "
-                                 "ordens separadas.")
-                        res = None
+                    if not res.get("ok"):
+                        self.log(f"⛔ ORDEM RECUSADA POR SEGURANÇA: {res.get('erro') or 'Falha ao vincular ATM/OCO'}. "
+                                 "Não envio ordens avulsas ou separadas na pedra para evitar abertura involuntária a descoberto.")
                 else:
-                    self.log(f"ℹ️ Não conheço o tick de '{ativo or '?'}' — sem "
-                             "ele não dá para converter stop e alvo em ticks. "
-                             "Vou pelo caminho das três ordens separadas.")
-                if res is None:
-                    res = bot.enviar_bracket_ticket(direcao, entry, stop, alvo,
-                                                     qtd=qtd, enviar=not dry, ativo=ativo)
+                    self.log(f"⛔ ORDEM RECUSADA POR SEGURANÇA: Não conheço o tick de '{ativo or '?'}' — sem "
+                             "ele não dá para converter stop e alvo em ticks no modelo ATM nativo.")
+                    res = {"ok": False, "erro": "Tick desconhecido para ATM"}
                 # A ORDEM ESTÁ NA CORRETORA — a partir daqui ela ocupa lugar.
                 # Vale também para o caso incerto (a ligação caiu no clique de
                 # Enviar): se eu NÃO SEI se saiu, tenho de tratar como se

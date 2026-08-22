@@ -300,34 +300,19 @@ class TestAOrdemSoSAIComTudoConferido(unittest.TestCase):
 class TestOAppUSAOCaminhoNovo(unittest.TestCase):
     """Método escrito e nunca chamado é o defeito de sempre."""
 
-    def test_o_envio_do_app_tenta_a_ATM_primeiro(self):
+    def test_o_envio_do_app_usa_a_ATM(self):
         fonte = fonte_do_arquivo()
         i = fonte.index("def _tv_enviar_bracket(")
         bloco = fonte[i:i + 7000]
         self.assertIn("enviar_ordem_com_atm(", bloco)
-        j = bloco.index("enviar_ordem_com_atm(")
-        k = bloco.index("enviar_bracket_ticket(")
-        self.assertLess(j, k, "o caminho das três ordens tem de ser a reserva")
 
-    def test_a_reserva_so_entra_quando_NADA_foi_enviado(self):
-        """Cair para o caminho antigo depois de a entrada já ter ido seria
-        duplicar posição."""
+    def test_falha_de_atm_nao_envia_ordens_avulsas(self):
+        """21/08: o envio de três ordens soltas criava risco de abertura
+        a descoberto se o mercado tocasse o alvo antes da entrada. Agora é proibido."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def _tv_enviar_bracket(")
         bloco = fonte[i:i + 7000]
-        self.assertIn('not res.get("exposto")', bloco)
-
-    def test_RECUSA_nao_cai_para_o_caminho_antigo(self):
-        """19/08: a ATM disse 'não mando assim' e o programa tentou pelo
-        caminho que manda a entrada ANTES da proteção. A trava disse não e a
-        reserva tentou mesmo assim — é o oposto do que uma reserva serve."""
-        fonte = fonte_do_arquivo()
-        i = fonte.index("def _tv_enviar_bracket(")
-        bloco = fonte[i:i + 7000]
-        self.assertIn('res.get("recusa_de_seguranca")', bloco)
-        j = bloco.index('res.get("recusa_de_seguranca")')
-        k = bloco.index("enviar_bracket_ticket(")
-        self.assertLess(j, k, "a recusa tem de ser testada ANTES da reserva")
+        self.assertIn("ORDEM RECUSADA POR SEGURANÇA", bloco)
 
     def test_o_ativo_e_repassado_para_achar_o_tick(self):
         fonte = fonte_do_arquivo()

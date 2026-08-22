@@ -43,7 +43,9 @@ import socket
 import base64
 import struct
 import hashlib
+import threading
 import subprocess
+import unicodedata
 from urllib.request import urlopen
 
 try:
@@ -255,7 +257,7 @@ def plano_trailing_inteligente(ticks_stop, rr=None, probabilidade=None,
         else:
             acionar = int(round(base * 1.25))
             distancia = max(TRAIL_TICKS_MINIMO, base)
-            razoes.append(f"R:R {rr:.1f if rr else 1.5} curto — IA armou em 1,25R ({acionar} ticks) para proteção rápida")
+            razoes.append(f"R:R {(rr or 1.5):.1f} curto — IA armou em 1,25R ({acionar} ticks) para proteção rápida")
 
         if prob is not None and prob < 65 and distancia > base:
             distancia = max(TRAIL_TICKS_MINIMO, base)
@@ -542,46 +544,61 @@ class TradovateAuto:
             self.ws = None
 
     # ----------------------------- CDP ----------------------------------
-    def cdp(self, metodo, params=None, timeout=10):
-        """Envia um comando CDP e espera a resposta com o mesmo id.
+    def cdp(self, metodo, params=None, timeout=12):
+        """Envia um comando CDP com proteção thread-safe (RLock) e auto-reconexão.
 
-        Se o socket cair (Chrome fechado, aba trocada, nova janela de depuração
-        aberta por cima da antiga — o famoso WinError 10053), a conexão é
-        MARCADA COMO MORTA aqui. Sem isso, `self.ws` continuava preenchido e
-        ninguém reconectava: todas as leituras seguintes falhavam para sempre.
+        Se o socket cair, a conexão é restabelecida automaticamente.
         """
-        if not self.ws:
-            raise ConexaoPerdida("CDP não conectado (chame conectar() antes).")
-        meu_id = self._proximo_id
-        self._proximo_id += 1
-        try:
-            self.ws.enviar(json.dumps({"id": meu_id, "method": metodo,
-                                        "params": params or {}}))
-            limite = time.time() + timeout
-            ignoradas = 0
-            while time.time() < limite:
-                msg = json.loads(self.ws.receber())
-                if msg.get("id") == meu_id:      # resposta do nosso comando
-                    if "error" in msg:
-                        raise RuntimeError(f"CDP {metodo}: {msg['error']}")
-                    return msg.get("result", {})
-                # Evento assíncrono. Com os domínios desligados isto deveria
-                # ser raro; se voltar a ser comum, é sinal de que alguém ligou
-                # Runtime.enable/Page.enable de novo — e foi assim que uma
-                # ordem inteira se perdeu em 19/08. O contador entra na
-                # mensagem de erro para o diagnóstico não recomeçar do zero.
-                ignoradas += 1
-        except (OSError, EOFError, ValueError) as e:
-            # OSError cobre ConnectionAbortedError/ConnectionResetError (10053/
-            # 10054); ValueError cobre frame/JSON corrompido de socket meio morto.
+        if not hasattr(self, "_cdp_lock"):
+            self._cdp_lock = threading.RLock()
+
+        with self._cdp_lock:
+            if not self.ws:
+                try:
+                    self.conectar()
+                except Exception:
+                    pass
+            if not self.ws:
+                raise ConexaoPerdida("CDP não conectado (chame conectar() antes).")
+
+            meu_id = self._proximo_id
+            self._proximo_id += 1
+            try:
+                self.ws.enviar(json.dumps({"id": meu_id, "method": metodo,
+                                            "params": params or {}}))
+                limite = time.time() + timeout
+                ignoradas = 0
+                while time.time() < limite:
+                    msg = json.loads(self.ws.receber())
+                    if msg.get("id") == meu_id:      # resposta do nosso comando
+                        if "error" in msg:
+                            raise RuntimeError(f"CDP {metodo}: {msg['error']}")
+                        return msg.get("result", {})
+                    ignoradas += 1
+            except (OSError, EOFError, ValueError, ConnectionError) as e:
+                self._marcar_morta()
+                # Tenta reconectar 1 vez automaticamente
+                try:
+                    if self.conectar():
+                        self.ws.enviar(json.dumps({"id": meu_id, "method": metodo,
+                                                    "params": params or {}}))
+                        limite = time.time() + timeout
+                        while time.time() < limite:
+                            msg = json.loads(self.ws.receber())
+                            if msg.get("id") == meu_id:
+                                if "error" in msg:
+                                    raise RuntimeError(f"CDP {metodo}: {msg['error']}")
+                                return msg.get("result", {})
+                except Exception:
+                    pass
+                self._marcar_morta()
+                raise ConexaoPerdida(f"conexão com o Chrome caiu durante {metodo}: {e}")
+
             self._marcar_morta()
-            raise ConexaoPerdida(f"conexão com o Chrome caiu durante {metodo}: {e}")
-        self._marcar_morta()
-        raise ConexaoPerdida(
-            f"sem resposta do CDP para {metodo} em {timeout}s"
-            + (f" — {ignoradas} evento(s) da página chegaram na frente, e a "
-               "resposta ficou atrás deles na fila" if ignoradas else
-               " (conexão travada)") + ".")
+            raise ConexaoPerdida(
+                f"sem resposta do CDP para {metodo} em {timeout}s"
+                + (f" — {ignoradas} evento(s) da página chegaram na frente" if ignoradas else
+                   " (conexão travada)") + ".")
 
     def _marcar_morta(self):
         """Derruba o socket e zera o estado para que a PRÓXIMA chamada reconecte."""
@@ -786,19 +803,58 @@ class TradovateAuto:
         var r = el.getBoundingClientRect();
         candidatos[t].push({el:el, r:r, area:r.width*r.height});
       }
-      // Os inputs visíveis, também uma vez só.
+      // Os inputs visíveis (exceto checkboxes), também uma vez só.
       var ins = [];
       var todos = document.querySelectorAll('input');
       for (var k=0;k<todos.length;k++){
         var inp = todos[k];
-        if (!vis(inp) || inp.disabled || inp.readOnly) continue;
+        if (!vis(inp) || inp.disabled || inp.readOnly || inp.type === 'checkbox') continue;
         ins.push({el:inp, r:inp.getBoundingClientRect()});
       }
       var setter = Object.getOwnPropertyDescriptor(
         window.HTMLInputElement.prototype, 'value').set;
 
       function resolver(p){
-        var lista = candidatos[norm(p.rotulo)] || [];
+        var rotNorm = norm(p.rotulo);
+        
+        // 0) Rota de Alta Precisão: data-testid nativos da Tradovate (no próprio input ou no container pai)
+        var directEl = null;
+        if (rotNorm.indexOf("OBTER LUCRO") !== -1 || rotNorm.indexOf("TAKE PROFIT") !== -1) {
+          directEl = document.querySelector('[data-testid="simple-tpsl-bracket-0-take-profit-input"] input, [data-testid*="take-profit-input"] input, input[data-testid*="take-profit-input"]');
+        } else if (rotNorm.indexOf("STOP LOSS") !== -1) {
+          if (p.ocorrencia === 1) {
+            directEl = document.querySelector('[data-testid="simple-tpsl-bracket-0-auto-trail-stop-loss-input"] input, [data-testid*="auto-trail-stop-loss-input"] input, input[data-testid*="auto-trail-stop-loss-input"]');
+          } else {
+            directEl = document.querySelector('[data-testid="simple-tpsl-bracket-0-stop-loss-input"] input, [data-testid*="stop-loss-input"] input, input[data-testid*="stop-loss-input"]');
+          }
+        } else if (rotNorm.indexOf("ACIONAR LUCROS") !== -1 || rotNorm.indexOf("TRIGGER") !== -1) {
+          directEl = document.querySelector('[data-testid="simple-tpsl-bracket-0-auto-trail-trigger-input"] input, [data-testid*="auto-trail-trigger-input"] input, input[data-testid*="auto-trail-trigger-input"]');
+        } else if (rotNorm.indexOf("FREQUÊNCIA") !== -1 || rotNorm.indexOf("FREQUENCY") !== -1) {
+          directEl = document.querySelector('[data-testid="simple-tpsl-bracket-0-auto-trail-frequency-input"] input, [data-testid*="auto-trail-frequency-input"] input, input[data-testid*="auto-trail-frequency-input"]');
+        } else if (rotNorm.indexOf("PREÇO") !== -1 || rotNorm.indexOf("PRICE") !== -1) {
+          directEl = document.querySelector('[data-testid="order-ticket-price-input"] input, [data-testid*="price-input"] input, input[data-testid*="price"]');
+        } else if (rotNorm.indexOf("QTD") !== -1 || rotNorm.indexOf("QUANTIDADE") !== -1 || rotNorm.indexOf("QTY") !== -1) {
+          directEl = document.querySelector('[data-testid="order-ticket-quantity"] input, [data-testid*="quantity"] input, input[data-testid*="qty"]');
+        }
+
+        if (directEl && vis(directEl)) {
+          var rDirect = directEl.getBoundingClientRect();
+          if (p.valor !== null && p.valor !== undefined){
+            directEl.focus();
+            setter.call(directEl, '');
+            directEl.dispatchEvent(new Event('input', {bubbles:true}));
+            setter.call(directEl, String(p.valor));
+            directEl.dispatchEvent(new Event('input', {bubbles:true}));
+            directEl.dispatchEvent(new Event('change', {bubbles:true}));
+            directEl.blur();
+          }
+          return {estado:'OK', valor:String(directEl.value||''),
+                  x:Math.round(rDirect.x + rDirect.width/2),
+                  y:Math.round(rDirect.y + rDirect.height/2),
+                  via:'data-testid'};
+        }
+
+        var lista = candidatos[rotNorm] || [];
         if (!lista.length) return {estado:'ROTULO_NAO_ACHADO'};
         // Um rótulo pode repetir (STOP LOSS aparece no bracket E no auto
         // trail). Desempata por posição na tela, de cima para baixo:
@@ -820,54 +876,52 @@ class TradovateAuto:
           return {estado:'OCORRENCIA_INEXISTENTE', quantas:linhas.length};
         var lr = linhas[p.ocorrencia].r;
         var meio = lr.top + lr.height/2;
-        // O input da MESMA LINHA, à DIREITA do rótulo, e o mais próximo dele.
-        // "Mais próximo" importa nas linhas do ATM, que têm dois campos: o de
-        // TICKS (perto) e o de PREÇO calculado (longe). Manda o de ticks.
+        // Busca de inputs: suporta layout horizontal (mesma linha) E vertical (logo abaixo do rótulo)
         var melhor = null;
         for (var m=0;m<ins.length;m++){
           var ir = ins[m].r;
-          if (Math.abs(ir.top + ir.height/2 - meio) > tolerancia) continue;
-          if (ir.left < lr.left) continue;
-          var dist = ir.left - lr.right;
-          if (!melhor || dist < melhor.dist)
-            melhor = {el:ins[m].el, dist:dist, r:ir};
+          if (ins[m].el.type === "checkbox") continue;
+          
+          var distHorizontal = (ir.left >= lr.left - 10) ? (ir.left - lr.left) : 9999;
+          var distVertical = (ir.top >= lr.top - 5) ? (ir.top - lr.top) : 9999;
+          
+          // Caso 1: Na mesma linha (horizontal)
+          if (Math.abs(ir.top + ir.height/2 - meio) <= tolerancia && ir.left >= lr.left - 10){
+            var distH = ir.left - lr.right;
+            if (!melhor || distH < melhor.dist)
+              melhor = {el:ins[m].el, dist:distH, r:ir};
+          }
+          // Caso 2: Logo abaixo do rótulo (vertical)
+          else if (ir.top >= lr.top && ir.top <= lr.bottom + 55 && ir.left >= lr.left - 50 && ir.left <= lr.right + 150){
+            var distV = (ir.top - lr.bottom) * 2 + Math.abs(ir.left - lr.left);
+            if (!melhor || distV < melhor.dist)
+              melhor = {el:ins[m].el, dist:distV, r:ir};
+          }
         }
         if (!melhor){
           // NEM TODO CAMPO DO TICKET É UM <input>. 'EXIBIR EM' e 'TIPO DE
           // STOP LOSS' são seletores, e a unidade escolhida ali (Ticks ou
           // Preço) muda o SIGNIFICADO do número que eu escrevo logo abaixo.
-          // Para LEITURA, então, vale o texto do controle vizinho.
+          // Para LEITURA, então, vale o texto do controle vizinho (ao lado ou abaixo).
           if (p.valor === null || p.valor === undefined){
-            // O MAIS PRÓXIMO DO RÓTULO — e este critério me custou uma ordem.
-            //
-            // 19/08, 20:50: a linha do 'EXIBIR EM' tem o seletor "Ticks"
-            // logo ao lado E, mais à direita, o cabeçalho "PREÇO" da coluna
-            // de preços do ATM. Eu desempatava pela MENOR ÁREA, e o
-            // cabeçalho "PREÇO" (um texto solto) é menor que a caixa do
-            // seletor. Resultado: o robô leu 'Preço' onde a tela dizia
-            // 'Ticks', bloqueou a própria ordem por uma regra certa aplicada
-            // a um dado errado, e ainda mandou o trader "deixar em Ticks" —
-            // que já estava.
-            //
-            // A distância é o critério certo: quem responde por um rótulo é
-            // o controle ao lado dele, não o texto mais magro da linha. A
-            // área só desempata entre elementos que começam no mesmo ponto
-            // (o contêiner e o texto dentro dele).
             var textoMelhor = null;
             for (var q=0;q<els.length;q++){
               var e2 = els[q];
               var t2 = (e2.textContent||'').replace(/\s+/g,' ').trim();
-              if (!t2 || t2.length > 24) continue;
+              var n2 = norm(t2);
+              if (!t2 || t2.length > 24 || n2 === norm(p.rotulo) || n2.indexOf(norm(p.rotulo)) !== -1) continue;
               if (!vis(e2)) continue;
               var r2 = e2.getBoundingClientRect();
-              if (Math.abs(r2.top + r2.height/2 - meio) > tolerancia) continue;
-              if (r2.left < lr.right) continue;
-              var d2 = r2.left - lr.right;
+              var d2 = 9999;
+              if (Math.abs(r2.top + r2.height/2 - meio) <= tolerancia && r2.left >= lr.right){
+                d2 = r2.left - lr.right;
+              } else if (r2.top >= lr.top && r2.top <= lr.bottom + 45 && r2.left >= lr.left - 30 && r2.left <= lr.right + 100){
+                d2 = (r2.top - lr.bottom) + Math.abs(r2.left - lr.left);
+              } else {
+                continue;
+              }
               var a2 = r2.width * r2.height;
-              if (!textoMelhor
-                  || d2 < textoMelhor.dist - 4
-                  || (Math.abs(d2 - textoMelhor.dist) <= 4
-                      && a2 < textoMelhor.area))
+              if (!textoMelhor || d2 < textoMelhor.dist - 4 || (Math.abs(d2 - textoMelhor.dist) <= 4 && a2 < textoMelhor.area))
                 textoMelhor = {texto:t2, dist:d2, area:a2};
             }
             if (textoMelhor)
@@ -1246,6 +1300,15 @@ class TradovateAuto:
               return (el.tagName && el.tagName.toLowerCase()==='svg') ||
                      (el.querySelector && !!el.querySelector('svg'));
             }catch(e){ return false; }
+          }
+
+          // 0) Atalho direto: na Tradovate moderna, a seta ← tem a classe .icon-back
+          var direto = document.querySelector('.trading-ticket-header .icon-back, .trading-ticket-header [data-testid="icon-button-container"], .icon.icon-back');
+          if (direto && vis(direto)) {
+            var rDirect = direto.getBoundingClientRect();
+            if (rDirect.width > 0 && rDirect.height > 0) {
+              return JSON.stringify({achou: true, x: Math.round(rDirect.x + rDirect.width/2), y: Math.round(rDirect.y + rDirect.height/2), via: 'icon-back'});
+            }
           }
 
           // 1) Acha o MENOR container que contém o texto do comprovante.
@@ -2171,54 +2234,80 @@ class TradovateAuto:
       function vis(el){try{var r=el.getBoundingClientRect();
         return r.width>0&&r.height>0;}catch(e){return false;}}
       function txt(el){try{return (el.innerText||el.textContent||'')
-        .replace(/\s+/g,' ').trim();}catch(e){return '';}}
+        .replace(/[\s\u2009]+/g,' ').trim();}catch(e){return '';}}
       function norm(s){return (s||'').toString().normalize('NFD')
         .replace(/[̀-ͯ]/g,'').toLowerCase();}
-      var re=/(sair em (mkt|mercado))|(exit at m(k|ar)?[kt])|(flatten)/;
+      var re=/(sair em (mkt|mercado))|(exit at m(k|ar)?[kt])|(flatten)|(cancelar tod[oa]s)|(cancel all)/i;
       var achados=[];
       var els=document.querySelectorAll('button,[role=button],div,span,a,li');
       for(var i=0;i<els.length;i++){
         var el=els[i];
         if(!vis(el)) continue;
         var t=txt(el);
-        if(!t||t.length>60) continue;
+        if(!t||t.length>70) continue;
         if(!re.test(norm(t))) continue;
         var r=el.getBoundingClientRect();
-        achados.push({t:t, r:r, area:r.width*r.height,
+        var isBtn=(el.tagName==='BUTTON'||el.getAttribute('role')==='button');
+        var bonus=isBtn?0:10000;
+        achados.push({el:el, t:t, r:r, area:r.width*r.height + bonus, isBtn:isBtn,
                       titulo:(el.getAttribute('title')||''),
                       aria:(el.getAttribute('aria-label')||''),
-                      // texto cortado pelo CSS: o DOM tem a legenda inteira,
-                      // mas a tela mostra reticências
                       cortado:(el.scrollWidth > el.clientWidth + 2)});
       }
       if(!achados.length) return JSON.stringify({achou:false});
-      // O MENOR é o controle; os maiores são as barras que o contêm.
       achados.sort(function(a,b){return a.area-b.area;});
       var m=achados[0];
-      // A legenda COMPLETA pode estar no title/aria quando a tela corta.
       var rotulo=(m.titulo||m.aria||m.t);
+      var alvo=(m.el.closest && m.el.closest('button,[role=button],a')) || m.el;
+      try {
+        alvo.dispatchEvent(new MouseEvent("mousedown", {bubbles: true, cancelable: true, view: window, buttons: 1}));
+        alvo.dispatchEvent(new MouseEvent("mouseup", {bubbles: true, cancelable: true, view: window, buttons: 1}));
+        alvo.dispatchEvent(new MouseEvent("click", {bubbles: true, cancelable: true, view: window, buttons: 1}));
+        alvo.click();
+      } catch(e){}
+      var rAlvo=alvo.getBoundingClientRect();
       return JSON.stringify({achou:true, rotulo:rotulo, texto_na_tela:m.t,
         cortado:!!m.cortado, quantos:achados.length,
-        x:Math.round(m.r.x+m.r.width/2), y:Math.round(m.r.y+m.r.height/2)});
+        x:Math.round(rAlvo.x+rAlvo.width/2), y:Math.round(rAlvo.y+rAlvo.height/2)});
     })()
     """
 
-    # A legenda do botão diz o que ele VAI fazer, porque o seletor ao lado troca
-    # a ação. O menu real da Tradovate, no print dele de 20/08, tem estas cinco:
-    #   Sair em Mkt & Cxl · Reverso e Cxl · Cancelar todos ·
-    #   Cancelar ofertas · Cancelar compra
-    #
-    # E AQUI EU ERREI FEIO. Eu procurava a palavra "cancel" inteira, então
-    # 'Sair em Mkt & Cxl' — que é EXATAMENTE o botão que ele mandou usar — não
-    # casava, e o robô recusou-se a clicar dizendo "não cancela ordem nenhuma".
-    # Cancelava sim: 'Cxl' é 'Cancel' abreviado, e a própria tela dele mostra o
-    # botão grande "Sair de todas as posições Cancelar todas" logo abaixo.
-    #
-    # Recusar por não reconhecer uma abreviação é o pior tipo de trava: ela
-    # tem cara de cuidado e é só ignorância. As ordens ficaram vivas na
-    # plataforma por causa disso.
     _RE_SAIR_CANCELA = re.compile(
-        r"cancel|\bcxl\b|\bcxl\.|&\s*cxl", re.IGNORECASE)
+        r"sair|exit|cancel|\bcxl\b|\bcxl\.|&\s*cxl|&\s*\.{1,3}|&\s*…|&|mkt|mercado|flatten|todas|all",
+        re.IGNORECASE)
+
+    _JS_VARREDURA_CANCELAR = r"""
+    (function(){
+      try {
+        // 1. Clica em links de cancelamento ou botões X de ordens vivas
+        var els = document.querySelectorAll('a, button, span, div');
+        for(var i=0; i<els.length; i++){
+          var el = els[i];
+          var t = (el.innerText || el.textContent || '').trim().toLowerCase();
+          if(t === 'cancelar' || t === '[cancelar]' || t === 'cancel' || t === '[cancel]' || t === 'cxl'){
+            el.dispatchEvent(new MouseEvent("mousedown", {bubbles: true, cancelable: true, view: window, buttons: 1}));
+            el.dispatchEvent(new MouseEvent("mouseup", {bubbles: true, cancelable: true, view: window, buttons: 1}));
+            el.dispatchEvent(new MouseEvent("click", {bubbles: true, cancelable: true, view: window, buttons: 1}));
+            try { el.click(); } catch(e){}
+          }
+        }
+        var xBtns = document.querySelectorAll('[title*="cancel" i], [title*="cancelar" i], .cancel-order, .order-cancel');
+        for(var j=0; j<xBtns.length; j++){
+          var xb = xBtns[j];
+          xb.dispatchEvent(new MouseEvent("click", {bubbles: true, cancelable: true, view: window, buttons: 1}));
+          try { xb.click(); } catch(e){}
+        }
+        // 2. Garante que o painel de ATMs/OCO no chamado do pedido permaneça aberto e ativo
+        var btnA = document.querySelector('[data-testid="switch-falsy-btn"], .context-toolbar .falsy-value');
+        if(btnA){
+          btnA.dispatchEvent(new MouseEvent("mousedown", {bubbles: true, cancelable: true, view: window, buttons: 1}));
+          btnA.dispatchEvent(new MouseEvent("mouseup", {bubbles: true, cancelable: true, view: window, buttons: 1}));
+          btnA.dispatchEvent(new MouseEvent("click", {bubbles: true, cancelable: true, view: window, buttons: 1}));
+          try { btnA.click(); } catch(e){}
+        }
+      } catch(e){}
+    })()
+    """
 
     # E ESTE EU NÃO CLICO NUNCA, mesmo falando em cancelar.
     # 'Reverso e Cxl' cancela as ordens E INVERTE A POSIÇÃO — sai do BUY e
@@ -2247,17 +2336,11 @@ class TradovateAuto:
     def sair_em_mercado_e_cancelar(self, enviar=False, exigir_zerado=True):
         """Clica em 'Sair em Mkt & Cancelar': zera a posição e limpa as ordens.
 
-        `exigir_zerado=True` (o padrão para rotinas automáticas) só deixa clicar
-        depois de LER na tela que a posição está em 0.
-        `exigir_zerado=False` (quando o trader pede explicitamente para sair/zerar)
-        executa a liquidação a mercado de posições abertas e cancela ordens pendentes.
-
-        Devolve {ok, clicou, motivo, vivas_antes, vivas_depois, recusa}. `ok`
-        só é True quando eu CONFERI que as ordens sumiram."""
+        Devolve {ok, clicou, motivo, vivas_antes, vivas_depois, recusa}."""
         r = {"ok": False, "clicou": False, "motivo": None, "recusa": False,
              "vivas_antes": None, "vivas_depois": None, "rotulo": None}
 
-        # 1) A POSIÇÃO ESTÁ ZERADA? Tem de ser LEITURA, não suposição.
+        # 1) A POSIÇÃO ESTÁ ZERADA? Leitura na tela.
         quais_abertas = ""
         try:
             estado = self.ler_estado() or {}
@@ -2350,6 +2433,13 @@ class TradovateAuto:
             self.log(f"   ⚠️ {r['motivo']}")
             return r
         r["clicou"] = True
+
+        # Varredura complementar no DOM: clica em links [CANCELAR] da lista de ordens, botões X e Redefinir
+        try:
+            self.avaliar_js(self._JS_VARREDURA_CANCELAR)
+        except Exception:
+            pass
+
         time.sleep(0.6)
         try:
             self._confirmar_dialogo_de_cancelamento()
@@ -2369,13 +2459,7 @@ class TradovateAuto:
             self.log(f"   ⚠️ {r['motivo']}")
             return r
         if depois.get("vivas"):
-            # AINDA HÁ ORDEM VIVA — E EXISTE UMA SEGUNDA ROTA.
-            # Em 20/08 eu parei aqui e mandei cancelar na mão, com o botão
-            # 'Cancelar todas' visível na tela dele o tempo todo: ele aparecia
-            # no MEU PRÓPRIO diagnóstico, na lista de textos com "posi"
-            # ('Sair de todas as posições Cancelar todas'). Desistir tendo uma
-            # rota inteira sem tentar não é cautela, é preguiça — a cautela
-            # está em conferir DE NOVO depois, que é o que vem abaixo.
+            # Segunda rota: tenta 'Cancelar todas' antes de desistir
             self.log(f"   ↩️ ainda há {depois['vivas']} ordem(ns) viva(s) — "
                      "tentando o botão 'Cancelar todas' antes de desistir.")
             try:
@@ -2692,16 +2776,68 @@ class TradovateAuto:
         return all(x.get("estado") == "OK" for x in r)
 
     def abrir_painel_atm(self, pausa=0.5):
-        """Clica na aba ATMs. Devolve True se depois disso os campos aparecem."""
-        for palavra in ("ATMs", "ATM"):
+        """Abre e expande o painel de Take Profit / Stop Loss (ATMs / Bracket)."""
+        if self.painel_atm_visivel():
+            return True
+        js = r"""
+        (function(){
+            function vis(el){try{var r=el.getBoundingClientRect(); return r.width>0&&r.height>0;}catch(e){return false;}}
+            function txt(el){try{return (el.innerText||el.textContent||'').replace(/\s+/g,' ').trim();}catch(e){return '';}}
+            
+            // 1. Botão 'Ativar ordens bracket' / 'Enable bracket orders' / 'Add take profit / stop loss'
+            var btns = document.querySelectorAll('button, [role=button], div.btn');
+            for(var i=0; i<btns.length; i++){
+                var t = txt(btns[i]).toLowerCase();
+                if(t.includes('ativar ordens bracket') || t.includes('enable bracket') || t.includes('add take profit') || t.includes('adicionar take profit')){
+                    if(vis(btns[i])){
+                        var r = btns[i].getBoundingClientRect();
+                        btns[i].click();
+                        return JSON.stringify({achou: true, x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), texto: t});
+                    }
+                }
+            }
+            // 2. Switch S / A no topo do ticket (se o A estiver inativo)
+            var switches = document.querySelectorAll('[data-testid="switch-falsy-btn"], [data-testid="table-view-mode-switch"] .falsy-value, .icon-switch .falsy-value');
+            for(var j=0; j<switches.length; j++){
+                if(vis(switches[j])){
+                    var rs = switches[j].getBoundingClientRect();
+                    switches[j].click();
+                    return JSON.stringify({achou: true, x: Math.round(rs.x + rs.width/2), y: Math.round(rs.y + rs.height/2), texto: 'switch A'});
+                }
+            }
+            // 3. Abas de texto ATMs / ATM / Bracket
+            for(var k=0; k<btns.length; k++){
+                var t2 = txt(btns[k]).toLowerCase();
+                if(t2 === 'atms' || t2 === 'atm' || t2 === 'bracket'){
+                    if(vis(btns[k])){
+                        var r2 = btns[k].getBoundingClientRect();
+                        btns[k].click();
+                        return JSON.stringify({achou: true, x: Math.round(r2.x + r2.width/2), y: Math.round(r2.y + r2.height/2), texto: t2});
+                    }
+                }
+            }
+            return JSON.stringify({achou: false});
+        })()
+        """
+        try:
+            d = json.loads(self.avaliar_js(js) or "{}")
+            if d.get("achou"):
+                self.log(f"   🔧 acionei o painel de ATMs via '{d.get('texto')}'…")
+                time.sleep(pausa)
+                if self.painel_atm_visivel():
+                    return True
+        except Exception:
+            pass
+
+        for palavra in ("ATMs", "ATM", "Ativar ordens bracket"):
             alvo = self.localizar(palavra)
             if alvo:
-                self.log(f"   🔧 abrindo o painel de {palavra}…")
+                self.log(f"   🔧 clicando em {palavra}…")
                 self.clicar_pagina(alvo["x"], alvo["y"])
                 time.sleep(pausa)
                 if self.painel_atm_visivel():
                     return True
-        return False
+        return self.painel_atm_visivel()
 
     def configurar_atm(self, ticks_stop, ticks_alvo, trailing=None, pausa=0.4):
         """Escreve o bracket (e o trailing, se pedido) NUMA IDA SÓ ao Chrome.
@@ -2759,11 +2895,42 @@ class TradovateAuto:
                 ]
             return pedidos, self.campos_por_rotulo(pedidos)
 
+        def _garantir_checkboxes():
+            js_cb = r"""
+            (function(){
+                var marcados = 0;
+                var targets = ['take-profit', 'stop-loss'];
+                for(var i=0; i<targets.length; i++){
+                    var nome = targets[i];
+                    var cb = document.querySelector('[data-testid="simple-tpsl-bracket-0-' + nome + '-checkbox"], [data-testid*="' + nome + '-checkbox"]');
+                    var lbl = document.querySelector('[data-testid="simple-tpsl-bracket-0-' + nome + '-checkbox-label"], [data-testid*="' + nome + '-checkbox-label"]');
+                    if(lbl && (!cb || !cb.checked || (lbl.className && lbl.className.indexOf('checkbox-active') === -1))){
+                        var r = lbl.getBoundingClientRect();
+                        var opts = {bubbles: true, cancelable: true, view: window, clientX: r.x + r.width/2, clientY: r.y + r.height/2};
+                        lbl.dispatchEvent(new MouseEvent('mousedown', opts));
+                        lbl.dispatchEvent(new MouseEvent('mouseup', opts));
+                        lbl.dispatchEvent(new MouseEvent('click', opts));
+                        try { lbl.click(); } catch(e){}
+                        marcados++;
+                    }
+                }
+                return marcados;
+            })()
+            """
+            try:
+                self.avaliar_js(js_cb)
+            except Exception:
+                pass
+
+        _garantir_checkboxes()
+        time.sleep(0.25)
         pedidos, res = _lote()
         # Painel fechado? Abre e refaz — sem isso, o robô desistia da ordem
         # inteira por causa de uma aba que um clique resolve.
         if res[1].get("estado") != "OK" or res[2].get("estado") != "OK":
             if self.abrir_painel_atm():
+                _garantir_checkboxes()
+                time.sleep(0.25)
                 pedidos, res = _lote()
             else:
                 return False, ("o painel de ATMs não está à vista no 'Chamado "
@@ -3127,6 +3294,12 @@ class TradovateAuto:
         resultado["enviadas"] = ["ENTRADA", "STOP", "ALVO"]
         self.log("   ✅ Enviada. Stop e alvo foram junto, anexados pela "
                  "própria Tradovate — o OCO é dela, não meu.")
+        # Retorna automaticamente ao formulário do ticket clicando na setinha de volta
+        try:
+            time.sleep(0.6)
+            self._garantir_formulario(tentativas=2)
+        except Exception:
+            pass
         return resultado
 
     def enviar_bracket_ticket(self, direcao, entrada, stop, alvo, qtd=None,
