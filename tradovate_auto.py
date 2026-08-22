@@ -1277,8 +1277,14 @@ class TradovateAuto:
         if(!vis(el)) continue;
         var t=txt(el).trim();
         if(!t||t.length>60) continue;
-        if(/^(Enviar|Submit|Redefinir|Reset)$/i.test(t)) temEnviar=true;
+        if(/^(Enviar|Submit|Redefinir|Reset|Comprar|Vender|Buy|Sell)$/i.test(t)) temEnviar=true;
         if(/^(MODIFICAR|CANCELAR|MODIFY|CANCEL)$/i.test(t)) temComprovante=true;
+      }
+      if(!temEnviar){
+        var inputs=document.querySelectorAll('input, [data-testid*="price"], [data-testid*="qty"], [data-testid*="trading-ticket"], .trading-ticket, .ticket-form');
+        for(var j=0; j<inputs.length; j++){
+          if(vis(inputs[j])){ temEnviar=true; break; }
+        }
       }
       if(!temComprovante){
         var corpo=(document.body?txt(document.body):'');

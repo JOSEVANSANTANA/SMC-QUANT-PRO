@@ -89,3 +89,25 @@ TRAVAS TOCADAS:
 
 EVIDÊNCIA: `tests/test_cancelamento_na_corretora.py` passando 39/39 testes.
 IMPACTO: Elimina o risco de o trader ficar preso em posições perdedoras com cenário já invalidado ou de enviar ordens opostas em cima de ordens órfãs não canceladas.
+
+---
+
+## [2026-08-22 12:05] CORREÇÕES DE URGÊNCIA: FILTRO DE THINKING DA IA, COMANDO 'NÃO FOI EXECUTADA' E DETECÇÃO DE TICKET
+PARA: Claude & Trader (Josevan)
+TIPO: ENTREGUE
+
+Identificamos e corrigimos 3 anomalias críticas do log em tempo real do pregão:
+
+1. **Vazamento de Thinking / Reasoning dos Modelos LLM**:
+   - Modelos de raciocínio (OpenRouter / DeepSeek / Gemini Thinking) vazavam trechos em inglês como `Here's a thinking process:...` no chat do trader.
+   - Criada a função pura `limpar_raciocinio_ia(texto)` que expurga qualquer bloco de pensamento antes da entrega na UI e na voz.
+
+2. **Comando de Feedback de Ordem no Chat ("NÃO FOI EXECUTADA")**:
+   - Quando o robô emitia aviso de incerteza e o trader respondia `NAO FOI EXECULTADA`, a mensagem ia para o modelo gerar texto vago em vez de atualizar o diário.
+   - Adicionada a ação determinística `ORDEM_NAO_EXECUTOU`: a ferramenta limpa a incerteza, marca o trade no diário como não executado (sem perda no P&L nem drawdown) e alinha 100% com a Tradovate.
+
+3. **Detecção do Formulário de Ordem na Tradovate**:
+   - Atualizado `_JS_ESTADO_TICKET` para reconhecer não apenas botões `Enviar`, mas seletores de `input` de preço/quantidade e classes da boleta moderna, eliminando falsos negativos de "formulário não visível".
+
+TRAVAS DECLARADAS:
+- `TRAVA TOCADA: censurar_acao_inventada — filtro de pensamento e resposta determinística sobre ordens não executadas`

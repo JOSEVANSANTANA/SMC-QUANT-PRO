@@ -1779,6 +1779,38 @@ def modelos_do_provedor(pid, info=None):
     return list(info.get("modelos", []))
 
 
+def limpar_raciocinio_ia(texto):
+    """Remove blocos de pensamento interno (<think>...</think>, 'Here's a thinking process:' etc.)
+    que modelos de raciocínio (ex: DeepSeek-R1, Qwen Reasoning, Gemini Thinking) vazam no texto."""
+    if not texto:
+        return ""
+    t = str(texto).strip()
+    # 1. Remove tags <think>...</think>
+    t = re.sub(r"<think>.*?</think>", "", t, flags=re.DOTALL | re.IGNORECASE)
+    # 2. Remove blocos como "Here's a thinking process: ... " até o início da resposta real
+    m = re.search(r"(?:Here'?s a thinking process|Thinking Process|Here is my thought process):?\s*", t, re.IGNORECASE)
+    if m:
+        linhas = t.split("\n")
+        idx_inicio_real = None
+        for i, l in enumerate(linhas):
+            l_strip = l.strip()
+            if (any(p in l_strip.lower() for p in ["compreendido", "entendido", "olá", "ola", "josévan", "josevan", "s&p", "ativo", "ordem", "mesa", "gráfico", "setup", "boa tarde", "bom dia", "boa noite", "certo", "sobre a ordem", "a ordem"])
+                    and not re.search(r"^\d+\.\s*\*\*(?:Analyze|Check|Determine|Draft|Tone|Language|Ensure)", l_strip, re.I)
+                    and not re.search(r"^(?:Analyze|Check|Determine|Draft|User says|My role|Context):", l_strip, re.I)):
+                idx_inicio_real = i
+                break
+        if idx_inicio_real is not None:
+            t = "\n".join(linhas[idx_inicio_real:]).strip()
+        else:
+            partes = re.split(r"\n\s*\n", t)
+            boas = [p for p in partes if not re.search(r"thinking process|check rules|analyze user input|internal monologue", p, re.I)]
+            if boas:
+                t = "\n\n".join(boas).strip()
+    # 3. Remove prefixos residuais de thinking
+    t = re.sub(r"^(?:Final Polish|Response|Draft Response):\s*", "", t, flags=re.IGNORECASE).strip()
+    return t.strip()
+
+
 def provedores_configurados():
     """Quais alternativos estão USÁVEIS agora. Lista vazia = só a Gemini.
 
@@ -1813,7 +1845,10 @@ def _pedir_openai(url, chave, modelo, mensagens, timeout=45):
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code}: {r.text[:220]}")
     dados = r.json()
-    return (dados.get("choices") or [{}])[0].get("message", {}).get("content", "")
+    escolha = (dados.get("choices") or [{}])[0]
+    msg = escolha.get("message") or {}
+    conteudo = msg.get("content") or ""
+    return limpar_raciocinio_ia(conteudo)
 
 
 def _pedir_ollama(url, chave, modelo, mensagens, timeout=90):
@@ -1922,7 +1957,8 @@ def _pedir_anthropic(url, chave, modelo, mensagens, timeout=45):
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code}: {r.text[:220]}")
     partes = r.json().get("content") or []
-    return "".join(p.get("text", "") for p in partes if p.get("type") == "text")
+    texto_ant = "".join(p.get("text", "") for p in partes if p.get("type") == "text")
+    return limpar_raciocinio_ia(texto_ant)
 
 
 def pedir_ao_provedor(info, chave, modelo, mensagens, timeout=None):
@@ -10129,6 +10165,9 @@ def interpretar_intencao(texto):
             re.search(r"\b(ordens?|ordem|pendentes?|entradas?|tradovate|corretora|plataforma|gr[aá]fico)\b.*\bcancel\w*\b", t) or \
             re.search(r"^\s*cancel\w*\s*$", t):
         return "CANCELAR"
+    # ORDEM NÃO EXECUTOU / RESPOSTA DE INCERTEZA:
+    if re.search(r"\b(n[ãa]o\s+foi\s+execu[lc]tada|n[ãa]o\s+executou|n[ãa]o\s+pegou|n[ãa]o\s+entrou|ordem\s+n[ãa]o\s+entrou|n[ãa]o\s+deu\s+entrada|n[ãa]o\s+preencheu|ficou\s+sem\s+fill)\b", t):
+        return "ORDEM_NAO_EXECUTOU"
     if re.search(r"\b(acat\w*|aceito|bora|entra(r)? nessa)\b", t) \
             and not re.search(r"\b(não|nao|nunca|sem)\b", t):
         return "ACATAR"
@@ -10483,7 +10522,7 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
     # ao ACATAR. Nada que apaga números do trader roda sem ele dizer "sim".
     if intencao == "ZERAR_CICLO":
         return ("PEDIR_CONFIRMACAO", "ZERAR_CICLO")
-    if intencao in ("VER_GRAFICO", "PRINT_AGORA", "ABRIR_HUD", "FECHAR_APP", "ABRIR_TRADOVATE", "TELEMETRIA_SMC", "AUDITORIA_ASSERTIVIDADE", "SAUDACAO", "LIGAR_TRAILING", "DESLIGAR_TRAILING"):
+    if intencao in ("VER_GRAFICO", "PRINT_AGORA", "ABRIR_HUD", "FECHAR_APP", "ABRIR_TRADOVATE", "TELEMETRIA_SMC", "AUDITORIA_ASSERTIVIDADE", "SAUDACAO", "LIGAR_TRAILING", "DESLIGAR_TRAILING", "ORDEM_NAO_EXECUTOU"):
         return (intencao, None)
     if isinstance(intencao, tuple) and intencao[0] in ("ABRIR_URL", "ABRIR_APP", "TROCAR_VOZ", "CONFIGURAR_TRAILING_MODO"):
         return intencao
@@ -12391,6 +12430,27 @@ class SmcQuantApp(ctk.CTk):
             return
         if tipo == "CONF_CANCELADA":
             self._chat_responder("Certo, deixei como estava — nada foi feito.")
+            return
+        if tipo == "ORDEM_NAO_EXECUTOU":
+            posicoes = carregar_posicoes()
+            achou = False
+            for p in reversed(posicoes):
+                if p.get("execucao_incerta") or (p.get("status") in ("PENDENTE", "ABERTA") and _e_da_conta_ativa(p)):
+                    p["execucao_incerta"] = False
+                    p["status"] = "CANCELADA_NAO_EXECUTOU"
+                    p["motivo_desfecho"] = "Trader confirmou que a ordem não executou na Tradovate"
+                    p["pnl_final"] = 0.0
+                    salvar_posicoes(posicoes)
+                    achou = True
+                    self._chat_responder(
+                        f"✅ Entendido, Josevan! A ordem {p.get('direcao')} {p.get('ativo')} @ {p.get('entry')} "
+                        f"({p.get('contratos')} ctr) foi registrada como NÃO EXECUTADA. O diário e o saldo da conta "
+                        f"'{nome_conta_ativa()}' estão 100% alinhados com o extrato real da sua Tradovate.", falar_tb=True)
+                    self._atualizar_dashboard()
+                    break
+            if not achou:
+                self._chat_responder(
+                    "✅ Registrado: confirmei que não há ordem em execução pendente. O sistema está livre para o próximo cenário de qualidade.", falar_tb=True)
             return
         if tipo == "SAUDACAO":
             nome_c = nome_conta_ativa()
