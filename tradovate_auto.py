@@ -190,23 +190,24 @@ def plano_trailing(ticks_stop, ligado=False, frequencia=1):
 #  Função PURA, como todo o resto que decide dinheiro aqui: dá para conferir
 #  sem Chrome, sem corretora e sem mercado.
 
-# Quanto do drawdown que ainda resta pode ser devolvido a partir do topo de
-# UMA operação. 30% é folga para três trades protegidos antes de o limite apertar.
+# o que sobrou, que é exatamente o que se quer evitar.
 TRAIL_FRACAO_DO_DRAWDOWN = 0.30
-# Piso institucional anti-ruído (Micro S&P 500): 16 ticks = 4.0 pontos.
-# Qualquer trailing menor que 16 ticks é degolado pelo ruído normal de 1 vela de 5m.
-TRAIL_TICKS_MINIMO = 16
+# Abaixo disto o trail vira ruído: qualquer respiração normal do mercado tira
+# o trade. Se o teto da mesa exigir menos que isto, o certo é dizer que não dá
+# para proteger nessa quantidade de contratos — não apertar até o absurdo.
+TRAIL_TICKS_MINIMO = 4
 
 
 def plano_trailing_inteligente(ticks_stop, rr=None, probabilidade=None,
                                contratos=1, valor_do_tick=0.0,
                                drawdown_restante=None, ligado=True,
-                               frequencia=1, modo_r="auto"):
+                               frequencia=1, modo_r="auto",
+                               ruido_ticks=None, ativo=None):
     """Decide QUANDO armar o trail e a que DISTÂNCIA seguir. None = não mexer.
 
-    modo_r: "auto" (IA avalia R:R, probabilidade, regime de mercado), ou um multiplicador
-    como "1.0", "1.5", "2.0", "2.5", "3.0", etc.
-    Devolve {stop, acionar, frequencia, motivo} — `motivo` em português.
+    Devolve {stop, acionar, frequencia, motivo} — `motivo` em português, para
+    aparecer no registro: um stop que se move sozinho sem explicação é a
+    receita para ele desconfiar da ferramenta no meio do pregão.
     """
     if not ligado:
         return None
@@ -225,9 +226,10 @@ def plano_trailing_inteligente(ticks_stop, rr=None, probabilidade=None,
 
     rr = _f(rr)
     prob = _f(probabilidade)
+    ruido = _f(ruido_ticks)
     razoes = []
 
-    # Extrai multiplicador customizado se houver (ex: "1.5 R" -> 1.5)
+    # Multiplicador customizado se o trader escolheu via chat (ex: "1.5 R" -> 1.5)
     mult_custom = None
     if modo_r and str(modo_r).lower() not in ("auto", "ia", "adaptativa", "🤖 ia adaptativa (smart smc)"):
         import re
@@ -242,28 +244,35 @@ def plano_trailing_inteligente(ticks_stop, rr=None, probabilidade=None,
     if mult_custom is not None and mult_custom > 0:
         acionar = max(1, int(round(base * mult_custom)))
         distancia = max(TRAIL_TICKS_MINIMO, base)
-        razoes.append(f"Gatilho customizado em {mult_custom:.1f}R ({acionar} ticks) com folga estrutural de {distancia} ticks")
+        razoes.append(f"Gatilho customizado em {mult_custom:.1f}R ({acionar} ticks) com folga de {distancia} ticks")
     else:
-        # Modo IA Adaptativa Inteligente (SMC Institucional)
-        # NUNCA arma antes de 1.5R em trades normais para não ser stopado no reteste do Order Block
-        if rr is not None and rr >= 2.5:
+        if rr is not None and rr >= 3.0:
             acionar = int(round(base * 1.5))
-            distancia = max(TRAIL_TICKS_MINIMO, int(round(base * 1.25)))
-            razoes.append(f"R:R {rr:.1f} amplo — IA armou em 1,5R ({acionar} ticks) com folga de {distancia} ticks para não sair no reteste do bloco")
-        elif rr is not None and rr >= 1.8:
-            acionar = int(round(base * 1.5))
-            distancia = max(TRAIL_TICKS_MINIMO, base)
-            razoes.append(f"R:R {rr:.1f} intermediário — IA armou em 1,5R ({acionar} ticks) e segue a {distancia} ticks protegendo a estrutura")
+            distancia = int(round(base * 1.25))
+            razoes.append(f"R:R {rr:.1f} é largo — deixo respirar até 1,5R e sigo "
+                          "com folga, para não sair no ruído antes do movimento")
+        elif rr is not None and rr <= 2.0:
+            acionar = base
+            distancia = base
+            razoes.append(f"R:R {rr:.1f} é curto — protejo já em 1R, porque não há "
+                          "muito a ganhar esperando")
         else:
-            acionar = int(round(base * 1.25))
-            distancia = max(TRAIL_TICKS_MINIMO, base)
-            razoes.append(f"R:R {(rr or 1.5):.1f} curto — IA armou em 1,25R ({acionar} ticks) para proteção rápida")
+            acionar = base
+            distancia = base
+            razoes.append("R:R intermediário — armo em 1R com a distância do stop")
 
+        # A probabilidade só APERTA. Cenário fraco não merece corda comprida, e
+        # afrouxar por causa dela seria deixar o otimismo do modelo mexer no risco.
         if prob is not None and prob < 65 and distancia > base:
-            distancia = max(TRAIL_TICKS_MINIMO, base)
-            razoes.append(f"probabilidade {prob:.0f}% < 65% — IA manteve distância de segurança no stop base")
+            distancia = base
+            razoes.append(f"probabilidade {prob:.0f}% abaixo de 65 — encurtei a "
+                          "corda de volta para a distância do stop")
 
-    # ---- 3) O TETO DA MESA INSTITUCIONAL ----
+        if ruido is not None and ruido > 0:
+            distancia = max(distancia, int(round(ruido * 1.5)))
+            razoes.append(f"calibrado pelo ruído do mercado ({ruido:g} ticks)")
+
+    # ---- 3) O TETO DA MESA. Manda nos dois de cima. ----
     dd = _f(drawdown_restante)
     vt = _f(valor_do_tick, 0.0) or 0.0
     try:
@@ -278,16 +287,16 @@ def plano_trailing_inteligente(ticks_stop, rr=None, probabilidade=None,
             if ticks_que_cabem >= TRAIL_TICKS_MINIMO:
                 distancia = ticks_que_cabem
                 razoes.append(
-                    f"REGRA DA MESA: com {ctr} contrato(s), devolver {distancia} ticks já custa US$ {distancia * vt * ctr:,.2f} "
-                    f"— apertei o trail para {distancia} ticks para respeitar o teto do drawdown")
+                    f"REGRA DA MESA: com {ctr} contrato(s), devolver "
+                    f"{distancia} ticks já custaria US$ "
+                    f"{distancia * vt * ctr:,.2f} — o teto era "
+                    f"US$ {teto_usd:,.2f} ({TRAIL_FRACAO_DO_DRAWDOWN:.0%} do "
+                    f"drawdown que ainda resta, US$ {dd:,.2f}). Apertei o "
+                    "trail para o lucro aberto não virar drawdown ao voltar")
             else:
-                # Com quantidade grande de contratos (ex: 18 ctr), esmagar o stop abaixo de 16 ticks
-                # mata o trade no ruído. Mantemos o piso anti-ruído de 16 ticks e alertamos o risco de lote!
-                distancia = max(TRAIL_TICKS_MINIMO, int(round(base * 0.8)))
-                aviso_mesa = (
-                    f"⚠️ LOTE PESADO: com {ctr} contratos, {distancia} ticks custa US$ {distancia * vt * ctr:,.2f}. "
-                    f"Mantive o piso anti-ruído de {distancia} ticks para não morrer no spread")
-                razoes.append(f"Lote elevado ({ctr} ctr) — mantido piso anti-ruído estrutural de {distancia} ticks")
+                # Não dá para proteger nesta quantidade de contratos sem
+                # colar o stop no preço. Dizer isso é mais útil do que armar
+                # um trail que vai tirar o trade na primeira respiração.
                 aviso_mesa = (
                     f"com {ctr} contrato(s), proteger o lucro dentro do "
                     f"drawdown que resta (US$ {dd:,.2f}) exigiria um trail de "

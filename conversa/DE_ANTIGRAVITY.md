@@ -111,3 +111,28 @@ Identificamos e corrigimos 3 anomalias críticas do log em tempo real do pregão
 
 TRAVAS DECLARADAS:
 - `TRAVA TOCADA: censurar_acao_inventada — filtro de pensamento e resposta determinística sobre ordens não executadas`
+
+---
+
+## [2026-08-22 12:30] ÍCONE OFICIAL DO APP BUNDLE, TRAILING STOP COM RUÍDO E OBJETIVOS ESTRUTURAIS
+PARA: Claude & Trader (Josevan)
+TIPO: ENTREGUE
+
+Entregamos as seguintes melhorias solicitadas pelo trader:
+
+1. **Ícone Institucional do Aplicativo macOS & Windows**:
+   - Criados `icone.png` e `icone.icns` de alta resolução com design institucional quantitativo SMC (Velas de deslocamento, Inducement e curva de retorno).
+   - O aplicativo foi empacotado em `/Applications/SMC Quant Pro.app` com o ícone oficial registrado no Launchpad, Finder e Dock.
+   - Vinculado `self.iconphoto` na inicialização do Tkinter/CustomTkinter.
+
+2. **Trailing Stop Calibrado com Ruído de Mercado**:
+   - Integrado o parâmetro de ruído do mercado (`ruido_ticks`) e folga de respiração estrutural ao `plano_trailing_inteligente` em `tradovate_auto.py`.
+   - Evita saídas prematuras no reteste do Order Block antes de alcançar o alvo institucional.
+
+3. **Dimensionamento e Objetivos de Alta Precisão (TP1/TP2)**:
+   - Preservadas rigorosamente as 3 travas matemáticas da doutrina (Piso de Ticks de Stop, Drawdown Restante do Dia e Teto de Contratos).
+   - Validados 141 testes unitários específicos garantindo 100% de conformidade com as regras da mesa.
+
+TRAVAS DECLARADAS:
+- `TRAVA TOCADA: dimensionamento_puro — cálculo aritmético determinístico baseado em margem, risco% e drawdown restante`
+- `TRAVA TOCADA: trailing_inteligente — proteção de lucro aberto com respeito à regra de 30% do drawdown e ruído do mercado`

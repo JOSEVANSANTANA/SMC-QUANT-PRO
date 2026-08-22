@@ -10779,6 +10779,16 @@ class SmcQuantApp(ctk.CTk):
         self.minsize(_larg, min(int(800 * self._escala_letra), 900))
         self.protocol("WM_DELETE_WINDOW", self.ao_fechar)
 
+        # Ícone visual da janela (macOS e Windows)
+        try:
+            if os.path.exists("icone.png"):
+                img_ico = tk.PhotoImage(file="icone.png")
+                self.iconphoto(True, img_ico)
+            elif os.path.exists("icone.ico"):
+                self.iconbitmap("icone.ico")
+        except Exception:
+            pass
+
         self.processo_motor = None
         self.motor_rodando = False
         # motor_rodando = "o Popen voltou". motor_confirmado = "a porta 3939
@@ -17129,7 +17139,8 @@ class SmcQuantApp(ctk.CTk):
                         rr=_rr, probabilidade=probabilidade,
                         contratos=qtd, valor_do_tick=_vt,
                         drawdown_restante=_dd_resta, ligado=usar_trail,
-                        modo_r=getattr(self, "tv_trail_modo_var", None).get() if getattr(self, "tv_trail_modo_var", None) else "auto")
+                        modo_r=getattr(self, "tv_trail_modo_var", None).get() if getattr(self, "tv_trail_modo_var", None) else "auto",
+                        ativo=ativo or getattr(self, "_ultimo_ativo_lido", None))
                     if trailing:
                         # UM STOP QUE SE MOVE SOZINHO SEM EXPLICAÇÃO É A
                         # RECEITA PARA ELE DESCONFIAR DA FERRAMENTA NO MEIO DO
