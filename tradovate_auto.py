@@ -2591,10 +2591,27 @@ class TradovateAuto:
             self.log(f"   ❌ {r['motivo']}")
             return r
         r["ok"] = True
-        r["motivo"] = (f"ordens canceladas na plataforma "
-                       f"({r['vivas_antes']} → 0)"
-                       + (f", posições fechadas ({quais_abertas})" if quais_abertas else ", com a posição zerada")
-                       + ".")
+        # "CANCELADAS (0 → 0)" NÃO É CANCELAMENTO — É UMA TELA JÁ LIMPA.
+        #
+        # 22/08, às 10:53 e às 11:56, saiu para ele: "✅ ORDENS CANCELADAS NA
+        # PLATAFORMA: BUY MESU6 @ 7545,0 ... (0 → 0), com a posição zerada".
+        # Zero antes e zero depois quer dizer que não havia o que cancelar. O
+        # resultado final está certo (a tela está limpa, que era o objetivo),
+        # mas a frase credita ao programa uma ação que ele não fez.
+        #
+        # Parece implicância e não é: é a mesma família do lucro que não
+        # existiu. No dia em que a leitura falhar e devolver zero por engano,
+        # essa frase vai dizer "cancelei" com três ordens vivas na tela.
+        if not r.get("vivas_antes"):
+            r["motivo"] = ("não havia ordem viva na plataforma para cancelar"
+                           + (f"; posições fechadas ({quais_abertas})"
+                              if quais_abertas else "; a posição já estava zerada")
+                           + ".")
+        else:
+            r["motivo"] = (f"ordens canceladas na plataforma "
+                           f"({r['vivas_antes']} → 0)"
+                           + (f", posições fechadas ({quais_abertas})" if quais_abertas else ", com a posição zerada")
+                           + ".")
         self.log(f"   ✅ {r['motivo']}")
         return r
 

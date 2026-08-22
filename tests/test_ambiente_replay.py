@@ -1,12 +1,21 @@
-"""Testes de identificação determinística de Conta e Modo Replay (RPL)."""
+"""Testes de identificação determinística de Conta e Modo Replay (RPL).
+
+PORTADO PARA O HARNESS EM 22/08. A versão original fazia `import main_app`,
+que arrasta customtkinter e tkinter para dentro do processo de teste. No Mac
+do trader isso passa; em qualquer máquina sem a pilha gráfica — e o servidor
+onde a suíte é auditada é uma delas — o módulo inteiro morre no import e os
+três testes viram ERROR sem nunca terem rodado.
+
+É o motivo de `carregar()` existir: o teste isola as funções que quer e não
+depende de haver tela. Aqui bastavam duas.
+"""
 import unittest
-import sys
 from unittest.mock import MagicMock
 
-from harness import RAIZ
-sys.path.insert(0, RAIZ)
-import main_app  # noqa: E402
-import tradovate_auto as tv  # noqa: E402
+from harness import carregar
+
+ns = carregar(["texto_do_ambiente_atual"],
+              stubs={"unicodedata": __import__("unicodedata")})
 
 
 class TestDeteccaoAmbienteReplay(unittest.TestCase):
@@ -20,7 +29,7 @@ class TestDeteccaoAmbienteReplay(unittest.TestCase):
             "velocidade": "400%",
             "horario_mercado": "09:07:16 CDT"
         }
-        txt = main_app.texto_do_ambiente_atual(bot)
+        txt = ns["texto_do_ambiente_atual"](bot)
         self.assertIn("MARKET REPLAY", txt)
         self.assertIn("RPL2893430-5", txt)
         self.assertIn("400%", txt)
@@ -32,7 +41,7 @@ class TestDeteccaoAmbienteReplay(unittest.TestCase):
             "modo": "DEMO",
             "eh_replay": False,
         }
-        txt_demo = main_app.texto_do_ambiente_atual(bot_demo)
+        txt_demo = ns["texto_do_ambiente_atual"](bot_demo)
         self.assertIn("DEMO", txt_demo)
 
         bot_real = MagicMock()
@@ -41,21 +50,16 @@ class TestDeteccaoAmbienteReplay(unittest.TestCase):
             "modo": "REAL",
             "eh_replay": False,
         }
-        txt_real = main_app.texto_do_ambiente_atual(bot_real)
+        txt_real = ns["texto_do_ambiente_atual"](bot_real)
         self.assertIn("MERCADO REAL", txt_real)
 
-    def test_intencao_pergunta_sobre_replay_ou_mercado_real(self):
-        perguntas = [
-            "é replay?",
-            "estou no replay?",
-            "é mercado real ou replay?",
-            "estamos no replay?",
-            "qual ambiente?",
-            "modo replay",
-        ]
-        for p in perguntas:
-            intencao = main_app.interpretar_intencao(p)
-            self.assertEqual(intencao, "AMBIENTE_MERCADO", f"Falhou para: {p}")
+    # O teste de ROTEAMENTO ("é replay?" vira AMBIENTE_MERCADO) mudou-se para
+    # test_conversa.py. Não foi para escondê-lo: `interpretar_intencao` puxa
+    # meia dúzia de funções junto, e a lista dessas dependências já é mantida
+    # lá, no helper `_ns_intencao()`. Uma segunda cópia da lista aqui ficaria
+    # desatualizada na primeira refatoração — e um teste de intenção que não
+    # roda é pior do que nenhum. Cada teste no arquivo de quem já tem a
+    # ferramenta certa.
 
 
 if __name__ == "__main__":

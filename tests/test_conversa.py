@@ -336,3 +336,23 @@ class TestConfirmacaoDoAcatar(unittest.TestCase):
         ns = _ns_intencao()
         tipo, _ = ns["processar_turno_chat"]("status", confirmacao_pendente="ACATAR")
         self.assertEqual(tipo, "EXECUTAR")   # executa o STATUS, não o ACATAR
+
+
+class TestQualAmbiente(unittest.TestCase):
+    """'É replay?' tem de virar leitura da plataforma, não conversa.
+
+    Veio de 22/08, 12:43. Ele perguntou "É replay?" e recebeu meia página de
+    deliberação em inglês, o modelo pesando se a conta 'TESTES SMC QUANT' era
+    replay ou não a partir do prompt. A resposta certa não estava no modelo:
+    estava na tela, no prefixo RPL da conta.
+
+    Este teste mora aqui, e não em test_ambiente_replay.py, porque
+    `interpretar_intencao` só roda com a dezena de dependências que o helper
+    `_ns_intencao()` deste arquivo já mantém.
+    """
+
+    def test_pergunta_sobre_ambiente_vira_leitura_da_plataforma(self):
+        ns = _ns_intencao()
+        for p in ("é replay?", "estou no replay?", "é mercado real ou replay?",
+                  "estamos no replay?", "qual ambiente?", "modo replay"):
+            self.assertEqual(ns["interpretar_intencao"](p), "AMBIENTE_MERCADO", p)

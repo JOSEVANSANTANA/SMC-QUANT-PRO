@@ -1808,7 +1808,70 @@ def limpar_raciocinio_ia(texto):
                 t = "\n\n".join(boas).strip()
     # 3. Remove prefixos residuais de thinking
     t = re.sub(r"^(?:Final Polish|Response|Draft Response):\s*", "", t, flags=re.IGNORECASE).strip()
+
+    # 4. E SE, DEPOIS DE TUDO ISSO, O QUE SOBROU AINDA FOR RACIOCÍNIO?
+    #
+    # 22/08, 12:43. Ele perguntou "É replay?" e recebeu isto no chat da mesa:
+    #
+    #   1.  **Analyze the user's question:** The user asks "É replay?"
+    #   2.  **Consult the system instructions and context:** ...
+    #   *   Let's re-read the "DIRETRIZES DE COMPORTAMENTO". ...
+    #
+    # Nenhum dos três passos acima encostou nisso, porque os três dependem de
+    # um CABEÇALHO ("Here's a thinking process:") que este vazamento não tem:
+    # ele já começa no passo 1. O filtro procurava a etiqueta, não a coisa.
+    #
+    # Os passos 1-3 tentam RESGATAR a resposta de dentro do raciocínio,
+    # procurando a linha onde ela começa. É palpite — e num painel de mesa
+    # palpite é a coisa que este programa inteiro existe para não fazer. Se o
+    # que sobrou É o raciocínio, a saída honesta é dizer que o modelo não
+    # respondeu. Ele reformula a pergunta ou tenta de novo; o que ele NÃO pode
+    # é receber deliberação interna em inglês achando que é análise da mesa.
+    if _parece_raciocinio_interno(t):
+        return ("⚠️ O modelo devolveu o rascunho do raciocínio dele em vez da "
+                "resposta, e eu não vou adivinhar qual pedaço era a resposta. "
+                "Pergunte de novo — se repetir, troque de modelo em "
+                "Motor & WhatsApp.")
     return t.strip()
+
+
+# Marcas de deliberação interna. Cada uma sozinha pode aparecer numa resposta
+# legítima; o que denuncia o rascunho é a REPETIÇÃO delas.
+_MARCAS_DE_RACIOCINIO = (
+    r"\*\*(?:Analyze|Analise|Consult|Determine|Identify|Formulate|Draft|Check|"
+    r"Verify|Review|Plan|Consider|Evaluate)[^*]{0,60}\*\*",
+    r"^\s*[-*•]?\s*(?:Let'?s|Let me|I need to|I should|I must|I'?ll)\s+"
+    r"(?:re-?read|check|be careful|keep|draft|refine|look|make sure|avoid|"
+    r"answer|respond|verify|consider)\b",
+    r"\b(?:thinking process|internal monologue|chain of thought|"
+    r"draft response|final polish|response strategy|check(?:ing)? (?:the )?"
+    r"rules?|user says|user asks|my role|per rule \d|rule \d+:)\b",
+    r"^\s*\d+\.\s+\*\*[^*]+\*\*\s*:",
+)
+
+
+def _parece_raciocinio_interno(texto):
+    """O texto é deliberação do modelo em vez de resposta ao trader?
+
+    Função PURA e conservadora, porque o custo dos dois erros é diferente:
+    engolir uma resposta boa gera um "pergunte de novo" chato; deixar passar
+    o rascunho põe inglês e hesitação no painel de quem está posicionado.
+    Mesmo assim, ela exige DUAS marcas independentes — uma sozinha ("Let me
+    check" citado dentro de uma explicação) não condena o texto inteiro.
+    """
+    if not texto:
+        return False
+    t = str(texto)
+    # Resposta curta não é rascunho: rascunho é longo por natureza.
+    if len(t) < 200:
+        return False
+    marcas = 0
+    for padrao in _MARCAS_DE_RACIOCINIO:
+        if re.search(padrao, t, re.IGNORECASE | re.MULTILINE):
+            marcas += 1
+        if marcas >= 2:
+            return True
+    return False
 
 
 def provedores_configurados():
@@ -2223,15 +2286,22 @@ def valor_por_ponto_do_ativo(asset_symbol: str) -> float:
             return VALOR_POR_PONTO[prefixo]
     return VALOR_POR_PONTO_PADRAO
 
+# Quanto do drawdown QUE AINDA RESTA hoje uma ÚNICA operação pode arriscar.
+# Um terço deixa o trader levar três stops seguidos e continuar no jogo. É o
+# número que separa "tive um dia ruim" de "perdi a conta antes do almoço".
+FRACAO_MAX_DO_RESTANTE_PADRAO = 0.33
+
+
 def calcular_contratos(entry, stop, asset_symbol, margem, risco_pct, drawdown_maximo,
-                       max_contratos=0, min_ticks_stop=None, restante_dia=None):
+                       max_contratos=0, min_ticks_stop=None, restante_dia=None,
+                       fracao_max_do_restante=None):
     """
     Dimensiona a posição com base no plano da mesa:
     - risco em US$ por trade = margem × risco_pct%
     - risco por contrato = distância até o stop (pontos) × valor por ponto do ativo
     - contratos = risco permitido ÷ risco por contrato
 
-    TRÊS TRAVAS, todas determinísticas (nada aqui passa por modelo):
+    QUATRO TRAVAS, todas determinísticas (nada aqui passa por modelo):
 
     1) PISO DE STOP. Um stop mais curto que `min_ticks_stop` não dimensiona
        posição nenhuma. Sem esse piso, um stop de 1,87 ponto no MES virava
@@ -2239,7 +2309,11 @@ def calcular_contratos(entry, stop, asset_symbol, margem, risco_pct, drawdown_ma
     2) DRAWDOWN QUE AINDA RESTA HOJE. Antes o teto era o drawdown CHEIO do
        plano, mesmo depois de o dia já ter consumido quase todo ele. Agora,
        quem manda é o que sobrou: `restante_dia`.
-    3) TETO DE CONTRATOS. Limite duro por operação, definido pelo trader
+    3) FATIA MÁXIMA DESSE RESTANTE POR OPERAÇÃO. O que sobrou é orçamento do
+       DIA; uma entrada só pode gastar um pedaço dele. Sem esta, o teto (2)
+       autorizava uma aposta que valia o dia inteiro — e em 22/08 autorizou:
+       50 contratos, stop de US$2.000, drawdown restante de US$2.000.
+    4) TETO DE CONTRATOS. Limite duro por operação, definido pelo trader
        (0 = automático, sem teto fixo).
 
     Retorna dict com os detalhes para exibir na mensagem. `motivo_limite` diz
@@ -2265,15 +2339,50 @@ def calcular_contratos(entry, stop, asset_symbol, margem, risco_pct, drawdown_ma
     motivo = None
 
     # (2) O teto é o drawdown QUE AINDA RESTA hoje, não o drawdown cheio.
+    #
+    # E UMA OPERAÇÃO SOZINHA NÃO PODE CONSUMIR O QUE RESTA DO DIA INTEIRO.
+    #
+    # Esta segunda metade é de 22/08 e nasceu do pregão dele. O log inteiro:
+    #
+    #   12:03  BUY MESU6 50 ctr @ 7550,0 · stop 7542,0
+    #   12:07  Operação encerrada no STOP: resultado US$ -2.000,00
+    #   12:08  o prejuízo de hoje bateu o drawdown máximo do plano
+    #
+    # A conta fecha exata: stop de 8 pontos × US$5/ponto = US$40 por contrato;
+    # com US$2.000 de drawdown restante, 2000 ÷ 40 = 50 contratos. O programa
+    # dimensionou uma posição cujo STOP valia CEM POR CENTO do que restava do
+    # dia. Não houve defeito de execução: o stop fez o que stop faz, e o dia
+    # acabou no primeiro trade perdedor. O mesmo cálculo tinha produzido 60
+    # contratos às 11:56 e 33 às 11:57.
+    #
+    # O erro é de conceito, e é meu: o drawdown restante é orçamento do DIA e
+    # estava sendo usado como orçamento de UMA ENTRADA. Como trava, ela só
+    # sabia reduzir o risco até o limite — nunca disse que uma única aposta
+    # não pode valer o limite todo. Mesa nenhuma opera assim: se o pior caso
+    # de um trade zera o dia, não existe segundo trade, e uma sequência de
+    # dois perdedores normais (que acontece toda semana) vira conta reprovada.
+    #
+    # Agora o dia é fatiado. Com 1/3, ele sobrevive a três stops seguidos —
+    # e é o trader quem escolhe a fatia no Plano, se quiser outra.
     teto_dd = None
     if restante_dia is not None:
         teto_dd = max(0.0, float(restante_dia))
     elif drawdown_maximo:
         teto_dd = abs(float(drawdown_maximo))
-    if teto_dd is not None and risco_usd_permitido > teto_dd:
-        risco_usd_permitido = teto_dd
-        motivo = (f"limitado pelo drawdown que ainda resta hoje "
-                  f"(US${teto_dd:,.2f})")
+    if teto_dd is not None:
+        try:
+            fracao = float(fracao_max_do_restante or 0)
+        except (TypeError, ValueError):
+            fracao = 0.0
+        if not (0 < fracao <= 1):
+            fracao = FRACAO_MAX_DO_RESTANTE_PADRAO
+        teto_da_operacao = teto_dd * fracao
+        if risco_usd_permitido > teto_da_operacao:
+            risco_usd_permitido = teto_da_operacao
+            motivo = (
+                f"limitado a {fracao:.0%} do drawdown que ainda resta hoje "
+                f"(US${teto_da_operacao:,.2f} de US${teto_dd:,.2f}) — uma "
+                f"operação sozinha não pode gastar o dia inteiro")
 
     pontos_risco = abs(entry - stop)
     risco_por_contrato = pontos_risco * vpp
@@ -2319,9 +2428,15 @@ def calcular_contratos(entry, stop, asset_symbol, margem, risco_pct, drawdown_ma
     # arredondados para baixo). É este o número honesto para mostrar ao trader.
     risco_real_usd = round(contratos * risco_por_contrato, 2)
 
-    if contratos == 0 and motivo is None:
-        motivo = (f"o risco de 1 contrato (US${risco_por_contrato:,.2f}) já passa "
-                  f"do que o plano permite por operação (US${risco_usd_permitido:,.2f}).")
+    if contratos == 0:
+        # ZERO CONTRATOS É RESPOSTA, NÃO É FALHA. Quando nem um contrato cabe
+        # no que sobrou do dia, a operação certa é não operar — insistir aqui
+        # é exatamente como se perde uma conta de mesa. O motivo tem de dizer
+        # isso com todas as letras, senão ele vê "0" e acha que quebrou.
+        base = (f"o risco de 1 contrato (US${risco_por_contrato:,.2f}) já passa "
+                f"do que o plano permite nesta operação "
+                f"(US${risco_usd_permitido:,.2f})")
+        motivo = (f"{base} — {motivo}." if motivo else f"{base}.")
 
     return {
         "contratos": contratos,
@@ -2618,6 +2733,8 @@ def dimensionar_pelo_plano(entry, stop, ativo, plano=None, restante_dia=None):
         max_contratos=plano.get("max_contratos", 0),
         min_ticks_stop=plano.get("min_ticks_stop", MIN_TICKS_STOP_PADRAO),
         restante_dia=restante_dia,
+        fracao_max_do_restante=plano.get("fracao_max_do_restante",
+                                         FRACAO_MAX_DO_RESTANTE_PADRAO),
     )
 
 def calcular_r_multiplo(direcao, entry, stop, preco_saida):

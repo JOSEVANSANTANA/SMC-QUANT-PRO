@@ -50,20 +50,67 @@ def carregar(nomes, stubs=None, caminho=None):
     procurados = set(nomes)
     achados, trechos = set(), []
 
+    # AS CONSTANTES DE MÓDULO QUE O CÓDIGO PEDIDO USA VÊM JUNTO, SOZINHAS.
+    #
+    # 22/08: um commit acrescentou `_RE_AMBIENTE_OU_REPLAY` e passou a usá-lo
+    # dentro de `interpretar_intencao`. A função continuou correta e o
+    # aplicativo continuou funcionando — mas DEZOITO testes quebraram com
+    # NameError, porque o namespace isolado só recebia os nomes listados em
+    # cada `carregar([...])`. O teste acusava um defeito que não existia, e
+    # consertar exigia editar a lista de cinco arquivos de teste.
+    #
+    # Isso fazia do harness uma armadilha: quem criasse uma constante nova
+    # derrubava a suíte sem ter errado nada — e, pior, aprendia a desconfiar
+    # dela. Uma suíte em que a falha nem sempre significa defeito para de ser
+    # lida, e é justamente ela que segura as travas de dinheiro deste projeto.
+    #
+    # Só ATRIBUIÇÕES entram automaticamente, nunca funções ou classes. Cada
+    # teste continua escolhendo a dedo QUAIS funções quer isolar, que é o
+    # ponto do harness; o que ele deixa de exigir é a lista de constantes que
+    # essas funções usam por dentro — detalhe de implementação que o teste não
+    # tem como conhecer e que muda a cada refatoração legítima.
+    constantes = {}
+    for no in arvore.body:
+        if isinstance(no, ast.Assign):
+            for t in no.targets:
+                if isinstance(t, ast.Name):
+                    constantes[t.id] = no
+
+    def _nomes_usados(no):
+        return {n.id for n in ast.walk(no) if isinstance(n, ast.Name)}
+
+    # Fecho transitivo: `_RE_ACAO_INVENTADA` é montada a partir de
+    # `_ALEGACOES_FALSAS`, então trazer só a primeira não bastava.
+    necessarias, fila = set(), []
+    for no in arvore.body:
+        nome = getattr(no, "name", None)
+        if nome in procurados:
+            fila.append(no)
+        elif isinstance(no, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id in procurados for t in no.targets):
+            fila.append(no)
+    while fila:
+        atual = fila.pop()
+        for usado in _nomes_usados(atual):
+            if usado in constantes and usado not in necessarias and usado not in procurados:
+                necessarias.add(usado)
+                fila.append(constantes[usado])
+
     for no in arvore.body:
         alvo = None
         if isinstance(no, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             alvo = no.name
         elif isinstance(no, ast.Assign):
             for t in no.targets:
-                if isinstance(t, ast.Name) and t.id in procurados:
+                if isinstance(t, ast.Name) and (t.id in procurados or t.id in necessarias):
                     alvo = t.id
                     break
-        if alvo and alvo in procurados:
+        if alvo and (alvo in procurados or alvo in necessarias):
             decoradores = getattr(no, "decorator_list", None)
             ini = (decoradores[0].lineno - 1) if decoradores else (no.lineno - 1)
             trechos.append("".join(linhas[ini:no.end_lineno]))
-            achados.add(alvo)
+            if alvo in procurados:
+                achados.add(alvo)
 
     faltando = procurados - achados
     assert not faltando, f"não achei no main_app.py: {sorted(faltando)}"

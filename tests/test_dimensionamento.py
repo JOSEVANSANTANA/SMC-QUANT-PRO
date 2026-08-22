@@ -119,17 +119,33 @@ class TestTetoDeContratos(unittest.TestCase):
 
 
 class TestDrawdownRestante(unittest.TestCase):
-    def test_teto_passa_a_ser_o_que_sobrou_do_dia(self):
+    def test_teto_passa_a_ser_UMA_FATIA_do_que_sobrou_do_dia(self):
+        """ATUALIZADO EM 22/08, e o motivo da mudança está no log do pregão.
+
+        A versão anterior deste teste afirmava: "sobram US$222,50 — e é ISSO
+        que a próxima operação pode arriscar". Era o raciocínio de quem
+        escreveu a trava, e estava errado pela metade. O que sobrou é
+        orçamento do DIA; usá-lo inteiro numa entrada significa que o primeiro
+        stop encerra o dia.
+
+        Em 22/08 isso saiu do campo teórico: com US$2.000 restantes e um stop
+        de US$40 por contrato, o programa dimensionou 50 contratos e a
+        operação seguinte perdeu exatamente US$2.000 às 12:07.
+
+        O teto do dia continua valendo — o que mudou é que uma operação só
+        pega uma fatia dele.
+        """
         ns = _ns()
         # O dia já perdeu US$1.177,50 de um drawdown de US$1.400. Sobram
-        # US$222,50 — e é ISSO que a próxima operação pode arriscar, não os
-        # US$280 do "20% da margem".
+        # US$222,50, e 33% disso (US$73,42) é o que UMA entrada pode arriscar.
         r = ns["calcular_contratos"](7772.00, 7767.00, "MESU6", 1400, 20, 1400,
                                      restante_dia=222.50)
-        self.assertEqual(r["risco_usd"], 222.50)
+        self.assertEqual(r["risco_usd"], 73.42)
         self.assertIn("drawdown que ainda resta", r["motivo_limite"])
-        # 5 pontos × US$5 = US$25/contrato → 222,50 ÷ 25 = 8 contratos
-        self.assertEqual(r["contratos"], 8)
+        # 5 pontos × US$5 = US$25/contrato → 73,42 ÷ 25 = 2 contratos.
+        # Com os 8 de antes, um único stop levava US$200 dos US$222,50 que
+        # restavam. Agora restam três tentativas em vez de uma.
+        self.assertEqual(r["contratos"], 2)
 
     def test_sem_restante_usa_o_drawdown_cheio(self):
         ns = _ns()
@@ -208,10 +224,14 @@ class TestDimensionarPeloPlano(unittest.TestCase):
         r = ns["dimensionar_pelo_plano"](7772.43, 7770.56, "MESU6")
         self.assertEqual(r["contratos"], 0)
         self.assertIn("curto demais", r["motivo_limite"])
-        # Stop de 5 pontos: passa no piso, mas o drawdown restante aperta.
+        # Stop de 5 pontos: passa no piso, mas o drawdown restante aperta —
+        # e agora aperta pela FATIA, não pelo restante inteiro. O atalho tem
+        # de levar a fatia junto: se `dimensionar_pelo_plano` esquecer de
+        # passá-la, todo o resto do programa volta a dimensionar pelo dia
+        # cheio sem que nada acuse.
         r2 = ns["dimensionar_pelo_plano"](7772.00, 7767.00, "MESU6")
-        self.assertEqual(r2["risco_usd"], 222.50)
-        self.assertEqual(r2["contratos"], 8)
+        self.assertEqual(r2["risco_usd"], 73.42)
+        self.assertEqual(r2["contratos"], 2)
 
 
 if __name__ == "__main__":
