@@ -1816,7 +1816,32 @@ class TradovateAuto:
       }
 
       var res={ok:false, motivo:'', estrategia:'', linhas:[], preco:null,
+               conta:null, modo:"REAL", eh_replay:false, velocidade:null, horario_mercado:null,
                diag:{amostras:[], textos_posi:[]}};
+
+      // ================= IDENTIFICAÇÃO DETERMINÍSTICA: CONTA & MODO REPLAY =================
+      var corpoTexto = (document.body ? (document.body.innerText || document.body.textContent || '') : '');
+      var elsConta = document.querySelectorAll('.account-dropdown, [data-testid*="account"], .account-selector, div, span, select, p, label');
+      for(var ic=0; ic<elsConta.length; ic++){
+        var tc = txt(elsConta[ic]);
+        if(!tc || tc.length > 60) continue;
+        var mRpl = tc.match(/\b(RPL[0-9A-Z-]+)\b/i);
+        if(mRpl){ res.conta = mRpl[1]; res.eh_replay = true; res.modo = "REPLAY"; break; }
+        var mDemo = tc.match(/\b(DEMO[0-9A-Z-]+)\b/i);
+        if(mDemo){ res.conta = mDemo[1]; res.modo = "DEMO"; break; }
+        var mNum = tc.match(/\b([0-9]{6,10}(?:-[0-9]+)?)\b/);
+        if(mNum && !res.conta){ res.conta = mNum[1]; }
+      }
+      if(!res.eh_replay){
+        if(/\bRPL[0-9A-Z-]*\b/i.test(corpoTexto) || /VELOCIDADE\s*:\s*\d+%/i.test(corpoTexto) || /\(R\)\s*\d{2}:\d{2}/i.test(corpoTexto)){
+          res.eh_replay = true;
+          res.modo = "REPLAY";
+        }
+      }
+      var mVel = corpoTexto.match(/VELOCIDADE\s*:\s*(\d+%)/i);
+      if(mVel) res.velocidade = mVel[1];
+      var mH = corpoTexto.match(/(\d{2}:\d{2}:\d{2}\s*(?:CDT|EST|EDT|CST|UTC|BRT)?)/i);
+      if(mH) res.horario_mercado = mH[1];
 
       // ================= PREÇO AO VIVO =================
       // Lê COMPRA/VENDA (bid/ask) do painel. É o preço EXATO da plataforma —
@@ -2146,6 +2171,17 @@ class TradovateAuto:
         if not d.get("ok") and not d.get("conexao_perdida"):
             self.log(f"ℹ️ Posições: {d.get('motivo', 'leitura falhou')}.")
         return d
+
+    def ler_ambiente(self):
+        """Identifica a Conta ativa, Modo (REAL / DEMO / REPLAY), Velocidade e Horário do Mercado."""
+        d = self.ler_estado() or {}
+        return {
+            "conta": d.get("conta"),
+            "modo": d.get("modo", "REAL"),
+            "eh_replay": bool(d.get("eh_replay")),
+            "velocidade": d.get("velocidade"),
+            "horario_mercado": d.get("horario_mercado"),
+        }
 
     def diagnosticar_posicoes(self):
         """Dump do que a leitura enxerga. Se a detecção não pegar na SUA tela,

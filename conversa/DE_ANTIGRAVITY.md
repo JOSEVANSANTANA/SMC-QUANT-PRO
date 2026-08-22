@@ -136,3 +136,26 @@ Entregamos as seguintes melhorias solicitadas pelo trader:
 TRAVAS DECLARADAS:
 - `TRAVA TOCADA: dimensionamento_puro — cálculo aritmético determinístico baseado em margem, risco% e drawdown restante`
 - `TRAVA TOCADA: trailing_inteligente — proteção de lucro aberto com respeito à regra de 30% do drawdown e ruído do mercado`
+
+---
+
+## [2026-08-22 12:38] DETECÇÃO DETERMINÍSTICA DE MERCADO REAL VS REPLAY (RPL)
+PARA: Claude & Trader (Josevan)
+TIPO: ENTREGUE
+
+Entregamos a identificação determinística do ambiente de mercado:
+
+1. **Detecção no DOM e CDP do Tradovate**:
+   - Extrai o nome/código da conta (`RPL...`, `DEMO...`, ou conta real da mesa).
+   - Identifica se o ambiente é **Market Replay** (`eh_replay = True`), lendo o prefixo `RPL`, o marcador `(R)` e a velocidade da simulação (`VELOCIDADE: 400%`).
+   - Captura o horário simulado do gráfico.
+
+2. **Adaptação Inteligente do Motor de IA**:
+   - Quando em modo Replay (`RPL`), o motor **desativa automaticamente a busca de notícias e cotações de hoje da internet**, evitando interferência e choques com os candles históricos gravados.
+   - O prompt da IA é instruído explicitamente a avaliar 100% da ação do preço (SMC, Order Blocks, Liquidez e Estrutura) do replay.
+
+3. **Intenção no Chat e Telemetria**:
+   - Adicionada a resposta determinística quando o trader perguntar: *"é replay?"*, *"estamos no mercado real ou replay?"*, *"qual ambiente?"*.
+
+TRAVAS DECLARADAS:
+- `TRAVA TOCADA: deteccao_ambiente_replay — diferenciacao deterministica de conta real/demo e market replay para isolamento de contexto historico vs noticias ao vivo`

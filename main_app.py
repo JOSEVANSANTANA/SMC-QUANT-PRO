@@ -6572,6 +6572,45 @@ _RE_SAUDACAO = re.compile(
     r"cheguei|voltei|estou aqui|to aqui)\b[\s!,.?]*$", re.I)
 
 
+_RE_AMBIENTE_OU_REPLAY = re.compile(
+    r"\b(e\s+replay|[ée]\s+replay|e\s+mercado\s+real|[ée]\s+mercado\s+real|estou\s+no\s+replay|estamos\s+no\s+replay|"
+    r"modo\s+replay|conta\s+replay|qual\s+conta|qual\s+ambiente|mercado\s+real\s+ou\s+replay|"
+    r"e\s+simula[çc][ãa]o|[ée]\s+simula[çc][ãa]o|e\s+backtest|[ée]\s+backtest|estou\s+na\s+conta\s+real|estou\s+em\s+replay)\b", re.I)
+
+
+def texto_do_ambiente_atual(bot_tv=None):
+    """Responde se a plataforma está em Mercado Real, Demo ou Market Replay (RPL)."""
+    amb = {}
+    if bot_tv:
+        try:
+            amb = bot_tv.ler_ambiente() or {}
+        except Exception:
+            amb = {}
+    conta = amb.get("conta")
+    eh_replay = bool(amb.get("eh_replay") or (conta and str(conta).upper().startswith("RPL")))
+    vel = amb.get("velocidade") or "100%"
+    hora = amb.get("horario_mercado")
+
+    if eh_replay:
+        linhas = [
+            f"🎮 **MODO ATUAL: MARKET REPLAY (Simulação Histórica)**",
+            f"• **Conta:** {conta or 'RPL'}",
+            f"• **Velocidade:** {vel}",
+        ]
+        if hora:
+            linhas.append(f"• **Horário da Simulação:** {hora}")
+        linhas.append("\n💡 **Comportamento Inteligente:** Você está em replay de pregão gravado. A IA analisa 100% dos padrões gráficos SMC e Order Blocks, desativando notícias de hoje da internet para evitar interferências.")
+        return "\n".join(linhas)
+    elif conta and str(conta).upper().startswith("DEMO"):
+        return (f"🟡 **MODO ATUAL: CONTA DE SIMULAÇÃO AO VIVO (DEMO)**\n"
+                f"• **Conta:** {conta}\n"
+                f"• **Mercado:** Cotações ao vivo em tempo real com execução simulada.")
+    else:
+        return (f"🔴 **MODO ATUAL: PREGÃO AO VIVO (MERCADO REAL)**\n"
+                f"• **Conta:** {conta or 'Conta Ativa na Tradovate'}\n"
+                f"• **Mercado:** Execução real com brackets gerenciados pelo plano da mesa.")
+
+
 def texto_do_pregao_atual(agora=None, cfg=None):
     """Em que pregão a mesa está AGORA, e por quê. Sem API, sem internet.
 
@@ -10307,6 +10346,8 @@ def interpretar_intencao(texto):
     # app responde do relogio e da configuracao, sem modelo nenhum.
     if _RE_QUAL_PREGAO.search(t):
         return "QUAL_PREGAO"
+    if _RE_AMBIENTE_OU_REPLAY.search(t):
+        return "AMBIENTE_MERCADO"
     if pergunta_sobre_configuracao(texto):
         return "VER_CONFIG"
     # NOTÍCIA E COTAÇÃO: buscadas na web pela PRÓPRIA ferramenta, sem chave de
@@ -10531,7 +10572,7 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
                     "LIGAR_MOTOR", "DESLIGAR_MOTOR", "ENVIAR_WHATSAPP",
                     "CONECTAR_WHATSAPP", "LISTAR_LICOES", "LISTAR_CONHECIMENTO",
                     "NOTICIAS", "COTACAO", "PESQUISAR", "VER_CONFIG",
-                    "POR_QUE_SEM_SUGESTAO", "VIRAR_DIA", "QUAL_PREGAO",
+                    "POR_QUE_SEM_SUGESTAO", "VIRAR_DIA", "QUAL_PREGAO", "AMBIENTE_MERCADO",
                     "DIAG_MICROFONE",
                     "VOZ_RAPIDA", "VOZ_LENTA", "CALAR"):
         return ("EXECUTAR", intencao)
@@ -13806,6 +13847,9 @@ class SmcQuantApp(ctk.CTk):
             return
         if acao == "QUAL_PREGAO":
             self._chat_responder(texto_do_pregao_atual())
+            return
+        if acao == "AMBIENTE_MERCADO":
+            self._chat_responder(texto_do_ambiente_atual(getattr(self, "_tv_bot", None)))
             return
         if acao == "VIRAR_DIA":
             self._chat_virar_dia()
@@ -21088,16 +21132,35 @@ class SmcQuantApp(ctk.CTk):
                             "Cite em confluence_factors os nomes REAIS dos conceitos que você "
                             "de fato identificou no gráfico."
                         )
-                        # O MUNDO ENTRA NA ANÁLISE, E NÃO SÓ O DESENHO.
-                        # Até aqui isto só existia no chat: ela sabia da
-                        # notícia quando ELE perguntava, e não sabia quando
-                        # ELA sugeria entrada. O ativo vem da leitura do ciclo
-                        # anterior — serve para buscar a cotação de referência;
-                        # a manchete não depende de ativo nenhum.
-                        bloco_macro, eventos_macro = contexto_de_mercado_do_motor(
-                            getattr(self, "_ultimo_ativo_lido", None))
+                        # Identificação Determinística do Ambiente: REAL vs REPLAY (RPL)
+                        _amb_tv = {}
+                        try:
+                            if getattr(self, "_tv_bot", None):
+                                _amb_tv = self._tv_bot.ler_ambiente() or {}
+                        except Exception:
+                            _amb_tv = {}
+
+                        _eh_replay = bool(_amb_tv.get("eh_replay") or (_amb_tv.get("conta", "").startswith("RPL")))
+                        if _eh_replay:
+                            _rpl_conta = _amb_tv.get("conta") or "RPL"
+                            _rpl_vel = _amb_tv.get("velocidade") or "400%"
+                            self.log(f"🎮 AMBIENTE DETECTADO: MARKET REPLAY ({_rpl_conta} · Velocidade: {_rpl_vel}) — Notícias de hoje desativadas para simulação histórica.")
+                            bloco_macro = ""
+                            contexto_replay = (
+                                "\n--- AMBIENTE: SIMULAÇÃO HISTÓRICA / MARKET REPLAY (Conta RPL) ---\n"
+                                f"A Tradovate está em modo REPLAY ({_rpl_conta} · Velocidade {_rpl_vel}). "
+                                "As velas e o horário pertencem ao pregão histórico gravado. Analise "
+                                "estritamente a AÇÃO DO PREÇO, a estrutura SMC, liquidez interna/externa "
+                                "e Order Blocks visíveis no gráfico, desconsiderando eventos do dia de hoje.\n\n"
+                            )
+                        else:
+                            bloco_macro, eventos_macro = contexto_de_mercado_do_motor(
+                                getattr(self, "_ultimo_ativo_lido", None))
+                            contexto_replay = ""
+
                         PROMPT_FINAL = (
                             f"{PROMPT_BASE}\n{memoria_dinamica}\n"
+                            f"{contexto_replay}"
                             + (f"\n--- O QUE ESTÁ ACONTECENDO NO MUNDO AGORA ---\n"
                                f"{bloco_macro}\n\n" if bloco_macro else "")
                             + f"ÚLTIMO ESTADO DO LEDGER:\n{ledger_text_memory}\n"
