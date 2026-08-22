@@ -544,6 +544,17 @@ class TradovateAuto:
             self.ws = None
 
     # ----------------------------- CDP ----------------------------------
+    # COMANDOS QUE PODEM SER REENVIADOS SEM RISCO: todos apenas LEEM.
+    # Qualquer coisa fora desta lista (Input.*, digitação, navegação) muda o
+    # estado da plataforma e NUNCA é repetida depois de uma queda de conexão.
+    _CDP_REPETIVEIS = frozenset({
+        "Runtime.evaluate",          # leitura de DOM e de campos
+        "Target.getTargets",
+        "Browser.getVersion",
+        "Page.getLayoutMetrics",
+        "DOM.getDocument",
+    })
+
     def cdp(self, metodo, params=None, timeout=12):
         """Envia um comando CDP com proteção thread-safe (RLock) e auto-reconexão.
 
@@ -577,21 +588,43 @@ class TradovateAuto:
                     ignoradas += 1
             except (OSError, EOFError, ValueError, ConnectionError) as e:
                 self._marcar_morta()
-                # Tenta reconectar 1 vez automaticamente
-                try:
-                    if self.conectar():
-                        self.ws.enviar(json.dumps({"id": meu_id, "method": metodo,
-                                                    "params": params or {}}))
-                        limite = time.time() + timeout
-                        while time.time() < limite:
-                            msg = json.loads(self.ws.receber())
-                            if msg.get("id") == meu_id:
-                                if "error" in msg:
-                                    raise RuntimeError(f"CDP {metodo}: {msg['error']}")
-                                return msg.get("result", {})
-                except Exception:
-                    pass
+                # RECONECTAR, SIM. REENVIAR, DEPENDE DO COMANDO.
+                #
+                # A reconexão automática é uma boa ideia e fica. O reenvio
+                # cego é que não pode ficar: `cdp()` também transporta o
+                # CLIQUE (Input.dispatchMouseEvent). Se a ligação cair DEPOIS
+                # de o clique chegar ao Chrome e ANTES de a resposta voltar, o
+                # reenvio clica de novo — e no botão Enviar isso é uma SEGUNDA
+                # ORDEM no mercado.
+                #
+                # É a regra que este arquivo já tinha, escrita em outro lugar:
+                # PREENCHER PODE SER REPETIDO; ENVIAR, NÃO. Ler o DOM, medir,
+                # consultar — repetir isso é inofensivo e vale a pena. Clicar
+                # e digitar mudam o estado da corretora, e "não sei se chegou"
+                # tem de virar erro, não uma segunda tentativa.
+                if metodo in self._CDP_REPETIVEIS:
+                    try:
+                        if self.conectar():
+                            self.ws.enviar(json.dumps(
+                                {"id": meu_id, "method": metodo,
+                                 "params": params or {}}))
+                            limite = time.time() + timeout
+                            while time.time() < limite:
+                                msg = json.loads(self.ws.receber())
+                                if msg.get("id") == meu_id:
+                                    if "error" in msg:
+                                        raise RuntimeError(
+                                            f"CDP {metodo}: {msg['error']}")
+                                    return msg.get("result", {})
+                    except Exception:
+                        pass
                 self._marcar_morta()
+                if metodo not in self._CDP_REPETIVEIS:
+                    raise ConexaoPerdida(
+                        f"a ligação caiu durante {metodo} ({e}) e este comando "
+                        "MUDA O ESTADO da plataforma — NÃO repito para não "
+                        "arriscar uma segunda ordem. NÃO SEI se ele chegou: "
+                        "confira a Tradovate.")
                 raise ConexaoPerdida(f"conexão com o Chrome caiu durante {metodo}: {e}")
 
             self._marcar_morta()
@@ -1307,6 +1340,15 @@ class TradovateAuto:
           if (direto && vis(direto)) {
             var rDirect = direto.getBoundingClientRect();
             if (rDirect.width > 0 && rDirect.height > 0) {
+              // O CLIQUE FALTAVA AQUI. Este atalho devolvia as coordenadas e
+              // saía pelo `return` ANTES do trecho que clica, lá embaixo — e
+              // o Python, vendo achou:true, registrava "voltar (←) clicado"
+              // sem nada ter sido clicado. O formulário não voltava e a
+              // mensagem dizia que sim.
+              try {
+                var b = (direto.closest && direto.closest('button,[role=button],a')) || direto;
+                b.click();
+              } catch(e){}
               return JSON.stringify({achou: true, x: Math.round(rDirect.x + rDirect.width/2), y: Math.round(rDirect.y + rDirect.height/2), via: 'icon-back'});
             }
           }
@@ -2259,12 +2301,17 @@ class TradovateAuto:
       var m=achados[0];
       var rotulo=(m.titulo||m.aria||m.t);
       var alvo=(m.el.closest && m.el.closest('button,[role=button],a')) || m.el;
-      try {
-        alvo.dispatchEvent(new MouseEvent("mousedown", {bubbles: true, cancelable: true, view: window, buttons: 1}));
-        alvo.dispatchEvent(new MouseEvent("mouseup", {bubbles: true, cancelable: true, view: window, buttons: 1}));
-        alvo.dispatchEvent(new MouseEvent("click", {bubbles: true, cancelable: true, view: window, buttons: 1}));
-        alvo.click();
-      } catch(e){}
+      // ESTA FUNÇÃO SÓ OLHA. O CLIQUE É DE QUEM DECIDE.
+      //
+      // Havia aqui um dispatchEvent + click() e ele custava caro: quem chama
+      // isto é `localizar_sair_em_mercado()`, que roda ANTES da checagem de
+      // modo teste e ANTES da recusa por "Reverso e Cxl". Com o clique aqui
+      // dentro, o modo teste zerava a posição de verdade — e logo abaixo o
+      // programa escrevia "MODO TESTE: achei o botão e NÃO cliquei".
+      //
+      // Localizar e agir são passos diferentes de propósito: é a separação
+      // que permite LER o rótulo, decidir se aquele botão serve, e só então
+      // clicar. Juntar os dois transforma toda leitura numa ação.
       var rAlvo=alvo.getBoundingClientRect();
       return JSON.stringify({achou:true, rotulo:rotulo, texto_na_tela:m.t,
         cortado:!!m.cortado, quantos:achados.length,
@@ -2272,8 +2319,16 @@ class TradovateAuto:
     })()
     """
 
+    # A LEGENDA DIZ O QUE O BOTÃO VAI FAZER — e por isso ela precisa
+    # DISCRIMINAR. Com 'sair', 'mkt', '&' e 'all' na lista, a expressão casava
+    # com "Sair em Mkt" puro, que zera a posição e DEIXA as ordens vivas: o
+    # oposto do que se quer aqui. Uma trava que aceita tudo não é trava.
+    #
+    # O que continua coberto, e era o motivo do alargamento: 'Cxl' abreviado
+    # ('Sair em Mkt & Cxl'), 'Cancelar todas' e as reticências do texto
+    # cortado pelo CSS.
     _RE_SAIR_CANCELA = re.compile(
-        r"sair|exit|cancel|\bcxl\b|\bcxl\.|&\s*cxl|&\s*\.{1,3}|&\s*…|&|mkt|mercado|flatten|todas|all",
+        r"cancel|\bcxl\b|\bcxl\.|&\s*cxl|&\s*\.{1,3}|&\s*…",
         re.IGNORECASE)
 
     _JS_VARREDURA_CANCELAR = r"""
@@ -2904,7 +2959,21 @@ class TradovateAuto:
                     var nome = targets[i];
                     var cb = document.querySelector('[data-testid="simple-tpsl-bracket-0-' + nome + '-checkbox"], [data-testid*="' + nome + '-checkbox"]');
                     var lbl = document.querySelector('[data-testid="simple-tpsl-bracket-0-' + nome + '-checkbox-label"], [data-testid*="' + nome + '-checkbox-label"]');
-                    if(lbl && (!cb || !cb.checked || (lbl.className && lbl.className.indexOf('checkbox-active') === -1))){
+                    // SÓ MARCA O QUE ESTÁ DESMARCADO — nunca alterna.
+                    //
+                    // A condição anterior tinha um OU a mais: com o checkbox
+                    // JÁ MARCADO (cb.checked === true) mas a classe do label
+                    // diferente de 'checkbox-active', ela clicava — e clicar
+                    // num checkbox marcado DESMARCA. O efeito seria mandar a
+                    // entrada sem stop e sem alvo anexados, que é o estado que
+                    // a ordem ATM inteira existe para impedir.
+                    //
+                    // Quando o checkbox existe, ele é a fonte da verdade: a
+                    // classe do label é aparência e pode mudar de nome numa
+                    // atualização da Tradovate sem nada estar errado.
+                    var precisa = cb ? !cb.checked
+                                     : (lbl.className || '').indexOf('checkbox-active') === -1;
+                    if(lbl && precisa){
                         var r = lbl.getBoundingClientRect();
                         var opts = {bubbles: true, cancelable: true, view: window, clientX: r.x + r.width/2, clientY: r.y + r.height/2};
                         lbl.dispatchEvent(new MouseEvent('mousedown', opts));

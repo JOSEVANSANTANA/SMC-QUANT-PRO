@@ -14627,6 +14627,32 @@ class SmcQuantApp(ctk.CTk):
             "5. HONESTIDADE VISUAL & PROIBIÇÃO DE ALUCINAÇÃO: NUNCA invente nem presuma indicadores técnicos que NÃO estão listados nos dados da mesa ou visíveis no gráfico (ex: RSI, MACD, Estocástico, médias móveis não plotadas). Se o trader perguntar sobre o RSI e ele não estiver no gráfico, responda com honestidade direta: 'O RSI não está plotado no gráfico nesta tela — a análise atual é 100% Price Action institucional SMC (Order Blocks, BOS/CHoCH, FVG e Liquidez)'. NUNCA afirme que o RSI está 'neutro' ou 'em 50' sem ele estar desenhado na tela.\n"
             "6. RESPOSTA DIRETA SOBRE DELTA E ORDER FLOW: Quando o trader perguntar sobre o Delta ('o delta está comprador ou vendedor?', 'qual o delta agora?'), responda PRIMEIRO e DIRETAMENTE se o Delta atual da mesa está COMPRADOR ou VENDEDOR (citando o valor da telemetria) e explique o contexto prático (ex: se o preço cai e o delta é comprador, isso indica absorção passiva vendedora no Order Block; se o delta é vendedor, indica agressão vendedora líquida a favor da queda). NUNCA dê apenas uma aula teórica vaga sem responder o dado real do momento.\n"
             "7. TIMEFRAME E INTERVALO DO MOTOR: O gráfico opera em timeframe de 5 minutos (5m) com leituras periódicas de fechamento de vela (a cada 5 min). Se a hora atual for 11:40, a última leitura de candle de 5m consolidada é a das 11:35 enquanto a vela das 11:40 está se formando no book.\n\n"
+            # AS DUAS REGRAS ABAIXO VOLTARAM EM 21/08, e o motivo importa.
+            # A instrucao 5 (honestidade visual) cobre INDICADORES que nao
+            # estao no grafico. Nao cobre NUMERO DA CONTA nem ACAO EXECUTADA
+            # — e eram essas duas que existiam antes e sairam quando este
+            # bloco foi reescrito. O docstring da funcao continuou dizendo
+            # "leva a regra da casa junto", entao o texto afirmava algo que o
+            # codigo tinha deixado de fazer.
+            #
+            # Deixou de ser detalhe quando o OpenRouter virou o provedor
+            # PRINCIPAL: esta era a via de excecao e passou a ser a normal.
+            #
+            # A frase fica INTEIRA num literal so de proposito: o teste que a
+            # protege le o CODIGO-FONTE, e quebrada em duas linhas ela some da
+            # busca mesmo estando correta em execucao.
+            "8. NUNCA invente número. Preço, stop, alvo, entrada, resultado, "
+            "P&L, drawdown, contratos, VWAP — sem o dado nos dados da mesa "
+            "acima, diga que não tem. Ausência de dado não é conclusão, e um "
+            "número plausível inventado numa mesa vira prejuízo.\n"
+            "9. VOCÊ NÃO EXECUTA NADA ESCREVENDO. Quem envia ordem, cancela "
+            "ordem, encerra posição, liga o motor ou manda WhatsApp é o "
+            "PROGRAMA, por comando ou pelo modo autônomo — nunca o texto que "
+            "você escreve no chat. NUNCA diga que fez algo: diga qual comando "
+            "faz. Isso inclui a voz passiva: é proibido escrever \'foi "
+            "cancelada\', \'ficou salvo\', \'está gravado\', \'foi enviada\'. "
+            "Ensinar o comando certo é o desejado; afirmar que já o executou, "
+            "não.\n"
             "O ATIVO PRINCIPAL: MES / MESU6 (Micro E-mini S&P 500 futuro na CME, US$ 5/ponto, tick 0.25).\n"
             + (f"\nDADOS DA MESA EM TEMPO REAL (Consulte quando a pergunta for sobre a mesa/mercado):\n{cenario}" if cenario else ""))
 

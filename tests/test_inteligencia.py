@@ -89,10 +89,16 @@ class TestSegundaInteligencia(unittest.TestCase):
             self.assertEqual(formatos[p], "openai", p)
 
     def test_a_regra_anti_invencao_vai_junto_no_prompt(self):
-        """Trocar de provedor NÃO pode afrouxar a regra da casa."""
+        """Trocar de provedor NÃO pode afrouxar a regra da casa.
+
+        A janela era de 3000 caracteres, calibrada para uma função que tinha
+        esse tamanho. Ela cresceu para ~8000 com o super-contexto de
+        telemetria, e a regra passou a viver depois do corte — o teste
+        acusava ausência de algo que estava lá. O invariante é a regra ESTAR
+        no prompt, não estar nos primeiros 3000 caracteres."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def _mensagens_para_provedor")
-        corpo = fonte[i:i + 3000]
+        corpo = fonte[i:i + 12000]
         self.assertIn("NUNCA invente número", corpo)
         self.assertIn("Ausência de dado não é conclusão", corpo)
 
