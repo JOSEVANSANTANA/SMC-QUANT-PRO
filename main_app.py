@@ -2556,6 +2556,120 @@ CICLOS_PARA_PRECO_CONGELADO = 3
 # a única régua que se ajusta sozinha ao ativo e à volatilidade do momento.
 MAX_DISTANCIA_ENTRADA_R = 3.0
 
+
+# ====================================================================
+#  O TAMANHO DO STOP TEM DE CABER NO ATIVO
+# ====================================================================
+#  23/08, ele: "ultimamente só tomamos stops, não sei se é o dimensionamento
+#  ou o trailing, precisamos recalibrar para o tamanho do mercado do sp500".
+#  Os números do log dele, no MESMO ativo e no MESMO dia:
+#
+#      19 ticks · 30 · 32 · 33 · 48 · 76 · 76 · 106
+#
+#  Do menor ao maior, 5,6 VEZES. Não existe "stop do cenário" variando cinco
+#  vezes: existe modelo escolhendo distância sem nenhuma referência do que é
+#  um movimento normal daquele contrato.
+#
+#  E os dois extremos machucam de formas opostas:
+#    · 19 ticks (4,75 pts) no MES é ruído de um candle de 5m — o preço varre
+#      isso sem nem mudar de ideia, e o trader "só toma stop";
+#    · 106 ticks (26,5 pts) é quase a amplitude de um dia inteiro. O R:R 1:2
+#      obriga um alvo de 53 pontos, que raramente chega, e o dimensionamento
+#      cai para 2 contratos — muito risco parado para pouca chance.
+#
+#  A faixa abaixo é por RAIZ DE CONTRATO e está em TICKS, que é a unidade em
+#  que o instrumento se move. Não é opinião sobre o mercado: é a régua do que
+#  cabe num setup intradiário daquele contrato. Fora dela, o cenário é
+#  recusado — do mesmo jeito que `min_ticks_stop` já recusava o stop curto.
+FAIXA_TICKS_STOP = {
+    # (mínimo, máximo) por operação intradiária
+    "MES": (12, 60),   "ES":  (12, 60),
+    "MNQ": (16, 80),   "NQ":  (16, 80),
+    "MYM": (10, 50),   "YM":  (10, 50),
+    "M2K": (12, 60),   "RTY": (12, 60),
+    "MGC": (10, 50),   "GC":  (10, 50),
+    "MCL": (10, 60),   "CL":  (10, 60),
+    "WIN": (50, 400),  "IND": (50, 400),
+    "WDO": (20, 150),  "DOL": (20, 150),
+}
+
+
+def faixa_de_stop_do_ativo(asset_symbol):
+    """(mín, máx) de ticks aceitáveis para o stop, ou None se não conheço.
+
+    `None` é resposta legítima: num contrato fora da tabela eu não sei o que é
+    um movimento normal, e inventar uma faixa seria pior que não ter faixa —
+    barraria cenário bom ou deixaria passar cenário absurdo, os dois no
+    escuro."""
+    if not asset_symbol:
+        return None
+    simbolo = str(asset_symbol).upper().strip()
+    for prefixo in sorted(FAIXA_TICKS_STOP.keys(), key=len, reverse=True):
+        if simbolo.startswith(prefixo):
+            return FAIXA_TICKS_STOP[prefixo]
+    return None
+
+
+def avaliar_tamanho_do_stop(entry, stop, asset_symbol, faixa=None):
+    """O stop tem tamanho compatível com o ativo? Função PURA.
+
+    Devolve (ok, ticks, motivo). `ok=True` com motivo=None é o caso normal.
+
+    Esta trava fica ao lado do piso de qualidade e ANTES do dimensionamento,
+    de propósito: um stop fora de escala não é um tamanho de posição a
+    corrigir, é um CENÁRIO a recusar. Dimensionar em cima dele só transforma
+    a leitura ruim numa posição ruim.
+    """
+    faixa = faixa if faixa is not None else faixa_de_stop_do_ativo(asset_symbol)
+    if not faixa:
+        return True, None, None          # ativo desconhecido: não julgo
+    if entry is None or stop is None or entry == stop:
+        return True, None, None
+    tick = tick_do_ativo(asset_symbol)
+    if not tick:
+        return True, None, None
+    ticks = round(abs(float(entry) - float(stop)) / tick, 1)
+    minimo, maximo = faixa
+    if ticks < minimo:
+        return False, ticks, (
+            f"stop de {ticks:g} tick(s) é curto demais para o "
+            f"{str(asset_symbol).upper()}: abaixo de {minimo} ticks o preço "
+            "varre isso como ruído normal, sem o cenário ter sido invalidado. "
+            "É assim que se toma stop numa leitura que estava certa.")
+    if ticks > maximo:
+        return False, ticks, (
+            f"stop de {ticks:g} tick(s) é largo demais para o "
+            f"{str(asset_symbol).upper()}: acima de {maximo} ticks a operação "
+            f"pede um alvo de {ticks * 2:g} ticks para fechar o R:R 1:2, e um "
+            "movimento desse tamanho raramente vem no intradiário. Muito risco "
+            "parado para pouca chance de pagar.")
+    return True, ticks, None
+
+
+def _instrucao_de_escala_do_stop(asset_symbol):
+    """A faixa do ativo, dita ao modelo ANTES de ele escolher o stop.
+
+    Recusar depois protege o dinheiro, mas desperdiça o ciclo: o cenário
+    morre e o trader fica sem sugestão nenhuma. Dizer a régua antes faz o
+    modelo mirar dentro dela — e as recusas passam a ser a exceção, não a
+    rotina. Sem ativo conhecido, devolve texto vazio: eu não invento faixa
+    para um contrato que não conheço."""
+    faixa = faixa_de_stop_do_ativo(asset_symbol)
+    if not faixa:
+        return ""
+    minimo, maximo = faixa
+    tick = tick_do_ativo(asset_symbol) or 0.25
+    return ("5a) ESCALA DO STOP NESTE CONTRATO (obrigatório): para o "
+            f"{str(asset_symbol).upper()}, um stop intradiário válido fica "
+            f"entre {minimo} e {maximo} ticks ({minimo * tick:g} a "
+            f"{maximo * tick:g} pontos). Abaixo de {minimo} o preço varre por "
+            f"ruído, sem invalidar nada; acima de {maximo} o alvo de 1:2 "
+            "precisaria de um movimento que raramente vem no dia. Se a "
+            "estrutura que você encontrou EXIGE um stop fora dessa faixa, "
+            "então este não é um setup intradiário: retorne HOLD em vez de "
+            "espremer o stop ou esticar o alvo para caber.\n")
+
+
 def avaliar_distancia_da_entrada(entry, stop, preco, max_r=MAX_DISTANCIA_ENTRADA_R):
     """A entrada está a uma distância operável do preço de agora?
 
@@ -19619,6 +19733,41 @@ class SmcQuantApp(ctk.CTk):
                 + (f" {sem_lado} negócio(s) ficaram sem lado e não entraram "
                    "no delta." if sem_lado else ""))
 
+    def _tela_parada_pelo_cdp(self):
+        """O preço está congelado? Lido do DOM, antes de gastar chamada de IA.
+
+        Devolve (congelado, preço, quantas_leituras_iguais).
+
+        POR QUE PELO CDP, e não pela imagem: com o replay pausado a figura
+        continua mudando um pouco — relógio do sistema, cursor, repintura —
+        e o hash nunca repete. O preço no DOM, não: ele é o mesmo número, ou
+        não é. É a diferença entre uma trava que dispara e uma que só existe
+        no código.
+
+        SEM LEITURA, NÃO CONGELA. Se o CDP não responder, esta função devolve
+        `False` e o ciclo segue normal — barrar a análise por falta de leitura
+        deixaria o robô cego justamente quando a conexão oscila.
+        """
+        fita = getattr(self, "_fita", None)
+        bot = getattr(self, "_tv_bot", None)
+        if fita is None or bot is None:
+            return False, None, 0
+        try:
+            fita.definir_cliente_cdp(bot)
+            preco = fita.ler_preco_imediato()
+        except Exception:
+            return False, None, 0
+        if preco is None:
+            return False, None, 0
+        anterior = getattr(self, "_preco_cdp_anterior", None)
+        if anterior is not None and abs(float(preco) - float(anterior)) < 1e-9:
+            self._ciclos_preco_cdp_igual = getattr(self, "_ciclos_preco_cdp_igual", 0) + 1
+        else:
+            self._ciclos_preco_cdp_igual = 0
+        self._preco_cdp_anterior = preco
+        n = self._ciclos_preco_cdp_igual + 1
+        return (n >= CICLOS_PARA_PRECO_CONGELADO), preco, n
+
     def _tem_fluxo_medido(self):
         """Existe negócio REGISTRADO no motor? É a única porta para o fluxo
         entrar no prompt da análise — e ela é fechada por padrão."""
@@ -22227,6 +22376,57 @@ class SmcQuantApp(ctk.CTk):
                                 and self.tv_sync_var.get()):
                             self._tv_sincronizar_posicoes(silencioso=True)
 
+                        # ================================================
+                        #  TELA PARADA NÃO CHEGA A VIRAR CHAMADA DE API
+                        # ================================================
+                        # 23/08, das 04:30 às 11:00: o replay PAUSOU sozinho e
+                        # o preço ficou em 7574,00 por 29 ciclos. O robô
+                        # continuou analisando a MESMA figura e devolveu, em
+                        # cima dela, probabilidades de 35% a 78% e cinco
+                        # entradas diferentes — 7552,5 · 7555,0 · 7560,0 ·
+                        # 7562,5 · 7565,0. A imagem não mudou; as leituras
+                        # mudaram. Isso é o modelo inventando estrutura.
+                        #
+                        # A trava JÁ EXISTIA, e em dois lugares — e nenhum
+                        # impediu o estrago:
+                        #   · a de HASH DA IMAGEM nunca dispara na prática: o
+                        #     relógio do sistema, o cursor e o repintar da
+                        #     página mudam pixels mesmo com o replay pausado;
+                        #   · a de PREÇO REPETIDO roda DEPOIS da chamada da
+                        #     API. Ela suprimia a sugestão, mas a leitura
+                        #     alucinada já tinha custado cota, ido para o
+                        #     WhatsApp e entrado no contexto da TIGER. E só
+                        #     agia em BUY/SELL: HOLD passava direto.
+                        #
+                        # Agora o preço vem do DOM pelo CDP — exato, barato e
+                        # imune a ruído de pixel — e é conferido ANTES. Tela
+                        # parada não vira chamada de API: economiza a cota
+                        # para quando o mercado estiver andando, que foi
+                        # justamente o que faltou quando três modelos
+                        # apareceram com "cota esgotada" no seu log.
+                        if janela_principal:
+                            _congelado, _p_cdp, _n_cong = self._tela_parada_pelo_cdp()
+                            if _congelado:
+                                if not getattr(self, "_avisou_congelado_cdp", False):
+                                    self._avisou_congelado_cdp = True
+                                    self.log(
+                                        f"🧊 CICLO PULADO: o preço de {_p_cdp} não se "
+                                        f"mexe há {_n_cong} leituras (lido direto da "
+                                        "plataforma). NÃO vou analisar uma tela parada "
+                                        "— qualquer cenário daqui seria estrutura "
+                                        "inventada, e a chamada de API seria cota "
+                                        "gasta à toa. Volto sozinha quando o preço "
+                                        "andar. Se o mercado está aberto, confira se "
+                                        "o replay não está pausado.")
+                                    self._chat_feed(
+                                        f"🧊 Parei de analisar: o preço está parado em "
+                                        f"{_p_cdp} há {_n_cong} leituras. Não analiso "
+                                        "tela parada — volto sozinha quando ela andar.")
+                                continue
+                            if getattr(self, "_avisou_congelado_cdp", False):
+                                self._avisou_congelado_cdp = False
+                                self.log("✅ O preço voltou a andar — retomando as análises.")
+
                         self.log("🧠 Processando análise com Memória Episódica...")
 
                         # FLUXO DE ORDENS, junto do ciclo. Leitura de DOM pelo
@@ -22421,7 +22621,9 @@ class SmcQuantApp(ctk.CTk):
                             "'se o preço der mais uma lambida nesse extremo, meu stop sobrevive?' Se a "
                             "resposta for não, o stop está apertado demais. O stop só é válido se, "
                             "colocado assim (largo o suficiente), o R:R do 1º alvo AINDA fechar 1:2.\n"
-                            "5b) ALVOS — RASPAR O MÁXIMO (não seja tímido no alvo): take_profit_1 a "
+                            + _instrucao_de_escala_do_stop(
+                                getattr(self, "_ultimo_ativo_lido", None))
+                            + "5b) ALVOS — RASPAR O MÁXIMO (não seja tímido no alvo): take_profit_1 a "
                             "PELO MENOS 2x a distância do stop (R:R >= 1:2, idealmente 1:3), na "
                             "PRIMEIRA liquidez/estrutura REAL do caminho. take_profit_2 é o ALVO "
                             "INSTITUCIONAL: o pool de liquidez COMPLETO para onde o preço está sendo "
@@ -23220,6 +23422,20 @@ class SmcQuantApp(ctk.CTk):
                         # seria tocado, e não foi: a ordem ficou pendente e
                         # morreu. Sugestão que não tem chance de acontecer não
                         # deveria ocupar o lugar de uma que tem.
+                        # O STOP CABE NO ATIVO? Vem ANTES da distância e antes
+                        # do dimensionamento, porque stop fora de escala não é
+                        # tamanho de posição a corrigir — é cenário a recusar.
+                        # No log de 23/08 o mesmo MESU6 recebeu stops de 19 a
+                        # 106 ticks no mesmo dia: 5,6 vezes de diferença. O
+                        # curto é varrido por ruído (e vira "só tomo stop"); o
+                        # largo pede um alvo que raramente vem.
+                        if not repetido and acao in ("BUY", "SELL"):
+                            _ok_stop, _tk_stop, _motivo_stop = avaliar_tamanho_do_stop(
+                                _ep, _sl, ativo)
+                            if not _ok_stop:
+                                repetido = True
+                                self.log(f"📐 {acao} {ativo} descartado: {_motivo_stop}")
+
                         if not repetido and acao in ("BUY", "SELL"):
                             _ok_dist, _dist_r = avaliar_distancia_da_entrada(
                                 _ep, _sl, preco)
