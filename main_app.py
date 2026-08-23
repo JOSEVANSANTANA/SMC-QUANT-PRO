@@ -11634,6 +11634,9 @@ class SmcQuantApp(ctk.CTk):
         # extrato de ordens de seis em seis segundos — e só quando existe
         # posição minha viva para conferir.
         self.after(6000, self._loop_reconciliar_extrato)
+        # E o fluxo: a captura é contínua dentro da página; este laço só
+        # recolhe o que ela juntou, de dois em dois segundos.
+        self.after(4000, self._loop_drenar_fluxo)
 
     # ------------------------------------------------------------------
     # ABA 1: MOTOR / WHATSAPP / SETUP
@@ -19455,6 +19458,24 @@ class SmcQuantApp(ctk.CTk):
             self._atualizar_dashboard()
         return mudou
 
+    def _loop_drenar_fluxo(self):
+        """Esvazia o balde da fita de dois em dois segundos.
+
+        A CAPTURA é contínua — o observador dentro da página não pisca. Este
+        laço não é a captura: é só o caminhão que recolhe o que ela juntou.
+        Por isso ele pode ser espaçado sem perder nenhum negócio, e por isso
+        é BARATO: uma chamada CDP curta, que devolve um lote pronto.
+
+        Dois segundos é o intervalo que mantém o painel vivo aos olhos dele
+        sem chegar perto do volume de chamadas que afogou o Chrome em 20/08.
+        """
+        try:
+            if getattr(self, "_tv_bot", None) is not None:
+                self._coletar_order_flow()
+        except Exception:
+            pass
+        self.after(2000, self._loop_drenar_fluxo)
+
     def _loop_reconciliar_extrato(self):
         """Batida do relógio da reconciliação.
 
@@ -19501,17 +19522,49 @@ class SmcQuantApp(ctk.CTk):
         except Exception:
             return 0, {"motivo": "sem_conexao_cdp"}
 
+        # CAPTURA CONTÍNUA, e não amostragem. Ele: "a fita muda o tempo
+        # inteiro, esse acompanhamento precisa ser online, sem pausas".
+        #
+        # O observador vive DENTRO da página e não perde nada entre uma
+        # chamada e outra; aqui só se ESVAZIA o balde do que ele já juntou.
+        # Instalar é idempotente: com o observador de pé, esta chamada volta
+        # de imediato sem reinstalar (observador duplicado contaria cada
+        # negócio duas vezes e dobraria o CVD em silêncio).
         try:
-            leitura = fita.ler_time_and_sales()
-            novos, diag = fita.negocios_novos(leitura)
+            inst = fita.instalar_observador()
+            if not inst.get("ok"):
+                self._fita_diag = {"painel": False, "linhas_vistas": 0,
+                                   "metodo": None, "motivo": inst.get("motivo")}
+                return 0, self._fita_diag
+            novos, info = fita.drenar_negocios()
         except Exception as e:
             return 0, {"motivo": f"erro:{e}"}
 
+        # Para o bid/ask do desempate, uma leitura pontual basta: o spread
+        # muda devagar perto do que interessa, e é só reserva de quem já não
+        # tem o lado pela cor da linha.
+        bid = ask = None
+        try:
+            pontual = fita.ler_time_and_sales()
+            bid, ask = pontual.get("bid"), pontual.get("ask")
+            diag = pontual.get("diag") or {}
+        except Exception:
+            diag = {}
+        diag = dict(diag or {})
+        diag["capturados"] = len(novos)
+        diag["continuo"] = True
+        if info.get("perdidos"):
+            # BURACO NÃO SE ESCONDE. Se o balde estourou porque ninguém
+            # esvaziou, o CVD perdeu negócios — e um CVD com buraco não
+            # anunciado é a mesma família do delta inventado que saiu daqui.
+            diag["perdidos"] = info["perdidos"]
+            self.log(f"⚠️ Fluxo: {info['perdidos']} negócio(s) se perderam — o "
+                     "balde da fita encheu antes de eu esvaziar. O CVD desta "
+                     "sessão tem um buraco.")
         self._fita_diag = diag
         if not novos:
             return 0, diag
 
-        bid, ask = leitura.get("bid"), leitura.get("ask")
         entraram = 0
         for ln in novos:
             lado = fita.classificar_agressao(ln, bid, ask)
@@ -19747,8 +19800,34 @@ class SmcQuantApp(ctk.CTk):
             # provedor configurado e sem nenhuma medição feita. Quando ele
             # abrisse um chamado dizendo "está lento", o painel estaria
             # afirmando 210ms que ninguém cronometrou.
-            provedor = cfg.get("ia_provedor_chat") or "— (não configurado)"
-            modelo = cfg.get("ia_modelo_chat") or "— (não configurado)"
+            # `ia_provedor_chat` e `ia_modelo_chat` SÃO CHAVES FANTASMA: lidas
+            # aqui, nunca escritas em lugar nenhum. A terceira do mesmo tipo
+            # nesta varredura, depois de `drawdown_max` e `_tv_instancia`.
+            # Por isso o painel dizia "não configurado" com a Gemini
+            # analisando e o OpenRouter respondendo no chat.
+            #
+            # A verdade não mora numa chave salva: mora em
+            # `provedores_configurados()`, que confere quem tem chave USÁVEL
+            # agora — e a Gemini é o padrão da casa quando não há alternativo.
+            try:
+                prontos = provedores_configurados()
+            except Exception:
+                prontos = []
+            if prontos:
+                pid = prontos[0]
+                provedor = PROVEDORES_IA.get(pid, {}).get("rotulo", pid)
+                if len(prontos) > 1:
+                    provedor += f"  (+{len(prontos) - 1} de reserva)"
+                try:
+                    lista = modelos_do_provedor(pid) or []
+                except Exception:
+                    lista = []
+                modelo = (getattr(self, "_ultimo_modelo_usado", "")
+                          or (lista[0] if lista else "")
+                          or "— (padrão do provedor)")
+            else:
+                provedor = "Gemini (padrão)"
+                modelo = getattr(self, "_ultimo_modelo_usado", "") or "— (sem análise ainda)"
             latencia = getattr(self, "_ultima_latencia_ia", "") or "— (sem medição)"
 
             ultimos_msgs = carregar_chat()[-12:]
@@ -22480,6 +22559,12 @@ class SmcQuantApp(ctk.CTk):
                                     # fila também no chat — a TIGER começa pelo que
                                     # acabou de funcionar, em vez de descobrir sozinha.
                                     registrar_sucesso_modelo(modelo_atual)
+                                    # O painel mostra o modelo QUE RESPONDEU,
+                                    # não o que está no topo da fila. Com a
+                                    # rotação por cooldown os dois divergem o
+                                    # tempo todo, e o trader precisa saber
+                                    # quem de fato analisou o gráfico dele.
+                                    self._ultimo_modelo_usado = modelo_atual
                                     if modelo_atual != candidatos[0]:
                                         self.log(f"ℹ️ Análise concluída usando modelo de reserva: {modelo_atual}")
                                     break

@@ -179,7 +179,7 @@ class TestOCampoVazioDepoisDeEnviar(unittest.TestCase):
         """
         fonte = _fonte_tv()
         i = fonte.index("_JS_ATIVO_DO_TICKET")
-        js = fonte[i:i + 3000]
+        js = fonte[i:i + 5200]
         self.assertIn("comValor || soBusca", js,
                       "a fila do VALOR tem de vencer a do placeholder")
 
@@ -270,3 +270,92 @@ def _fonte_tv():
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTudoQueOlhaOTicketOlhaDENTRODele(unittest.TestCase):
+    """23/08, 00:49 — A ORDEM FOI RECUSADA COM O TICKET ABERTO NA TELA.
+
+        ❌ NÃO ENVIEI BUY MESU6 7 ctr @ 7554.0: não consegui LER o
+           instrumento no 'Chamado do pedido'.
+
+    E dois ciclos antes a mesma ordem tinha saído normalmente. O que mudou no
+    meio não foi o programa: foi a TELA. Ele abriu a fita e o DOM — a meu
+    pedido, para o CVD poder ser medido — e a partir dali:
+
+      · `estado_ticket` varria a PÁGINA INTEIRA e concluía "o formulário está
+        à vista" ao encontrar QUALQUER input visível. Os painéis novos
+        trouxeram o filtro de volume, a quantidade do DOM e a busca. A partir
+        dali a resposta era SEMPRE "formulario";
+      · logo, `_garantir_formulario` nunca clicava na setinha ← — não há
+        nenhum "↩️ comprovante à vista" no log dele, e é essa ausência que
+        entrega o defeito;
+      · e a leitura do instrumento ia procurar um campo de busca num painel
+        que estava mostrando o COMPROVANTE da ordem anterior.
+
+    É a lição de 20/08 outra vez, e ela custou uma ordem no contrato errado:
+    conferir campo sem conferir DE QUEM é o campo. Um painel a mais na tela
+    não pode mudar a resposta de nenhuma dessas checagens.
+    """
+
+    def _js(self, nome, tamanho=6000):
+        fonte = _fonte_tv()
+        i = fonte.index(nome)
+        return fonte[i:i + tamanho]
+
+    def test_existe_um_achador_do_painel_do_ticket(self):
+        js = self._js("_JS_ACHAR_PAINEL")
+        self.assertIn("chamado do pedido", js)
+        self.assertIn("order ticket", js)
+
+    def test_o_achador_sobe_um_numero_LIMITADO_de_niveis(self):
+        """Subir sem limite chega no `body` — e aí o escopo volta a ser a
+        página inteira, que é exatamente o defeito. Uma subida sem teto
+        conserta o sintoma e mantém a causa."""
+        js = self._js("_JS_ACHAR_PAINEL")
+        self.assertRegex(js, r"n\s*<\s*\d+\s*&&")
+
+    def test_o_estado_do_ticket_NAO_varre_a_pagina_inteira(self):
+        js = self._js("_JS_ESTADO_TICKET")
+        self.assertIn("painel.querySelectorAll", js,
+                      "a varredura tem de ser DENTRO do painel do ticket")
+        self.assertNotIn("var todos=document.querySelectorAll", js,
+                         "voltou a varrer a página inteira — com a fita e o "
+                         "DOM abertos, isso responde 'formulario' sempre")
+
+    def test_input_de_OUTRO_painel_nao_conta_como_formulario(self):
+        """A linha exata que quebrou: `document.querySelectorAll('input')`
+        com fallback para 'qualquer input visível'."""
+        js = self._js("_JS_ESTADO_TICKET")
+        self.assertNotIn("var inputs=document.querySelectorAll", js)
+        self.assertIn("painel.querySelectorAll('input')", js)
+
+    def test_comprovante_vence_formulario(self):
+        """Um painel mostrando '#84649004 ... Filled' está no comprovante
+        mesmo que exista um input perdido dentro dele. A ação certa ali é
+        clicar na setinha, não tentar digitar."""
+        js = self._js("_JS_ESTADO_TICKET")
+        self.assertIn("if(temComprovante) temEnviar = false;", js)
+
+    def test_o_botao_Comprar_de_outro_painel_nao_conta_mais(self):
+        """'Comprar'/'Vender' estavam na lista de botões que provam
+        formulário. A tela dele tem 'Comprar merc.', 'Mkt de venda' e
+        'Lance de co...' em OUTROS painéis."""
+        js = self._js("_JS_ESTADO_TICKET")
+        i = js.index("temEnviar=true")
+        linha = js[max(0, i - 120):i]
+        self.assertNotIn("Comprar", linha)
+        self.assertNotIn("Vender", linha)
+
+    def test_a_leitura_do_instrumento_e_ancorada_no_painel(self):
+        js = self._js("_JS_ATIVO_DO_TICKET")
+        self.assertIn("_painelDoTicket()", js)
+        self.assertIn("raiz.querySelectorAll('input')", js)
+        self.assertNotIn("ins=document.querySelectorAll('input')", js,
+                         "a busca de outro painel voltaria a entrar na disputa")
+
+    def test_o_comprovante_TAMBEM_diz_qual_e_o_instrumento(self):
+        """Depois de enviar, o painel vira '← MESU6' com o histórico e não tem
+        campo de busca nenhum. O ticker está no título, à vista — e o robô
+        respondia 'não consegui LER o instrumento' olhando para ele."""
+        js = self._js("_JS_ATIVO_DO_TICKET")
+        self.assertIn("comprovante:true", js)

@@ -1270,8 +1270,59 @@ class TradovateAuto:
     _RE_COMPROVANTE = r"(MODIFICAR|CANCELAR|Funcionando|Preenchido|Trabalhando|" \
                       r"MODIFY|CANCEL|Working|Filled|Pending)"
 
+    # O ACHADOR DO PAINEL — compartilhado por quem precisa olhar o ticket.
+    #
+    # 23/08, 00:49. A ordem de BUY MESU6 7 ctr foi RECUSADA por "não consegui
+    # LER o instrumento", com o Chamado do pedido aberto na tela dele. E dois
+    # ciclos antes a mesma ordem tinha saído normalmente.
+    #
+    # O QUE MUDOU NO MEIO: ele abriu a fita e o DOM, a meu pedido, para o CVD
+    # poder ser medido. A checagem de estado do ticket varria a PÁGINA
+    # INTEIRA e concluía "o formulário está à vista" se encontrasse QUALQUER
+    # input visível — e os painéis novos trouxeram o filtro de volume, a
+    # quantidade do DOM e a busca. A partir dali `estado_ticket` respondia
+    # sempre "formulario", `_garantir_formulario` nunca clicava na setinha ←,
+    # e a leitura do instrumento ia procurar um campo de busca num painel que
+    # estava mostrando o COMPROVANTE da ordem anterior.
+    #
+    # A lição é a mesma de 20/08, que custou uma ordem no contrato errado:
+    # conferir campo sem conferir DE QUEM é o campo. Agora tudo que olha o
+    # ticket olha DENTRO do painel do ticket, e não em volta dele.
+    _JS_ACHAR_PAINEL = r"""
+      function _painelDoTicket(){
+        function txt(el){ try{ return (el.innerText||el.textContent||'')
+          .replace(/\s+/g,' ').trim(); }catch(e){ return ''; } }
+        function norm(s){ return (s||'').toString().normalize('NFD')
+          .replace(/[\u0300-\u036f]/g,'').toLowerCase(); }
+        var RE_TITULO = /(chamado do pedido|order ticket|ticket de ordem)/;
+        // 1) A ABA do painel: texto curto com o título e nada mais.
+        var titulo = null, els = document.querySelectorAll('div,span,a,li,h1,h2,h3');
+        for(var i=0;i<els.length;i++){
+          var t = txt(els[i]);
+          if(!t || t.length > 40) continue;
+          if(RE_TITULO.test(norm(t))){ titulo = els[i]; break; }
+        }
+        if(!titulo) return null;
+        // 2) SOBE até o ancestral que já contém o CONTEÚDO do painel — a
+        //    aba sozinha não serve. O corpo tem formulário (input/Enviar) ou
+        //    comprovante (linha "#12345"). Subida limitada: passar do painel
+        //    devolveria a página inteira, que é o defeito que isto conserta.
+        var no = titulo;
+        for(var n=0; n<8 && no && no.parentElement; n++){
+          no = no.parentElement;
+          var corpo = txt(no);
+          if(corpo.length < 30) continue;
+          var temForm = no.querySelector('input') !== null;
+          var temComprov = /#\d{4,}/.test(corpo);
+          if(temForm || temComprov) return no;
+        }
+        return null;
+      }
+    """
+
     _JS_ESTADO_TICKET = r"""
     (function(){
+      PLACEHOLDER_ACHAR_PAINEL
       function vis(el){
         try{ var r=el.getBoundingClientRect(); return r.width>0&&r.height>0; }
         catch(e){ return false; }
@@ -1279,27 +1330,33 @@ class TradovateAuto:
       function txt(el){
         try{ return (el.innerText||el.textContent||''); }catch(e){ return ''; }
       }
+      var painel = _painelDoTicket();
+      if(!painel) return JSON.stringify({formulario:false, comprovante:false,
+                                         painel:false});
       var temEnviar=false, temComprovante=false;
-      var todos=document.querySelectorAll('button,[role=button],div,span,a,p');
+      // DENTRO DO PAINEL, e só. Era aqui que a página inteira entrava.
+      var todos=painel.querySelectorAll('button,[role=button],div,span,a,p');
       for(var i=0;i<todos.length;i++){
         var el=todos[i];
         if(!vis(el)) continue;
         var t=txt(el).trim();
         if(!t||t.length>60) continue;
-        if(/^(Enviar|Submit|Redefinir|Reset|Comprar|Vender|Buy|Sell)$/i.test(t)) temEnviar=true;
+        if(/^(Enviar|Submit|Redefinir|Reset)$/i.test(t)) temEnviar=true;
         if(/^(MODIFICAR|CANCELAR|MODIFY|CANCEL)$/i.test(t)) temComprovante=true;
       }
-      if(!temEnviar){
-        var inputs=document.querySelectorAll('input, [data-testid*="price"], [data-testid*="qty"], [data-testid*="trading-ticket"], .trading-ticket, .ticket-form');
-        for(var j=0; j<inputs.length; j++){
-          if(vis(inputs[j])){ temEnviar=true; break; }
-        }
+      // O COMPROVANTE MANDA. Um painel mostrando "#84649004 ... Filled" está
+      // no comprovante mesmo que exista um input perdido dentro dele — e a
+      // ação certa ali é clicar na setinha, não tentar digitar.
+      var corpo = txt(painel);
+      if(/#\d{4,}/.test(corpo) && /PLACEHOLDER_COMPROVANTE/.test(corpo))
+        temComprovante = true;
+      if(!temEnviar && !temComprovante){
+        var ins = painel.querySelectorAll('input');
+        for(var j=0;j<ins.length;j++){ if(vis(ins[j])){ temEnviar=true; break; } }
       }
-      if(!temComprovante){
-        var corpo=(document.body?txt(document.body):'');
-        if(/PLACEHOLDER_COMPROVANTE/.test(corpo)) temComprovante=true;
-      }
-      return JSON.stringify({formulario:temEnviar, comprovante:temComprovante});
+      if(temComprovante) temEnviar = false;
+      return JSON.stringify({formulario:temEnviar, comprovante:temComprovante,
+                             painel:true});
     })()
     """
 
@@ -1311,6 +1368,10 @@ class TradovateAuto:
         """
         js = self._JS_ESTADO_TICKET.replace("PLACEHOLDER_COMPROVANTE",
                                              self._RE_COMPROVANTE)
+        # O achador de painel entra aqui, e não como string solta lá em cima:
+        # é uma função só, usada por mais de um JS, e duplicá-la garantiria
+        # que um dia as duas cópias divergissem.
+        js = js.replace("PLACEHOLDER_ACHAR_PAINEL", self._JS_ACHAR_PAINEL)
         try:
             d = json.loads(self.avaliar_js(js) or "{}")
         except ConexaoPerdida:
@@ -3262,6 +3323,7 @@ class TradovateAuto:
     #  eu NÃO ENVIO. Ordem no instrumento errado não tem desfazer.
     _JS_ATIVO_DO_TICKET = r"""
     (function(alvo){
+      PLACEHOLDER_ACHAR_PAINEL
       function vis(el){try{var r=el.getBoundingClientRect();
         return r.width>0&&r.height>0;}catch(e){return false;}}
       function ehSimbolo(t){
@@ -3281,7 +3343,33 @@ class TradovateAuto:
       // 'search' — o campo era PULADO, ninguém achava o instrumento, e a
       // ordem seguinte era recusada por segurança ("não consegui LER o
       // instrumento"). A trava estava certa; a leitura é que estava cega.
-      var comValor=null, soBusca=null, ins=document.querySelectorAll('input');
+      // ANCORADO NO PAINEL DO TICKET. Era `document.querySelectorAll` —
+      // página inteira —, e com a fita e o DOM abertos a busca de OUTRO
+      // painel entrava na disputa. Ler o instrumento errado manda a ordem
+      // para o contrato errado, que é o prejuízo de 20/08.
+      var painel = (typeof _painelDoTicket === 'function') ? _painelDoTicket() : null;
+      var raiz = painel || document;
+
+      // O COMPROVANTE TAMBÉM DIZ O INSTRUMENTO, e essa é a leitura que
+      // faltava: depois de enviar, o painel vira "← MESU6" com o histórico
+      // da ordem, e não tem campo de busca nenhum. O ticker está no título,
+      // à vista, e o robô respondia "não consegui LER o instrumento".
+      if(painel){
+        var cab = painel.querySelectorAll('h1,h2,h3,div,span');
+        for(var c=0;c<cab.length;c++){
+          var tc=(cab[c].innerText||cab[c].textContent||'').trim();
+          if(tc && tc.length<=8 && ehSimbolo(tc)){
+            var rc=cab[c].getBoundingClientRect();
+            if(rc.width>0 && rc.height>0){
+              return JSON.stringify({achou:true, atual:tc, comprovante:true,
+                                     x:Math.round(rc.x+rc.width/2),
+                                     y:Math.round(rc.y+rc.height/2)});
+            }
+          }
+        }
+      }
+
+      var comValor=null, soBusca=null, ins=raiz.querySelectorAll('input');
       for(var i=0;i<ins.length;i++){
         var el=ins[i];
         if(!vis(el)) continue;
@@ -3325,11 +3413,21 @@ class TradovateAuto:
     })(%s)
     """
 
+    def _js_ativo_do_ticket(self, alvo):
+        """Monta o JS do instrumento com o achador de painel dentro.
+
+        A montagem fica numa função só porque o `%` do formato e a injeção do
+        achador precisam acontecer na MESMA ordem nos dois pontos de uso —
+        leitura e escrita. Duas montagens à mão divergiriam."""
+        return (self._JS_ATIVO_DO_TICKET
+                .replace("PLACEHOLDER_ACHAR_PAINEL", self._JS_ACHAR_PAINEL)
+                % alvo)
+
     def ler_ativo_do_ticket(self):
         """Qual instrumento está selecionado no 'Chamado do pedido'."""
         try:
             d = json.loads(self.avaliar_js(
-                self._JS_ATIVO_DO_TICKET % "null") or "{}")
+                self._js_ativo_do_ticket("null")) or "{}")
         except ConexaoPerdida:
             raise
         except Exception:
@@ -3382,7 +3480,7 @@ class TradovateAuto:
                  f" e esta ordem é de {ativo.upper()} — preenchendo o "
                  f"instrumento antes de tudo.")
         try:
-            self.avaliar_js(self._JS_ATIVO_DO_TICKET % json.dumps(str(ativo)))
+            self.avaliar_js(self._js_ativo_do_ticket(json.dumps(str(ativo))))
             time.sleep(pausa)
             # ENTER confirma a busca; sem ele a Tradovate mantém o anterior.
             self.cdp("Input.dispatchKeyEvent",

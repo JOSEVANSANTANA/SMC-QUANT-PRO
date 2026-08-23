@@ -301,6 +301,236 @@ class TradovateStream:
     })();
     """
 
+    # =====================================================================
+    #  CAPTURA CONTÍNUA — a fita não espera o robô olhar
+    # =====================================================================
+    #  Ele: "a fita muda o tempo inteiro, esse acompanhamento com o cdp
+    #  precisa ser online, sem pausas". Está certo, e o problema é real: com
+    #  leitura de 6 em 6 segundos, tudo que rolou entre uma leitura e outra
+    #  ou é perdido (se saiu da janela visível da fita) ou chega atrasado.
+    #  Num ativo líquido a fita anda dezenas de linhas por segundo.
+    #
+    #  E o extremo oposto também não serve: chamar o CDP em laço apertado é
+    #  exatamente o que afogou o Chrome em 20/08 e derrubou uma ordem no meio
+    #  do envio.
+    #
+    #  A SAÍDA NÃO É OLHAR MAIS VEZES — É PARAR DE OLHAR.
+    #  Um MutationObserver instalado DENTRO da página observa a fita em tempo
+    #  real, sem pausa nenhuma, e vai empilhando cada negócio novo num balde
+    #  ali mesmo. O robô não fica perguntando "mudou?": de tempos em tempos
+    #  ele ESVAZIA o balde e recebe tudo que aconteceu no intervalo, na
+    #  ordem, sem buraco.
+    #
+    #  Quem observa é o navegador, que já ia repintar aquelas linhas de
+    #  qualquer jeito. O CDP passa a ser chamado MENOS vezes que antes, e
+    #  mesmo assim nenhum negócio se perde.
+    # AS PEÇAS COMPARTILHADAS: achar a fita e entender uma linha.
+    # Ficam numa só porque o observador contínuo e a leitura sob demanda
+    # PRECISAM concordar sobre o que é uma linha e qual é o preço dela. Duas
+    # cópias divergiriam, e o dia em que divergissem o CVD mudaria de valor
+    # dependendo de qual caminho leu.
+    _JS_PECAS_DA_FITA = r"""
+      function _txt(el){ try{ return (el.innerText||el.textContent||'').trim(); }
+                         catch(e){ return ''; } }
+      function _norm(s){ return (s||'').toString().normalize('NFD')
+        .replace(/[\u0300-\u036f]/g,'').toLowerCase(); }
+      // Carimbo de hora/data NÃO é número — "10:42:56.611" vira 104256.611,
+      // maior que o preço 7557.25, e seria lido como preço.
+      function _ehCarimbo(s){
+        return /\d{1,2}:\d{2}/.test(s) || /\d{1,2}\/\d{1,2}\/\d{2,4}/.test(s);
+      }
+      function _num(s){
+        if(!s || _ehCarimbo(s)) return null;
+        var t=String(s).replace(/[^0-9.,-]/g,'');
+        if(!t) return null;
+        if(t.indexOf(',')>-1 && t.indexOf('.')>-1){
+          t=(t.lastIndexOf(',')>t.lastIndexOf('.'))
+            ? t.replace(/\./g,'').replace(',','.') : t.replace(/,/g,'');
+        } else if(t.indexOf(',')>-1){
+          t=(t.split(',')[1]||'').length===3 ? t.replace(',','') : t.replace(',','.');
+        }
+        var v=parseFloat(t);
+        return isNaN(v)?null:v;
+      }
+      // A fita dele NÃO se chama "Time & Sales" em lugar nenhum: o cabeçalho
+      // é "SELO DE DATA E HORA | PREÇO | TAMA | CONT.". A âncora são os
+      // TÍTULOS DAS COLUNAS, que é o que a tela garante nos dois idiomas.
+      function _acharFita(){
+        var RE_H=/(selo de data|data e hora|timestamp|hora)/;
+        var RE_P=/(preco|price)/, RE_T=/(tama|size|qtd|quant)/;
+        var alvo=null, menor=1e9;
+        var c=document.querySelectorAll('div,section,table,aside,ul');
+        for(var i=0;i<c.length;i++){
+          var t=_txt(c[i]);
+          if(!t || t.length>8000) continue;
+          var n=_norm(t);
+          if(!(RE_H.test(n) && RE_P.test(n) && RE_T.test(n))) continue;
+          if(t.length<menor){ menor=t.length; alvo=c[i]; }
+        }
+        return alvo;
+      }
+      function _lerLinha(ln){
+        if(!ln || !ln.querySelectorAll) return null;
+        var cel=ln.querySelectorAll('td,[role=cell],span,div'), textos=[];
+        for(var k=0;k<cel.length;k++){
+          var ct=_txt(cel[k]);
+          if(ct && ct.length<30) textos.push(ct);
+        }
+        if(textos.length<2){
+          var bruto=_txt(ln);
+          if(!bruto || bruto.length>80) return null;
+          textos=bruto.split(/\s+/);
+        }
+        // Linha de fita TEM carimbo de hora. É assim que o cabeçalho, que
+        // tem as palavras das colunas mas não tem hora, fica de fora.
+        var hora=null;
+        for(var h=0;h<textos.length;h++){ if(_ehCarimbo(textos[h])){ hora=textos[h]; break; } }
+        if(!hora) return null;
+        var nums=[];
+        for(var m=0;m<textos.length;m++){ var v=_num(textos[m]); if(v!==null) nums.push(v); }
+        if(nums.length<2) return null;
+        var preco=nums[0], tam=null;
+        for(var q=1;q<nums.length;q++){
+          if(nums[q]>0 && nums[q]===Math.floor(nums[q])){ tam=nums[q]; break; }
+        }
+        if(preco===null || tam===null || preco<=0) return null;
+        // O LADO pela COR da linha: a fita da Tradovate pinta vermelho e
+        // verde, e essa é a marca mais estável que existe aqui — classe de
+        // CSS muda a cada release da plataforma.
+        var lado=null;
+        try{
+          var rgb=(window.getComputedStyle(ln).backgroundColor||'')
+                   .match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+          if(rgb){
+            var R=+rgb[1],G=+rgb[2],B=+rgb[3];
+            if(R>G+25 && R>B+25) lado='venda';
+            else if(G>R+25 && G>B+15) lado='compra';
+          }
+        }catch(e){}
+        return {preco:preco, tamanho:tam, lado:lado, ts:hora,
+                chave: hora+'|'+preco+'|'+tam};
+      }
+    """
+
+    _JS_INSTALAR_OBSERVADOR = r"""
+    (function(){
+      PLACEHOLDER_ACHAR_FITA
+      if(window.__smcFita && window.__smcFita.vivo) {
+        return JSON.stringify({ok:true, ja_estava:true,
+                               capturados: window.__smcFita.balde.length});
+      }
+      var alvo = _acharFita();
+      if(!alvo) return JSON.stringify({ok:false, motivo:'fita_nao_encontrada'});
+
+      var st = window.__smcFita = window.__smcFita || {};
+      st.balde = st.balde || [];
+      st.vistos = st.vistos || {};
+      st.vivo = true;
+      st.perdidos = 0;
+
+      function registrar(ln){
+        var d = _lerLinha(ln);
+        if(!d) return;
+        // A MESMA LINHA repintada não é negócio novo. A chave junta hora,
+        // preço e tamanho: dois negócios idênticos no mesmo milissegundo são
+        // o mesmo print da fita.
+        var chave = d.chave;
+        if(st.vistos[chave]) return;
+        st.vistos[chave] = 1;
+        st.balde.push({preco:d.preco, tamanho:d.tamanho, lado:d.lado, ts:d.ts});
+        // TETO NO BALDE: se o robô parar de esvaziar (app fechado, CDP caído),
+        // a página não pode crescer sem limite e travar o navegador DELE.
+        if(st.balde.length > 4000){
+          st.perdidos += (st.balde.length - 3000);
+          st.balde = st.balde.slice(-3000);
+        }
+        var ks = Object.keys(st.vistos);
+        if(ks.length > 8000){ for(var i=0;i<4000;i++) delete st.vistos[ks[i]]; }
+      }
+
+      // Conta o que JÁ está na tela como visto, sem mandar para o balde: o
+      // CVD começa a contar de agora, e não com o passado da sessão embutido.
+      var iniciais = alvo.querySelectorAll('tr,[role=row],li,div');
+      for(var i=0;i<iniciais.length;i++){
+        var d0 = _lerLinha(iniciais[i]);
+        if(d0) st.vistos[d0.chave] = 1;
+      }
+
+      st.obs = new MutationObserver(function(muts){
+        for(var m=0;m<muts.length;m++){
+          var add = muts[m].addedNodes;
+          for(var a=0;a<add.length;a++){
+            var n = add[a];
+            if(!n || n.nodeType !== 1) continue;
+            registrar(n);
+            // A fita às vezes troca um bloco inteiro de linhas de uma vez.
+            var dentro = n.querySelectorAll ? n.querySelectorAll('tr,[role=row],li,div') : [];
+            for(var q=0;q<dentro.length;q++) registrar(dentro[q]);
+          }
+        }
+      });
+      st.obs.observe(alvo, {childList:true, subtree:true});
+      return JSON.stringify({ok:true, ja_estava:false, capturados:0});
+    })();
+    """
+
+    _JS_ESVAZIAR_BALDE = r"""
+    (function(){
+      var st = window.__smcFita;
+      if(!st || !st.vivo) return JSON.stringify({ok:false, motivo:'sem_observador'});
+      var lote = st.balde;
+      st.balde = [];
+      var perdidos = st.perdidos || 0;
+      st.perdidos = 0;
+      return JSON.stringify({ok:true, negocios:lote, perdidos:perdidos});
+    })();
+    """
+
+    def _js_com_achador(self, js):
+        """Injeta o achador da fita e o leitor de linha nos scripts."""
+        return js.replace("PLACEHOLDER_ACHAR_FITA", self._JS_PECAS_DA_FITA)
+
+    def instalar_observador(self):
+        """Põe o observador da fita de pé DENTRO da página. Idempotente.
+
+        Chamar de novo com o observador vivo não reinstala nada — devolve
+        `ja_estava` e segue. É de propósito: um observador duplicado contaria
+        cada negócio duas vezes, e o CVD dobraria sem ninguém perceber.
+        """
+        if not self.cdp:
+            return {"ok": False, "motivo": "cdp_ausente"}
+        try:
+            r = self.cdp.cdp("Runtime.evaluate", {
+                "expression": self._js_com_achador(self._JS_INSTALAR_OBSERVADOR),
+                "returnByValue": True, "awaitPromise": False}, timeout=5)
+            bruto = r.get("result", {}).get("value", "")
+            return json.loads(bruto) if bruto else {"ok": False, "motivo": "sem_retorno"}
+        except Exception as e:
+            return {"ok": False, "motivo": f"erro:{e}"}
+
+    def drenar_negocios(self):
+        """Tira do balde tudo que a página capturou desde a última vez.
+
+        Devolve (negócios, info). `perdidos` vem junto e nunca é escondido:
+        se o balde estourou porque ninguém esvaziou, o CVD tem um buraco, e
+        um buraco não anunciado é pior que um número ausente.
+        """
+        if not self.cdp:
+            return [], {"ok": False, "motivo": "cdp_ausente"}
+        try:
+            r = self.cdp.cdp("Runtime.evaluate", {
+                "expression": self._JS_ESVAZIAR_BALDE,
+                "returnByValue": True, "awaitPromise": False}, timeout=4)
+            bruto = r.get("result", {}).get("value", "")
+            if not bruto:
+                return [], {"ok": False, "motivo": "sem_retorno"}
+            d = json.loads(bruto)
+            if not d.get("ok"):
+                return [], d
+            return (d.get("negocios") or []), d
+        except Exception as e:
+            return [], {"ok": False, "motivo": f"erro:{e}"}
+
     def ler_time_and_sales(self) -> Dict[str, Any]:
         """Lê a fita de negócios. Devolve o que achou E como achou.
 
