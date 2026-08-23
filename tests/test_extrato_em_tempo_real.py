@@ -135,7 +135,7 @@ class TestOQueNAOPodeVirarConclusao(unittest.TestCase):
 
 class TestOLacoDeTempoRealExisteEEDisciplinado(unittest.TestCase):
 
-    def _corpo(self, nome, tamanho=4200):
+    def _corpo(self, nome, tamanho=6200):
         fonte = fonte_do_arquivo()
         i = fonte.index(nome)
         return fonte[i:i + tamanho]

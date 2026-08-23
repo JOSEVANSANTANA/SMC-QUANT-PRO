@@ -160,6 +160,7 @@ class TradovateStream:
     #  existe para não repetir.
     _JS_TIME_AND_SALES = r"""
     (function(){
+      PLACEHOLDER_LADO_PELA_COR
       function txt(el){ try{ return (el.innerText||el.textContent||'').trim(); }
                         catch(e){ return ''; } }
       function norm(s){ return (s||'').toString().normalize('NFD')
@@ -257,23 +258,7 @@ class TradovateStream:
 
         // 3) O LADO. Na fita dele a linha inteira e VERMELHA ou VERDE, e essa
         //    e a marca da agressao. Cor primeiro, classe depois.
-        var lado = null;
-        try{
-          var cor = window.getComputedStyle(ln).backgroundColor || '';
-          var rgb = cor.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-          if(rgb){
-            var R=+rgb[1], G=+rgb[2], B=+rgb[3];
-            if(R>G+25 && R>B+25) lado='venda';
-            else if(G>R+25 && G>B+15) lado='compra';
-          }
-        }catch(e){}
-        if(!lado){
-          var assinatura = (ln.className||'') + ' ' + (ln.getAttribute('data-side')||'')
-                         + ' ' + (ln.getAttribute('aria-label')||'');
-          var na = norm(assinatura);
-          if(/\b(buy|bid|comprad|compra|up|alta|green)\b/.test(na)) lado='compra';
-          else if(/\b(sell|ask|offer|vend|down|baixa|red)\b/.test(na)) lado='venda';
-        }
+        var lado = _ladoPelaCor(ln);
         if(lado && diag.rotulos.indexOf(lado)<0) diag.rotulos.push(lado);
 
         out.push({preco:preco, tamanho:tam, lado:lado});
@@ -283,6 +268,42 @@ class TradovateStream:
       if(!out.length) return JSON.stringify({ok:false, motivo:'fita_sem_linhas', diag:diag});
 
       // 4) BID/ASK, para as linhas que nao trouxerem lado.
+      //
+      // O LEITOR ANTIGO NAO PODIA FUNCIONAR NESTA TELA. Ele exigia que o
+      // rotulo e o valor estivessem no MESMO no de texto — `num("COMPRA")`,
+      // que e sempre null. No cabecalho do grafico dele os dois estao
+      // empilhados em elementos separados:
+      //
+      //     COMPRA            PRECO DE VENDA
+      //     7536.75           7537.00
+      //
+      // Entao: acha o rotulo, e procura o numero ao lado dele — no irmao
+      // seguinte, no pai, nessa ordem. Nunca no documento inteiro: o primeiro
+      // numero solto da pagina nao tem relacao nenhuma com o book.
+      function _valorPerto(el){
+        var v = num(txt(el));
+        if(v) return v;
+        try{
+          var ir = el.nextElementSibling;
+          for(var k=0; k<3 && ir; k++, ir = ir.nextElementSibling){
+            var t = txt(ir);
+            if(t && t.length <= 40){ v = num(t); if(v) return v; }
+          }
+        }catch(e){}
+        try{
+          var pai = el.parentElement;
+          if(pai){
+            var tp = txt(pai);
+            // Tira o proprio rotulo antes de procurar o numero no pai.
+            if(tp && tp.length <= 80){
+              v = num(tp.replace(txt(el), ' '));
+              if(v) return v;
+            }
+          }
+        }catch(e){}
+        return null;
+      }
+
       var bid=null, ask=null;
       var rot = document.querySelectorAll('div,span,td');
       for(var p=0;p<rot.length;p++){
@@ -290,10 +311,33 @@ class TradovateStream:
         if(!rt || rt.length>40) continue;
         var nr = norm(rt);
         if(bid===null && /^(bid|compra|preco de compra)\b/.test(nr)){
-          var vb=num(rt); if(vb) bid=vb;
+          var vb=_valorPerto(rot[p]); if(vb) bid=vb;
         }
         if(ask===null && /^(ask|offer|venda|preco de venda)\b/.test(nr)){
-          var va=num(rt); if(va) ask=va;
+          var va=_valorPerto(rot[p]); if(va) ask=va;
+        }
+      }
+
+      // BID/ASK PARADO E PIOR QUE BID/ASK NENHUM.
+      //
+      // Nos prints de 23/08 o cabecalho marca COMPRA 7536.75 e PRECO DE VENDA
+      // 7537.00 enquanto a fita imprime negocio a 7583 e a 7591 — o book do
+      // replay nao acompanha. Se eu usasse esses numeros no Lee-Ready, TODO
+      // negocio sairia "acima do ask" e portanto agressao compradora: o CVD
+      // viraria uma reta subindo para sempre. Um numero errado com cara de
+      // medida — que e exatamente o defeito que este modulo existe para nao
+      // repetir.
+      //
+      // Book de verdade cola no ultimo negocio. 0,2% de distancia ja e
+      // ordem de grandeza acima de qualquer spread real destes contratos, e
+      // e o bastante para separar "parado" de "vivo" sem precisar saber o
+      // tick de cada ativo.
+      if(bid && ask && out.length){
+        var ultimo = out[0].preco;
+        var meio = (bid + ask) / 2;
+        if(meio > 0 && Math.abs(ultimo - meio) / meio > 0.002){
+          diag.bid_ask_descartado = {bid:bid, ask:ask, ultimo:ultimo};
+          bid = null; ask = null;
         }
       }
       diag.metodo = diag.rotulos.length ? 'rotulo' : ((bid&&ask) ? 'bid_ask' : null);
@@ -397,18 +441,69 @@ class TradovateStream:
         // O LADO pela COR da linha: a fita da Tradovate pinta vermelho e
         // verde, e essa é a marca mais estável que existe aqui — classe de
         // CSS muda a cada release da plataforma.
-        var lado=null;
-        try{
-          var rgb=(window.getComputedStyle(ln).backgroundColor||'')
-                   .match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-          if(rgb){
-            var R=+rgb[1],G=+rgb[2],B=+rgb[3];
-            if(R>G+25 && R>B+25) lado='venda';
-            else if(G>R+25 && G>B+15) lado='compra';
-          }
-        }catch(e){}
+        var lado = _ladoPelaCor(ln);
         return {preco:preco, tamanho:tam, lado:lado, ts:hora,
                 chave: hora+'|'+preco+'|'+tam};
+      }
+    """
+
+    # A COR DA LINHA — E O MOTIVO DE ELA PRECISAR DE UM SEGUNDO OLHAR.
+    #
+    # Em 23/08, 12:05, o painel respondeu "a fita não marca o lado da agressão
+    # e não achei bid/ask". Só que a fita DELE marca: as linhas aparecem
+    # pintadas de vermelho e verde nos prints, sem exceção.
+    #
+    # A explicação está em ONDE a tinta é aplicada. `getComputedStyle` não
+    # herda cor de fundo: se a Tradovate pinta a CÉLULA (ou uma faixa interna
+    # que ocupa a linha toda) em vez do elemento da linha, a linha devolve
+    # `rgba(0,0,0,0)` — transparente. O regex de três números casa "0, 0, 0",
+    # nenhuma das duas condições bate, e o lado sai `null` EM SILÊNCIO. A
+    # leitura falha parecendo uma fita sem cor.
+    #
+    # A correção é olhar a linha e, se ela for transparente, olhar para
+    # dentro. Não é chute: é procurar a mesma marca um nível abaixo, e parar
+    # no primeiro fundo que realmente tem cor.
+    _JS_LADO_PELA_COR = r"""
+      function _corDe(el){
+        try{
+          var c = window.getComputedStyle(el);
+          // Fundo transparente não é cor: alfa 0 significa "não pintado",
+          // e tratá-lo como preto (0,0,0) era o que fazia a leitura morrer.
+          if(c.backgroundColor && /rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*0\s*\)/.test(c.backgroundColor)) return null;
+          var m = (c.backgroundColor||'').match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+          if(!m) return null;
+          var R=+m[1], G=+m[2], B=+m[3];
+          if(R===G && G===B) return null;   // cinza/branco/preto: sem lado
+          if(R>G+25 && R>B+25) return 'venda';
+          if(G>R+25 && G>B+15) return 'compra';
+          return null;
+        }catch(e){ return null; }
+      }
+      function _ladoPelaCor(ln){
+        var l = _corDe(ln);
+        if(l) return l;
+        // A linha não está pintada: a tinta pode estar na célula.
+        try{
+          var f = ln.children || [];
+          for(var i=0;i<f.length && i<12;i++){
+            l = _corDe(f[i]);
+            if(l) return l;
+            var n = f[i].children || [];
+            for(var j=0;j<n.length && j<6;j++){
+              l = _corDe(n[j]);
+              if(l) return l;
+            }
+          }
+        }catch(e){}
+        // Última tentativa: marca declarada em classe ou atributo.
+        try{
+          var a = ((ln.className||'') + ' ' + (ln.getAttribute('data-side')||'')
+                   + ' ' + (ln.getAttribute('aria-label')||''))
+                  .toString().normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
+          if(/\b(buy|bid|comprad|compra|up|alta|green)\b/.test(a)) return 'compra';
+          if(/\b(sell|ask|offer|vend|down|baixa|red)\b/.test(a)) return 'venda';
+        }catch(e){}
+        return null;
       }
     """
 
@@ -428,7 +523,31 @@ class TradovateStream:
       st.vivo = true;
       st.perdidos = 0;
 
+      // PORTEIRO BARATO, ANTES DO TRABALHO CARO.
+      //
+      // Cada nó que entra na fita chegava direto em `_lerLinha`, e lá dentro
+      // roda `querySelectorAll('td,[role=cell],span,div')` sobre a subárvore
+      // inteira e, mais adiante, `getComputedStyle` — que força o navegador a
+      // recalcular estilo. Como o laço de fora JÁ expande os descendentes de
+      // cada nó adicionado, um bloco de linhas trocado de uma vez fazia isso
+      // n vezes para os mesmos n nós: custo quadrático, na página DELE, num
+      // ativo que imprime dezenas de negócios por segundo.
+      //
+      // Toda linha de fita tem carimbo de hora no próprio texto. Uma leitura
+      // de texto e um teste de regex descartam container e cabeçalho antes de
+      // qualquer varredura. O que passa daqui é candidato de verdade.
+      function pareceLinha(ln){
+        if(!ln || !ln.querySelectorAll) return false;
+        var t;
+        try{ t = (ln.innerText||ln.textContent||''); }catch(e){ return false; }
+        if(!t) return false;
+        // Linha de fita é curta. Texto comprido é bloco, não linha.
+        if(t.length > 120) return false;
+        return /\d{1,2}:\d{2}/.test(t);
+      }
+
       function registrar(ln){
+        if(!pareceLinha(ln)) return;
         var d = _lerLinha(ln);
         if(!d) return;
         // A MESMA LINHA repintada não é negócio novo. A chave junta hora,
@@ -488,7 +607,8 @@ class TradovateStream:
 
     def _js_com_achador(self, js):
         """Injeta o achador da fita e o leitor de linha nos scripts."""
-        return js.replace("PLACEHOLDER_ACHAR_FITA", self._JS_PECAS_DA_FITA)
+        return js.replace("PLACEHOLDER_ACHAR_FITA",
+                          self._JS_LADO_PELA_COR + self._JS_PECAS_DA_FITA)
 
     def instalar_observador(self):
         """Põe o observador da fita de pé DENTRO da página. Idempotente.
@@ -544,7 +664,8 @@ class TradovateStream:
                     "diag": {"painel": False, "linhas_vistas": 0, "metodo": None}}
         try:
             res = self.cdp.cdp("Runtime.evaluate", {
-                "expression": self._JS_TIME_AND_SALES,
+                "expression": self._JS_TIME_AND_SALES.replace(
+                    "PLACEHOLDER_LADO_PELA_COR", self._JS_LADO_PELA_COR),
                 "returnByValue": True, "awaitPromise": False}, timeout=4)
             bruto = res.get("result", {}).get("value", "")
             if not bruto:

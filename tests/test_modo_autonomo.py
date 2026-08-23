@@ -292,16 +292,50 @@ class TestNaoEmpilharOrdemNaCorretora(unittest.TestCase):
         self.assertIn("repetido = True", bloco)
         self.assertIn("cancele a ordem antiga", bloco)
 
-    def test_o_carimbo_so_e_posto_quando_a_corretora_RECEBEU(self):
+    def test_o_carimbo_e_posto_ASSIM_QUE_A_ORDEM_PODE_TER_SAIDO(self):
+        """ESTE TESTE MUDOU DE LADO EM 23/08, E A MUDANÇA É O CONSERTO.
+
+        Ele se chamava `..._so_e_posto_quando_a_corretora_RECEBEU` e exigia
+        que o carimbo viesse DEPOIS do `res.get("ok")`. Parecia prudência.
+        Era o bug:
+
+            plataforma: #119531042 Comprar 3 MESU6 LMT 7552.50 - Filled 3/3
+            diário:     CANCELADA sem executar (a ordem não chegou a ir
+                        para a plataforma)
+
+        Se o envio levanta exceção DEPOIS do clique em Enviar — leitura de
+        volta estourando prazo, CDP caindo —, `res` nunca existe, o carimbo
+        nunca é posto, e o programa passa a acreditar que não tem posição
+        enquanto tem três contratos no mercado.
+
+        A pergunta certa não é 'a corretora recebeu?', é 'pode ter saído?'.
+        Do clique em diante a resposta é sim. Errar para o lado de supor que
+        a ordem existe custa uma oportunidade; errar para o outro custa a
+        conta.
+        """
         fonte = fonte_do_arquivo()
         i = fonte.index("def _marcar_ordem_na_corretora(")
-        self.assertIn('p["enviada_plataforma"] = True', fonte[i:i + 1200])
-        j = fonte.index("self._marcar_ordem_na_corretora(sinal_id)")
-        bloco = fonte[j - 800:j]
-        self.assertIn("not dry", bloco, "modo teste não pode carimbar")
-        self.assertIn('res.get("incerto")', bloco,
+        self.assertIn('p["enviada_plataforma"] = True', fonte[i:i + 3000])
+
+        i_fn = fonte.index("def _tv_enviar_bracket")
+        trecho = fonte[i_fn:i_fn + 20000]
+        j = trecho.index("self._marcar_ordem_na_corretora(sinal_id)")
+        self.assertIn("if not dry:", trecho[max(0, j - 300):j],
+                      "modo teste não pode carimbar")
+        self.assertLess(j, trecho.index("bot.enviar_ordem_com_atm("),
+                        "o carimbo tem de vir ANTES do clique em Enviar")
+
+    def test_o_carimbo_so_e_desfeito_quando_a_falha_e_PROVADA(self):
+        """`incerto` e `exposto` são casos em que a ordem PODE estar lá."""
+        fonte = fonte_do_arquivo()
+        j = fonte.index("self._desmarcar_ordem_na_corretora(sinal_id)")
+        bloco = fonte[j - 700:j]
+        self.assertIn('not res.get("ok")', bloco)
+        self.assertIn('not res.get("incerto")', bloco,
                       "se eu NÃO SEI se saiu, tenho de tratar como se tivesse "
                       "saído — empilhar em cima do que existe é pior")
+        self.assertIn('not res.get("exposto")', bloco,
+                      "entrada enviada sem proteção é ordem na corretora")
 
     def test_cancelar_no_diario_NAO_cancela_na_corretora_e_isso_e_dito(self):
         """'Cancelada' no meu registro com a ordem viva na plataforma é a pior

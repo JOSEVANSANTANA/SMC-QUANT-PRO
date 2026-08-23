@@ -267,13 +267,33 @@ class TestOSeletorCasaComATelaREAL(unittest.TestCase):
     def test_a_cor_da_linha_e_lida_como_lado_da_agressao(self):
         """Na fita da Tradovate a linha inteira é vermelha ou verde, e é a
         marca mais confiável de quem agrediu — mais que classe de CSS, que
-        muda a cada release."""
-        js = self._js()
+        muda a cada release.
+
+        A LEITURA MUDOU DE ENDEREÇO EM 23/08. Estava em linha no `_lerLinha`
+        e passou para `_JS_LADO_PELA_COR`, porque `getComputedStyle` não herda
+        fundo: quando a Tradovate pinta a CÉLULA, a linha volta transparente e
+        o lado saía nulo em silêncio. A regra que este teste protege é a
+        mesma; só o lugar dela é outro."""
+        import tradovate_stream
+        js = tradovate_stream.TradovateStream._JS_LADO_PELA_COR
         self.assertIn("getComputedStyle", js)
         i = js.index("getComputedStyle")
-        corpo = js[i:i + 420]
+        corpo = js[i:i + 800]
         self.assertIn("'venda'", corpo)
         self.assertIn("'compra'", corpo)
+
+    def test_a_cor_e_lida_pelos_dois_leitores_da_fita(self):
+        """O observador contínuo e a leitura pontual têm de classificar
+        igual: dois critérios de agressão dariam dois CVDs diferentes."""
+        import tradovate_stream
+        T = tradovate_stream.TradovateStream
+        s = T.__new__(T)
+        observador = T._js_com_achador(s, T._JS_INSTALAR_OBSERVADOR)
+        pontual = T._JS_TIME_AND_SALES.replace(
+            "PLACEHOLDER_LADO_PELA_COR", T._JS_LADO_PELA_COR)
+        for nome, js in (("observador", observador), ("pontual", pontual)):
+            self.assertIn("_ladoPelaCor(", js, nome)
+            self.assertIn("function _ladoPelaCor", js, nome)
 
 
 class TestOParserSobreAsLinhasREAIS(unittest.TestCase):

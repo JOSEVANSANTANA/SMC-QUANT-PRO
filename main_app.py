@@ -4300,6 +4300,130 @@ def desfecho_pelas_execucoes(pos, ordens, vpp=None):
         f"{preco_saida} ({contratos} ctr)")
 
 
+def divergencia_do_bracket(ordens, direcao, stop_decidido, alvo_decidido,
+                           ativo=None, tick=None):
+    """O bracket que CHEGOU à plataforma é o que o motor DECIDIU?
+
+    Devolve (bate, [avisos]). Lista vazia e `bate=True` quando confere.
+
+    POR QUE ISTO PRECISOU EXISTIR (23/08, 12:33)
+    --------------------------------------------
+    O motor decidiu, e anunciou no chat:
+
+        entrada 7552.5 · stop 7540.0 · alvo 7575.0 · R:R 1.8
+
+    O que a Tradovate registrou:
+
+        #119531042 Comprar 3 MESU6 LMT em 7552.50 - Filled - 3/3
+        #119531048 Vender  3 MESU6 LMT em 7559.50 - Filled - 3/3
+        #119531050 Vender  3 MESU6 STP em 7524.50 - Cancelado - 0/3
+
+    A entrada bate. O stop, não: 7524.50 em vez de 7540.00. São 28 pontos de
+    risco onde o plano autorizou 12,5 — em 3 contratos, US$420 expostos no
+    lugar de US$187,50. E o alvo também não: saiu em 7559.50, que não é o
+    7575.0 decidido.
+
+    NENHUM DOS DOIS APARECEU EM LUGAR NENHUM. O programa anunciou os números
+    que ELE escolheu e nunca conferiu quais números a corretora aceitou. Todo
+    o resto — R:R no painel, dimensionamento do próximo trade, cálculo de
+    drawdown — passou a ser feito em cima de um bracket que não era o que
+    estava lá.
+
+    Conferir depois não desfaz a ordem. Mas transforma um erro silencioso, que
+    contamina toda a gestão de risco seguinte, num aviso na cara — e é a
+    diferença entre um sistema que ele pode deixar sozinho e um que ele não
+    pode.
+
+    Função pura: a régua é conferível sem corretora, sem tela e sem rede.
+    """
+    avisos = []
+    direcao = str(direcao or "").upper()
+    if direcao not in ("BUY", "SELL") or not ordens:
+        return True, avisos
+    lado_saida = "SELL" if direcao == "BUY" else "BUY"
+
+    def _mesmo_ativo(o):
+        a, b = o.get("ativo"), ativo
+        if not a or not b:
+            return True
+        return str(a).upper()[:3] == str(b).upper()[:3]
+
+    # Meio tick de folga: a plataforma arredonda para o tick do contrato, e
+    # acusar divergência de arredondamento seria alarme falso — que gasta a
+    # atenção que o alarme de verdade precisa ter.
+    folga = (float(tick) / 2.0) if tick else 0.0
+
+    saidas = [o for o in ordens
+              if o.get("lado") == lado_saida and _mesmo_ativo(o)
+              and o.get("estado") != "rejeitada"]
+
+    def _confere(tipo, decidido, nome):
+        if decidido is None:
+            return
+        linhas = [o for o in saidas
+                  if o.get("tipo") == tipo and o.get("preco") is not None]
+        if not linhas:
+            avisos.append(
+                f"o {nome} que eu decidi ({decidido}) NÃO APARECE no extrato "
+                "da plataforma")
+            return
+        # A mais recente é a que vale: um trail que andou substitui a anterior.
+        real = float(linhas[-1]["preco"])
+        if abs(real - float(decidido)) > folga:
+            avisos.append(
+                f"o {nome} na plataforma é {real}, e eu decidi {decidido}")
+
+    _confere("STOP", stop_decidido, "STOP")
+    _confere("LIMITE", alvo_decidido, "ALVO")
+    return (not avisos), avisos
+
+
+def reconciliavel_pelo_extrato(pos, hoje=None):
+    """Esta posição ainda pode ser corrigida pelo extrato da corretora?
+
+    A CORRETORA TEM A ÚLTIMA PALAVRA. Esta função existe por causa do dia
+    23/08 às 12:33, quando a regra antiga ("só olho o que está PENDENTE ou
+    ABERTA") transformou um palpite em sentença:
+
+        plataforma: Comprar 3 MESU6 LMT 7552.50 - Filled - 3/3
+                    Vender  3 MESU6 LMT 7559.50 - Filled - 3/3
+        diário:     CANCELADA sem executar
+
+    Quem escreveu 'CANCELADA' foi a lógica de PREÇO — que enxerga de ciclo em
+    ciclo e não vê o que acontece no meio. Ao virar CANCELADA a posição saía
+    da varredura, e a partir dali nenhuma leitura do extrato podia mais
+    desmentir o palpite. Um erro que se tranca sozinho.
+
+    Agora CANCELADA também é varrida, com duas condições que evitam o exagero
+    oposto (ficar ressuscitando registro velho a cada leitura):
+
+      · a ordem PODE ter chegado à corretora — `enviada_plataforma` ou
+        `execucao_incerta`. Sugestão que nunca saiu do diário não tem o que
+        conferir lá;
+      · e é DE HOJE. O extrato da tela mostra as ordens recentes; casar uma
+        cancelada de terça com o extrato de hoje inventaria operação.
+
+    FECHADA fica de fora: ou veio do próprio extrato, ou de um fechamento já
+    confirmado. Reabrir isso seria contar o mesmo resultado duas vezes.
+
+    Função pura: dá para conferir a regra sem corretora, sem tela e sem rede.
+    """
+    if not pos:
+        return False
+    status = pos.get("status")
+    if status in ("PENDENTE", "ABERTA"):
+        return True
+    if status != "CANCELADA":
+        return False
+    if not (pos.get("enviada_plataforma") or pos.get("execucao_incerta")):
+        return False
+    if pos.get("desfecho_por") == "extrato_plataforma":
+        return False
+    dia = hoje or time.strftime('%d/%m/%Y')
+    carimbo = str(pos.get("data_fechamento") or "")
+    return carimbo.startswith(dia)
+
+
 def cancelar_pendentes_do_sinal(sinal_id, motivo="cenário invalidado"):
     """Cancela as ordens PENDENTES (não executadas) ligadas a uma sugestão que
     perdeu validade. Só mexe no que AINDA NÃO entrou no mercado — posição já
@@ -17954,10 +18078,28 @@ class SmcQuantApp(ctk.CTk):
         """Carimba a posição como ENVIADA À PLATAFORMA.
 
         É este carimbo que faz `ordem_enviada_e_viva_no_ativo` enxergar a
-        ordem e impedir que o cenário seguinte empilhe outra em cima. Ele só é
-        posto quando a corretora REALMENTE recebeu — em modo teste, ou quando
-        o envio falha, a posição continua sendo só um registro meu, e um
-        registro meu não ocupa lugar na Tradovate."""
+        ordem e impedir que o cenário seguinte empilhe outra em cima.
+
+        A ORDEM DOS ACONTECIMENTOS MUDOU EM 23/08, E É O CONSERTO DO PIOR BUG
+        QUE ESTE PROGRAMA JÁ TEVE. Antes o carimbo só era posto DEPOIS que o
+        envio voltava dizendo `ok`. Parece prudente e é o contrário: se o
+        envio levanta exceção DEPOIS do clique em Enviar — a leitura de volta
+        estourou o prazo, o WebSocket do CDP caiu, o Chrome engasgou —, a
+        ordem está na corretora e o carimbo nunca é posto. O programa passa a
+        acreditar que não existe posição enquanto existe.
+
+        Foi exatamente isso, às 12:33 de 23/08:
+            plataforma: #119531042 Comprar 3 MESU6 LMT 7552.50 - Filled - 3/3
+            diário:     "CANCELADA sem executar (a ordem não chegou a ir
+                         para a plataforma)"
+
+        Agora o carimbo vem ANTES do clique. A pergunta certa não é "deu
+        certo?", é "pode ter saído?". Assim que o dedo encosta no Enviar a
+        resposta é sim, e o único desfecho seguro é assumir que saiu. Se o
+        envio falhar de forma PROVADA, `_desmarcar_ordem_na_corretora`
+        desfaz — e essa é a direção barata do erro: segurar uma sugestão que
+        talvez pudesse ir custa uma oportunidade; ignorar uma posição que
+        existe custa a conta."""
         if not sinal_id:
             return
         lista = carregar_posicoes()
@@ -17966,6 +18108,46 @@ class SmcQuantApp(ctk.CTk):
             if p.get("sinal_id") == sinal_id and p.get("status") == "PENDENTE":
                 p["enviada_plataforma"] = True
                 mexeu = True
+        if mexeu:
+            salvar_posicoes(lista)
+
+    def _marcar_execucao_incerta(self, sinal_id, porque=""):
+        """Marca que esta ordem pode existir na corretora sem eu saber.
+
+        É o que faz a reconciliação pelo extrato continuar olhando para ela
+        mesmo depois que a lógica de preço a der por CANCELADA. Sem esta
+        marca, o palpite do preço vira palavra final e a corretora nunca tem
+        chance de desmentir."""
+        if not sinal_id:
+            return
+        lista = carregar_posicoes()
+        mexeu = False
+        for p in lista:
+            if p.get("sinal_id") == sinal_id:
+                p["execucao_incerta"] = True
+                if porque:
+                    p["motivo_incerteza"] = porque
+                mexeu = True
+        if mexeu:
+            salvar_posicoes(lista)
+
+    def _desmarcar_ordem_na_corretora(self, sinal_id):
+        """Desfaz o carimbo — SÓ quando o envio falhou de forma provada.
+
+        'Provada' quer dizer: a função de envio voltou, sem exceção, dizendo
+        que não enviou e sem marcar `incerto`. Qualquer outra coisa (exceção,
+        prazo estourado, `incerto`) deixa o carimbo de pé, porque nesses casos
+        eu não sei o que ficou na corretora — e não saber tem de pesar para o
+        lado de supor que a ordem existe."""
+        if not sinal_id:
+            return
+        lista = carregar_posicoes()
+        mexeu = False
+        for p in lista:
+            if p.get("sinal_id") == sinal_id and p.get("status") == "PENDENTE":
+                if p.get("enviada_plataforma"):
+                    p["enviada_plataforma"] = False
+                    mexeu = True
         if mexeu:
             salvar_posicoes(lista)
 
@@ -18006,6 +18188,14 @@ class SmcQuantApp(ctk.CTk):
                 _rr = abs(float(alvo) - float(entry)) / _risco
         except (TypeError, ValueError, ZeroDivisionError):
             _rr = None
+
+        # CARIMBO ANTES DO CLIQUE — ver `_marcar_ordem_na_corretora`.
+        # Feito AQUI, na thread da interface, e não lá dentro: `tarefa()` roda
+        # noutra thread, e mexer no diário de lá é corrida de dados no caminho
+        # que manda ordem. Em modo teste nada vai para a corretora, então nada
+        # é carimbado.
+        if not dry:
+            self._marcar_ordem_na_corretora(sinal_id)
 
         def tarefa():
             try:
@@ -18057,13 +18247,14 @@ class SmcQuantApp(ctk.CTk):
                     self.log(f"⛔ ORDEM RECUSADA POR SEGURANÇA: Não conheço o tick de '{ativo or '?'}' — sem "
                              "ele não dá para converter stop e alvo em ticks no modelo ATM nativo.")
                     res = {"ok": False, "erro": "Tick desconhecido para ATM"}
-                # A ORDEM ESTÁ NA CORRETORA — a partir daqui ela ocupa lugar.
-                # Vale também para o caso incerto (a ligação caiu no clique de
-                # Enviar): se eu NÃO SEI se saiu, tenho de tratar como se
-                # tivesse saído. Empilhar em cima de uma ordem que existe é
-                # pior que segurar uma sugestão que talvez pudesse ir.
-                if not dry and (res.get("ok") or res.get("incerto")):
-                    self.after(0, lambda: self._marcar_ordem_na_corretora(sinal_id))
+                # O CARIMBO JÁ FOI POSTO ANTES DO CLIQUE. Aqui só se DESFAZ, e
+                # só quando a falha é provada: voltou sem exceção, dizendo que
+                # não enviou, sem `incerto` e sem `exposto`. `exposto` é o caso
+                # em que a ENTRADA saiu e a proteção não — ordem na corretora,
+                # carimbo fica.
+                if (not dry and not res.get("ok")
+                        and not res.get("incerto") and not res.get("exposto")):
+                    self.after(0, lambda: self._desmarcar_ordem_na_corretora(sinal_id))
 
                 # ---- A CONFIRMAÇÃO. O QUE ACONTECEU DE VERDADE. ----
                 # 19/08, ele: "nao pode falar que fez e nao ter feito". A
@@ -18098,6 +18289,47 @@ class SmcQuantApp(ctk.CTk):
                 if not isinstance(res, dict):
                     return
 
+                # CONFERÊNCIA DO BRACKET — o que a corretora ACEITOU é o que
+                # eu DECIDI? Ver `divergencia_do_bracket`. Isto lê o extrato
+                # UMA vez, logo após o envio, e é a única chance de pegar um
+                # stop trocado antes que ele vire prejuízo.
+                if not dry and res.get("ok"):
+                    try:
+                        extrato = bot.ler_execucoes() or {}
+                        if extrato.get("ok") and extrato.get("ordens"):
+                            bate, avisos = divergencia_do_bracket(
+                                extrato["ordens"], direcao, stop, alvo,
+                                ativo=ativo, tick=tick)
+                            if not bate:
+                                alerta = (
+                                    f"🚨 BRACKET DIFERENTE DO QUE EU DECIDI — "
+                                    f"{direcao} {ativo or ''} {qtd} ctr: "
+                                    + "; ".join(avisos)
+                                    + ". A gestão de risco daqui para a frente "
+                                      "está sendo calculada em cima dos MEUS "
+                                      "números, não dos que estão lá. CONFIRA "
+                                      "A PLATAFORMA AGORA.")
+                                self.log(alerta)
+                                self._chat_feed(alerta)
+                                self._notificar_desktop(
+                                    "🚨 BRACKET DIFERENTE NA PLATAFORMA",
+                                    avisos + ["Confira a Tradovate agora."],
+                                    cor="#c53030", segundos=600)
+                                try:
+                                    enviar_relatorio_whatsapp(alerta, None, self.log)
+                                except Exception:
+                                    pass
+                            else:
+                                self.log("🔎 Bracket conferido no extrato: stop "
+                                         f"{stop} e alvo {alvo} são os que estão "
+                                         "na plataforma.")
+                    except Exception as e:
+                        # Não conseguir conferir NÃO é o mesmo que conferir e
+                        # estar certo — e o log tem de saber a diferença.
+                        self.log(f"⚠️ Não consegui conferir o bracket no extrato "
+                                 f"({e}). Os números do painel são os que EU "
+                                 "decidi; não os confirmei na plataforma.")
+
                 if res.get("exposto"):
                     # ENTRADA no mercado SEM proteção: é o pior estado possível.
                     # Grita no log, no alerta da tela e no WhatsApp.
@@ -18119,8 +18351,30 @@ class SmcQuantApp(ctk.CTk):
                              f"({res.get('erro') or 'motivo não informado'}). "
                              "Nenhuma ordem sua ficou solta — confira a plataforma.")
             except Exception as e:
-                self.log(f"⚠️ Tradovate: falha ao enviar ordem: {e}. "
-                          "CONFIRA A PLATAFORMA: pode ter ficado ordem parcial.")
+                # ESTE ERA O BURACO DE 23/08 ÀS 12:33. A mensagem anterior ao
+                # envio promete "confirmo aqui se ela foi aceita" — e este
+                # ramo só escrevia no LOG. No chat, a última linha que ele lia
+                # era a promessa, e depois silêncio. A ordem estava na
+                # corretora, preenchida, 3 contratos.
+                #
+                # Promessa feita é promessa cumprida em TODOS os desfechos,
+                # inclusive (e principalmente) neste, que é o único em que eu
+                # não sei o que aconteceu.
+                aviso = (f"⚠️ {direcao} {ativo or ''} {qtd} ctr @ {entry}: "
+                         f"a ligação com o Chrome falhou no meio do envio ({e}). "
+                         "NÃO SEI dizer se a ordem saiu — estou tratando como "
+                         "SE TIVESSE SAÍDO até o extrato dizer o contrário. "
+                         "CONFIRA A PLATAFORMA AGORA.").strip()
+                self.log(aviso)
+                self._chat_feed(aviso)
+                try:
+                    enviar_relatorio_whatsapp(aviso, None, self.log)
+                except Exception:
+                    pass
+                # O carimbo posto antes do clique FICA. Exceção depois do
+                # Enviar é exatamente o caso em que a ordem pode existir sem
+                # eu saber, e é para ele que o carimbo antecipado existe.
+                self._marcar_execucao_incerta(sinal_id, str(e)[:120])
                 # zera a conexão pra forçar reconexão limpa no próximo envio
                 self._tv_bot = None
 
@@ -19515,7 +19769,7 @@ class SmcQuantApp(ctk.CTk):
             return 0
         minhas = [p for p in carregar_posicoes()
                   if p.get("origem") == "ROBO"
-                  and p.get("status") in ("PENDENTE", "ABERTA")
+                  and reconciliavel_pelo_extrato(p)
                   and _e_da_conta_ativa(p)]
         if not minhas:
             return 0        # nada vivo: não gasto leitura à toa
@@ -19535,11 +19789,30 @@ class SmcQuantApp(ctk.CTk):
         for pos in lista:
             if pos.get("origem") != "ROBO" or not _e_da_conta_ativa(pos):
                 continue
-            if pos.get("status") not in ("PENDENTE", "ABERTA"):
+            if not reconciliavel_pelo_extrato(pos):
                 continue
+            era_cancelada = pos.get("status") == "CANCELADA"
             novo, saida, pnl, motivo = desfecho_pelas_execucoes(pos, ordens)
             if not novo or novo == pos.get("status"):
                 continue
+            if era_cancelada:
+                # UM DESMENTIDO NÃO PODE PASSAR EM SILÊNCIO. O programa disse
+                # a ele, com todas as letras, que a ordem não tinha ido para a
+                # plataforma. Foi. Corrigir de fininho e seguir seria a mesma
+                # doença de outro jeito.
+                aviso = (f"🔁 CORRIGINDO O QUE EU TINHA DITO: dei o "
+                         f"{pos.get('direcao')} {pos.get('ativo')} "
+                         f"{pos.get('contratos')} ctr @ {pos.get('entry')} como "
+                         "CANCELADA sem executar. O extrato da Tradovate diz "
+                         f"que não foi isso: {motivo}. Quem vale é o extrato — "
+                         "estou refazendo o registro.")
+                self.log(aviso)
+                self._chat_feed(aviso)
+                try:
+                    enviar_relatorio_whatsapp(aviso, None, self.log)
+                except Exception:
+                    pass
+                pos.pop("motivo_cancelamento", None)
             if novo == "ABERTA":
                 pos["status"] = "ABERTA"
                 pos["execucao"] = "CONFIRMADA"

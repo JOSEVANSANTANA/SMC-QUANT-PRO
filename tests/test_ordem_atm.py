@@ -324,7 +324,7 @@ class TestOAppUSAOCaminhoNovo(unittest.TestCase):
     def test_o_ativo_e_repassado_para_a_atm_e_o_bracket(self):
         fonte = fonte_do_arquivo()
         i = fonte.index("def _tv_enviar_bracket(")
-        bloco = fonte[i:i + 4500]
+        bloco = fonte[i:i + 6000]
         self.assertIn("bot.enviar_ordem_com_atm(", bloco)
         self.assertIn("ativo=ativo", bloco)
 
