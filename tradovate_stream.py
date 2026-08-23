@@ -162,9 +162,19 @@ class TradovateStream:
     (function(){
       function txt(el){ try{ return (el.innerText||el.textContent||'').trim(); }
                         catch(e){ return ''; } }
+      function norm(s){ return (s||'').toString().normalize('NFD')
+        .replace(/[\u0300-\u036f]/g,'').toLowerCase(); }
+
+      // CARIMBO DE HORA E DATA NAO SAO NUMERO.
+      // A fita dele mostra "10:42:56.611" e "7/9/26" na primeira coluna.
+      // Tirando os separadores, o carimbo vira 104256.611 — MAIOR que o
+      // preco 7557.25. Qualquer heuristica de "o maior numero da linha e o
+      // preco" leria a HORA como preco e mandaria o CVD para o espaco.
+      function ehCarimbo(s){
+        return /\d{1,2}:\d{2}/.test(s) || /\d{1,2}\/\d{1,2}\/\d{2,4}/.test(s);
+      }
       function num(s){
-        if(!s) return null;
-        // Aceita 7.583,25 e 7,583.25 — a fita muda de separador com o idioma.
+        if(!s || ehCarimbo(s)) return null;
         var t = String(s).replace(/[^0-9.,-]/g,'');
         if(!t) return null;
         if(t.indexOf(',')>-1 && t.indexOf('.')>-1){
@@ -178,56 +188,92 @@ class TradovateStream:
         return isNaN(v) ? null : v;
       }
 
-      var diag = { painel:false, linhas_vistas:0, metodo:null, rotulos:[] };
+      var diag = { painel:false, linhas_vistas:0, metodo:null, rotulos:[],
+                   cabecalho:null };
 
-      // 1) ACHAR A FITA. Pela legenda da coluna, não por classe de CSS:
-      //    classe muda a cada release da plataforma, legenda não.
-      var RE_FITA = /(time\s*&?\s*sales|times\s*&?\s*sales|tempo\s*e\s*vendas|neg[oó]cios|fita|prints)/i;
-      var alvo = null, cands = document.querySelectorAll('div,section,table,aside');
+      // 1) ACHAR A FITA PELOS TITULOS DAS COLUNAS.
+      //    Na tela dele o cabecalho e "SELO DE DATA E HORA | PRECO | TAMA |
+      //    CONT." — nao existe a expressao "Time & Sales" em lugar nenhum do
+      //    painel. Procurar pelo NOME da janela nao acha; procurar pelo que
+      //    as colunas dizem, acha. E vale nos dois idiomas.
+      var RE_HORA  = /(selo de data|data e hora|timestamp|hora)/;
+      var RE_PRECO = /(preco|price)/;
+      var RE_TAM   = /(tama|size|qtd|quant)/;
+      var alvo = null, melhor = 1e9;
+      var cands = document.querySelectorAll('div,section,table,aside,ul');
       for(var i=0;i<cands.length;i++){
         var c = cands[i], t = txt(c);
-        if(!t || t.length > 4000) continue;
-        if(!RE_FITA.test(t)) continue;
-        // O MENOR container que ainda casa é a fita; os maiores são a página.
-        if(!alvo || t.length < txt(alvo).length) alvo = c;
+        if(!t || t.length > 8000) continue;
+        var n = norm(t);
+        if(!(RE_HORA.test(n) && RE_PRECO.test(n) && RE_TAM.test(n))) continue;
+        // O MENOR container que ainda tem as tres colunas e a fita; os
+        // maiores sao a pagina inteira em volta dela.
+        if(t.length < melhor){ melhor = t.length; alvo = c; }
       }
       if(!alvo) return JSON.stringify({ok:false, motivo:'fita_nao_encontrada', diag:diag});
       diag.painel = true;
+      diag.cabecalho = txt(alvo).slice(0,90);
 
-      // 2) AS LINHAS. Linha de fita tem preço e tamanho; cabeçalho não.
+      // 2) AS LINHAS. Cada uma tem carimbo + preco + tamanho.
       var linhas = alvo.querySelectorAll('tr,[role=row],li,div');
       var out = [];
       for(var j=0;j<linhas.length;j++){
         var ln = linhas[j];
         var celulas = ln.querySelectorAll('td,[role=cell],span,div');
-        if(celulas.length < 2) continue;
-        var vals = [];
-        for(var k=0;k<celulas.length;k++){
-          var ct = txt(celulas[k]);
-          if(ct && ct.length < 24 && !/[a-zA-Z]{4,}/.test(ct)) vals.push(ct);
-        }
-        if(vals.length < 2) continue;
-        var nums = [];
-        for(var m=0;m<vals.length;m++){ var v=num(vals[m]); if(v!==null) nums.push(v); }
-        if(nums.length < 2) continue;
-
-        // O PREÇO é o maior número da linha (índice na casa dos milhares);
-        // o TAMANHO é o menor inteiro positivo. Vale para MES/MNQ/ES/NQ.
-        var preco = Math.max.apply(null, nums);
-        var tam = null;
-        for(var n=0;n<nums.length;n++){
-          if(nums[n] !== preco && nums[n] > 0 && nums[n] === Math.floor(nums[n])){
-            if(tam === null || nums[n] < tam) tam = nums[n];
+        var textos = [];
+        if(celulas.length >= 2){
+          for(var k=0;k<celulas.length;k++){
+            var ct = txt(celulas[k]);
+            if(ct && ct.length < 30) textos.push(ct);
           }
         }
-        if(preco === null || tam === null) continue;
+        if(textos.length < 2){
+          // Fita que desenha a linha inteira num no so.
+          var bruto = txt(ln);
+          if(!bruto || bruto.length > 80) continue;
+          textos = bruto.split(/\s+/);
+        }
+        // Linha de fita PRECISA ter carimbo de hora — e assim o cabecalho,
+        // que tem as palavras mas nao tem hora, fica de fora sozinho.
+        var temHora = false;
+        for(var h=0;h<textos.length;h++){ if(ehCarimbo(textos[h])) temHora = true; }
+        if(!temHora) continue;
 
-        // 3) O LADO, se a própria linha disser.
+        var nums = [];
+        for(var m=0;m<textos.length;m++){
+          var v = num(textos[m]);
+          if(v !== null) nums.push(v);
+        }
+        if(nums.length < 2) continue;
+
+        // ORDEM DAS COLUNAS, que e o que a tela garante: depois do carimbo
+        // vem PRECO e depois TAMANHO. Nada de "o maior e o preco".
+        var preco = nums[0];
+        var tam = null;
+        for(var q=1;q<nums.length;q++){
+          if(nums[q] > 0 && nums[q] === Math.floor(nums[q])){ tam = nums[q]; break; }
+        }
+        if(preco === null || tam === null || preco <= 0) continue;
+
+        // 3) O LADO. Na fita dele a linha inteira e VERMELHA ou VERDE, e essa
+        //    e a marca da agressao. Cor primeiro, classe depois.
         var lado = null;
-        var assinatura = (ln.className||'') + ' ' + (ln.getAttribute('data-side')||'')
-                       + ' ' + (ln.getAttribute('aria-label')||'');
-        if(/\b(buy|bid|comprad|compra|up|alta)\b/i.test(assinatura)) lado = 'compra';
-        else if(/\b(sell|ask|offer|vend|down|baixa)\b/i.test(assinatura)) lado = 'venda';
+        try{
+          var cor = window.getComputedStyle(ln).backgroundColor || '';
+          var rgb = cor.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+          if(rgb){
+            var R=+rgb[1], G=+rgb[2], B=+rgb[3];
+            if(R>G+25 && R>B+25) lado='venda';
+            else if(G>R+25 && G>B+15) lado='compra';
+          }
+        }catch(e){}
+        if(!lado){
+          var assinatura = (ln.className||'') + ' ' + (ln.getAttribute('data-side')||'')
+                         + ' ' + (ln.getAttribute('aria-label')||'');
+          var na = norm(assinatura);
+          if(/\b(buy|bid|comprad|compra|up|alta|green)\b/.test(na)) lado='compra';
+          else if(/\b(sell|ask|offer|vend|down|baixa|red)\b/.test(na)) lado='venda';
+        }
         if(lado && diag.rotulos.indexOf(lado)<0) diag.rotulos.push(lado);
 
         out.push({preco:preco, tamanho:tam, lado:lado});
@@ -236,16 +282,17 @@ class TradovateStream:
       diag.linhas_vistas = out.length;
       if(!out.length) return JSON.stringify({ok:false, motivo:'fita_sem_linhas', diag:diag});
 
-      // 4) BID/ASK do topo do book, para o caso de a linha não trazer lado.
+      // 4) BID/ASK, para as linhas que nao trouxerem lado.
       var bid=null, ask=null;
-      var rotulos = document.querySelectorAll('div,span,td');
-      for(var p=0;p<rotulos.length;p++){
-        var rt = txt(rotulos[p]);
+      var rot = document.querySelectorAll('div,span,td');
+      for(var p=0;p<rot.length;p++){
+        var rt = txt(rot[p]);
         if(!rt || rt.length>40) continue;
-        if(bid===null && /^(bid|compra|pre[cç]o de compra)\b/i.test(rt)){
+        var nr = norm(rt);
+        if(bid===null && /^(bid|compra|preco de compra)\b/.test(nr)){
           var vb=num(rt); if(vb) bid=vb;
         }
-        if(ask===null && /^(ask|offer|venda|pre[cç]o de venda)\b/i.test(rt)){
+        if(ask===null && /^(ask|offer|venda|preco de venda)\b/.test(nr)){
           var va=num(rt); if(va) ask=va;
         }
       }

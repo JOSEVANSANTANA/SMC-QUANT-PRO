@@ -259,7 +259,11 @@ class TestNenhumaChaveFantasmaNoPlano(unittest.TestCase):
     DE_RUNTIME = {"ciclo_inicio", "fracao_max_do_restante"}
 
     def test_toda_chave_lida_do_plano_existe_de_verdade(self):
-        fonte = fonte_do_arquivo()
+        # COMENTÁRIOS FORA. Pela terceira vez neste projeto um teste ia punir
+        # quem documenta: a explicação do conserto do CDP cita
+        # `plano.get('drawdown_max')` como exemplo do defeito antigo, e a
+        # varredura contava a citação como se fosse código vivo.
+        fonte = _so_codigo(fonte_do_arquivo())
         reais = self._chaves_do_plano_padrao() | self.DE_RUNTIME
         # `stats_plano.get(...)` é outro dicionário — não confundir.
         lidas = set(re.findall(

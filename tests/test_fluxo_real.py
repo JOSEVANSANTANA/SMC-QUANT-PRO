@@ -207,3 +207,121 @@ class TestODiagnosticoDizOQueFazer(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestOSeletorCasaComATelaREAL(unittest.TestCase):
+    """23/08: ele mandou o print da fita aberta, e ela desmentiu meu seletor.
+
+    O cabeçalho da fita dele é:
+
+        SELO DE DATA E HORA | PREÇO | TAMA | CONT.
+
+    A expressão "Time & Sales" NÃO APARECE em lugar nenhum do painel — o
+    seletor procurava pelo NOME da janela e não acharia nada, com a fita
+    aberta bem na frente dele.
+
+    E havia coisa pior. A primeira coluna traz "10:42:56.611"; sem os
+    separadores isso vira 104256.611, MAIOR que o preço 7557.25. A regra de
+    "o maior número da linha é o preço" leria a HORA como preço, e o CVD
+    sairia calculado sobre um número que não é preço de nada.
+
+    Os dois defeitos eram meus, e nenhum apareceria em teste sintético: só o
+    print da tela real os revelou.
+    """
+
+    def _js(self):
+        import os
+        return fonte_do_arquivo(os.path.join(RAIZ, "tradovate_stream.py"))
+
+    def test_a_fita_e_achada_pelos_TITULOS_das_colunas(self):
+        js = self._js()
+        self.assertIn("selo de data", js,
+                      "a âncora tem de ser o que as colunas dizem, não o nome "
+                      "da janela — 'Time & Sales' não existe na tela dele")
+        for coluna in ("preco|price", "tama|size"):
+            self.assertIn(coluna, js)
+
+    def test_carimbo_de_hora_e_de_data_nao_viram_numero(self):
+        """A regra que impede a hora de ser lida como preço."""
+        js = self._js()
+        self.assertIn("ehCarimbo", js)
+        i = js.index("function ehCarimbo")
+        corpo = js[i:i + 260]
+        self.assertIn(r"\d{1,2}:\d{2}", corpo)        # 10:42:56
+        self.assertIn(r"\d{1,2}\/\d{1,2}\/\d{2,4}", corpo)   # 7/9/26
+
+    def test_o_preco_vem_da_ORDEM_das_colunas_e_nao_do_maior_numero(self):
+        js = self._js()
+        i = js.index("ORDEM DAS COLUNAS")
+        self.assertIn("nums[0]", js[i:i + 400])
+        self.assertNotIn("Math.max.apply(null,nums)", js,
+                         "o 'maior número da linha' é exatamente o que fazia a "
+                         "hora virar preço")
+
+    def test_a_linha_sem_carimbo_de_hora_e_descartada(self):
+        """É assim que o cabeçalho fica de fora sozinho: ele tem as palavras
+        das colunas, mas não tem hora."""
+        js = self._js()
+        self.assertIn("if(!temHora) continue;", js)
+
+    def test_a_cor_da_linha_e_lida_como_lado_da_agressao(self):
+        """Na fita da Tradovate a linha inteira é vermelha ou verde, e é a
+        marca mais confiável de quem agrediu — mais que classe de CSS, que
+        muda a cada release."""
+        js = self._js()
+        self.assertIn("getComputedStyle", js)
+        i = js.index("getComputedStyle")
+        corpo = js[i:i + 420]
+        self.assertIn("'venda'", corpo)
+        self.assertIn("'compra'", corpo)
+
+
+class TestOParserSobreAsLinhasREAIS(unittest.TestCase):
+    """A mesma lógica do JS, medida em Python sobre as linhas do print."""
+
+    @staticmethod
+    def _eh_carimbo(s):
+        import re
+        return bool(re.search(r"\d{1,2}:\d{2}", s)
+                    or re.search(r"\d{1,2}/\d{1,2}/\d{2,4}", s))
+
+    @classmethod
+    def _num(cls, s):
+        import re
+        if not s or cls._eh_carimbo(s):
+            return None
+        t = re.sub(r"[^0-9.,-]", "", s)
+        try:
+            return float(t)
+        except ValueError:
+            return None
+
+    def _ler(self, textos):
+        if not any(self._eh_carimbo(t) for t in textos):
+            return None
+        nums = [v for v in (self._num(t) for t in textos) if v is not None]
+        if len(nums) < 2:
+            return None
+        preco = nums[0]
+        tam = next((n for n in nums[1:] if n > 0 and n == int(n)), None)
+        return (preco, tam) if tam else None
+
+    def test_as_quatro_linhas_do_print_sao_lidas_certo(self):
+        casos = [
+            (["10:42:56.611", "7/9/26", "7557.25", "1", "10"], (7557.25, 1)),
+            (["10:42:56.545", "7/9/26", "7557.50", "2", "3"], (7557.50, 2)),
+            (["10:42:55.519", "7/9/26", "7557.00", "18", "24"], (7557.00, 18)),
+            (["10:42:55.394", "7/9/26", "7556.75", "9", "9"], (7556.75, 9)),
+        ]
+        for textos, esperado in casos:
+            self.assertEqual(self._ler(textos), esperado, f"linha {textos}")
+
+    def test_o_cabecalho_da_fita_dele_nao_vira_negocio(self):
+        self.assertIsNone(
+            self._ler(["SELO DE DATA E HORA", "PREÇO", "TAMA", "CONT."]))
+
+    def test_a_hora_nunca_e_o_preco(self):
+        """104256.611 é maior que 7557.25 — e é o defeito inteiro num número."""
+        preco, _ = self._ler(["10:42:56.611", "7/9/26", "7557.25", "1", "10"])
+        self.assertEqual(preco, 7557.25)
+        self.assertLess(preco, 100000)

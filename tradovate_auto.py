@@ -2285,6 +2285,122 @@ class TradovateAuto:
     })()
     """
 
+    # ==================================================================
+    #  O DESFECHO DE CADA ORDEM — a verdade que o diário precisa
+    # ==================================================================
+    #  23/08, 00:36. O robô mandou BUY MESU6 8 ctr @ 7538,50, a entrada
+    #  PREENCHEU, o alvo PREENCHEU em 7549,25 e o stop foi cancelado pelo OCO.
+    #  Operação completa, com lucro. E o painel do app continuou mostrando
+    #  "PENDENTE · aguardando o preço tocar 7538.5".
+    #
+    #  A CAUSA: a reconciliação olhava a POSIÇÃO ATUAL. Entrou e saiu entre
+    #  dois ciclos, e quando o robô olhou a posição já era zero — então a
+    #  PENDENTE nunca virou ABERTA, e nunca virou FECHADA. Ficou pendurada.
+    #
+    #  Posição é um retrato do AGORA e some quando a operação fecha. O
+    #  histórico de ordens é um EXTRATO: ele guarda o que aconteceu mesmo
+    #  depois de acabar, com preço de execução e quantidade. É dele que o
+    #  diário tem de sair, e é isso que esta leitura entrega.
+    _JS_EXECUCOES = r"""
+    (function(){
+      function txt(el){try{return (el.innerText||el.textContent||'')
+        .replace(/\s+/g,' ').trim();}catch(e){return '';}}
+      function norm(s){return (s||'').toString().normalize('NFD')
+        .replace(/[\u0300-\u036f]/g,'').toLowerCase();}
+      function num(s){
+        if(s===null||s===undefined) return null;
+        var t=String(s).replace(/[^0-9.,-]/g,'');
+        if(!t) return null;
+        if(t.indexOf(',')>-1 && t.indexOf('.')>-1){
+          t=(t.lastIndexOf(',')>t.lastIndexOf('.'))
+            ? t.replace(/\./g,'').replace(',','.') : t.replace(/,/g,'');
+        } else if(t.indexOf(',')>-1){
+          t=(t.split(',')[1]||'').length===3 ? t.replace(',','') : t.replace(',','.');
+        }
+        var v=parseFloat(t);
+        return isNaN(v)?null:v;
+      }
+
+      // A LINHA REAL, do print de 23/08:
+      //   #84649004 Comprar 8 MESU6 LMT em 7538.50 - Filled - 8/8
+      //   #84649013 Vender 8 MESU6 STP em 7541.00 - Cancelado - 0/8
+      // Sem visibilidade obrigatória: painel recolhido dentro da Tradovate
+      // continua no DOM, e o extrato vale igual.
+      var achadas={}, ordem=[], viuPainel=false;
+      var els=document.querySelectorAll('div,span,li,td,tr,p');
+      for(var i=0;i<els.length;i++){
+        var t=txt(els[i]);
+        if(!t||t.length>240) continue;
+        var ids=t.match(/#\d{4,}/g);
+        if(!ids||ids.length!==1) continue;      // uma ordem por linha
+        viuPainel=true;
+        var id=ids[0];
+        if(achadas[id]) continue;
+
+        var n=norm(t);
+        var estado=null;
+        if(/(preenchid|filled|executad)/.test(n)) estado='executada';
+        else if(/(cancelad|cancell?ed|expirad|expired)/.test(n)) estado='cancelada';
+        else if(/(rejeitad|rejected|recusad)/.test(n)) estado='rejeitada';
+        else if(/(funcionando|working|suspenso|suspended|aceito|accepted|pendente|pending|execucao)/.test(n)) estado='viva';
+        if(!estado) continue;
+
+        var lado=null;
+        if(/\b(comprar|compra|buy|bought)\b/.test(n)) lado='BUY';
+        else if(/\b(vender|venda|sell|sold)\b/.test(n)) lado='SELL';
+
+        var tipo=null;
+        if(/\blmt\b|limite|limit/.test(n)) tipo='LIMITE';
+        else if(/\bstp\b|stop/.test(n)) tipo='STOP';
+        else if(/\bmkt\b|market|mercado/.test(n)) tipo='MERCADO';
+
+        // "8/8" no fim: executados / total. É o que separa preenchimento
+        // total de parcial, e parcial não pode virar posição cheia.
+        var frac=t.match(/(\d+)\s*\/\s*(\d+)\s*$/);
+        var execu=frac?parseInt(frac[1],10):null;
+        var total=frac?parseInt(frac[2],10):null;
+
+        // O PREÇO vem depois de "em"/"at"; sem isso, o maior número da linha
+        // que não seja quantidade. O id (#84649004) já saiu do texto antes.
+        var semId=t.replace(/#\d{4,}/,' ');
+        var mPreco=semId.match(/\b(?:em|at|@)\s*([0-9][0-9.,]*)/i);
+        var preco=mPreco?num(mPreco[1]):null;
+        if(preco===null){
+          var nums=(semId.match(/[0-9][0-9.,]*/g)||[]).map(num)
+                     .filter(function(v){return v!==null;});
+          if(nums.length) preco=Math.max.apply(null,nums);
+        }
+
+        // O ATIVO: token com letras maiúsculas e um dígito de vencimento.
+        var mAtivo=t.match(/\b([A-Z]{1,5}[FGHJKMNQUVXZ]\d{1,2})\b/);
+        var ativo=mAtivo?mAtivo[1]:null;
+
+        achadas[id]=1;
+        ordem.push({id:id, estado:estado, lado:lado, tipo:tipo, preco:preco,
+                    ativo:ativo, executados:execu, total:total,
+                    texto:t.slice(0,180)});
+      }
+      return JSON.stringify({ok:viuPainel, ordens:ordem,
+                             motivo: viuPainel?null:'nenhuma linha de ordem na tela'});
+    })();
+    """
+
+    def ler_execucoes(self):
+        """Extrato das ordens na tela: id, lado, tipo, preço, estado e preenchimento.
+
+        `ok=False` significa NÃO SEI — nunca "não há ordem". A diferença
+        importa: sem leitura, o diário não pode concluir que a operação
+        fechou, e concluir isso por engano inventaria um resultado.
+        """
+        try:
+            d = json.loads(self.avaliar_js(self._JS_EXECUCOES) or "{}")
+        except ConexaoPerdida as e:
+            return {"ok": False, "ordens": [], "conexao_perdida": True,
+                    "motivo": f"a ligação com o Chrome caiu: {e}"}
+        except Exception as e:
+            return {"ok": False, "ordens": [], "motivo": str(e)}
+        return d or {"ok": False, "ordens": [], "motivo": "sem resposta da página"}
+
     def contar_ordens_vivas(self):
         """Quantas ordens minhas/suas ainda estão de pé na Tradovate.
 

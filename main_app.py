@@ -4107,6 +4107,85 @@ def sincronizar_posicoes_plataforma(linhas_lidas, log=None):
     salvar_posicoes(lista)
     return resumo
 
+def desfecho_pelas_execucoes(pos, ordens, vpp=None):
+    """O que o EXTRATO da corretora diz que aconteceu com esta posição.
+
+    Devolve (novo_status, preco_saida, pnl, motivo) — ou (None, ...) quando o
+    extrato não é conclusivo, que é resposta legítima e frequente.
+
+    POR QUE ISTO EXISTE (23/08, 00:36)
+    ----------------------------------
+    A ordem entrou e saiu entre dois ciclos. O painel ficou preso em
+    "PENDENTE · aguardando o preço tocar 7538.5" enquanto a plataforma já
+    mostrava a operação inteira, concluída com lucro:
+
+        #84649004 Comprar 8 MESU6 LMT em 7538.50 - Filled - 8/8
+        #84649011 Vender  8 MESU6 LMT em 7549.25 - Filled - 8/8
+        #84649013 Vender  8 MESU6 STP em 7541.00 - Cancelado - 0/8
+
+    A reconciliação antiga olhava a POSIÇÃO ATUAL, que é um retrato do agora e
+    some quando a operação fecha. O extrato de ordens é a memória: sobrevive
+    ao fechamento e traz o preço de execução. É dele que o diário tem de sair.
+
+    FUNÇÃO PURA de propósito: a regra que decide se uma operação fechou e por
+    quanto precisa ser conferível sem corretora, sem tela e sem rede.
+    """
+    if not pos or not ordens:
+        return None, None, None, None
+    direcao = str(pos.get("direcao") or "").upper()
+    if direcao not in ("BUY", "SELL"):
+        return None, None, None, None
+    lado_saida = "SELL" if direcao == "BUY" else "BUY"
+
+    def _mesmo_ativo(o):
+        a, b = o.get("ativo"), pos.get("ativo")
+        if not a or not b:
+            return True          # sem ticker na linha, não descarto por isso
+        return str(a).upper()[:3] == str(b).upper()[:3]
+
+    executadas = [o for o in ordens
+                  if o.get("estado") == "executada" and _mesmo_ativo(o)]
+    if not executadas:
+        return None, None, None, None
+
+    # PREENCHIMENTO PARCIAL NÃO É ENTRADA CHEIA. "3/8" com o diário achando
+    # que são 8 contratos calcularia P&L quase três vezes maior que o real.
+    def _cheia(o):
+        e, t = o.get("executados"), o.get("total")
+        return (e is None or t is None) or (e >= t > 0)
+
+    entradas = [o for o in executadas
+                if o.get("lado") == direcao and _cheia(o)]
+    saidas = [o for o in executadas
+              if o.get("lado") == lado_saida and _cheia(o)]
+    if not entradas:
+        return None, None, None, None
+
+    preco_entrada = entradas[-1].get("preco")
+    if not saidas:
+        # Entrou e continua dentro: vira ABERTA com o preço REAL de execução,
+        # que costuma diferir do preço planejado.
+        return "ABERTA", None, None, (
+            f"entrada executada na plataforma @ {preco_entrada}")
+
+    preco_saida = saidas[-1].get("preco")
+    if preco_entrada is None or preco_saida is None:
+        return None, None, None, None
+
+    contratos = int(pos.get("contratos") or 0)
+    if contratos <= 0:
+        return None, None, None, None
+    v = vpp or pos.get("vpp") or 0
+    if not v:
+        return None, None, None, None
+    pontos = ((preco_saida - preco_entrada) if direcao == "BUY"
+              else (preco_entrada - preco_saida))
+    pnl = round(pontos * float(v) * contratos, 2)
+    return "FECHADA", preco_saida, pnl, (
+        f"extrato da plataforma: entrada @ {preco_entrada}, saída @ "
+        f"{preco_saida} ({contratos} ctr)")
+
+
 def cancelar_pendentes_do_sinal(sinal_id, motivo="cenário invalidado"):
     """Cancela as ordens PENDENTES (não executadas) ligadas a uma sugestão que
     perdeu validade. Só mexe no que AINDA NÃO entrou no mercado — posição já
@@ -11549,6 +11628,12 @@ class SmcQuantApp(ctk.CTk):
 
         self.verificar_node()
         self.after(3000, self._loop_atualizar_dashboard)
+        # O DIÁRIO ACOMPANHA A PLATAFORMA EM TEMPO REAL, e não só no ciclo de
+        # análise. É o que faltava em 23/08: a operação entrou e saiu entre
+        # dois ciclos e o painel ficou preso em PENDENTE. Este laço lê o
+        # extrato de ordens de seis em seis segundos — e só quando existe
+        # posição minha viva para conferir.
+        self.after(6000, self._loop_reconciliar_extrato)
 
     # ------------------------------------------------------------------
     # ABA 1: MOTOR / WHATSAPP / SETUP
@@ -19296,6 +19381,97 @@ class SmcQuantApp(ctk.CTk):
         # o tique custa 4 os.stat, não um redesenho inteiro.
         self.after(2000, self._loop_atualizar_dashboard)
 
+    def _reconciliar_pelo_extrato(self):
+        """Confere o diário contra o EXTRATO de ordens da Tradovate.
+
+        Roda a cada poucos segundos enquanto houver posição minha viva. É o
+        que faltava em 23/08: a operação entrou e saiu entre dois ciclos de
+        análise, e o painel ficou preso em PENDENTE porque a checagem olhava a
+        posição atual — que já era zero quando ele foi olhar.
+
+        Devolve quantos registros mudaram (0 quando não há nada a fazer).
+        """
+        if not TRADOVATE_DISPONIVEL:
+            return 0
+        bot = getattr(self, "_tv_bot", None)
+        if bot is None:
+            return 0
+        minhas = [p for p in carregar_posicoes()
+                  if p.get("origem") == "ROBO"
+                  and p.get("status") in ("PENDENTE", "ABERTA")
+                  and _e_da_conta_ativa(p)]
+        if not minhas:
+            return 0        # nada vivo: não gasto leitura à toa
+        try:
+            extrato = bot.ler_execucoes() or {}
+        except Exception:
+            return 0
+        if not extrato.get("ok"):
+            # SEM LEITURA NÃO É "NÃO ACONTECEU". O diário fica como está.
+            return 0
+        ordens = extrato.get("ordens") or []
+        if not ordens:
+            return 0
+
+        lista = carregar_posicoes()
+        mudou = 0
+        for pos in lista:
+            if pos.get("origem") != "ROBO" or not _e_da_conta_ativa(pos):
+                continue
+            if pos.get("status") not in ("PENDENTE", "ABERTA"):
+                continue
+            novo, saida, pnl, motivo = desfecho_pelas_execucoes(pos, ordens)
+            if not novo or novo == pos.get("status"):
+                continue
+            if novo == "ABERTA":
+                pos["status"] = "ABERTA"
+                pos["execucao"] = "CONFIRMADA"
+                pos["data_abertura"] = time.strftime('%d/%m/%Y %H:%M')
+                self.log(f"✅ EXECUTADA na plataforma: {pos.get('direcao')} "
+                         f"{pos.get('ativo')} {pos.get('contratos')} ctr — {motivo}.")
+                mudou += 1
+            elif novo == "FECHADA":
+                pos["status"] = "FECHADA"
+                pos["execucao"] = "CONFIRMADA"
+                pos["preco_saida"] = saida
+                pos["pnl_final"] = pnl
+                pos["pnl_atual"] = pnl
+                pos["data_fechamento"] = time.strftime('%d/%m/%Y %H:%M')
+                pos["desfecho_por"] = "extrato_plataforma"
+                sinal = "+" if (pnl or 0) >= 0 else ""
+                self.log(f"📕 FECHADA pelo extrato: {pos.get('direcao')} "
+                         f"{pos.get('ativo')} — US${sinal}{pnl:,.2f} · {motivo}.")
+                self._chat_feed(
+                    f"📕 {pos.get('direcao')} {pos.get('ativo')} "
+                    f"{pos.get('contratos')} ctr encerrada: US${sinal}{pnl:,.2f}. "
+                    "Li isso no extrato da plataforma, não estimei pelo preço.")
+                mudou += 1
+        if mudou:
+            salvar_posicoes(lista)
+            # O painel tem de refletir NA HORA — foi o pedido dele: "nem
+            # atualização no acompanhamento da ordem no painel de trading".
+            self._assin_posicoes = None
+            self._assin_dashboard = None
+            self._atualizar_dashboard()
+        return mudou
+
+    def _loop_reconciliar_extrato(self):
+        """Batida do relógio da reconciliação.
+
+        SEIS SEGUNDOS, e o número tem motivo. Mais rápido que isso enche o CDP
+        de chamadas — foi assim que o Chrome engasgou em 20/08 e derrubou uma
+        ordem no meio do envio. Mais devagar e a tela volta a mostrar
+        "PENDENTE" numa operação que já fechou.
+
+        E a leitura só sai quando há posição minha viva: com o diário limpo, o
+        laço não toca na plataforma.
+        """
+        try:
+            self._reconciliar_pelo_extrato()
+        except Exception:
+            pass
+        self.after(6000, self._loop_reconciliar_extrato)
+
     def _coletar_order_flow(self):
         """Lê a fita da Tradovate e alimenta o motor de CVD com o que ela deu.
 
@@ -19524,14 +19700,19 @@ class SmcQuantApp(ctk.CTk):
             # -------------------------------------------------------------
             # CDP TRADOVATE STATUS
             # -------------------------------------------------------------
-            cdp_ok = False
-            try:
-                if TRADOVATE_DISPONIVEL:
-                    inst = getattr(self, "_tv_instancia", None)
-                    if inst is not None:
-                        cdp_ok = True
-            except Exception:
-                pass
+            # `_tv_instancia` NÃO EXISTE em lugar nenhum do programa — o
+            # atributo é `_tv_bot`, usado em outros dezesseis pontos. O
+            # `getattr` com padrão engolia o erro: a luz ficava vermelha com a
+            # conexão viva e a ordem saindo. Foi o print de 23/08 às 00:35,
+            # com "CDP Tradovate: SEM CONEXÃO" no painel e "ORDEM ENVIADA:
+            # BUY MESU6 8 ctr" no log da mesma tela.
+            #
+            # É a MESMA família do `plano.get('drawdown_max')`: nome errado,
+            # padrão silencioso, e um painel afirmando o contrário do que
+            # acontece. Por isso o teste desta vez varre TODOS os getattr de
+            # `_tv_*` em vez de guardar o nome consertado.
+            cdp_ok = bool(TRADOVATE_DISPONIVEL
+                          and getattr(self, "_tv_bot", None) is not None)
             # OS DOIS LADOS ERAM VERDES, e o de baixo dizia "Conectado"
             # justamente quando NÃO havia conexão. Uma luz de status que não
             # consegue acender vermelho não é status: é enfeite — e enfeite
