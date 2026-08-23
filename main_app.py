@@ -4300,6 +4300,106 @@ def desfecho_pelas_execucoes(pos, ordens, vpp=None):
         f"{preco_saida} ({contratos} ctr)")
 
 
+PISO_MITIGACAO_MIN = 30
+CICLOS_DE_MITIGACAO = 6
+
+
+def janela_de_mitigacao_min(intervalo_min, prazo_acatar_min=None,
+                            ciclos=CICLOS_DE_MITIGACAO):
+    """Quanto tempo a ordem pendente espera o preço voltar à zona de entrada.
+
+    ISTO ERA CONTADO EM CICLOS, E O NOME MENTIA. A regra antiga era
+    `sinal_ativo["candles"] >= 6` — mas `candles` sobe uma vez por CICLO DE
+    ANÁLISE, não por candle do gráfico. O intervalo do ciclo é configurável,
+    então o prazo de vida de toda ordem pendente mudava junto, em silêncio:
+
+        ciclo de 15 min  ->  6 ciclos = 90 minutos
+        ciclo de  3 min  ->  6 ciclos = 18 minutos
+        ciclo de  1 min  ->  6 ciclos =  6 MINUTOS
+
+    Em 23/08 ele baixou o intervalo para 1 min às 15:42. Às 15:52 saiu uma
+    ordem de 8 contratos; às 15:58 ela foi cancelada por "preço não voltou à
+    zona de entrada". Seis minutos. Uma ordem limitada de MES em 5m não tem
+    o que provar em seis minutos — o cenário não morreu, o cronômetro é que
+    era o do ciclo.
+
+    Foi isso que encheu o log de "ORDEM ENVIADA" seguido de "ORDENS
+    CANCELADAS" poucos minutos depois, sem quase nenhuma execução no meio.
+
+    Agora o prazo é medido em TEMPO, com dois limites:
+      · PISO de 30 min, para o encurtamento do ciclo não encurtar a paciência
+        da ordem — são coisas sem relação;
+      · TETO no 'Prazo p/ acatar' do Plano, porque nada do robô deve
+        sobreviver ao prazo que o trader configurou.
+
+    Função pura: dá para conferir a régua sem relógio, sem tela e sem rede.
+    """
+    try:
+        intervalo = float(intervalo_min or 0)
+    except (TypeError, ValueError):
+        intervalo = 0.0
+    janela = max(intervalo * ciclos, float(PISO_MITIGACAO_MIN))
+    try:
+        prazo = float(prazo_acatar_min or 0)
+    except (TypeError, ValueError):
+        prazo = 0.0
+    if prazo > 0:
+        janela = min(janela, prazo)
+    return int(round(janela))
+
+
+def _mitigacao_vencida(sinal_ativo, minutos, agora=None):
+    """O prazo de mitigação estourou? Medido em RELÓGIO, não em ciclos.
+
+    O carimbo é o `ts_criacao` que o sinal já carregava — não inventei campo
+    novo para isso. Sem carimbo (sinal de uma versão anterior), devolve
+    False: expirar o que não dá para datar seria cancelar no escuro."""
+    if not sinal_ativo:
+        return False
+    nasceu = sinal_ativo.get("ts_criacao")
+    if not nasceu:
+        return False
+    try:
+        return ((agora or time.time()) - float(nasceu)) >= float(minutos) * 60.0
+    except (TypeError, ValueError):
+        return False
+
+
+def pode_derrubar_cenario_por_virada(probabilidade, prob_minima, margem):
+    """O cenário NOVO tem qualidade para matar o cenário VELHO?
+
+    23/08, 16:01, em dois minutos e no mesmo ciclo:
+
+        16:01  🔄 CENÁRIO MUDOU: a sugestão SELL MESU6 @ 7555.5 foi
+               INVALIDADA (surgiu um setup de BUY com qualidade).
+               13 ordem(ns) pendente(s) cancelada(s).
+        16:01  ↔️ BUY MESU6: o cenário inverteu de lado nos últimos 30 min e
+               a probabilidade (72%) não chega aos 80% que eu exijo para
+               virar a mão.
+
+    O mesmo BUY de 72% foi bom o bastante para DERRUBAR treze contratos de
+    SELL e ruim demais para ENTRAR. O robô ficou sem os dois — pagou o preço
+    da virada sem fazer a virada.
+
+    A causa é uma incoerência de régua: quem derrubava usava o piso de
+    qualidade (70%); quem entrava, na virada de lado, exige piso + margem
+    anti-chicote (80%). A porta de destruir era mais larga que a de construir.
+
+    A regra certa é uma frase: só se desmonta um cenário por outro que você
+    de fato tomaria. Se o novo não passa na trava de virada de mão, ele não
+    ganha o direito de cancelar o que já está de pé.
+
+    Função pura, pelo mesmo motivo das outras.
+    """
+    try:
+        p = float(probabilidade or 0)
+        base = float(prob_minima or 0)
+        m = float(margem or 0)
+    except (TypeError, ValueError):
+        return False
+    return p >= base + m
+
+
 def divergencia_do_bracket(ordens, direcao, stop_decidido, alvo_decidido,
                            ativo=None, tick=None):
     """O bracket que CHEGOU à plataforma é o que o motor DECIDIU?
@@ -18052,9 +18152,21 @@ class SmcQuantApp(ctk.CTk):
                     res = bot.sair_em_mercado_e_cancelar(
                         enviar=True, exigir_zerado=exigir_zerado)
                     if res.get("ok"):
-                        aviso = (f"✅ ORDENS CANCELADAS NA PLATAFORMA: {quais}"
+                        # "✅ ORDENS CANCELADAS" quando não havia nada para
+                        # cancelar é a mesma família de mentira que este
+                        # projeto passou meses arrancando. O corpo já dizia
+                        # "não havia ordem viva na plataforma para cancelar" —
+                        # o TÍTULO é que afirmava o contrário, e é o título
+                        # que ele lê no WhatsApp.
+                        _motivo = str(res.get("motivo") or "")
+                        _nada = ("não havia ordem viva" in _motivo
+                                 or "nao havia ordem viva" in _motivo)
+                        _cabeca = ("ℹ️ NADA A CANCELAR NA PLATAFORMA"
+                                   if _nada else
+                                   "✅ ORDENS CANCELADAS NA PLATAFORMA")
+                        aviso = (f"{_cabeca}: {quais}"
                                  + (f" ({contexto})" if contexto else "")
-                                 + f". {res.get('motivo')}")
+                                 + f". {_motivo}")
                     elif res.get("incerto"):
                         aviso = (f"⚠️ {quais}: {res.get('motivo')} NÃO SEI "
                                  "dizer se saíram. CONFIRA A PLATAFORMA AGORA.")
@@ -19069,10 +19181,58 @@ class SmcQuantApp(ctk.CTk):
                                             font=ctk.CTkFont(size=9))
         self.lbl_qtd_sinais.pack(side="right", padx=6)
 
+        # ATUALIZAR AGORA — pedido dele: "considere incluir um botão atualizar
+        # ali no ciclo, afim de buscar essas informações também".
+        #
+        # Ele existe porque a reconciliação pelo extrato roda a cada 6s e SÓ
+        # com o CDP de pé. Quando a conexão oscila, ou quando a operação
+        # nasceu e morreu numa janela em que o robô não estava olhando, a tela
+        # fica parada num estado que já não é verdade — e a única saída era
+        # esperar. Este botão é a mão no ombro: relê o EXTRATO da corretora
+        # agora e redesenha com o que ela disser.
+        ctk.CTkButton(
+            barra_filtro, text="🔄 Atualizar", width=92, height=22,
+            font=ctk.CTkFont(size=10),
+            fg_color=COR["verde_esc"], hover_color=COR["verde"],
+            command=self._atualizar_ciclo_agora).pack(side="right", padx=6)
+
         self.frame_sinais = ctk.CTkFrame(sec_sinais, fg_color="transparent")
         self.frame_sinais.pack(padx=4, pady=(0, 8), fill="both", expand=True)
 
         self._atualizar_dashboard()
+
+    def _atualizar_ciclo_agora(self):
+        """Relê o extrato da corretora AGORA e redesenha o painel do ciclo.
+
+        A regra de honestidade vale igual aqui: se o CDP não estiver de pé, o
+        botão NÃO finge que atualizou. Ele diz que não conseguiu falar com a
+        corretora e redesenha só com o que já está gravado — porque redesenhar
+        o mesmo número e chamar isso de 'atualizado' é o tipo de conforto
+        falso que faz o trader confiar numa tela velha."""
+        bot = getattr(self, "_tv_bot", None)
+        if bot is None:
+            self.log("🔄 Atualizar: sem conexão com a Tradovate — redesenhei "
+                     "com o que já estava gravado, mas NÃO reli o extrato. "
+                     "Ligue a Automação para eu conferir na corretora.")
+            self._assin_posicoes = None
+            self._assin_dashboard = None
+            self._atualizar_dashboard(forcar=True)
+            return
+        try:
+            mudou = self._reconciliar_pelo_extrato()
+        except Exception as e:
+            self.log(f"🔄 Atualizar: falha ao ler o extrato ({e}). O painel "
+                     "continua com o que estava gravado.")
+            mudou = 0
+        self._assin_posicoes = None
+        self._assin_dashboard = None
+        self._atualizar_dashboard(forcar=True)
+        if mudou:
+            self.log(f"🔄 Atualizar: o extrato mudou {mudou} registro(s) — "
+                     "painel refeito com o que a corretora diz.")
+        else:
+            self.log("🔄 Atualizar: li o extrato da corretora e não havia nada "
+                     "a corrigir. O painel já estava certo.")
 
     def _ajustar_altura_graficos(self, delta):
         """Deixa os gráficos mais altos ou mais baixos, do jeito que você prefere.
@@ -22376,6 +22536,13 @@ class SmcQuantApp(ctk.CTk):
             _timeout_min = 10
         TIMEOUT_ACATAR_SEG = max(1, _timeout_min) * 60
 
+        # PRAZO DE MITIGAÇÃO — quanto a ordem pendente espera o preço voltar à
+        # entrada. Era `MAX_CANDLES = 6` CICLOS, e por isso encolhia junto com
+        # o intervalo: com ciclo de 1 min virava SEIS MINUTOS de paciência.
+        # Ver `janela_de_mitigacao_min` para o caso de 23/08 às 15:52.
+        MINUTOS_MITIGACAO = janela_de_mitigacao_min(
+            INTERVALO_MINUTOS, _timeout_min)
+
         # PISO DE QUALIDADE (corta ruído sem travar a agressividade). Um cenário
         # só vira sugestão se passar destes dois filtros:
         #   • R:R até o 1º alvo >= 2.0 (alvo no mínimo 2x o risco — "a conta fecha")
@@ -23521,7 +23688,7 @@ class SmcQuantApp(ctk.CTk):
                                     if acatado_atual:
                                         enviar_relatorio_whatsapp(msg, screenshot, self.log)
                                         falar(f"Ordem de {direcao} ativada no mercado.")
-                                elif sinal_ativo["candles"] >= MAX_CANDLES:
+                                elif _mitigacao_vencida(sinal_ativo, MINUTOS_MITIGACAO):
                                     _sid_mc = sinal_ativo.get("sinal_id")
                                     if _sid_mc:
                                         atualizar_decisao_sinal(_sid_mc, "EXPIRADO")
@@ -23643,10 +23810,20 @@ class SmcQuantApp(ctk.CTk):
                         # CONTRÁRIA, a sugestão pendente é invalidada na hora e a ordem
                         # pendente ligada a ela é cancelada, liberando o robô para o
                         # cenário novo.
+                        # E A RÉGUA DE DERRUBAR É A MESMA DE ENTRAR. Ver
+                        # `pode_derrubar_cenario_por_virada`: em 16:01 de 23/08
+                        # um BUY de 72% cancelou 13 contratos de SELL e logo
+                        # depois foi recusado pela trava de virada de mão (que
+                        # exige 80%). O robô pagou o preço da virada sem fazer
+                        # a virada. Só se desmonta um cenário por outro que eu
+                        # de fato tomaria.
                         if (sinal_ativo.get("estado") == "PENDENTE"
                                 and acao in ("BUY", "SELL")
                                 and acao != sinal_ativo.get("direcao")
-                                and qualidade_ok and _ep > 0 and _sl > 0):
+                                and qualidade_ok and _ep > 0 and _sl > 0
+                                and pode_derrubar_cenario_por_virada(
+                                    probabilidade, PROBABILIDADE_MINIMA,
+                                    MARGEM_ANTI_CHICOTE)):
                             sid_inv = sinal_ativo.get("sinal_id")
                             atualizar_decisao_sinal(sid_inv, "INVALIDADO")
                             self.sinais_dispensados.discard(sid_inv)
