@@ -24410,11 +24410,28 @@ class SmcQuantApp(ctk.CTk):
                                 sinal_ativo["entry"], sinal_ativo["stop"], ativo, plano)
 
                             # R:R do relatório é SEMPRE calculado dos preços reais (nunca
-                            # vem do texto da IA). Usa o mesmo alvo do piso de qualidade
-                            # (tp1, ou tp2 se não houver tp1), então o número exibido nunca
-                            # fica abaixo do RR_MINIMO que aprovou o sinal.
+                            # vem do texto da IA), e agora do ALVO QUE DE FATO APROVOU.
+                            #
+                            # O comentário antigo aqui prometia exatamente isto — "o
+                            # número exibido nunca fica abaixo do RR_MINIMO que aprovou
+                            # o sinal" — e o código fazia outra coisa: pegava `tp1` toda
+                            # vez que `tp1` existisse. Só que `avaliar_piso_de_qualidade`
+                            # tenta o TP1 e, se ele não paga o piso, CAI PARA O TP2 e
+                            # aprova por ele (devolvendo `alvo_do_piso = 2`).
+                            #
+                            # 23/08, 20:11, com 13 contratos vendidos abertos:
+                            #     "📘 Nova sugestão: SELL MESU6 — entrada 7687.5,
+                            #      stop 7692.5, alvo 7682.5, R:R 1.0"
+                            # com o piso configurado em 1:2. O R:R 1.0 é o do TP1; quem
+                            # aprovou foi o TP2 (7677,5), que paga 1:2. O trader leu na
+                            # tela um número que o próprio piso teria recusado.
+                            #
+                            # Painel que mostra um número e decide por outro é a mesma
+                            # família do bracket que chegou diferente do decidido: não
+                            # muda o trade, mas apaga a capacidade de conferir o trade.
                             rr1 = None
-                            _alvo_rr_disp = sinal_ativo["tp1"] or sinal_ativo["tp2"]
+                            _alvo_rr_disp = (sinal_ativo["tp2"] if alvo_do_piso == 2
+                                             else sinal_ativo["tp1"]) or sinal_ativo["tp2"]
                             if _alvo_rr_disp and sinal_ativo["entry"] != sinal_ativo["stop"]:
                                 rr1 = round(abs((_alvo_rr_disp - sinal_ativo["entry"]) /
                                                 (sinal_ativo["entry"] - sinal_ativo["stop"])), 2)
