@@ -47,18 +47,30 @@ class CyberHUDCanvasRenderer:
         self.fase_onda = 0.0
         self.texto_usuario = "Aguardando chamado por voz ('Olá Tiger' ou 'Jarvis')..."
         self.texto_resposta = "TIGER 2.0 // Jarvis Neural Engine online e monitorando o mercado."
-        self.ativo_smc = "MESU6 @ 7698.75"
-        self.regime_smc = "Expansão Bullish (Alta)"
-        self.score_confluencia = "Score: 82% (Aprovado)"
-        self.confluencias_txt = "OB Bullish + BOS + SSL Sweep"
-        self.orderflow_txt = "CVD Delta: +1,420 (Comprador Forte)"
-        self.cvd_valor = 1420.0
-        self.cdp_status_txt = "🟢 CDP Tradovate: Ao Vivo"
-        self.posicao_txt = "Conta Flat (Sem Posição)"
-        self.provedor_ia = "OpenRouter Cloud"
-        self.modelo_ia = "Claude 3.5 Sonnet"
-        self.latencia_ia = "210ms (Rápida)"
-        self.trailing_txt = "Auto Trail: 1.5R (16 ticks)"
+        # OS VALORES INICIAIS DESTE PAINEL ERAM UMA MESA INTEIRA DE MENTIRA.
+        #
+        # Enquanto nenhuma análise tivesse rodado, o HUD abria afirmando
+        # MESU6 a 7698,75, regime de alta, score 82% aprovado, três
+        # confluências, CVD +1.420 comprador forte e CDP ao vivo — tudo isso
+        # sem uma única leitura de tela ter acontecido. E o +1.420 é
+        # exatamente o número que apareceu no pregão de 22/08 e que a TIGER
+        # citou de volta ao trader como se fosse fluxo medido.
+        #
+        # Painel de instrumento não enfeita: ou mostra medição, ou mostra
+        # travessão. Um mostrador parado no valor bonito é pior que um
+        # mostrador vazio, porque o vazio ninguém confunde com leitura.
+        self.ativo_smc = "— (aguardando primeira leitura)"
+        self.regime_smc = "— (sem leitura)"
+        self.score_confluencia = "Score: — (sem leitura)"
+        self.confluencias_txt = "— (nenhuma confluência lida ainda)"
+        self.orderflow_txt = "Order Flow: — (sem fluxo ao vivo)"
+        self.cvd_valor = 0.0
+        self.cdp_status_txt = "⚪ CDP Tradovate: não verificado"
+        self.posicao_txt = "— (posição não verificada)"
+        self.provedor_ia = "— (não configurado)"
+        self.modelo_ia = "— (não configurado)"
+        self.latencia_ia = "— (sem medição)"
+        self.trailing_txt = "Auto Trail: — (nenhuma ordem enviada)"
         self.wake_word = "'Olá Tiger' / 'Jarvis'"
         self.maos_livres_ativa = False
         self.on_falar_click = None
@@ -68,11 +80,21 @@ class CyberHUDCanvasRenderer:
         self._raio_base = 90
         self._btn_falar_bounds = None
         self._badge_ml_bounds = None
-        self.logs_recentes = [
-            ("09:35", "ORDEM", "BUY MESU6 6 ctr @ 7690.0 enviada"),
-            ("09:40", "TRAIL", "Stop móvel armado e protegido no BE"),
-            ("09:51", "CDP", "CVD Delta +1,420 confirmando fluxo comprador"),
-        ]
+        # AQUI HAVIA TRÊS LINHAS DE LOG FALSAS, e uma delas era a pior frase
+        # que este programa poderia exibir sem ser verdade:
+        #
+        #     ("09:35", "ORDEM", "BUY MESU6 6 ctr @ 7690.0 enviada")
+        #
+        # O painel abria afirmando que uma ordem de seis contratos tinha ido
+        # para a corretora. Nenhuma tinha. As outras duas diziam que o stop
+        # móvel estava armado e que o delta confirmava fluxo comprador — o
+        # mesmo +1.420 de sempre.
+        #
+        # Log é registro do que aconteceu. Um log de exemplo é um registro do
+        # que NÃO aconteceu, e num programa que manda ordem sozinho isso não
+        # é enfeite de interface: é a diferença entre o trader achar que está
+        # posicionado e estar.
+        self.logs_recentes = []
 
     def tratar_clique(self, x: int, y: int):
         """Processa clique do mouse nas áreas interativas do HUD (Orbe, Botão de Voz e Mãos Livres)."""

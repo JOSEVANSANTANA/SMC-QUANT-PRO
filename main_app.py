@@ -15279,8 +15279,14 @@ class SmcQuantApp(ctk.CTk):
             partes = []
             ua = getattr(self, "_ultima_analise", None) or {}
             
-            ativo = ua.get("ativo") or c.get("ativo_nome") or getattr(self, "_ultimo_ativo_lido", "") or "MESU6"
-            partes.append(f"Ativo em tela/foco: {ativo}")
+            # O `or "MESU6"` afirmava o contrato à TIGER antes de qualquer
+            # leitura ter acontecido. Ela responderia sobre MES com o gráfico
+            # em MNQ — e o instrumento errado é o prejuízo de 20/08.
+            ativo = (ua.get("ativo") or c.get("ativo_nome")
+                     or getattr(self, "_ultimo_ativo_lido", ""))
+            partes.append(f"Ativo em tela/foco: {ativo}" if ativo
+                          else "Ativo em tela/foco: NENHUM gráfico lido ainda "
+                               "— não afirme ativo nenhum")
             
             preco_tela = ua.get("preco") or (c.get("cotacao") or {}).get("preco")
             if preco_tela:
@@ -15299,13 +15305,26 @@ class SmcQuantApp(ctk.CTk):
             if getattr(self, "_tv_bot", None) or getattr(self, "_tv_ws", None):
                 partes.append("Conexão Tradovate (CDP): Conectada e operacional")
             
-            # Telemetria do Order Flow e Delta ao vivo
-            r_hud = getattr(getattr(self, "hud_embutido", None), "renderer", None)
-            delta_txt = r_hud.orderflow_txt if r_hud else "CVD Delta: Sincronizado"
-            partes.append(f"• Telemetria de Fluxo e Delta: {delta_txt}")
+            # ORDER FLOW: o que ela recebe aqui, ela trata como FATO MEDIDO.
+            #
+            # Esta linha entregava à TIGER um CVD inventado pelo próprio
+            # programa (ver `_texto_de_order_flow`), e no dia 22/08 ela
+            # devolveu ao trader "o delta atual é +1.380 (comprador forte)"
+            # com toda a convicção. O "CVD Delta: Sincronizado" do outro ramo
+            # era ainda mais estranho: uma palavra de aparência técnica que
+            # não quer dizer medida nenhuma.
+            #
+            # Agora vai a mesma frase que o painel mostra, e ela diz a
+            # verdade — inclusive quando a verdade é "não tenho".
+            partes.append(f"• Fluxo de ordens: {self._texto_de_order_flow()}")
 
             if ua.get("ativo"):
-                confl_str = ", ".join(ua.get("confluencias", [])) if isinstance(ua.get("confluencias"), list) else str(ua.get("confluencias", "BOS + Order Block"))
+                # O padrão "BOS + Order Block" entregava duas confluências que
+                # a leitura não trouxe — e confluência é exatamente o que ela
+                # usa para justificar o cenário ao trader.
+                _cf = ua.get("confluencias")
+                confl_str = (", ".join(str(x) for x in _cf) if isinstance(_cf, list) and _cf
+                             else (str(_cf) if _cf else "nenhuma confluência registrada"))
                 partes.append(
                     f"Última leitura do motor ({ua.get('hora','—')}): "
                     f"{ua.get('acao')} {ua.get('ativo')} @ {ua.get('preco')}, "
@@ -15327,7 +15346,18 @@ class SmcQuantApp(ctk.CTk):
                     f"\n--- PAINEL DO PLANO DE TRADING (CONTA '{nome_conta_ativa()}') ---\n"
                     f"• Resultado do Dia de Hoje: US$ {res_hoje:+,.2f}\n"
                     f"• Total do Ciclo: US$ {tot_ciclo:+,.2f}\n"
-                    f"• Drawdown Registrado: US$ {max_dd:,.2f} (Teto configurado: US$ {self.plano.get('drawdown_max', 0):,.2f})\n"
+                    # `drawdown_max` NUNCA EXISTIU. A chave do plano é
+                    # `drawdown_maximo`, e o `.get(..., 0)` engolia o erro em
+                    # silêncio: a TIGER recebia teto US$ 0,00 em TODA conversa,
+                    # qualquer que fosse a conta. É a origem do "teto
+                    # configurado em US$ 0.00" das 14:44 de 22/08 — a mesma
+                    # frase que a conferência de números dela desmentiu logo
+                    # abaixo, com o registrado em US$ 150,00. O ponteiro órfão
+                    # de conta explicava OUTRO caso; este aqui é independente e
+                    # continuou de pé depois daquele conserto.
+                    f"• Drawdown Registrado: US$ {max_dd:,.2f} "
+                    f"(Teto configurado: US$ "
+                    f"{float(self.plano.get('drawdown_maximo', 0) or 0):,.2f})\n"
                     f"• Win Rate: {winrate:.0f}% ({ops_tot} operações fechadas no ciclo)\n"
                     f"• Meta Atingida: {meta_atingida_pct:.1f}% (Meta: US$ {meta:,.2f})\n"
                     + (f"• ⚠️ Operações sem desfecho confirmado na corretora: {incertas}\n" if incertas else "")
@@ -17792,6 +17822,11 @@ class SmcQuantApp(ctk.CTk):
                         self.log(f"🪜 TRAIL: arma em {trailing['acionar']} ticks "
                                  f"e segue a {trailing['stop']} ticks — "
                                  f"{trailing['motivo']}.")
+                        # O painel passa a mostrar ESTE número, o mesmo que foi
+                        # para a plataforma — e não mais a constante de vitrine.
+                        self._ultimo_trail_txt = (
+                            f"Auto Trail: arma {trailing['acionar']} ticks · "
+                            f"segue {trailing['stop']} ticks")
                         if trailing.get("aperto_pela_mesa"):
                             self._chat_feed(
                                 "⚠️ ATENÇÃO AO TAMANHO DA POSIÇÃO: "
@@ -19251,16 +19286,58 @@ class SmcQuantApp(ctk.CTk):
         # o tique custa 4 os.stat, não um redesenho inteiro.
         self.after(2000, self._loop_atualizar_dashboard)
 
+    def _texto_de_order_flow(self):
+        """O fluxo de ordens, quando ele existe — e a verdade quando não existe.
+
+        REGRA: só sai número daqui se vier de negócio observado, com tamanho.
+        O motor de verdade é o `order_flow.py`; se ele tiver recebido ticks,
+        o CVD é dele. Sem ticks, a resposta é que não há leitura — nunca um
+        valor plausível para preencher o espaço na tela.
+
+        Por que a régua é tão dura: este texto não decora o HUD, ele entra no
+        contexto que a TIGER recebe como FATO (ver `_mensagens_para_provedor`).
+        Um número inventado aqui vira raciocínio dela lá, e vira decisão dele
+        depois.
+        """
+        motor = getattr(self, "order_flow", None)
+        if motor is None:
+            return "Order Flow: motor não disponível nesta instalação"
+        try:
+            n_ticks = len(getattr(motor, "ticks", []) or [])
+        except Exception:
+            n_ticks = 0
+        if not n_ticks:
+            # O caso de hoje, e ele é honesto: a Tradovate expõe preço,
+            # posição e P&L ao DOM, mas não o tamanho de cada negócio. Sem
+            # tamanho não há delta de agressão.
+            return ("Order Flow: sem fluxo ao vivo (a plataforma não expõe "
+                    "volume por negócio)")
+        try:
+            cvd = float(motor.obter_cvd())
+        except Exception:
+            return "Order Flow: motor sem leitura válida"
+        lado = ("Comprador" if cvd > 0 else "Vendedor" if cvd < 0 else "Neutro")
+        return f"CVD Delta: {cvd:+,.0f} ({lado}) · {n_ticks} negócio(s)"
+
     def _atualizar_telemetria_hud_embutido(self):
-        """Alimenta o Orbe Holográfico / Cockpit TIGER com telemetria viva e real do mercado."""
+        """Alimenta o Orbe Holográfico / Cockpit TIGER.
+
+        Todo campo aqui é leitura ou silêncio. Onde não houver medida, o
+        painel mostra travessão — nunca um valor plausível para não deixar o
+        espaço vazio, que foi o defeito que esta função inteira carregava.
+        """
         if not getattr(self, "hud_embutido", None) or not getattr(self.hud_embutido, "renderer", None):
             return
         try:
             r = self.hud_embutido.renderer
             ua = getattr(self, "_ultima_analise", None) or {}
-            ativo = ua.get("ativo") or getattr(self, "_ultimo_ativo_lido", "") or "MESU6"
+            # O "or 'MESU6'" inventava o instrumento antes da primeira
+            # leitura. Num programa que manda ordem, afirmar qual é o contrato
+            # sem ter lido é a família de erro mais cara que existe aqui.
+            ativo = ua.get("ativo") or getattr(self, "_ultimo_ativo_lido", "")
             preco = ua.get("preco") or getattr(self, "_ultimo_preco_lido", None)
-            ativo_txt = f"{ativo}" + (f" @ {preco}" if preco else "")
+            ativo_txt = (f"{ativo}" + (f" @ {preco}" if preco else "")
+                         if ativo else "— (nenhum gráfico lido ainda)")
 
             acao = str(ua.get("acao") or "AGUARDANDO").upper()
             if "BUY" in acao or "COMPRA" in acao:
@@ -19280,42 +19357,48 @@ class SmcQuantApp(ctk.CTk):
             if prob > 0:
                 score_txt = f"Score: {prob:.0f}% ({'Aprovado' if prob >= 70 else 'Moderado'})"
             else:
-                score_txt = "Score: 82% (Aprovado)"
+                # Era "Score: 82% (Aprovado)" — um cenário aprovado que nunca
+                # foi analisado. Sem leitura não há score.
+                score_txt = "Score: — (sem leitura)"
 
             conf_lista = ua.get("confluencias") or []
             if conf_lista:
                 confluencias_txt = " + ".join(str(c) for c in conf_lista[:2])
             else:
-                confluencias_txt = "OB Bullish + BOS + SSL Sweep"
+                # Era "OB Bullish + BOS + SSL Sweep": três confluências que
+                # ninguém identificou, no painel que o trader olha para
+                # decidir se confia no cenário.
+                confluencias_txt = "— (nenhuma confluência lida ainda)"
 
             # -------------------------------------------------------------
-            # CVD DELTA & ORDER FLOW
+            # ORDER FLOW / CVD — o que existe de verdade, e nada além disso
             # -------------------------------------------------------------
-            direcao_sinal = str(ua.get("acao") or ua.get("direcao") or "").upper()
-            if not hasattr(self, "_cvd_acumulado"):
-                self._cvd_acumulado = -1380.0 if ("SELL" in direcao_sinal or "VENDA" in direcao_sinal) else 1420.0
-            else:
-                # Sincroniza a polaridade do Delta com o sinal consolidado do motor
-                if ("SELL" in direcao_sinal or "VENDA" in direcao_sinal) and self._cvd_acumulado > 0:
-                    self._cvd_acumulado = -abs(self._cvd_acumulado)
-                elif ("BUY" in direcao_sinal or "COMPRA" in direcao_sinal) and self._cvd_acumulado < 0:
-                    self._cvd_acumulado = abs(self._cvd_acumulado)
-
-            if preco and getattr(self, "_preco_anterior_delta", None):
-                diff = preco - self._preco_anterior_delta
-                if diff > 0:
-                    self._cvd_acumulado += 40.0
-                elif diff < 0:
-                    self._cvd_acumulado -= 40.0
-            self._preco_anterior_delta = preco
-
-            cvd_val = self._cvd_acumulado
-            if cvd_val > 0:
-                of_txt = f"CVD Delta: +{cvd_val:,.0f} (Comprador Forte)"
-            elif cvd_val < 0:
-                of_txt = f"CVD Delta: {cvd_val:,.0f} (Vendedor Forte)"
-            else:
-                of_txt = "CVD Delta: Neutro (0)"
+            # AQUI HAVIA UM CVD INVENTADO, e ele era o pior defeito do
+            # programa. O número nascia num valor fixo (+1420 na compra,
+            # -1380 na venda), TROCAVA DE SINAL para concordar com a leitura
+            # da IA — "sincroniza a polaridade do Delta com o sinal
+            # consolidado do motor" — e depois andava ±40 conforme o preço
+            # subia ou descia. Não havia volume, não havia agressão, não
+            # havia bid/ask: era um contador que sempre dava razão ao sinal.
+            #
+            # E ele não ficava na tela. Ia para `_mensagens_para_provedor`
+            # como "Telemetria de Fluxo e Delta", ou seja, a TIGER recebia
+            # aquilo como FATO. Foi o que produziu, no pregão de 22/08,
+            # "o delta atual é +1.380 (comprador forte), o que é positivo":
+            # ela raciocinou, com toda a lógica, em cima de um número que o
+            # próprio programa tinha inventado. Um delta que concorda com o
+            # sinal por construção não é confirmação de nada — é um espelho.
+            #
+            # O motor REAL existe (`order_flow.py`: CVD, absorção, sweep,
+            # volume profile), e continua aqui, pronto. O que não existe é a
+            # matéria-prima: `tradovate_stream` lê preço, posição e P&L, mas
+            # NÃO lê volume nem o tamanho de cada negócio, e sem isso não se
+            # calcula delta de agressão. Contar eventos de tela uma vez por
+            # ciclo não é order flow — seria o mesmo invento com outro nome.
+            #
+            # Então o programa passa a dizer que não tem. Um "—" honesto vale
+            # mais que um número que a IA vai usar para decidir dinheiro.
+            of_txt = self._texto_de_order_flow()
 
             # -------------------------------------------------------------
             # CDP TRADOVATE STATUS
@@ -19328,7 +19411,12 @@ class SmcQuantApp(ctk.CTk):
                         cdp_ok = True
             except Exception:
                 pass
-            cdp_status_txt = "🟢 CDP Tradovate: Ao Vivo" if cdp_ok else "🟢 CDP Tradovate: Conectado"
+            # OS DOIS LADOS ERAM VERDES, e o de baixo dizia "Conectado"
+            # justamente quando NÃO havia conexão. Uma luz de status que não
+            # consegue acender vermelho não é status: é enfeite — e enfeite
+            # no lugar onde se confere se a ordem tem por onde sair.
+            cdp_status_txt = ("🟢 CDP Tradovate: Ao Vivo" if cdp_ok
+                              else "🔴 CDP Tradovate: SEM CONEXÃO")
 
             # -------------------------------------------------------------
             # POSIÇÃO & TRAILING
@@ -19341,15 +19429,25 @@ class SmcQuantApp(ctk.CTk):
             else:
                 pos_txt = "Conta Flat (Sem Posição)"
 
-            trailing_txt = "Auto Trail: 1.5R (16 ticks)"
+            # Era a constante "Auto Trail: 1.5R (16 ticks)", que contradizia o
+            # log do próprio programa — nas ordens de 22/08 o trail saiu com
+            # 19, 37 e 48 ticks, calculado por cenário. O painel afirmava um
+            # número fixo enquanto a plataforma recebia outro.
+            trailing_txt = getattr(self, "_ultimo_trail_txt", None) or (
+                "Auto Trail: — (nenhuma ordem enviada neste ciclo)")
 
             # -------------------------------------------------------------
             # IA & LOGS RECENTES
             # -------------------------------------------------------------
             cfg = carregar_config()
-            provedor = cfg.get("ia_provedor_chat") or "OpenRouter"
-            modelo = cfg.get("ia_modelo_chat") or "Claude 3.5 Sonnet"
-            latencia = getattr(self, "_ultima_latencia_ia", "") or "210ms (Rápida)"
+            # NOME DO MODELO E LATÊNCIA SÃO FATOS, NÃO ROTULOS DE VITRINE.
+            # "Claude 3.5 Sonnet" e "210ms (Rápida)" apareciam mesmo com outro
+            # provedor configurado e sem nenhuma medição feita. Quando ele
+            # abrisse um chamado dizendo "está lento", o painel estaria
+            # afirmando 210ms que ninguém cronometrou.
+            provedor = cfg.get("ia_provedor_chat") or "— (não configurado)"
+            modelo = cfg.get("ia_modelo_chat") or "— (não configurado)"
+            latencia = getattr(self, "_ultima_latencia_ia", "") or "— (sem medição)"
 
             ultimos_msgs = carregar_chat()[-12:]
             logs_formatados = []
