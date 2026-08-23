@@ -4348,6 +4348,53 @@ def janela_de_mitigacao_min(intervalo_min, prazo_acatar_min=None,
     return int(round(janela))
 
 
+def numeros_do_plano(plano, intervalo_min):
+    """Os números que o ciclo usa, tirados do Plano de Trading AGORA.
+
+    ELE MUDA O PLANO NO MEIO DO PREGÃO — E TEM DE VALER NA HORA.
+    Palavras dele, 23/08: "pode ser que após ter estourado ele vá lá e
+    altere, ele precisa considerar isso sem julgamentos".
+
+    Estava errado, e de um jeito silencioso. `_plano_cfg =
+    plano_da_conta_ativa()` era lido UMA VEZ, antes do laço de ciclos. Tudo
+    o que sai dele — R:R mínimo, probabilidade mínima, prazo para acatar,
+    janela de mitigação — ficava CONGELADO até o motor ser desligado e
+    religado. O intervalo já era relido a cada ciclo ("permite alterar ao
+    vivo sem reiniciar"); o resto do plano, não.
+
+    Efeito prático: ele estourava o teto de 5, ia ao painel, punha 20 — e o
+    motor seguia com os números velhos. Mexer no painel parecia não fazer
+    nada, e não havia como saber por quê.
+
+    (O FREIO em si — `freio_de_sugestoes` — sempre releu o plano a cada
+    chamada, e continua. Quem estava congelado era o piso de qualidade e os
+    prazos. Por isso o teto respondia e o resto não: incoerência que só
+    aparece quando se lê os dois lados.)
+
+    SEM JULGAMENTO, e isto é literal: aqui não há trava que recuse um valor
+    novo porque ele "é alto demais". O teto é dele; a régua é dele. O que a
+    ferramenta deve é obedecer na hora e dizer o que passou a valer.
+
+    Função pura, para a régua ser conferível sem interface e sem disco.
+    """
+    plano = plano or {}
+
+    def _num(campo, padrao):
+        try:
+            return float(plano.get(campo, padrao))
+        except (TypeError, ValueError):
+            return float(padrao)
+
+    timeout_min = max(1, int(_num("timeout_acatar_min", 10)))
+    return {
+        "rr_minimo": _num("rr_minimo", 2.0),
+        "probabilidade_minima": _num("probabilidade_minima", 55),
+        "timeout_acatar_min": timeout_min,
+        "timeout_acatar_seg": timeout_min * 60,
+        "minutos_mitigacao": janela_de_mitigacao_min(intervalo_min, timeout_min),
+    }
+
+
 def _mitigacao_vencida(sinal_ativo, minutos, agora=None):
     """O prazo de mitigação estourou? Medido em RELÓGIO, não em ciclos.
 
@@ -9315,6 +9362,39 @@ _ALEGACOES_FALSAS = [
     r"\b(estou|fico|sigo|continuo|permane[çc]o)\s+(\w+\s+){0,3}"
     r"(ativa|monitorando|varrendo|acompanhando|processando|vigiando)\b"
     r"[^.!?]{0,60}?\b(fundo|segundo plano|tempo real|por voc[êe])",
+
+    # ---- O RECIBO SEM VERBO. 23/08, 14:35. ----
+    # Todos os padrões acima procuram um VERBO: primeira pessoa ("registrei")
+    # ou passiva com auxiliar ("está gravado"). A mentira daquele dia não tinha
+    # nem um nem outro — era um TÍTULO DE RECIBO, em markdown:
+    #
+    #     ✅ **Trade registrado**
+    #     - Operação: SELL MESU6 @ 7536,00 (3 contratos)
+    #     - Resultado: +US$ 510,00
+    #     **Painel atualizado (Conta 1)**
+    #     - Resultado do dia: US$ +510,00
+    #
+    # Nada foi registrado. Os US$510 nunca entraram no ciclo; o "painel" era
+    # texto. E era a forma mais convincente possível, porque parece a saída de
+    # um sistema, não a fala de alguém.
+    r"\b(trade|opera[çc][ãa]o|ordem|entrada|sa[íi]da|resultado)\s*"
+    r"(registrad|inclu[íi]d|lan[çc]ad|adicionad|computad|contabilizad)[oa]s?\b",
+    r"\b(painel|ciclo|dashboard|di[áa]rio|hist[óo]rico|conta|relat[óo]rio)\s*"
+    r"(\([^)]{0,30}\)\s*)?(atualizad|reiniciad|zerad|resetad|limpad)[oa]s?\b",
+    r"\b(reiniciando|resetando|zerando|atualizando|limpando)\s+"
+    r"(o\s+|a\s+)?(conta|ciclo|painel|dashboard|hist[óo]rico)",
+
+    # ---- A PROMESSA DE ROTINA QUE ELA NÃO TEM. Mesma conversa, 14:35. ----
+    # "✅ Aprendendo agora: vou registrar automaticamente as operações
+    #  concluídas aqui no chat, sem precisar de comandos extras."
+    # Isto é pior que o recibo: o recibo mente sobre UM fato, a promessa
+    # ensina ao trader um jeito de trabalhar que não existe — e ele passa a
+    # informar operações achando que estão entrando na conta dele.
+    r"\baprendendo agora\b",
+    r"\bvou\s+(passar a\s+)?(registrar|incluir|lan[çc]ar|atualizar|gravar|"
+    r"anotar|computar)\s+(\w+\s+){0,3}automaticamente\b",
+    r"\bsem\s+precisar\s+de\s+comandos?\b",
+    r"\bn[ãa]o\s+precisa\s+de\s+comandos?\s+(adicionais|extras)\b",
 ]
 _RE_ALEGACOES = re.compile("|".join(_ALEGACOES_FALSAS),
                            re.IGNORECASE | re.MULTILINE)
@@ -9332,7 +9412,13 @@ def censurar_alegacao_falsa(texto):
     trecho que afirma um feito que não aconteceu."""
     if not texto or not _RE_ALEGACOES.search(texto):
         return texto, False
-    frases = re.split(r"(?<=[.!?])\s+", texto)
+    # QUEBRA TAMBÉM POR LINHA, e não só por ponto final.
+    # O recibo falso de 23/08 era uma lista em markdown — títulos em negrito e
+    # itens começados por '-', quase sem ponto final no meio. Cortando só em
+    # [.!?] o bloco inteiro virava UMA frase: ou tudo caía (perdendo o que
+    # havia de correto) ou nada caía. Cortando por linha, some o item mentiroso
+    # e sobra o que era verdade.
+    frases = [f for f in re.split(r"(?<=[.!?])\s+|\n+", texto) if f.strip()]
     limpas = [f for f in frases if not _RE_ALEGACOES.search(f)]
     corpo = " ".join(limpas).strip()
     if not corpo:
@@ -19201,6 +19287,50 @@ class SmcQuantApp(ctk.CTk):
 
         self._atualizar_dashboard()
 
+    def _avisar_olho_cego_no_autonomo(self):
+        """Sem Gravação de Tela, o aviso tem de sair ONDE ELE OLHA.
+
+        23/08: a primeira linha do log dizia "🖥️ Gravação de Tela: NÃO
+        concedida — os títulos das janelas vêm vazios e a captura pode sair
+        preta". Estava certa, estava lá, e passou o pregão inteiro
+        despercebida: era a linha 8 de um log de milhares, e o robô operou
+        sozinho o dia todo por cima dela.
+
+        Aviso que fica só no log é aviso que não existe. Este sai no CHAT e no
+        WhatsApp — os dois lugares onde ele de fato lê.
+
+        NÃO BLOQUEIA O MOTOR, e isso é decisão consciente. Naquele dia a
+        captura funcionou (PrintWindow deu conta), então parar tudo teria
+        custado um pregão inteiro por uma permissão que não chegou a
+        atrapalhar. O dano real — imagem preta — já tem trava própria
+        (`imagem_esta_em_branco`), que suspende a análise quando acontece.
+        Aqui é para ele SABER; a decisão continua sendo dele.
+        """
+        try:
+            ok = plataforma.permissao_de_tela_ok()
+        except Exception:
+            return
+        if ok is not False:      # None = não se aplica (Windows). True = ok.
+            return
+        aviso = (
+            "⚠️ ATENÇÃO — VOU OPERAR SOZINHA COM A VISÃO EM RISCO: a permissão "
+            "de GRAVAÇÃO DE TELA do macOS não está concedida. Sem ela os "
+            "títulos das janelas vêm vazios e a captura pode sair PRETA — e "
+            "uma leitura de tela preta pode virar ordem. Enquanto isso, eu "
+            "suspendo a análise se a imagem vier em branco, mas o certo é "
+            "ligar agora: Ajustes do Sistema → Privacidade e Segurança → "
+            "Gravação de Tela (e Acessibilidade), marque o SMC Quant Pro e "
+            "REABRA o programa.")
+        self.log(aviso)
+        try:
+            self._chat_feed(aviso)
+        except Exception:
+            pass
+        try:
+            enviar_relatorio_whatsapp(aviso, None, self.log)
+        except Exception:
+            pass
+
     def _atualizar_ciclo_agora(self):
         """Relê o extrato da corretora AGORA e redesenha o painel do ciclo.
 
@@ -22424,6 +22554,7 @@ class SmcQuantApp(ctk.CTk):
                 self.log(f"🤖 MODO AUTÔNOMO LIGADO{teste}: eu acato e envio "
                          "sozinha toda sugestão aprovada. Freio, drawdown, "
                          "stops seguidos e teto de operações continuam valendo.")
+                self._avisar_olho_cego_no_autonomo()
             else:
                 self.log("👤 MODO ASSISTIDO: eu sugiro, você acata. Para eu "
                          "operar sozinha, ligue a Automação Tradovate em "
@@ -22653,6 +22784,29 @@ class SmcQuantApp(ctk.CTk):
                 # Relê o intervalo a cada ciclo — permite que o usuário
                 # altere no dropdown "ao vivo" sem reiniciar o motor.
                 intervalo_atual = carregar_config().get("intervalo_minutos", INTERVALO_MINUTOS)
+
+                # O PLANO INTEIRO É RELIDO AQUI, e não só o intervalo.
+                # Ver `numeros_do_plano`: estes números ficavam congelados no
+                # valor de quando o motor ligou, então mexer no Plano de
+                # Trading no meio do pregão não fazia efeito nenhum — e não
+                # havia como ele saber disso.
+                _plano_cfg = plano_da_conta_ativa()
+                _n = numeros_do_plano(_plano_cfg, intervalo_atual)
+                _antes = (RR_MINIMO, PROBABILIDADE_MINIMA, MINUTOS_MITIGACAO)
+                RR_MINIMO = _n["rr_minimo"]
+                PROBABILIDADE_MINIMA = _n["probabilidade_minima"]
+                TIMEOUT_ACATAR_SEG = _n["timeout_acatar_seg"]
+                MINUTOS_MITIGACAO = _n["minutos_mitigacao"]
+                if _antes != (RR_MINIMO, PROBABILIDADE_MINIMA, MINUTOS_MITIGACAO):
+                    # Mudança de régua no meio do pregão é informação, não
+                    # detalhe: sem esta linha ele nunca saberia a partir de
+                    # qual ciclo o número novo passou a valer.
+                    self.log(
+                        f"📋 Plano relido: R:R mínimo 1:{RR_MINIMO:g} · "
+                        f"probabilidade mínima {PROBABILIDADE_MINIMA:g}% · "
+                        f"ordem pendente espera {MINUTOS_MITIGACAO} min. "
+                        "Vale a partir deste ciclo.")
+
                 espera = segundos_ate_proximo_fechamento(intervalo_atual)
                 self.log(f"⏳ Aguardando {espera:.1f}s até o próximo ciclo (intervalo: {intervalo_atual} min)...")
 
