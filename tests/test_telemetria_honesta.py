@@ -112,14 +112,24 @@ class TestOFluxoQueVaiParaAIADizAVerdade(unittest.TestCase):
         self.assertNotIn("CVD Delta: Sincronizado", corpo)
 
     def test_sem_ticks_a_resposta_e_que_nao_ha_fluxo(self):
-        """A régua: só sai número se vier de negócio observado."""
+        """A régua: só sai número se vier de negócio observado.
+
+        E o "não tenho" vem COM MOTIVO. Depois que a fita passou a ser lida
+        de verdade, "sem fluxo" deixou de ser um estado só: pode ser a
+        conexão, a fita fechada no layout, ou a agressão que não dá para
+        classificar. Cada um pede uma ação diferente do trader, e um travessão
+        mudo mandaria ele caçar defeito no escuro."""
         fonte = fonte_do_arquivo()
         i = fonte.index("def _texto_de_order_flow")
-        corpo = _so_codigo(fonte[i:i + 2200])
-        self.assertIn("sem fluxo ao vivo", corpo)
+        corpo = _so_codigo(fonte[i:i + 2600])
+        self.assertIn("n_ticks", corpo,
+                      "a decisão tem de sair dos negócios REGISTRADOS")
         self.assertIn("obter_cvd", corpo,
                       "quando houver ticks de verdade, o número tem de vir do "
                       "motor real (order_flow.py), não de um cálculo paralelo")
+        for motivo in ("sem conexão", "fita Time & Sales fechada", "no chute"):
+            self.assertIn(motivo, corpo,
+                          f"o painel precisa saber dizer {motivo!r}")
 
 
 class TestNenhumCampoDoPainelInventaValor(unittest.TestCase):

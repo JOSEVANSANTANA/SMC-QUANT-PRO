@@ -174,6 +174,11 @@ except Exception:
     OrderFlowEngine = None
 
 try:
+    from tradovate_stream import TradovateStream
+except Exception:
+    TradovateStream = None
+
+try:
     from market_regime import MarketRegimeClassifier, ConfluenceMatrix
 except Exception:
     MarketRegimeClassifier, ConfluenceMatrix = None, None
@@ -11451,6 +11456,11 @@ class SmcQuantApp(ctk.CTk):
         self._tv_ultimo_aviso_falha = 0  # p/ não repetir o aviso a cada ciclo
         self._ultimo_ativo_lido = None   # ticker do último gráfico analisado
         self.order_flow = OrderFlowEngine() if OrderFlowEngine else None
+        # A FITA DE NEGÓCIOS, que é de onde o CVD de verdade sai. O leitor
+        # recebe o mesmo cliente CDP da automação — ver `_coletar_order_flow`.
+        self._fita = TradovateStream(log=self.log) if TradovateStream else None
+        self._fita_diag = None       # último diagnóstico, para o painel dizer o motivo
+        self._fita_sem_lado = 0      # negócios lidos que não deram para classificar
         self.regime_classifier = MarketRegimeClassifier if MarketRegimeClassifier else None
         self.confluence_matrix = ConfluenceMatrix if ConfluenceMatrix else None
         self._hud_jarvis = None
@@ -19286,6 +19296,109 @@ class SmcQuantApp(ctk.CTk):
         # o tique custa 4 os.stat, não um redesenho inteiro.
         self.after(2000, self._loop_atualizar_dashboard)
 
+    def _coletar_order_flow(self):
+        """Lê a fita da Tradovate e alimenta o motor de CVD com o que ela deu.
+
+        Devolve (quantos_entraram, diagnóstico). Roda junto do ciclo de
+        análise; é barato porque é uma leitura de DOM, sem screenshot e sem
+        trazer a janela para a frente.
+
+        A REGRA QUE MANDA AQUI: negócio sem lado determinável NÃO entra no
+        delta. Ele é contado à parte (`_fita_sem_lado`) para o painel poder
+        dizer "li 40 negócios e não soube classificar 12" em vez de exibir um
+        CVD que já nasceu torto. É o oposto exato do contador que existia
+        antes, que dava lado a tudo — inclusive ao que não tinha.
+        """
+        motor = getattr(self, "order_flow", None)
+        fita = getattr(self, "_fita", None)
+        if motor is None or fita is None:
+            return 0, {"motivo": "modulo_ausente"}
+
+        # O leitor usa o MESMO CDP da automação: uma conexão só com a aba,
+        # em vez de duas competindo pelo mesmo alvo. Foi assim que o Chrome
+        # engasgou em 20/08 e derrubou uma ordem.
+        bot = getattr(self, "_tv_bot", None)
+        if bot is None:
+            return 0, {"motivo": "sem_conexao_cdp"}
+        try:
+            fita.definir_cliente_cdp(bot)
+        except Exception:
+            return 0, {"motivo": "sem_conexao_cdp"}
+
+        try:
+            leitura = fita.ler_time_and_sales()
+            novos, diag = fita.negocios_novos(leitura)
+        except Exception as e:
+            return 0, {"motivo": f"erro:{e}"}
+
+        self._fita_diag = diag
+        if not novos:
+            return 0, diag
+
+        bid, ask = leitura.get("bid"), leitura.get("ask")
+        entraram = 0
+        for ln in novos:
+            lado = fita.classificar_agressao(ln, bid, ask)
+            if lado is None:
+                self._fita_sem_lado += 1
+                continue
+            try:
+                motor.registrar_tick(preco=float(ln["preco"]),
+                                     volume=float(ln["tamanho"]),
+                                     agressao_compra=bool(lado))
+                entraram += 1
+            except Exception:
+                continue
+        return entraram, diag
+
+    def diagnostico_da_fita(self):
+        """O que a fita entregou, em uma frase — para o botão de conferência.
+
+        Existe pelo mesmo motivo do DIAGNÓSTICO DA LEITURA das posições: sem
+        ele, "sem fluxo ao vivo" é indistinguível de "está quebrado", e o
+        trader não tem como saber que basta abrir a fita no layout.
+        """
+        d = getattr(self, "_fita_diag", None)
+        if not d:
+            return ("Fita de negócios: ainda não consultada nesta sessão "
+                    "(ela é lida junto do ciclo de análise).")
+        if d.get("motivo") == "modulo_ausente":
+            return "Fita de negócios: módulo de fluxo não veio nesta instalação."
+        if d.get("motivo") == "sem_conexao_cdp":
+            return ("Fita de negócios: sem conexão com a Tradovate. Ligue a "
+                    "Automação e conecte a aba primeiro.")
+        if not d.get("painel"):
+            return ("Fita de negócios: NÃO ENCONTREI o painel Time & Sales na "
+                    "página. Ele não precisa estar à sua frente — a leitura é "
+                    "interna, e a janela pode ficar atrás de outras —, mas "
+                    "precisa estar ABERTO no layout da Tradovate, senão ele "
+                    "nem existe para eu ler.")
+        if not d.get("linhas_vistas"):
+            return ("Fita de negócios: painel encontrado, porém SEM linhas. "
+                    "Fora do pregão, ou a fita ainda não recebeu negócios.")
+        metodo = {"rotulo": "pelo lado marcado na própria linha",
+                  "bid_ask": "pelo preço contra bid/ask (Lee-Ready)"}.get(
+                      d.get("metodo"), None)
+        if not metodo:
+            return (f"Fita de negócios: li {d['linhas_vistas']} linha(s), mas "
+                    "não consigo determinar QUEM agrediu — a fita não marca o "
+                    "lado e não achei bid/ask na tela. Sem isso eu não calculo "
+                    "delta: prefiro não ter número a ter um número chutado.")
+        sem_lado = getattr(self, "_fita_sem_lado", 0)
+        return (f"Fita de negócios: OK — {d['linhas_vistas']} linha(s) na "
+                f"última leitura, agressão classificada {metodo}."
+                + (f" {sem_lado} negócio(s) ficaram sem lado e não entraram "
+                   "no delta." if sem_lado else ""))
+
+    def _tem_fluxo_medido(self):
+        """Existe negócio REGISTRADO no motor? É a única porta para o fluxo
+        entrar no prompt da análise — e ela é fechada por padrão."""
+        motor = getattr(self, "order_flow", None)
+        try:
+            return bool(motor is not None and len(getattr(motor, "ticks", []) or []))
+        except Exception:
+            return False
+
     def _texto_de_order_flow(self):
         """O fluxo de ordens, quando ele existe — e a verdade quando não existe.
 
@@ -19307,11 +19420,19 @@ class SmcQuantApp(ctk.CTk):
         except Exception:
             n_ticks = 0
         if not n_ticks:
-            # O caso de hoje, e ele é honesto: a Tradovate expõe preço,
-            # posição e P&L ao DOM, mas não o tamanho de cada negócio. Sem
-            # tamanho não há delta de agressão.
-            return ("Order Flow: sem fluxo ao vivo (a plataforma não expõe "
-                    "volume por negócio)")
+            # Sem negócio nenhum registrado, o painel diz o MOTIVO — fita
+            # fechada, sem conexão, fora do pregão — em vez de um "sem fluxo"
+            # seco que o trader não sabe se é estado ou defeito.
+            d = getattr(self, "_fita_diag", None) or {}
+            if d.get("motivo") == "sem_conexao_cdp":
+                return "Order Flow: — (sem conexão com a Tradovate)"
+            if d and not d.get("painel"):
+                return ("Order Flow: — (fita Time & Sales fechada no layout "
+                        "da Tradovate)")
+            if d and not d.get("metodo"):
+                return ("Order Flow: — (a fita não marca o lado da agressão "
+                        "e não achei bid/ask; não calculo delta no chute)")
+            return "Order Flow: — (sem negócios lidos ainda)"
         try:
             cvd = float(motor.obter_cvd())
         except Exception:
@@ -21848,6 +21969,19 @@ class SmcQuantApp(ctk.CTk):
 
                         self.log("🧠 Processando análise com Memória Episódica...")
 
+                        # FLUXO DE ORDENS, junto do ciclo. Leitura de DOM pelo
+                        # mesmo CDP: não tira foco, não tira screenshot e não
+                        # atrasa a análise de forma perceptível. Se a fita não
+                        # estiver aberta no layout, volta zero e o painel diz
+                        # exatamente isso — nada é inventado para preencher.
+                        try:
+                            _n_fluxo, _ = self._coletar_order_flow()
+                            if _n_fluxo:
+                                self.log(f"📶 Fluxo: {_n_fluxo} negócio(s) novos "
+                                         f"na fita · {self._texto_de_order_flow()}")
+                        except Exception:
+                            pass
+
                         memoria_dinamica = compilar_memoria_prompt()
                         contexto_meta = self._contexto_do_plano()
                         PROMPT_BASE = (
@@ -21960,6 +22094,25 @@ class SmcQuantApp(ctk.CTk):
                             f"{contexto_replay}"
                             + (f"\n--- O QUE ESTÁ ACONTECENDO NO MUNDO AGORA ---\n"
                                f"{bloco_macro}\n\n" if bloco_macro else "")
+                            # O FLUXO ENTRA NA ANÁLISE — e SÓ quando é medido.
+                            #
+                            # É a confluência que ele sempre quis: o SMC
+                            # define a estrutura, o order flow confirma ou
+                            # reprova a entrada dentro dela. A linha só é
+                            # montada se o motor tiver negócios de verdade
+                            # registrados; sem fita, o prompt não recebe nada
+                            # e a IA decide sem fluxo — que é honesto, e é o
+                            # que ela já fazia. O que não pode voltar a
+                            # acontecer é ela receber um delta inventado e
+                            # tratá-lo como confirmação.
+                            + (f"\n--- FLUXO DE ORDENS MEDIDO NA FITA ---\n"
+                               f"{self._texto_de_order_flow()}\n"
+                               "Use isto como CONFIRMAÇÃO da entrada dentro do "
+                               "viés que a estrutura definiu, nunca como o "
+                               "motivo principal do cenário. Delta contra a "
+                               "direção da estrutura é motivo para HOLD, não "
+                               "para inverter a mão.\n\n"
+                               if self._tem_fluxo_medido() else "")
                             + f"ÚLTIMO ESTADO DO LEDGER:\n{ledger_text_memory}\n"
                             f"CONTEXTO DA TELA: {DICAS_PLATAFORMA.get(self.plataforma_atual, DICAS_PLATAFORMA['outra'])}\n"
                             f"{contexto_meta}"
