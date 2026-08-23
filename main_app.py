@@ -601,6 +601,28 @@ PLANO_PADRAO = {
     # dimensionava 30 contratos numa conta de US$1.400.
     "max_contratos": 0,
     "min_ticks_stop": MIN_TICKS_STOP_PADRAO,
+    # ---- PERSEGUIR A META (desligado por padrão) ----
+    #
+    # 22/08, ele: "ele está configurado para bater a meta em um dia, tem
+    # margem, tem drawdown disponível — o que explica tamanha cautela?"
+    # Explicava a aritmética: 5% de US$2.000 são US$100 por operação, e com
+    # 5 operações a R:R 1:2 o melhor dia possível eram US$1.000 contra uma
+    # Meta de US$3.000. Ele pediu, ciente do risco, que o motor passasse a
+    # dimensionar olhando o que FALTA para a meta.
+    #
+    # LIGADO, o orçamento por operação deixa de ser fixo em margem×risco% e
+    # passa a ser o necessário para a meta, dividido pelas oportunidades que
+    # ainda restam. Ele só SOBE a partir do risco base; nunca desce.
+    #
+    # ISTO É MARTINGALE se ficar solto: perder aumenta o que falta, que
+    # aumenta a posição, que aumenta a perda. Por isso não vai solto —
+    # `risco_max_pct` é o teto duro por operação, e a fração do drawdown
+    # restante (abaixo) aperta sozinha à medida que o dia piora, empurrando
+    # no sentido contrário ao da meta.
+    "perseguir_meta": False,
+    # Teto de risco por operação no modo meta, em % da margem.
+    # 0 = automático: três vezes o risco base.
+    "risco_max_pct": 0,
     # Em quantos dias operados a meta deve ser batida. Era fixo em 5; agora você
     # escolhe — 1 para "quero bater hoje", 20 para um mês de mesa, etc. Isso muda
     # o ritmo exigido por dia E entra no contexto que a IA recebe.
@@ -2352,7 +2374,7 @@ FRACAO_MAX_DO_RESTANTE_PADRAO = 0.33
 
 def calcular_contratos(entry, stop, asset_symbol, margem, risco_pct, drawdown_maximo,
                        max_contratos=0, min_ticks_stop=None, restante_dia=None,
-                       fracao_max_do_restante=None):
+                       fracao_max_do_restante=None, risco_usd_override=None):
     """
     Dimensiona a posição com base no plano da mesa:
     - risco em US$ por trade = margem × risco_pct%
@@ -2389,7 +2411,15 @@ def calcular_contratos(entry, stop, asset_symbol, margem, risco_pct, drawdown_ma
         return dict(vazio)
 
     try:
-        risco_usd_permitido = float(margem) * (float(risco_pct) / 100.0)
+        # `risco_usd_override` é o orçamento já calculado por fora — hoje só o
+        # modo "perseguir a meta" o usa. Ele SUBSTITUI margem×risco%, mas não
+        # escapa de nada que vem depois: drawdown restante, piso de stop e teto
+        # de contratos continuam valendo, e é de propósito que a substituição
+        # entre aqui em cima, antes de todas as travas.
+        if risco_usd_override is not None:
+            risco_usd_permitido = float(risco_usd_override)
+        else:
+            risco_usd_permitido = float(margem) * (float(risco_pct) / 100.0)
     except (TypeError, ValueError):
         vazio["motivo_limite"] = "Margem ou Risco/operação inválidos no plano."
         return dict(vazio)
@@ -2766,8 +2796,23 @@ def avisos_do_plano(plano):
                 + f", ou dias p/ bater a meta {dias_meta} → {-(-meta // teto_dia):.0f}"
                   f", ou máx. operações/dia {max_ops} → "
                   f"{-(-meta // (risco_trade * rr_min * dias_meta)):.0f}."
-                " Eu não vou aumentar posição por conta própria para perseguir a Meta:"
-                " o tamanho sai do risco que você definiu, não do que falta para o alvo.")
+                + (
+                    # COM O MODO LIGADO a frase antiga viraria mentira — e este
+                    # arquivo inteiro existe porque um número que não bate com o
+                    # que o programa faz manda o trader caçar defeito onde não
+                    # há. Ligado, o que ele precisa saber é ONDE o teto o para.
+                    (f" O modo PERSEGUIR A META está LIGADO: o risco por operação vai "
+                     f"subir sozinho atrás do alvo, até o teto de "
+                     f"US${(margem * _f('risco_max_pct') / 100.0) if _f('risco_max_pct') > 0 else risco_trade * 3:,.2f}"
+                     f" por operação. Com esse teto o melhor dia possível passa a ser "
+                     f"US${((margem * _f('risco_max_pct') / 100.0) if _f('risco_max_pct') > 0 else risco_trade * 3) * rr_min * max_ops:,.2f}"
+                     f", e o Drawdown Máx. de US${drawdown:,.2f} continua mandando: uma "
+                     f"operação só gasta metade do que resta do dia, então perder DIMINUI "
+                     f"a posição em vez de dobrá-la.")
+                    if plano.get("perseguir_meta") else
+                    " Eu não vou aumentar posição por conta própria para perseguir a Meta:"
+                    " o tamanho sai do risco que você definiu, não do que falta para o alvo."
+                ))
 
     # O TETO DE CONTRATOS QUE NUNCA É ALCANÇADO.
     #
@@ -2854,7 +2899,25 @@ def dimensionar_pelo_plano(entry, stop, ativo, plano=None, restante_dia=None):
             restante_dia = drawdown_restante_hoje(plano)
         except Exception:
             restante_dia = None
-    return calcular_contratos(
+
+    # PERSEGUIR A META (desligado por padrão). Quando ligado, o orçamento por
+    # operação deixa de ser margem×risco% e passa a ser o que a meta pede,
+    # dividido pelas chances que restam. Ver `risco_para_perseguir_a_meta`.
+    #
+    # A RÉDEA CONTRA O MARTINGALE JÁ ESTAVA AQUI, e é melhor do que a que eu
+    # ia trazer: `fracao_max_do_restante` (33% por padrão, configurável no
+    # plano) limita QUALQUER operação a uma fatia do drawdown que resta —
+    # valha o modo meta ou não. Como ela aperta sozinha à medida que o dia
+    # piora, ela já empurra no sentido contrário ao da meta. Duplicar isso com
+    # uma segunda fração só do modo meta criaria dois números para a mesma
+    # regra, e o mais frouxo dos dois acabaria mandando.
+    risco_override, motivo_meta = None, None
+    try:
+        risco_override, motivo_meta = risco_para_perseguir_a_meta(plano)
+    except Exception:
+        risco_override, motivo_meta = None, None
+
+    r = calcular_contratos(
         entry, stop, ativo,
         plano.get("margem", 0), plano.get("risco_pct", 1.0),
         plano.get("drawdown_maximo", 0),
@@ -2863,7 +2926,14 @@ def dimensionar_pelo_plano(entry, stop, ativo, plano=None, restante_dia=None):
         restante_dia=restante_dia,
         fracao_max_do_restante=plano.get("fracao_max_do_restante",
                                          FRACAO_MAX_DO_RESTANTE_PADRAO),
+        risco_usd_override=risco_override,
     )
+    # O trader tem de conseguir ver POR QUE a posição ficou daquele tamanho —
+    # sobretudo quando ela cresceu. Tamanho que muda sem explicação é como o
+    # "1 contrato" de 22/08: manda procurar defeito onde não há.
+    if risco_override is not None:
+        r["motivo_meta"] = motivo_meta
+    return r
 
 def calcular_r_multiplo(direcao, entry, stop, preco_saida):
     risco_pontos = abs(entry - stop)
@@ -4468,6 +4538,135 @@ def drawdown_restante_hoje(plano=None):
         return drawdown
     usado = min(0.0, realizado + aberto)      # lucro NÃO aumenta o limite
     return max(0.0, drawdown - abs(usado))
+
+
+def oportunidades_restantes_do_ciclo(plano=None):
+    """Quantas operações o plano ainda autoriza até o fim do prazo da meta.
+
+    É o denominador de `risco_para_perseguir_a_meta`: o que falta para a meta
+    dividido por quantas chances sobram. Conta o teto de HOJE já descontado do
+    que foi feito, mais os dias inteiros que ainda vêm.
+
+    Devolve None quando não dá para saber (sem teto de operações por dia),
+    porque um denominador inventado aqui vira tamanho de posição lá na frente.
+    """
+    plano = plano if plano is not None else plano_da_conta_ativa()
+    try:
+        max_ops = int(float(plano.get("max_operacoes_dia", 0) or 0))
+    except (TypeError, ValueError):
+        return None
+    if max_ops <= 0:
+        return None
+    try:
+        feitas_hoje = len(operacoes_fechadas_hoje())
+    except Exception:
+        feitas_hoje = 0
+    sobram_hoje = max(0, max_ops - feitas_hoje)
+    try:
+        dias_meta = dias_meta_do_plano(plano)
+        dias_passados = dia_do_ciclo(plano) - 1
+    except Exception:
+        dias_meta, dias_passados = 1, 0
+    dias_restantes = max(0, dias_meta - dias_passados)
+    # Hoje já está contado em `sobram_hoje`; os OUTROS dias entram cheios.
+    return sobram_hoje + max(0, dias_restantes - 1) * max_ops
+
+
+def risco_para_perseguir_a_meta(plano=None, lucro_ciclo=None):
+    """Quanto arriscar nesta operação quando 'perseguir a meta' está ligado.
+
+    Devolve (risco_usd, motivo) — ou (None, motivo) quando o modo não se
+    aplica e o dimensionamento deve seguir pelo caminho normal.
+
+    A CONTA: falta para a meta ÷ oportunidades restantes = o ganho que cada
+    operação precisa entregar. Dividido pelo R:R, vira o risco necessário.
+
+    AS TRÊS RÉDEAS, e nenhuma delas é opcional:
+
+    1) SÓ SOBE. O resultado nunca fica abaixo do risco base do plano — se a
+       meta pede menos, quem manda é o plano. O modo existe para destravar
+       tamanho, não para encolher posição em dia bom.
+    2) TETO DURO (`risco_max_pct`). Por mais que falte, uma operação não passa
+       desse % da margem. É o freio que impede a perseguição de virar aposta.
+    3) O DRAWDOWN QUE RESTA (aplicado em `calcular_contratos`, com a fatia de
+       `fracao_max_do_restante` — 33% por padrão). Este é o único que APERTA
+       quando o dia piora, porque a base sobre a qual ele calcula encolhe a
+       cada perda. É ele que faz a diferença entre perseguir a meta e dobrar
+       a aposta depois de perder, e ele vale com o modo ligado ou desligado.
+
+    Com a meta já batida, o modo se desliga sozinho: não há o que perseguir, e
+    continuar grande depois do alvo é só devolver o que ganhou.
+    """
+    plano = plano if plano is not None else plano_da_conta_ativa()
+
+    def _f(campo, padrao=0.0):
+        try:
+            return float(plano.get(campo, padrao) or 0)
+        except (TypeError, ValueError):
+            return padrao
+
+    if not plano.get("perseguir_meta"):
+        return None, "modo meta desligado"
+
+    margem = _f("margem")
+    risco_pct = _f("risco_pct", 1.0)
+    risco_base = margem * (risco_pct / 100.0)
+    meta = _f("meta_alvo")
+    rr = _f("rr_minimo", 2.0)
+    if margem <= 0 or meta <= 0 or rr <= 0 or risco_base <= 0:
+        return None, "plano incompleto para perseguir a meta"
+
+    if lucro_ciclo is None:
+        try:
+            # `pnl_final is not None` NÃO é redundante com o `or 0`: uma
+            # operação fechada com desfecho INCERTO tem pnl_final None, e
+            # somá-la como zero afirmaria que ela empatou. Aqui isso encolheria
+            # o "falta" e, com ele, a posição — um palpite virando tamanho.
+            lucro_ciclo = sum(p["pnl_final"]
+                              for p in posicoes_do_ciclo()
+                              if p.get("status") == "FECHADA"
+                              and p.get("pnl_final") is not None)
+        except Exception:
+            lucro_ciclo = 0.0
+    falta = meta - float(lucro_ciclo or 0)
+    if falta <= 0:
+        return None, (f"meta de US${meta:,.2f} já batida no ciclo — "
+                      "volto ao tamanho normal do plano")
+
+    oportunidades = oportunidades_restantes_do_ciclo(plano)
+    if not oportunidades:
+        # Sem teto de operações por dia não há denominador; e com ZERO
+        # oportunidades o dia acabou — nos dois casos, tamanho normal.
+        return None, ("sem teto de operações por dia, não sei em quantas "
+                      "chances dividir a meta"
+                      if oportunidades is None else
+                      "não restam operações autorizadas no prazo da meta")
+
+    risco_necessario = (falta / oportunidades) / rr
+
+    # (1) SÓ SOBE.
+    risco = max(risco_base, risco_necessario)
+
+    # (2) TETO DURO. 0 = automático: três vezes o risco base.
+    teto_pct = _f("risco_max_pct")
+    teto = margem * (teto_pct / 100.0) if teto_pct > 0 else risco_base * 3.0
+    if risco > teto:
+        return teto, (
+            f"perseguindo a meta: faltam US${falta:,.2f} em {oportunidades} "
+            f"operação(ões), o que pediria US${risco_necessario:,.2f} por "
+            f"operação — LIMITADO ao teto de US${teto:,.2f} "
+            f"({teto_pct:g}% da margem)" if teto_pct > 0 else
+            f"perseguindo a meta: faltam US${falta:,.2f} em {oportunidades} "
+            f"operação(ões), o que pediria US${risco_necessario:,.2f} por "
+            f"operação — LIMITADO ao teto automático de US${teto:,.2f} "
+            f"(3x o risco base de US${risco_base:,.2f})")
+
+    if risco <= risco_base:
+        return None, "a meta cabe no risco normal do plano"
+
+    return risco, (f"perseguindo a meta: faltam US${falta:,.2f} em "
+                   f"{oportunidades} operação(ões) — risco por operação sobe "
+                   f"de US${risco_base:,.2f} para US${risco:,.2f}")
 
 # ====================================================================
 #  MODO AUTÔNOMO — a ferramenta acata sozinha
@@ -18150,8 +18349,43 @@ class SmcQuantApp(ctk.CTk):
                      text_color=COR["dim"], font=ctk.CTkFont(size=9), justify="left"
                      ).grid(row=13, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 2))
 
+        # PERSEGUIR A META — o modo que ele pediu em 22/08, sabendo do risco.
+        # Fica DESLIGADO por padrão e junto do campo que o segura, porque
+        # ligar um sem enxergar o outro é a metade perigosa da história.
+        self.var_perseguir_meta = ctk.BooleanVar(
+            value=bool(self.plano.get("perseguir_meta", False)))
+        ctk.CTkCheckBox(
+            frame_config, variable=self.var_perseguir_meta,
+            text="🎯 Perseguir a Meta (aumenta a posição atrás do alvo)",
+            text_color=COR["texto"], font=ctk.CTkFont(size=11),
+            fg_color=COR["verde_esc"], hover_color=COR["verde"]
+        ).grid(row=14, column=0, columnspan=2, sticky="w", padx=(12, 4), pady=4)
+
+        ctk.CTkLabel(frame_config, text="Teto de risco/op (%, 0=auto):",
+                     text_color=COR["dim"], font=ctk.CTkFont(size=11)
+                     ).grid(row=14, column=2, sticky="e", padx=(12, 4), pady=4)
+        self.entry_risco_max = ctk.CTkEntry(
+            frame_config, width=110, fg_color=COR["input"],
+            border_color=COR["borda"], text_color=COR["texto"])
+        self.entry_risco_max.grid(row=14, column=3, padx=(0, 12), pady=4)
+        self.entry_risco_max.insert(0, str(self.plano.get("risco_max_pct", 0)))
+
+        ctk.CTkLabel(frame_config,
+                     text="🎯 PERSEGUIR A META: desligado, cada operação arrisca sempre "
+                          "Margem × Risco%. Ligado, o risco por operação passa a ser o que "
+                          "falta para a Meta dividido pelas operações que ainda restam no "
+                          "prazo — ou seja, a posição AUMENTA para o alvo caber. Ele só "
+                          "sobe (nunca fica abaixo do Risco%), para no 'Teto de risco/op' "
+                          "(0 = automático, 3× o Risco%) e encolhe sozinho conforme a Meta "
+                          "se aproxima. O Drawdown Máx. continua mandando: uma operação só "
+                          "pode gastar METADE do que resta do dia, então uma sequência de "
+                          "perdas DIMINUI a posição em vez de dobrá-la.",
+                     text_color=COR["dim"], font=ctk.CTkFont(size=9), justify="left",
+                     wraplength=560
+                     ).grid(row=15, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 2))
+
         frame_botoes_plano = ctk.CTkFrame(frame_config, fg_color="transparent")
-        frame_botoes_plano.grid(row=14, column=0, columnspan=4, pady=(6, 10))
+        frame_botoes_plano.grid(row=16, column=0, columnspan=4, pady=(6, 10))
         ctk.CTkButton(frame_botoes_plano, text="💾 Salvar Plano", width=140,
                       fg_color=COR["verde_esc"], hover_color=COR["verde"],
                       command=self.salvar_plano_trading).pack(side="left", padx=6)
@@ -18784,12 +19018,17 @@ class SmcQuantApp(ctk.CTk):
             (self.entry_cooldown, "cooldown_stop_min", 30),
             (self.entry_max_ops, "max_operacoes_dia", 6),
             (self.entry_multi_contas, "multi_contas", 1),
+            (self.entry_risco_max, "risco_max_pct", 0),
         ]
         for widget, chave, padrao in campos:
             widget.delete(0, tk.END)
             widget.insert(0, str(self.plano.get(chave, padrao)))
         self.opt_com_posicao.set(self._rotulo_com_posicao(
             self.plano.get("com_posicao_aberta", "alerta")))
+        # O interruptor da meta é POR CONTA, como o resto do plano: trocar de
+        # conta tem de trazer o estado dela, e não deixar ligado o que estava
+        # ligado na anterior.
+        self.var_perseguir_meta.set(bool(self.plano.get("perseguir_meta", False)))
         # Invalida os caches de render: a conta mudou, as listas TÊM de ser
         # redesenhadas mesmo que a assinatura anterior fosse igual.
         self._assin_posicoes = None
@@ -18945,6 +19184,12 @@ class SmcQuantApp(ctk.CTk):
                 self.plano["multi_contas"] = 1
             self.plano["com_posicao_aberta"] = self._valor_com_posicao(
                 self.opt_com_posicao.get())
+            # PERSEGUIR A META. O teto aceita 0 (= automático, 3× o risco
+            # base) e não aceita negativo — teto negativo zeraria a posição
+            # sem dizer por quê.
+            self.plano["perseguir_meta"] = bool(self.var_perseguir_meta.get())
+            _rmax = float(self.entry_risco_max.get().replace(",", "."))
+            self.plano["risco_max_pct"] = max(0.0, _rmax)
         except ValueError:
             self.log("⚠️ Valores do plano de trading inválidos — use apenas números.")
             return
