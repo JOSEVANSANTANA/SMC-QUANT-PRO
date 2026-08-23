@@ -93,6 +93,7 @@ COMUM = [
     "tests/test_ordem_perdida_e_bracket_trocado.py",
     "tests/test_cancelamento_precoce.py",
     "tests/test_plano_ao_vivo_e_recibo_falso.py",
+    "tests/test_atr_pela_fita.py",
     "tests/test_ambiente_replay.py",
     "tests/test_notificacao.py",
     "tests/test_piso_qualidade.py",

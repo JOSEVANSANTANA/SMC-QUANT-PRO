@@ -169,9 +169,19 @@ except Exception:
     TRADOVATE_DISPONIVEL = False
 
 try:
-    from order_flow import OrderFlowEngine
+    from order_flow import (OrderFlowEngine, agregar_candles, atr_de_candles,
+                            faixa_de_stop_por_atr)
 except Exception:
     OrderFlowEngine = None
+
+    def agregar_candles(*_a, **_k):
+        return []
+
+    def atr_de_candles(*_a, **_k):
+        return None
+
+    def faixa_de_stop_por_atr(*_a, **_k):
+        return None
 
 try:
     from tradovate_stream import TradovateStream
@@ -19287,6 +19297,83 @@ class SmcQuantApp(ctk.CTk):
 
         self._atualizar_dashboard()
 
+    def _guardar_negocios_para_candles(self, novos):
+        """Junta os negócios da fita para montar OHLC (ver `agregar_candles`).
+
+        Guarda no máximo o necessário para um ATR de 14 períodos em 15m com
+        folga — o resto é memória parada. Negócio sem carimbo de hora usável
+        recebe a hora de AGORA: ele acabou de ser drenado, então o erro é de
+        segundos e não desloca o candle."""
+        balde = getattr(self, "_negocios_para_candles", None)
+        if balde is None:
+            from collections import deque
+            balde = self._negocios_para_candles = deque(maxlen=20000)
+        agora = time.time()
+        for n in novos or []:
+            try:
+                preco = float(n.get("preco"))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if preco <= 0:
+                continue
+            try:
+                tam = float(n.get("tamanho") or 0)
+            except (TypeError, ValueError):
+                tam = 0.0
+            balde.append({"preco": preco, "tamanho": tam, "ts": agora})
+
+    def _medir_atr_em_observacao(self, ativo):
+        """Mede o ATR da fita e diz que faixa de stop ele sugeriria.
+
+        MODO OBSERVAÇÃO, E ISTO É DELIBERADO. Ele não decide nada: quem
+        recusa cenário continua sendo a faixa fixa por contrato
+        (`FAIXA_TICKS_STOP`). Aqui só se MEDE e se REGISTRA.
+
+        Por que não ligar de uma vez, já que o número é melhor: porque estes
+        candles nascem quando o robô começa a olhar, não têm histórico, e um
+        ATR de meia hora de fita é um número que parece medida e ainda não é.
+        Trocar uma régua que funciona por uma que ainda está aquecendo, sem
+        um dia sequer de comparação, é exatamente o tipo de decisão que este
+        projeto passou a semana desfazendo.
+
+        Depois de alguns pregões os dois números ficam lado a lado no log e a
+        troca deixa de ser aposta.
+        """
+        balde = getattr(self, "_negocios_para_candles", None)
+        if not balde:
+            return
+        tick = tick_do_ativo(ativo or "")
+        if not tick:
+            return
+        try:
+            candles = agregar_candles(list(balde), minutos=5)
+            atr = atr_de_candles(candles, periodo=14)
+        except Exception:
+            return
+        if atr is None:
+            # Diz quanto falta, em vez de calar: sem isso ele não sabe se
+            # está aquecendo ou se está quebrado.
+            faltam = max(0, 15 - max(0, len(candles) - 1))
+            if faltam and not getattr(self, "_avisou_atr_aquecendo", False):
+                self._avisou_atr_aquecendo = True
+                self.log(f"📏 ATR: aquecendo — faltam {faltam} candle(s) de 5m "
+                         "de fita para o primeiro número válido. Até lá, quem "
+                         "manda no stop é a faixa fixa do contrato.")
+            return
+        self._avisou_atr_aquecendo = False
+        faixa_atr = faixa_de_stop_por_atr(atr, tick)
+        fixa = faixa_de_stop_do_ativo(ativo)
+        if not faixa_atr:
+            return
+        self._ultimo_atr = atr
+        txt = (f"📏 ATR(14) de 5m pela fita: {atr:.2f} pts "
+               f"({atr / tick:.0f} ticks) · faixa de stop que ele sugeriria: "
+               f"{faixa_atr[0]}–{faixa_atr[1]} ticks")
+        if fixa:
+            txt += f" · faixa fixa em uso: {fixa[0]}–{fixa[1]} ticks"
+        self.log(txt + ". OBSERVAÇÃO — quem recusa cenário continua sendo a "
+                       "faixa fixa.")
+
     def _avisar_olho_cego_no_autonomo(self):
         """Sem Gravação de Tela, o aviso tem de sair ONDE ELE OLHA.
 
@@ -20241,6 +20328,16 @@ class SmcQuantApp(ctk.CTk):
         self._fita_diag = diag
         if not novos:
             return 0, diag
+
+        # OS NEGÓCIOS BRUTOS VÃO PARA O BALDE DE CANDLES — TODOS.
+        # Aqui embaixo o negócio sem lado determinável é descartado, e com
+        # razão: ele não pode entrar no delta. Mas para OHLC o lado não
+        # importa — importa preço, tamanho e hora. Descartar aqui faria os
+        # candles nascerem com buraco, e o ATR sairia menor que o mercado.
+        try:
+            self._guardar_negocios_para_candles(novos)
+        except Exception:
+            pass
 
         entraram = 0
         for ln in novos:
@@ -23033,6 +23130,14 @@ class SmcQuantApp(ctk.CTk):
                             if _n_fluxo:
                                 self.log(f"📶 Fluxo: {_n_fluxo} negócio(s) novos "
                                          f"na fita · {self._texto_de_order_flow()}")
+                        except Exception:
+                            pass
+
+                        # ATR EM OBSERVAÇÃO — mede e registra, não decide.
+                        # Ver `_medir_atr_em_observacao`.
+                        try:
+                            self._medir_atr_em_observacao(
+                                getattr(self, "_ultimo_ativo_lido", None))
                         except Exception:
                             pass
 

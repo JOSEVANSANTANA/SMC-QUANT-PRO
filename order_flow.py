@@ -14,6 +14,130 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 
+def agregar_candles(negocios, minutos=5, ts_agora=None):
+    """Monta candles OHLC a partir dos NEGÓCIOS da fita.
+
+    DE ONDE VEM O DADO, E POR QUE NÃO DO GRÁFICO
+    ---------------------------------------------
+    O motor lê o gráfico como IMAGEM. Para ATR e para qualquer coisa
+    numérica isso não serve: pixel não tem preço. A saída óbvia seria abrir
+    um painel de candles e ler o DOM — e é justamente a que não funciona,
+    porque gráfico de corretora é desenhado em `<canvas>`, um bitmap. Não há
+    nó de DOM por candle para o CDP ler.
+
+    Mas a fita (Time & Sales) já entrega, negócio a negócio, PREÇO, TAMANHO e
+    CARIMBO DE HORA — que é exatamente a matéria-prima de um candle. Agrupar
+    por janela de tempo é aritmética. Zero pixel, zero painel novo, e serve
+    para 1m, 5m e 15m ao mesmo tempo a partir da mesma leitura.
+
+    O QUE ISTO NÃO É: histórico. Os candles começam quando o robô começa a
+    olhar. Um ATR de 14 períodos em 5m precisa de ~70 minutos de fita antes
+    de significar alguma coisa — e quem usa isto tem de respeitar o
+    aquecimento em vez de decidir dinheiro com três candles.
+
+    `negocios`: lista de dicts com 'preco', 'tamanho' e 'ts' (epoch em
+    segundos). Negócio sem preço ou sem carimbo é descartado — inventar a
+    hora seria inventar o candle.
+
+    Devolve a lista de candles do mais ANTIGO para o mais NOVO, com o último
+    ainda em formação. Função pura.
+    """
+    if not negocios or minutos <= 0:
+        return []
+    largura = float(minutos) * 60.0
+    baldes = {}
+    for n in negocios:
+        try:
+            preco = float(n.get("preco"))
+            ts = float(n.get("ts"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if preco <= 0 or ts <= 0:
+            continue
+        try:
+            vol = float(n.get("tamanho") or 0)
+        except (TypeError, ValueError):
+            vol = 0.0
+        inicio = int(ts // largura) * largura
+        c = baldes.get(inicio)
+        if c is None:
+            baldes[inicio] = {"inicio": inicio, "abertura": preco,
+                              "maxima": preco, "minima": preco,
+                              "fechamento": preco, "volume": vol,
+                              "negocios": 1}
+        else:
+            if preco > c["maxima"]:
+                c["maxima"] = preco
+            if preco < c["minima"]:
+                c["minima"] = preco
+            c["fechamento"] = preco
+            c["volume"] += vol
+            c["negocios"] += 1
+    return [baldes[k] for k in sorted(baldes)]
+
+
+def atr_de_candles(candles, periodo=14):
+    """ATR de Wilder. Devolve None quando não há candle FECHADO suficiente.
+
+    `None` é resposta legítima e é o ponto: um ATR calculado com três candles
+    é um número que parece medida e não é. Nesta casa, ausência de dado nunca
+    vira conclusão — e um ATR chutado dimensionaria stop de verdade.
+
+    O ÚLTIMO CANDLE FICA DE FORA. Ele ainda está em formação: sua máxima e
+    mínima crescem até o fim da janela, então incluí-lo faria o ATR encolher
+    e crescer sozinho dentro do mesmo período, sem o mercado ter mudado.
+
+    Função pura.
+    """
+    if not candles or periodo < 1:
+        return None
+    fechados = candles[:-1]          # o último ainda está aberto
+    if len(fechados) < periodo + 1:
+        return None
+    trs = []
+    for i in range(1, len(fechados)):
+        atual, anterior = fechados[i], fechados[i - 1]
+        try:
+            fech_ant = float(anterior["fechamento"])
+            tr = max(float(atual["maxima"]) - float(atual["minima"]),
+                     abs(float(atual["maxima"]) - fech_ant),
+                     abs(float(atual["minima"]) - fech_ant))
+        except (TypeError, ValueError, KeyError):
+            continue
+        trs.append(tr)
+    if len(trs) < periodo:
+        return None
+    # Wilder: primeira média simples, depois suavização (n-1)/n.
+    atr = sum(trs[:periodo]) / float(periodo)
+    for tr in trs[periodo:]:
+        atr = (atr * (periodo - 1) + tr) / float(periodo)
+    return atr
+
+
+def faixa_de_stop_por_atr(atr, tick, minimo=0.8, maximo=2.5):
+    """A faixa de stop que o ATR sugere, em TICKS. (mín, máx) ou None.
+
+    A régua fixa por contrato (MES: 12 a 60 ticks) resolveu o caos de 23/08 —
+    stops de 19 a 106 ticks no mesmo dia. Mas ela é fixa: num dia parado 60
+    ticks é largo demais, e num dia de FOMC 60 é apertado demais. O ATR move
+    a faixa junto com o mercado.
+
+    OS MULTIPLICADORES: 0,8×ATR embaixo porque um stop menor que a oscilação
+    típica de um candle é varrido por ruído sem o cenário ter sido
+    invalidado; 2,5×ATR em cima porque, com R:R 1:2, um stop maior que isso
+    pede um alvo de 5 ATRs — movimento que raramente vem no intradiário.
+
+    Sem ATR ou sem tick devolve None: não se inventa faixa.
+    """
+    try:
+        a, t = float(atr), float(tick)
+    except (TypeError, ValueError):
+        return None
+    if a <= 0 or t <= 0:
+        return None
+    return (int(round(a * minimo / t)), int(round(a * maximo / t)))
+
+
 class OrderFlowEngine:
     """Motor de análise de fluxo de ordens institucional."""
 
