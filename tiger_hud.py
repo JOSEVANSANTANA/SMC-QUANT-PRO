@@ -18,6 +18,15 @@ from tkinter import Canvas
 import threading
 from typing import Optional
 
+# OS TEMAS DO ORBE VIVEM FORA DAQUI, de proposito. Ver orbe_temas.py: trocar
+# o estilo do Orbe nao pode exigir editar o arquivo que desenha a telemetria
+# da conta. Se o modulo faltar na instalacao, o HUD degrada para o rosto
+# classico em vez de nao abrir — painel que nao abre esconde posicao aberta.
+try:
+    import orbe_temas
+except Exception:
+    orbe_temas = None
+
 # Paleta Sci-Fi / Cyberpunk Futurista
 COR_FUNDO_DEEP = "#030712"
 COR_CARD_BG = "#060e1d"
@@ -41,7 +50,23 @@ class CyberHUDCanvasRenderer:
         self.altura = altura
         self.modo_compacto = modo_compacto
 
-        self.estado = "STANDBY"  # STANDBY, OUVINDO, PENSANDO, FALANDO
+        self.estado = "STANDBY"  # STANDBY, OUVINDO, PENSANDO, FALANDO, ACAO
+        # Tema visual do Orbe (ver orbe_temas.py). Trocavel em tempo de
+        # execucao por `definir_tema` — sem tocar em nada do motor.
+        self.tema_orbe = getattr(orbe_temas, "TEMA_PADRAO", "quantum_predator") \
+            if orbe_temas else "quantum_predator"
+        # Amplitude da fala AGORA (0.0 a 1.0), quando a camada de voz mede.
+        # None = nao medi — e a boca cai numa oscilacao plausivel em vez de
+        # fingir uma medida que nao existe.
+        self.envelope_voz = None
+        # Ultima captura do grafico, para o quadro LIVE CHART INSIGHT dentro
+        # do cluster do Orbe. A referencia fica AQUI porque o Tkinter nao
+        # segura imagem sozinho: sem alguem guardando, o coletor leva e o
+        # quadro fica preto sem erro nenhum.
+        self.imagem_grafico = None
+        self.rotulo_grafico = ""
+        self.fontes_de_grafico = []
+        self._seletor_grafico_bounds = None
         self.angulo_rotacao = 0.0
         self.angulo_radar = 0.0
         self.fase_onda = 0.0
@@ -153,6 +178,126 @@ class CyberHUDCanvasRenderer:
             self.trailing_txt = str(trailing)
         if logs is not None:
             self.logs_recentes = list(logs)
+
+    # -----------------------------------------------------------------
+    #  PONTE COM O MÓDULO DE TEMAS
+    # -----------------------------------------------------------------
+    #  Os três métodos abaixo são a ÚNICA porta entre o laço de desenho e
+    #  `orbe_temas.py`. Sem o módulo, o HUD continua abrindo — degradado, mas
+    #  abrindo. Painel que não abre esconde posição aberta, e esconder posição
+    #  é pior que mostrar um rosto feio.
+
+    def _tema(self):
+        """O tema escolhido, ou None se o módulo de temas não veio."""
+        if orbe_temas is None:
+            return None
+        return orbe_temas.tema(getattr(self, "tema_orbe", None))
+
+    def _cores_estado(self):
+        """A paleta do estado atual (parado / ouvindo / calculando / falando /
+        ação confirmada). Sem o módulo, devolve o cyan de sempre."""
+        if orbe_temas is None:
+            return {"principal": COR_CYAN_GLOW, "brilho": COR_TEXT_BRIGHT,
+                    "pulso": 1.0, "rotulo": str(self.estado)}
+        return orbe_temas.cores_do_estado(self.estado)
+
+    def _abertura_boca(self):
+        """Quanto a boca está aberta agora — 0.0 a 1.0.
+
+        `envelope_voz` é a amplitude da fala, quando a camada de voz consegue
+        medir; None significa "não medi" e a boca cai numa oscilação de fala
+        plausível — que SÓ roda com o estado FALANDO. Boca calada não se mexe."""
+        if orbe_temas is None:
+            return 0.0
+        return orbe_temas.abertura_da_boca(
+            self.estado, getattr(self, "envelope_voz", None), self.fase_onda)
+
+    def _barras_voz(self, n=24):
+        """As alturas das barras do equalizador."""
+        if orbe_temas is None:
+            return [0.06] * n
+        return orbe_temas.barras_do_equalizador(
+            self.estado, getattr(self, "envelope_voz", None), self.fase_onda, n=n)
+
+    def definir_grafico(self, imagem_tk, rotulo="", fontes=None):
+        """Põe a ÚLTIMA CAPTURA do gráfico dentro do Orbe.
+
+        `imagem_tk` é um PhotoImage já pronto (a conversão de PIL para Tk é
+        da interface, não daqui). A referência fica guardada NESTE objeto de
+        propósito: o Tkinter não segura imagem sozinho — se ninguém guardar,
+        o coletor de lixo leva e o painel fica preto sem erro nenhum.
+
+        `rotulo` é o nome da janela de onde veio, e `fontes` é a lista de
+        janelas monitoradas, para o seletor. Se a lista vier vazia, o seletor
+        não é desenhado — não se oferece escolha que não existe.
+
+        O QUE ESTA IMAGEM É: a mesma captura que o motor analisou no último
+        ciclo, não um feed ao vivo. O rótulo diz a hora dela justamente para
+        ninguém confundir uma coisa com a outra."""
+        self.imagem_grafico = imagem_tk
+        self.rotulo_grafico = str(rotulo or "")
+        if fontes is not None:
+            self.fontes_de_grafico = list(fontes)
+
+    def _desenhar_painel_do_grafico(self, x1, y1, x2, y2):
+        """O quadro 'LIVE CHART INSIGHT' no canto do cluster do Orbe."""
+        cor = self._cores_estado()
+        self.canvas.create_rectangle(x1, y1, x2, y2, fill=COR_CARD_BG,
+                                     outline=cor["principal"], width=1)
+        # Cantos em L — a mesma linguagem dos outros cards do HUD.
+        for dx, dy in ((0, 0), (1, 0), (0, 1), (1, 1)):
+            px = x1 if dx == 0 else x2
+            py = y1 if dy == 0 else y2
+            sx = 12 if dx == 0 else -12
+            sy = 10 if dy == 0 else -10
+            self.canvas.create_line(px, py, px + sx, py, fill=cor["brilho"], width=2)
+            self.canvas.create_line(px, py, px, py + sy, fill=cor["brilho"], width=2)
+
+        self.canvas.create_text(x1 + 10, y1 + 11, anchor="w",
+                                text="📈 LIVE CHART INSIGHT",
+                                font=("Courier", 9, "bold"), fill=cor["principal"])
+
+        img = getattr(self, "imagem_grafico", None)
+        if img is None:
+            # SEM CAPTURA, DIZ QUE NÃO TEM. Um quadro vazio e bonito faria
+            # o trader achar que o motor está olhando algo quando não está.
+            self.canvas.create_text((x1 + x2) // 2, (y1 + y2) // 2,
+                                    text="— sem captura ainda —\no motor ainda não leu um gráfico",
+                                    justify="center", font=("Arial", 9),
+                                    fill=COR_TEXT_MUTED)
+            return
+        try:
+            self.canvas.create_image((x1 + x2) // 2, (y1 + y2) // 2 + 6,
+                                     image=img, anchor="center")
+        except Exception:
+            return
+        rot = getattr(self, "rotulo_grafico", "")
+        if rot:
+            self.canvas.create_text(x1 + 10, y2 - 10, anchor="w", text=rot[:52],
+                                    font=("Arial", 8), fill=COR_TEXT_MUTED)
+
+        # SELETOR DE FONTE — só aparece com mais de uma janela monitorada.
+        fontes = getattr(self, "fontes_de_grafico", None) or []
+        if len(fontes) > 1:
+            sel_y = y2 + 6
+            self.canvas.create_rectangle(x1, sel_y, x2, sel_y + 20,
+                                         fill="#041a2f", outline=COR_CARD_BORDER)
+            atual = rot or str(fontes[0])
+            self.canvas.create_text(x1 + 8, sel_y + 10, anchor="w",
+                                    text=f"CHART SOURCE: {atual[:30]} ▾",
+                                    font=("Courier", 8), fill=cor["principal"])
+            self._seletor_grafico_bounds = (x1, sel_y, x2, sel_y + 20)
+        else:
+            self._seletor_grafico_bounds = None
+
+    def definir_tema(self, nome):
+        """Troca o tema do Orbe e redesenha. É tudo o que a interface precisa
+        chamar — nenhum outro arquivo sabe que temas existem."""
+        self.tema_orbe = str(nome or "")
+        try:
+            self.desenhar()
+        except Exception:
+            pass
 
     def atualizar_estado(self, estado: str, texto_usuario: str = "", texto_resposta: str = ""):
         self.estado = estado
@@ -420,106 +565,23 @@ class CyberHUDCanvasRenderer:
                                             fill=COR_CYAN_GLOW, outline="")
 
         # -------------------------------------------------------------
-        # ROSTO E OLHOS DE TIGRE CIBERNÉTICOS (Predador Bravo e Focado)
+        # O ROSTO VEM DO TEMA — ver orbe_temas.py
         # -------------------------------------------------------------
+        # Antes, os ~100 comandos de desenho do rosto estavam escritos aqui,
+        # no meio do laco que tambem desenha radar, telemetria e logs. Trocar
+        # de estilo exigia editar o arquivo que mostra numero de conta.
+        # Agora o tema entrega a funcao do rosto, e este laco so a chama.
         tf_scale = max(28.0, raio_base * 0.46)
-        t_pulse = 1.0 + math.sin(self.fase_onda * 3.0) * 0.08
-
-        # Fundo do Reator do Rosto do Tigre
-        self.canvas.create_oval(cx - tf_scale * 1.15, cy - tf_scale * 1.15,
-                                cx + tf_scale * 1.15, cy + tf_scale * 1.15,
-                                fill="#030c18", outline="#07324d", width=1.5)
-
-        # 1. Olhos de Tigre Predatórios Inclinados (Foco Extremo & Bravo)
-        olho_e = [
-            cx - tf_scale * 0.62, cy - tf_scale * 0.22,
-            cx - tf_scale * 0.22, cy - tf_scale * 0.14,
-            cx - tf_scale * 0.38, cy - tf_scale * 0.02,
-            cx - tf_scale * 0.60, cy - tf_scale * 0.12
-        ]
-        self.canvas.create_polygon(olho_e, fill="#041a2f", outline=COR_CYAN_GLOW, width=1.5)
-        self.canvas.create_oval(cx - tf_scale * 0.48, cy - tf_scale * 0.19,
-                                cx - tf_scale * 0.30, cy - tf_scale * 0.05,
-                                fill=COR_GOLD_CYBER, outline="")
-        self.canvas.create_line(cx - tf_scale * 0.39, cy - tf_scale * 0.20,
-                                cx - tf_scale * 0.39, cy - tf_scale * 0.04,
-                                fill="#000000", width=2)
-
-        olho_d = [
-            cx + tf_scale * 0.62, cy - tf_scale * 0.22,
-            cx + tf_scale * 0.22, cy - tf_scale * 0.14,
-            cx + tf_scale * 0.38, cy - tf_scale * 0.02,
-            cx + tf_scale * 0.60, cy - tf_scale * 0.12
-        ]
-        self.canvas.create_polygon(olho_d, fill="#041a2f", outline=COR_CYAN_GLOW, width=1.5)
-        self.canvas.create_oval(cx + tf_scale * 0.30, cy - tf_scale * 0.19,
-                                cx + tf_scale * 0.48, cy - tf_scale * 0.05,
-                                fill=COR_GOLD_CYBER, outline="")
-        self.canvas.create_line(cx + tf_scale * 0.39, cy - tf_scale * 0.20,
-                                cx + tf_scale * 0.39, cy - tf_scale * 0.04,
-                                fill="#000000", width=2)
-
-        # 2. Sobrancelhas / Rugas Predatórias de Foco (V-Angulado Bravo)
-        self.canvas.create_line(cx - tf_scale * 0.70, cy - tf_scale * 0.34,
-                                cx - tf_scale * 0.18, cy - tf_scale * 0.20,
-                                fill=COR_CYAN_GLOW, width=2)
-        self.canvas.create_line(cx + tf_scale * 0.70, cy - tf_scale * 0.34,
-                                cx + tf_scale * 0.18, cy - tf_scale * 0.20,
-                                fill=COR_CYAN_GLOW, width=2)
-
-        # 3. Listras de Tigre na Testa (Chevrons Holográficos)
-        self.canvas.create_line(cx - tf_scale * 0.22, cy - tf_scale * 0.65,
-                                cx, cy - tf_scale * 0.48,
-                                cx + tf_scale * 0.22, cy - tf_scale * 0.65,
-                                fill=COR_GOLD_CYBER, width=2)
-        self.canvas.create_line(cx - tf_scale * 0.15, cy - tf_scale * 0.48,
-                                cx, cy - tf_scale * 0.36,
-                                cx + tf_scale * 0.15, cy - tf_scale * 0.48,
-                                fill=COR_CYAN_GLOW, width=1.5)
-        self.canvas.create_line(cx, cy - tf_scale * 0.36,
-                                cx, cy - tf_scale * 0.20,
-                                fill=COR_CYAN_DIM, width=1.5)
-
-        # 4. Focinho Cibernético e Boca com Presas
-        ny = cy + tf_scale * 0.14
-        self.canvas.create_polygon(cx - tf_scale * 0.14, ny,
-                                   cx + tf_scale * 0.14, ny,
-                                   cx, ny + tf_scale * 0.16,
-                                   fill="#041a2f", outline=COR_CYAN_GLOW, width=1.5)
-        self.canvas.create_line(cx, ny + tf_scale * 0.16, cx, ny + tf_scale * 0.30,
-                                fill=COR_CYAN_GLOW, width=1.5)
-        self.canvas.create_line(cx - tf_scale * 0.26, ny + tf_scale * 0.30,
-                                cx + tf_scale * 0.26, ny + tf_scale * 0.30,
-                                fill=COR_CYAN_GLOW, width=1.5)
-        self.canvas.create_line(cx - tf_scale * 0.16, ny + tf_scale * 0.30,
-                                cx - tf_scale * 0.16, ny + tf_scale * 0.42,
-                                fill=COR_GOLD_CYBER, width=2)
-        self.canvas.create_line(cx + tf_scale * 0.16, ny + tf_scale * 0.30,
-                                cx + tf_scale * 0.16, ny + tf_scale * 0.42,
-                                fill=COR_GOLD_CYBER, width=2)
-
-        # 5. Bigodes Cibernéticos Radiantes (Esquerda & Direita)
-        for w_off, w_ang in [(-0.06, -0.15), (0.02, 0.0), (0.10, 0.15)]:
-            self.canvas.create_line(cx - tf_scale * 0.24, ny + tf_scale * (0.24 + w_off),
-                                    cx - tf_scale * (0.85 * t_pulse), ny + tf_scale * (0.24 + w_ang),
-                                    fill=COR_CYAN_GLOW, width=1)
-            self.canvas.create_line(cx + tf_scale * 0.24, ny + tf_scale * (0.24 + w_off),
-                                    cx + tf_scale * (0.85 * t_pulse), ny + tf_scale * (0.24 + w_ang),
-                                    fill=COR_CYAN_GLOW, width=1)
-
-        # 6. Listras Laterais das Bochechas
-        self.canvas.create_line(cx - tf_scale * 0.78, cy - tf_scale * 0.05,
-                                cx - tf_scale * 0.52, cy + tf_scale * 0.02,
-                                fill=COR_CYAN_DIM, width=1.5)
-        self.canvas.create_line(cx - tf_scale * 0.72, cy + tf_scale * 0.12,
-                                cx - tf_scale * 0.48, cy + tf_scale * 0.16,
-                                fill=COR_GOLD_CYBER, width=1.5)
-        self.canvas.create_line(cx + tf_scale * 0.78, cy - tf_scale * 0.05,
-                                cx + tf_scale * 0.52, cy + tf_scale * 0.02,
-                                fill=COR_CYAN_DIM, width=1.5)
-        self.canvas.create_line(cx + tf_scale * 0.72, cy + tf_scale * 0.12,
-                                cx + tf_scale * 0.48, cy + tf_scale * 0.16,
-                                fill=COR_GOLD_CYBER, width=1.5)
+        _cor_est = self._cores_estado()
+        _abertura = self._abertura_boca()
+        _t = self._tema()
+        if _t is not None:
+            try:
+                _t["rosto"](self.canvas, cx, cy, tf_scale, _cor_est,
+                            self.fase_onda, _abertura)
+            except Exception:
+                # Um tema quebrado nao pode derrubar o painel inteiro.
+                pass
 
         # Anel Orbital Maior com Coordenadas Sci-Fi
         r_orb_x = raio_base * 1.54
@@ -559,19 +621,26 @@ class CyberHUDCanvasRenderer:
         # 6. Equalizador de Voz em Onda Fluida & Controles Inferiores
         # -------------------------------------------------------------
         if h > 240:
-            # Onda Senoidal Fluida de Voz (Waveform Speech Animation)
-            largura_onda = min(220, int(raio_base * 1.5))
-            onda_y = cy + r_orb_y + 24
-            for off_onda, col_onda, amp_mult in [(0, COR_CYAN_GLOW, 1.0), (1.2, COR_BLUE_ELECTRIC, 0.6)]:
-                pontos_onda = []
-                for px in range(int(cx - largura_onda // 2), int(cx + largura_onda // 2), 4):
-                    dist_centro = abs(px - cx) / (largura_onda / 2)
-                    envelope = max(0.0, 1.0 - dist_centro)
-                    amp = envelope * (14 if self.estado in ("FALANDO", "OUVINDO") else 6) * amp_mult
-                    py = onda_y + math.sin(self.fase_onda * 4.0 + px * 0.18 + off_onda) * amp
-                    pontos_onda.extend([px, py])
-                if len(pontos_onda) >= 4:
-                    self.canvas.create_line(pontos_onda, fill=col_onda, width=2, smooth=True)
+            # EQUALIZADOR DE VOZ — barras, e nao mais uma senoide unica.
+            # A senoide antiga oscilava igual em silencio e em fala; so mudava
+            # de amplitude. Barras leem como VOZ para o olho, e a linha de
+            # repouso baixa (nunca zero) diz "quieta", nao "desligada".
+            largura_onda = min(260, int(raio_base * 1.7))
+            onda_y = cy + r_orb_y + 26
+            _barras = self._barras_voz(n=24)
+            _cor_v = self._cores_estado()
+            n_b = max(1, len(_barras))
+            passo_b = max(3, largura_onda // n_b)
+            x0_b = cx - (passo_b * n_b) // 2
+            for i_b, alt_rel in enumerate(_barras):
+                bx = x0_b + i_b * passo_b
+                alt = 3 + alt_rel * 22
+                self.canvas.create_rectangle(
+                    bx, onda_y - alt, bx + max(2, passo_b - 2), onda_y + alt,
+                    fill=_cor_v["principal"] if alt_rel > 0.35 else _cor_v["brilho"],
+                    outline="")
+            self.canvas.create_line(x0_b, onda_y, x0_b + passo_b * n_b, onda_y,
+                                    fill=COR_CARD_BORDER, width=1)
 
             # Botão de Ação Central
             btn_w, btn_h = 190, 28
@@ -580,15 +649,33 @@ class CyberHUDCanvasRenderer:
                                          fill="#041a2f", outline=COR_CYAN_GLOW, width=1.5)
             btn_txt = "🎙️ FALAR COM A TIGER" if self.estado == "STANDBY" else (
                 "🎤 ESCUTANDO..." if self.estado == "OUVINDO" else (
-                    "⚙️ PROCESSANDO..." if self.estado == "PENSANDO" else "🔊 TIGER FALANDO"))
+                    "⚙️ CALCULANDO..." if self.estado == "PENSANDO" else (
+                        "🟠 ORDEM CONFIRMADA" if str(self.estado).upper() == "ACAO"
+                        else "🔊 TIGER FALANDO")))
             self.canvas.create_text(cx, btn_y + btn_h // 2, text=btn_txt,
-                                    font=("Arial", 10, "bold"), fill=cor_st)
+                                    font=("Arial", 10, "bold"),
+                                    fill=self._cores_estado()["principal"])
 
             # Registra coordenadas interativas do Orbe e do Botão de Voz
             self._cx = cx
             self._cy = cy
             self._raio_base = raio_base
             self._btn_falar_bounds = (cx - btn_w // 2, btn_y, cx + btn_w // 2, btn_y + btn_h)
+
+            # QUADRO DO GRAFICO no quadrante inferior-direito do cluster,
+            # como ele pediu. So entra quando ha altura sobrando: espremer
+            # este quadro tiraria espaco do equalizador e da telemetria, que
+            # sao informacao, e ele e referencia.
+            if h > 430:
+                pw, ph = 210, 118
+                px1 = int(cx + raio_base * 0.95)
+                py1 = int(cy + raio_base * 0.30)
+                px2, py2 = px1 + pw, py1 + ph
+                if px2 < self.largura - 300:
+                    try:
+                        self._desenhar_painel_do_grafico(px1, py1, px2, py2)
+                    except Exception:
+                        pass
 
             # Legenda de Wake-Words
             self.canvas.create_text(cx, btn_y + btn_h + 14,

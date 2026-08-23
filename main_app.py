@@ -12504,6 +12504,34 @@ class SmcQuantApp(ctk.CTk):
                       fg_color=COR["borda"], hover_color=COR["input"],
                       command=self._experimentar_voz).pack(side="left", padx=6)
 
+        # ---------- ESTILO DO ORBE ----------
+        # Pedido dele: um seletor de tema do Orbe, e o código estruturado para
+        # que trocar de tema seja só trocar assets — nada do motor sabe que
+        # temas existem. Ver `orbe_temas.py`: aqui só se lê a lista e se avisa
+        # o renderizador. Nenhuma linha de decisão de trade passa por aqui.
+        try:
+            import orbe_temas as _ot
+            linha_orbe = ctk.CTkFrame(sec_voz, fg_color="transparent")
+            linha_orbe.pack(anchor="w", padx=12, pady=(8, 2))
+            ctk.CTkLabel(linha_orbe, text="Estilo do Orbe:",
+                         text_color=COR["dim"]).pack(side="left", padx=(0, 8))
+            self._temas_por_rotulo = {r: k for k, r in _ot.nomes_dos_temas()}
+            _tema_atual = carregar_config().get("tema_orbe", _ot.TEMA_PADRAO)
+            self._var_tema_orbe = tk.StringVar(
+                value=next((r for r, k in self._temas_por_rotulo.items()
+                            if k == _tema_atual),
+                           list(self._temas_por_rotulo)[0]))
+            ctk.CTkOptionMenu(linha_orbe, variable=self._var_tema_orbe,
+                              values=list(self._temas_por_rotulo), width=220,
+                              command=lambda r: self._trocar_tema_orbe(r)).pack(side="left")
+            ctk.CTkLabel(
+                linha_orbe,
+                text="muda só o visual do Orbe — telemetria e motor não mudam",
+                text_color="#4a5163",
+                font=ctk.CTkFont(size=10)).pack(side="left", padx=8)
+        except Exception:
+            pass
+
         _pt = sum(1 for _n, _i, _e in _vozes if _i.lower().startswith("pt"))
         linha_mais = ctk.CTkFrame(sec_voz, fg_color="transparent")
         linha_mais.pack(anchor="w", padx=12, pady=(4, 2))
@@ -13212,6 +13240,11 @@ class SmcQuantApp(ctk.CTk):
                 ativo = getattr(self, "_ultimo_ativo_lido", "") or "MNQ / NQ"
                 self.hud_embutido.renderer.ativo_smc = str(ativo)
                 self.hud_embutido.renderer.on_falar_click = self._chat_ouvir
+                try:
+                    self.hud_embutido.renderer.tema_orbe = carregar_config().get(
+                        "tema_orbe", getattr(self.hud_embutido.renderer, "tema_orbe", ""))
+                except Exception:
+                    pass
                 self.hud_embutido.renderer.on_toggle_maos_livres = self._alternar_maos_livres_hud
                 self.hud_embutido.renderer.maos_livres_ativa = bool(getattr(self, "ia_tiger_var", None) and self.ia_tiger_var.get())
             except Exception as e:
@@ -16689,6 +16722,62 @@ class SmcQuantApp(ctk.CTk):
             return ""
         return (getattr(self, "_vozes_por_rotulo", {}).get(rotulo)
                 or rotulo.split("  ·  ")[0].strip())
+
+    def _trocar_tema_orbe(self, rotulo=None):
+        """Troca o estilo visual do Orbe e guarda a escolha.
+
+        É TUDO o que a interface faz por um tema: escreve a preferência e
+        avisa o renderizador. Nada aqui toca em telemetria, em plano, em
+        posição ou em ordem — e é assim que tem de continuar. Se um dia
+        trocar de tema precisar mexer no motor, o desenho está errado."""
+        chave = (getattr(self, "_temas_por_rotulo", {}) or {}).get(rotulo)
+        if not chave:
+            return
+        salvar_config({"tema_orbe": chave})
+        for alvo in (getattr(self, "hud_embutido", None),
+                     getattr(self, "_hud_jarvis", None)):
+            r = getattr(alvo, "renderer", None)
+            if r is not None and hasattr(r, "definir_tema"):
+                try:
+                    r.definir_tema(chave)
+                except Exception:
+                    pass
+        self.log(f"🎨 Estilo do Orbe: {rotulo}. Só o visual mudou — "
+                 "telemetria, plano e motor seguem iguais.")
+
+    def _alimentar_grafico_do_orbe(self):
+        """Manda a última captura do gráfico para dentro do Orbe.
+
+        O quadro 'LIVE CHART INSIGHT' mostra a MESMA imagem que o motor
+        analisou no último ciclo — não um feed ao vivo paralelo. O rótulo
+        carrega a hora justamente para não confundir uma coisa com a outra:
+        um quadro que parece ao vivo e está defasado é pior que quadro
+        nenhum."""
+        alvo = getattr(self, "hud_embutido", None)
+        r = getattr(alvo, "renderer", None)
+        if r is None or not hasattr(r, "definir_grafico"):
+            return
+        info = getattr(self, "_ultimo_print", None)
+        if not info:
+            return
+        try:
+            from PIL import Image, ImageTk
+            caminho = info.get("caminho") if isinstance(info, dict) else None
+            if not caminho or not os.path.exists(caminho):
+                return
+            img = Image.open(caminho)
+            img.thumbnail((200, 108))
+            tk_img = ImageTk.PhotoImage(img)
+            janela = (info.get("janela") or "") if isinstance(info, dict) else ""
+            quando = (info.get("hora") or "") if isinstance(info, dict) else ""
+            rotulo = f"{janela} · {quando}".strip(" ·")
+            try:
+                fontes = list(janelas_monitoradas() or [])
+            except Exception:
+                fontes = []
+            r.definir_grafico(tk_img, rotulo=rotulo, fontes=fontes)
+        except Exception:
+            return
 
     def _trocar_voz(self, _rotulo=None):
         """Grava a voz, RELÊ do disco e fala uma frase com ela — confirmação
@@ -20487,6 +20576,12 @@ class SmcQuantApp(ctk.CTk):
         """
         if not getattr(self, "hud_embutido", None) or not getattr(self.hud_embutido, "renderer", None):
             return
+        # O quadro do grafico dentro do Orbe anda junto da telemetria: mesma
+        # cadencia, mesma fonte. Ver `_alimentar_grafico_do_orbe`.
+        try:
+            self._alimentar_grafico_do_orbe()
+        except Exception:
+            pass
         try:
             r = self.hud_embutido.renderer
             ua = getattr(self, "_ultima_analise", None) or {}
