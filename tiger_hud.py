@@ -59,14 +59,13 @@ class CyberHUDCanvasRenderer:
         # None = nao medi — e a boca cai numa oscilacao plausivel em vez de
         # fingir uma medida que nao existe.
         self.envelope_voz = None
-        # Ultima captura do grafico, para o quadro LIVE CHART INSIGHT dentro
-        # do cluster do Orbe. A referencia fica AQUI porque o Tkinter nao
-        # segura imagem sozinho: sem alguem guardando, o coletor leva e o
-        # quadro fica preto sem erro nenhum.
-        self.imagem_grafico = None
-        self.rotulo_grafico = ""
-        self.fontes_de_grafico = []
-        self._seletor_grafico_bounds = None
+        # CAMADA 0: a captura do grafico como fundo do cluster, e o
+        # interruptor que a desliga. CAMADA 1: o PNG que pode substituir o
+        # rosto vetorial. As referencias ficam AQUI porque o Tkinter nao
+        # segura imagem sozinho — sem isso o coletor leva e some sem erro.
+        self.imagem_fundo = None
+        self.contexto_de_fundo = True
+        self.imagem_rosto = None
         self.angulo_rotacao = 0.0
         self.angulo_radar = 0.0
         self.fase_onda = 0.0
@@ -219,76 +218,54 @@ class CyberHUDCanvasRenderer:
         return orbe_temas.barras_do_equalizador(
             self.estado, getattr(self, "envelope_voz", None), self.fase_onda, n=n)
 
-    def definir_grafico(self, imagem_tk, rotulo="", fontes=None):
-        """Põe a ÚLTIMA CAPTURA do gráfico dentro do Orbe.
+    def _desenhar_fundo_de_contexto(self, cx, cy, largura_centro, h):
+        """CAMADA 0 — a ultima captura do grafico, como FUNDO do cluster.
 
-        `imagem_tk` é um PhotoImage já pronto (a conversão de PIL para Tk é
-        da interface, não daqui). A referência fica guardada NESTE objeto de
-        propósito: o Tkinter não segura imagem sozinho — se ninguém guardar,
-        o coletor de lixo leva e o painel fica preto sem erro nenhum.
+        Nao e um feed ao vivo paralelo: e a MESMA imagem que o motor analisou
+        no ultimo ciclo. Fica atras de tudo de proposito — contexto e o que
+        fica atras, informacao e o que fica na frente.
 
-        `rotulo` é o nome da janela de onde veio, e `fontes` é a lista de
-        janelas monitoradas, para o seletor. Se a lista vier vazia, o seletor
-        não é desenhado — não se oferece escolha que não existe.
-
-        O QUE ESTA IMAGEM É: a mesma captura que o motor analisou no último
-        ciclo, não um feed ao vivo. O rótulo diz a hora dela justamente para
-        ninguém confundir uma coisa com a outra."""
-        self.imagem_grafico = imagem_tk
-        self.rotulo_grafico = str(rotulo or "")
-        if fontes is not None:
-            self.fontes_de_grafico = list(fontes)
-
-    def _desenhar_painel_do_grafico(self, x1, y1, x2, y2):
-        """O quadro 'LIVE CHART INSIGHT' no canto do cluster do Orbe."""
-        cor = self._cores_estado()
-        self.canvas.create_rectangle(x1, y1, x2, y2, fill=COR_CARD_BG,
-                                     outline=cor["principal"], width=1)
-        # Cantos em L — a mesma linguagem dos outros cards do HUD.
-        for dx, dy in ((0, 0), (1, 0), (0, 1), (1, 1)):
-            px = x1 if dx == 0 else x2
-            py = y1 if dy == 0 else y2
-            sx = 12 if dx == 0 else -12
-            sy = 10 if dy == 0 else -10
-            self.canvas.create_line(px, py, px + sx, py, fill=cor["brilho"], width=2)
-            self.canvas.create_line(px, py, px, py + sy, fill=cor["brilho"], width=2)
-
-        self.canvas.create_text(x1 + 10, y1 + 11, anchor="w",
-                                text="📈 LIVE CHART INSIGHT",
-                                font=("Courier", 9, "bold"), fill=cor["principal"])
-
-        img = getattr(self, "imagem_grafico", None)
+        DESLIGAVEL. `contexto_de_fundo` False deixa o cluster escuro, so com o
+        rosto e a telemetria. Num pregao lateral, fundo demais atrapalha ler o
+        numero — e quem decide isso e ele, nao eu.
+        """
+        if not getattr(self, "contexto_de_fundo", True):
+            return
+        img = getattr(self, "imagem_fundo", None)
         if img is None:
-            # SEM CAPTURA, DIZ QUE NÃO TEM. Um quadro vazio e bonito faria
-            # o trader achar que o motor está olhando algo quando não está.
-            self.canvas.create_text((x1 + x2) // 2, (y1 + y2) // 2,
-                                    text="— sem captura ainda —\no motor ainda não leu um gráfico",
-                                    justify="center", font=("Arial", 9),
-                                    fill=COR_TEXT_MUTED)
             return
         try:
-            self.canvas.create_image((x1 + x2) // 2, (y1 + y2) // 2 + 6,
-                                     image=img, anchor="center")
+            self.canvas.create_image(cx, cy, image=img, anchor="center")
         except Exception:
             return
-        rot = getattr(self, "rotulo_grafico", "")
-        if rot:
-            self.canvas.create_text(x1 + 10, y2 - 10, anchor="w", text=rot[:52],
-                                    font=("Arial", 8), fill=COR_TEXT_MUTED)
+        # VEU ESCURO POR CIMA. Sem ele, o grafico compete com o rosto e com o
+        # equalizador em brilho, e o cockpit vira sopa visual. O Canvas do
+        # Tkinter nao tem transparencia real por pixel, entao o veu e feito
+        # com um retangulo do stipple — que e o jeito que existe aqui.
+        try:
+            meia_l = int(largura_centro * 0.5)
+            self.canvas.create_rectangle(
+                cx - meia_l, cy - h // 2, cx + meia_l, cy + h // 2,
+                fill=COR_FUNDO_DEEP, outline="", stipple="gray50")
+        except Exception:
+            pass
 
-        # SELETOR DE FONTE — só aparece com mais de uma janela monitorada.
-        fontes = getattr(self, "fontes_de_grafico", None) or []
-        if len(fontes) > 1:
-            sel_y = y2 + 6
-            self.canvas.create_rectangle(x1, sel_y, x2, sel_y + 20,
-                                         fill="#041a2f", outline=COR_CARD_BORDER)
-            atual = rot or str(fontes[0])
-            self.canvas.create_text(x1 + 8, sel_y + 10, anchor="w",
-                                    text=f"CHART SOURCE: {atual[:30]} ▾",
-                                    font=("Courier", 8), fill=cor["principal"])
-            self._seletor_grafico_bounds = (x1, sel_y, x2, sel_y + 20)
-        else:
-            self._seletor_grafico_bounds = None
+    def definir_fundo_de_contexto(self, imagem_tk, ligado=True):
+        """Recebe a captura ja convertida para Tk e diz se ela deve aparecer.
+
+        A referencia fica GUARDADA aqui: o Tkinter nao segura imagem sozinho,
+        e sem alguem guardando o coletor de lixo leva e o fundo some sem erro
+        nenhum — o tipo de defeito que parece 'o recurso nao funciona'."""
+        self.imagem_fundo = imagem_tk
+        self.contexto_de_fundo = bool(ligado)
+
+    def definir_rosto_de_imagem(self, imagem_tk):
+        """O PNG que substitui o rosto vetorial, quando o tema pede.
+
+        `None` volta ao rosto desenhado. Nao ha erro nesse caminho: se a
+        imagem nao carregou, o Orbe continua com o rosto de linha, que e feio
+        perto do fotorrealista mas infinitamente melhor que painel vazio."""
+        self.imagem_rosto = imagem_tk
 
     def definir_tema(self, nome):
         """Troca o tema do Orbe e redesenha. É tudo o que a interface precisa
@@ -406,6 +383,22 @@ class CyberHUDCanvasRenderer:
         pw = max(290, min(420, int(w * 0.30))) if w > 600 else 0
         largura_centro = w - 2 * pw if pw > 0 else w
         raio_base = min(max(h * 0.34, 75), int(largura_centro * 0.42), 170) + math.sin(self.fase_onda) * 2.0
+
+        # -------------------------------------------------------------
+        # CAMADA 0 — O GRAFICO COMO FUNDO DO CLUSTER
+        # -------------------------------------------------------------
+        # Antes isto era um quadro FLUTUANTE no canto inferior-direito, e
+        # ficou exatamente como ele descreveu: solto, desalinhado, brigando
+        # com o equalizador por atencao. Um retangulo de 210px no meio de um
+        # cockpit nao le como "contexto", le como erro de alinhamento.
+        #
+        # Agora o grafico e o FUNDO: ocupa o espaco central inteiro, atras do
+        # Orbe e atras de tudo. Contexto e o que fica atras; informacao e o
+        # que fica na frente. As camadas 1 (rosto) e 2 (telemetria, logs,
+        # equalizador) sao desenhadas DEPOIS, entao ficam por cima — no
+        # Canvas do Tkinter a ordem de desenho E a ordem das camadas.
+        self._desenhar_fundo_de_contexto(cx, cy, largura_centro, h)
+
         pitch = 0.38  # ~22 graus de inclinação tridimensional
 
         # -------------------------------------------------------------
@@ -575,7 +568,18 @@ class CyberHUDCanvasRenderer:
         _cor_est = self._cores_estado()
         _abertura = self._abertura_boca()
         _t = self._tema()
-        if _t is not None:
+        # CAMADA 1 — o rosto. A IMAGEM tem preferencia quando existe; o rosto
+        # vetorial e a queda segura. Uma imagem que nao carregou nao pode
+        # deixar o Orbe sem cara nenhuma.
+        _usou_imagem = False
+        _img_rosto = getattr(self, "imagem_rosto", None)
+        if _img_rosto is not None and orbe_temas is not None:
+            try:
+                _usou_imagem = orbe_temas.desenhar_rosto_de_imagem(
+                    self.canvas, cx, cy, tf_scale, _img_rosto)
+            except Exception:
+                _usou_imagem = False
+        if not _usou_imagem and _t is not None:
             try:
                 _t["rosto"](self.canvas, cx, cy, tf_scale, _cor_est,
                             self.fase_onda, _abertura)
@@ -661,21 +665,6 @@ class CyberHUDCanvasRenderer:
             self._cy = cy
             self._raio_base = raio_base
             self._btn_falar_bounds = (cx - btn_w // 2, btn_y, cx + btn_w // 2, btn_y + btn_h)
-
-            # QUADRO DO GRAFICO no quadrante inferior-direito do cluster,
-            # como ele pediu. So entra quando ha altura sobrando: espremer
-            # este quadro tiraria espaco do equalizador e da telemetria, que
-            # sao informacao, e ele e referencia.
-            if h > 430:
-                pw, ph = 210, 118
-                px1 = int(cx + raio_base * 0.95)
-                py1 = int(cy + raio_base * 0.30)
-                px2, py2 = px1 + pw, py1 + ph
-                if px2 < self.largura - 300:
-                    try:
-                        self._desenhar_painel_do_grafico(px1, py1, px2, py2)
-                    except Exception:
-                        pass
 
             # Legenda de Wake-Words
             self.canvas.create_text(cx, btn_y + btn_h + 14,

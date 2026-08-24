@@ -12529,6 +12529,44 @@ class SmcQuantApp(ctk.CTk):
                 text="muda só o visual do Orbe — telemetria e motor não mudam",
                 text_color="#4a5163",
                 font=ctk.CTkFont(size=10)).pack(side="left", padx=8)
+
+            # ---- ROSTO EM IMAGEM ----
+            # O caminho vem daqui e não de um nome cravado no código: o
+            # arquivo é dele, e um nome fixo falharia em silêncio para
+            # qualquer outro — o defeito que faz o usuário achar que o
+            # recurso não existe.
+            linha_img = ctk.CTkFrame(sec_voz, fg_color="transparent")
+            linha_img.pack(anchor="w", padx=12, pady=(4, 2))
+            ctk.CTkLabel(linha_img, text="Rosto do Orbe (imagem):",
+                         text_color=COR["dim"]).pack(side="left", padx=(0, 8))
+            _img_atual = str(carregar_config().get("imagem_do_orbe", "") or "")
+            self._var_img_orbe = tk.StringVar(
+                value=(os.path.basename(_img_atual) if _img_atual
+                       else "(nenhuma — usa o rosto do tema)"))
+            ctk.CTkLabel(linha_img, textvariable=self._var_img_orbe,
+                         text_color=COR["texto"],
+                         font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 8))
+            ctk.CTkButton(linha_img, text="escolher…", width=90,
+                          fg_color=COR["borda"], hover_color=COR["input"],
+                          command=self._escolher_imagem_do_orbe).pack(side="left", padx=2)
+            ctk.CTkButton(linha_img, text="tirar", width=60,
+                          fg_color=COR["borda"], hover_color=COR["input"],
+                          command=self._limpar_imagem_do_orbe).pack(side="left", padx=2)
+
+            # ---- CAMADA 0: o gráfico ao fundo ----
+            linha_ctx = ctk.CTkFrame(sec_voz, fg_color="transparent")
+            linha_ctx.pack(anchor="w", padx=12, pady=(4, 2))
+            self._var_ctx_fundo = tk.BooleanVar(
+                value=bool(carregar_config().get("contexto_de_fundo", True)))
+            ctk.CTkCheckBox(
+                linha_ctx, text="Gráfico ao fundo do Orbe (contexto)",
+                variable=self._var_ctx_fundo, onvalue=True, offvalue=False,
+                command=self._alternar_contexto_de_fundo).pack(side="left")
+            ctk.CTkLabel(
+                linha_ctx,
+                text="desligado, o cluster fica escuro — só rosto e telemetria",
+                text_color="#4a5163",
+                font=ctk.CTkFont(size=10)).pack(side="left", padx=8)
         except Exception:
             pass
 
@@ -16746,38 +16784,125 @@ class SmcQuantApp(ctk.CTk):
                  "telemetria, plano e motor seguem iguais.")
 
     def _alimentar_grafico_do_orbe(self):
-        """Manda a última captura do gráfico para dentro do Orbe.
+        """CAMADA 0 e CAMADA 1 do Orbe: o fundo de contexto e o rosto em PNG.
 
-        O quadro 'LIVE CHART INSIGHT' mostra a MESMA imagem que o motor
-        analisou no último ciclo — não um feed ao vivo paralelo. O rótulo
-        carrega a hora justamente para não confundir uma coisa com a outra:
-        um quadro que parece ao vivo e está defasado é pior que quadro
-        nenhum."""
+        FUNDO (camada 0): a MESMA captura que o motor analisou no ultimo
+        ciclo — nao um feed ao vivo paralelo. Ela vai atras de tudo, porque
+        contexto e o que fica atras e informacao e o que fica na frente.
+        Desligavel pelo interruptor 'Gráfico ao fundo' em Configuracoes.
+
+        ROSTO (camada 1): o PNG que o tema pode usar no lugar do rosto
+        vetorial. O caminho vem da configuracao e nao de um nome cravado no
+        codigo — o arquivo e dele, e um nome fixo falharia em silencio para
+        qualquer outro, que e o defeito que faz o usuario achar que o recurso
+        nao existe.
+
+        Nada aqui levanta: sem Pillow, sem arquivo ou sem HUD, o Orbe volta ao
+        rosto desenhado e ao fundo escuro. Painel feio abre; painel quebrado
+        esconde posicao aberta.
+        """
         alvo = getattr(self, "hud_embutido", None)
         r = getattr(alvo, "renderer", None)
-        if r is None or not hasattr(r, "definir_grafico"):
-            return
-        info = getattr(self, "_ultimo_print", None)
-        if not info:
+        if r is None:
             return
         try:
             from PIL import Image, ImageTk
-            caminho = info.get("caminho") if isinstance(info, dict) else None
-            if not caminho or not os.path.exists(caminho):
-                return
-            img = Image.open(caminho)
-            img.thumbnail((200, 108))
-            tk_img = ImageTk.PhotoImage(img)
-            janela = (info.get("janela") or "") if isinstance(info, dict) else ""
-            quando = (info.get("hora") or "") if isinstance(info, dict) else ""
-            rotulo = f"{janela} · {quando}".strip(" ·")
-            try:
-                fontes = list(janelas_monitoradas() or [])
-            except Exception:
-                fontes = []
-            r.definir_grafico(tk_img, rotulo=rotulo, fontes=fontes)
         except Exception:
             return
+        cfg = carregar_config()
+
+        # ---- CAMADA 0: o grafico ao fundo ----
+        if hasattr(r, "definir_fundo_de_contexto"):
+            ligado = bool(cfg.get("contexto_de_fundo", True))
+            tk_fundo = None
+            info = getattr(self, "_ultimo_print", None)
+            caminho = (info or {}).get("caminho") if isinstance(info, dict) else None
+            if ligado and caminho and os.path.exists(caminho):
+                try:
+                    larg = max(320, int(getattr(r, "largura", 900) * 0.52))
+                    img = Image.open(caminho).convert("RGB")
+                    img.thumbnail((larg, max(180, int(getattr(r, "altura", 320) * 0.9))))
+                    tk_fundo = ImageTk.PhotoImage(img)
+                except Exception:
+                    tk_fundo = None
+            try:
+                r.definir_fundo_de_contexto(tk_fundo, ligado=ligado)
+            except Exception:
+                pass
+
+        # ---- CAMADA 1: o rosto em PNG ----
+        if hasattr(r, "definir_rosto_de_imagem"):
+            tk_rosto = None
+            caminho_rosto = str(cfg.get("imagem_do_orbe", "") or "").strip()
+            if caminho_rosto:
+                try:
+                    import orbe_temas as _ot
+                    ok, _motivo = _ot.caminho_de_imagem_valido(caminho_rosto)
+                except Exception:
+                    ok = bool(caminho_rosto and os.path.exists(caminho_rosto))
+                if ok:
+                    try:
+                        lado = max(90, int(getattr(r, "altura", 320) * 0.55))
+                        im = Image.open(caminho_rosto).convert("RGBA")
+                        im.thumbnail((lado, lado))
+                        tk_rosto = ImageTk.PhotoImage(im)
+                    except Exception:
+                        tk_rosto = None
+            try:
+                r.definir_rosto_de_imagem(tk_rosto)
+            except Exception:
+                pass
+
+    def _escolher_imagem_do_orbe(self):
+        """Abre o seletor de arquivo para o rosto do Orbe e guarda o caminho.
+
+        DIZ SE CONSEGUIU. Guardar um caminho ruim em silencio faria ele achar
+        que escolheu e que o programa ignorou — e a resposta certa e o
+        programa falar por que nao serviu."""
+        from tkinter import filedialog
+        caminho = filedialog.askopenfilename(
+            title="Imagem do rosto do Orbe",
+            filetypes=[("Imagens", "*.png *.gif *.jpg *.jpeg *.webp *.bmp"),
+                       ("Todos", "*.*")])
+        if not caminho:
+            return
+        try:
+            import orbe_temas as _ot
+            ok, motivo = _ot.caminho_de_imagem_valido(caminho)
+        except Exception:
+            ok, motivo = True, ""
+        if not ok:
+            self.log(f"🖼️ Não usei essa imagem no Orbe: {motivo}.")
+            return
+        salvar_config({"imagem_do_orbe": caminho})
+        if motivo:
+            self.log(f"🖼️ Imagem do Orbe definida ({os.path.basename(caminho)}) — {motivo}.")
+        else:
+            self.log(f"🖼️ Imagem do Orbe definida: {os.path.basename(caminho)}. "
+                     "Ela aparece no próximo redesenho do HUD.")
+        try:
+            self._var_img_orbe.set(os.path.basename(caminho))
+        except Exception:
+            pass
+        self._alimentar_grafico_do_orbe()
+
+    def _limpar_imagem_do_orbe(self):
+        """Volta ao rosto desenhado pelo tema."""
+        salvar_config({"imagem_do_orbe": ""})
+        try:
+            self._var_img_orbe.set("(nenhuma — usa o rosto do tema)")
+        except Exception:
+            pass
+        self.log("🖼️ Imagem do Orbe removida — voltando ao rosto do tema.")
+        self._alimentar_grafico_do_orbe()
+
+    def _alternar_contexto_de_fundo(self):
+        """Liga/desliga a CAMADA 0 (o gráfico ao fundo do cluster)."""
+        ligado = bool(self._var_ctx_fundo.get())
+        salvar_config({"contexto_de_fundo": ligado})
+        self.log("🖼️ Gráfico ao fundo do Orbe: "
+                 + ("LIGADO." if ligado else "desligado — cluster escuro, só rosto e telemetria."))
+        self._alimentar_grafico_do_orbe()
 
     def _trocar_voz(self, _rotulo=None):
         """Grava a voz, RELÊ do disco e fala uma frase com ela — confirmação

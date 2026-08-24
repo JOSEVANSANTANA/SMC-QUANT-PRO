@@ -317,6 +317,65 @@ TEMAS_DO_ORBE = {
 
 TEMA_PADRAO = "quantum_predator"
 
+# =====================================================================
+#  O ROSTO COMO IMAGEM — quando o vetor não dá conta
+# =====================================================================
+#  A referência que ele quer para o Quantum Predator é um tigre de energia
+#  fotorrealista. Isso não se desenha com linha e polígono num Canvas de
+#  Tkinter: a única forma honesta é carregar o arquivo.
+#
+#  POR QUE O CAMINHO É CONFIGURÁVEL, e não um nome fixo no código:
+#  porque o arquivo é DELE. Um `imagem = "tigre.png"` cravado aqui só
+#  funcionaria se ele batizasse o arquivo exatamente assim, e falharia em
+#  silêncio para qualquer outro nome — que é o tipo de defeito que faz o
+#  usuário achar que o recurso não existe. Com o caminho vindo da
+#  configuração, ele escolhe o arquivo e o programa diz se conseguiu abrir.
+
+EXTENSOES_DE_IMAGEM = (".png", ".gif", ".ppm", ".pgm")
+
+
+def caminho_de_imagem_valido(caminho):
+    """O arquivo serve como rosto do Orbe? Devolve (ok, motivo).
+
+    NÃO ABRE O ARQUIVO — só olha caminho e extensão. Abrir é da interface,
+    que é quem tem o Tk para converter. Aqui fica a REGRA, que precisa ser
+    conferível sem tela.
+
+    O Tkinter puro só lê PNG, GIF e PPM/PGM. JPEG só com Pillow, que este
+    projeto já traz — mas quem decide isso é quem carrega, não esta função:
+    aqui a resposta é sobre o que o formato PROMETE, e o motivo explica.
+    """
+    import os
+    caminho = str(caminho or "").strip()
+    if not caminho:
+        return False, "nenhum arquivo escolhido"
+    if not os.path.exists(caminho):
+        return False, f"arquivo não encontrado: {caminho}"
+    if not os.path.isfile(caminho):
+        return False, "o caminho aponta para uma pasta, não para um arquivo"
+    ext = os.path.splitext(caminho)[1].lower()
+    if ext in EXTENSOES_DE_IMAGEM:
+        return True, ""
+    if ext in (".jpg", ".jpeg", ".webp", ".bmp"):
+        # Não é recusa: o Pillow abre. É aviso de que depende dele.
+        return True, f"formato {ext} depende do Pillow para abrir"
+    return False, f"formato não suportado: {ext or '(sem extensão)'}"
+
+
+def desenhar_rosto_de_imagem(canvas, cx, cy, s, imagem_tk):
+    """Põe a imagem no centro do Orbe. Devolve True se desenhou.
+
+    Falhar aqui devolve False em vez de levantar: o laço de desenho tem um
+    rosto vetorial para cair de volta, e um Orbe feio é infinitamente melhor
+    que um painel que não abre."""
+    if imagem_tk is None:
+        return False
+    try:
+        canvas.create_image(cx, cy, image=imagem_tk, anchor="center")
+        return True
+    except Exception:
+        return False
+
 
 def tema(nome=None):
     """O tema pedido, ou o padrão. Nome desconhecido NÃO quebra o Orbe.

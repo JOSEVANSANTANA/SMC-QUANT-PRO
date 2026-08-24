@@ -222,46 +222,127 @@ class TestOHUDUSAOsTemasEDegradaSemEles(unittest.TestCase):
         self.assertIn("except Exception", self.fonte[i:i + 400])
 
 
-class TestOQuadroDoGraficoDentroDoOrbe(unittest.TestCase):
+class TestAsCamadasDoCluster(unittest.TestCase):
+    """O QUADRO FLUTUANTE SAIU, E O MOTIVO FOI ELE QUEM DEU.
+
+    Na v2.66.0 a última captura entrava num quadro de 210px no quadrante
+    inferior-direito do cluster. Palavras dele: "ficou muito estranho...
+    desalinhado e sobreposto, competindo visualmente com a telemetria e o
+    equalizador. Isso não é contextual e parece um erro de alinhamento."
+
+    Estava certo. Um retângulo solto no meio de um cockpit não lê como
+    contexto — lê como widget esquecido.
+
+    Agora são três camadas, e no Canvas do Tkinter a ORDEM DE DESENHO é a
+    ordem das camadas:
+
+        Camada 0 — o gráfico, ocupando o fundo do cluster inteiro
+        Camada 1 — o rosto (PNG quando há, vetorial quando não)
+        Camada 2 — telemetria, logs e equalizador, por cima de tudo
+
+    Contexto é o que fica atrás; informação é o que fica na frente.
+    """
 
     def setUp(self):
         self.hud = _fonte("tiger_hud.py")
 
-    def test_o_quadro_existe(self):
-        self.assertIn("LIVE CHART INSIGHT", self.hud)
-        self.assertIn("def _desenhar_painel_do_grafico", self.hud)
+    def test_o_quadro_flutuante_SUMIU(self):
+        for morto in ("LIVE CHART INSIGHT", "definir_grafico",
+                      "_seletor_grafico_bounds", "CHART SOURCE"):
+            self.assertNotIn(morto, self.hud, f"sobrou resquício de {morto}")
 
-    def test_sem_captura_ele_DIZ_que_nao_tem(self):
-        """Um quadro vazio e bonito faria o trader achar que o motor está
-        olhando algo quando não está."""
-        i = self.hud.index("def _desenhar_painel_do_grafico")
-        trecho = self.hud[i:i + 2200]
-        self.assertIn("sem captura ainda", trecho)
+    def test_a_camada_0_e_desenhada_ANTES_do_rosto(self):
+        """Se o fundo vier depois, ele cobre o Orbe — e o cockpit inverte."""
+        i_fundo = self.hud.index("self._desenhar_fundo_de_contexto(")
+        i_rosto = self.hud.index("desenhar_rosto_de_imagem(")
+        self.assertLess(i_fundo, i_rosto)
 
-    def test_a_referencia_da_imagem_e_GUARDADA(self):
+    def test_a_camada_0_e_desligavel(self):
+        i = self.hud.index("def _desenhar_fundo_de_contexto")
+        self.assertIn('getattr(self, "contexto_de_fundo", True)', self.hud[i:i + 900])
+
+    def test_o_fundo_leva_veu_escuro(self):
+        """Sem véu, o gráfico compete em brilho com o rosto e o equalizador,
+        e o cockpit vira sopa visual."""
+        i = self.hud.index("def _desenhar_fundo_de_contexto")
+        self.assertIn("stipple", self.hud[i:i + 2000])
+
+    def test_sem_captura_o_fundo_apenas_NAO_desenha(self):
+        """Fundo ausente é fundo escuro, não é erro."""
+        i = self.hud.index("def _desenhar_fundo_de_contexto")
+        trecho = self.hud[i:i + 900]
+        self.assertIn("if img is None:", trecho)
+        self.assertIn("return", trecho)
+
+    def test_as_referencias_das_DUAS_imagens_sao_guardadas(self):
         """O Tkinter não segura imagem sozinho: sem alguém guardando, o
-        coletor de lixo leva e o quadro fica preto sem erro nenhum."""
-        i = self.hud.index("def definir_grafico")
-        self.assertIn("self.imagem_grafico = imagem_tk", self.hud[i:i + 1500])
+        coletor leva e some sem erro nenhum."""
+        self.assertIn("self.imagem_fundo = imagem_tk", self.hud)
+        self.assertIn("self.imagem_rosto = imagem_tk", self.hud)
 
-    def test_o_seletor_so_aparece_com_mais_de_uma_fonte(self):
-        """Não se oferece escolha que não existe."""
-        i = self.hud.index("CHART SOURCE")
-        self.assertIn("len(fontes) > 1", self.hud[max(0, i - 400):i])
-
-    def test_a_imagem_vem_da_MESMA_captura_que_o_motor_analisou(self):
+    def test_o_fundo_vem_da_MESMA_captura_que_o_motor_analisou(self):
         fonte = _fonte("main_app.py")
         i = fonte.index("def _alimentar_grafico_do_orbe")
-        trecho = fonte[i:i + 2200]
+        trecho = fonte[i:i + 3000]
         self.assertIn("_ultimo_print", trecho)
-        self.assertIn("não um feed ao vivo", trecho)
+        self.assertIn("nao um feed ao vivo paralelo", trecho)
 
-    def test_o_rotulo_carrega_a_HORA_da_captura(self):
-        """Um quadro que parece ao vivo e está defasado é pior que quadro
-        nenhum."""
+
+class TestORostoEmImagem(unittest.TestCase):
+    """O tigre fotorrealista não se desenha com linha e polígono. A única
+    forma honesta é carregar o arquivo — e o arquivo é dele."""
+
+    def test_o_caminho_vem_da_CONFIGURACAO_e_nao_do_codigo(self):
+        """Um nome cravado só funcionaria se ele batizasse o arquivo
+        exatamente assim, e falharia em silêncio para qualquer outro — o
+        defeito que faz o usuário achar que o recurso não existe."""
         fonte = _fonte("main_app.py")
-        i = fonte.index("def _alimentar_grafico_do_orbe")
-        self.assertIn('info.get("hora")', fonte[i:i + 2200])
+        self.assertIn('cfg.get("imagem_do_orbe"', fonte)
+        self.assertIn("def _escolher_imagem_do_orbe", fonte)
+
+    def test_arquivo_que_nao_serve_e_RECUSADO_com_motivo(self):
+        self.assertEqual(T.caminho_de_imagem_valido("")[0], False)
+        self.assertIn("não encontrado",
+                      T.caminho_de_imagem_valido("/nao/existe/x.png")[1])
+        self.assertIn("não suportado",
+                      T.caminho_de_imagem_valido(__file__)[1])
+
+    def test_png_passa_limpo(self):
+        import os
+        png = os.path.join(RAIZ, "icone.png")
+        if os.path.exists(png):
+            self.assertEqual(T.caminho_de_imagem_valido(png), (True, ""))
+
+    def test_jpeg_passa_COM_aviso_e_nao_e_recusado(self):
+        """O Pillow abre. Recusar seria barrar um formato que funciona."""
+        import os, tempfile
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            nome = f.name
+        try:
+            ok, motivo = T.caminho_de_imagem_valido(nome)
+            self.assertTrue(ok)
+            self.assertIn("Pillow", motivo)
+        finally:
+            os.unlink(nome)
+
+    def test_a_funcao_NAO_abre_o_arquivo(self):
+        """A regra tem de ser conferível sem tela e sem Tk."""
+        fonte = _fonte("orbe_temas.py")
+        i = fonte.index("def caminho_de_imagem_valido")
+        corpo = fonte[i:i + 1600]
+        self.assertNotIn("open(", corpo)
+        self.assertNotIn("PhotoImage", corpo)
+
+    def test_imagem_que_nao_carrega_CAI_no_rosto_vetorial(self):
+        """Uma imagem quebrada não pode deixar o Orbe sem cara nenhuma."""
+        self.assertFalse(T.desenhar_rosto_de_imagem(None, 0, 0, 1, None))
+        hud = _fonte("tiger_hud.py")
+        i = hud.index("_usou_imagem")
+        self.assertIn("if not _usou_imagem and _t is not None:", hud[i:i + 900])
+
+    def test_o_contrato_do_tema_ainda_tem_o_campo_imagem(self):
+        for chave, t in T.TEMAS_DO_ORBE.items():
+            self.assertIn("imagem", t, chave)
 
 
 class TestOSeletorNaAbaDeConfiguracoes(unittest.TestCase):
@@ -289,6 +370,22 @@ class TestOSeletorNaAbaDeConfiguracoes(unittest.TestCase):
     def test_rotulo_desconhecido_nao_faz_nada(self):
         i = self.fonte.index("def _trocar_tema_orbe")
         self.assertIn("if not chave:", self.fonte[i:i + 1400])
+
+    def test_o_interruptor_do_fundo_existe_e_e_guardado(self):
+        self.assertIn("def _alternar_contexto_de_fundo", self.fonte)
+        i = self.fonte.index("def _alternar_contexto_de_fundo")
+        self.assertIn('salvar_config({"contexto_de_fundo"', self.fonte[i:i + 800])
+
+    def test_escolher_imagem_DIZ_quando_o_arquivo_nao_serve(self):
+        """Guardar um caminho ruim em silêncio faria ele achar que escolheu
+        e que o programa ignorou."""
+        i = self.fonte.index("def _escolher_imagem_do_orbe")
+        corpo = self.fonte[i:i + 1800]
+        self.assertIn("caminho_de_imagem_valido", corpo)
+        self.assertIn("Não usei essa imagem", corpo)
+
+    def test_da_para_TIRAR_a_imagem_e_voltar_ao_rosto_do_tema(self):
+        self.assertIn("def _limpar_imagem_do_orbe", self.fonte)
 
     def test_o_tema_salvo_e_aplicado_quando_o_HUD_nasce(self):
         """Salvar e não aplicar na abertura faria a escolha durar uma sessão."""
