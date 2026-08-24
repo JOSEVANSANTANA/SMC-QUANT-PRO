@@ -65,6 +65,7 @@ class CyberHUDCanvasRenderer:
         # segura imagem sozinho — sem isso o coletor leva e some sem erro.
         self.imagem_fundo = None
         self.contexto_de_fundo = True
+        self.aviso_fundo = ""
         self.imagem_rosto = None
         self.angulo_rotacao = 0.0
         self.angulo_radar = 0.0
@@ -258,14 +259,48 @@ class CyberHUDCanvasRenderer:
         y1, y2 = 46, max(60, h - 40)
         self._area_cluster = (x1, y1, x2, y2)
 
-        # O quadro escuro sai SEMPRE. Ele e a moldura, nao o conteudo.
+        # O QUADRO SAI SEMPRE, E AGORA DA PARA VE-LO.
+        #
+        # A versao anterior pintava #01060f com contorno #0a2036 sobre um
+        # fundo #030712: tres tons de quase-preto separados por menos de 3%
+        # de luminancia. Eu disse a ele "o quadrado mais escuro cedido ao
+        # Orbe" — mas na tela dele nao havia quadrado nenhum para achar, e ele
+        # nao tinha como saber se o quadro nao existia ou se a imagem e que
+        # nao tinha entrado. Sao dois defeitos diferentes com a mesma cara.
+        #
+        # Contorno visivel + cantos marcados + etiqueta: o quadro passa a ser
+        # um lugar identificavel, e "esta vazio" vira uma informacao em vez de
+        # uma duvida.
         self.canvas.create_rectangle(x1, y1, x2, y2,
-                                     fill="#01060f", outline="#0a2036", width=1)
+                                     fill="#01060f", outline="#123a5e", width=1)
+        cl = 14
+        for (ax, ay, bx, by) in ((x1, y1 + cl, x1, y1), (x1, y1, x1 + cl, y1),
+                                 (x2 - cl, y1, x2, y1), (x2, y1, x2, y1 + cl),
+                                 (x1, y2 - cl, x1, y2), (x1, y2, x1 + cl, y2),
+                                 (x2 - cl, y2, x2, y2), (x2, y2, x2, y2 - cl)):
+            self.canvas.create_line(ax, ay, bx, by, fill=COR_CYAN_DIM, width=2)
+        self.canvas.create_text(x1 + 10, y1 + 10, anchor="nw",
+                                text="◱ CONTEXTO", font=("Courier", 7, "bold"),
+                                fill=COR_TEXT_MUTED)
 
         if not getattr(self, "contexto_de_fundo", True):
             return
         img = getattr(self, "imagem_fundo", None)
         if img is None:
+            # LIGADO E SEM IMAGEM: o quadro DIZ o porque, na tela.
+            #
+            # A alternativa era o quadro vazio, que e exatamente o que ele
+            # viu duas vezes seguidas. Um quadro vazio nao distingue "o
+            # recurso esta quebrado" de "a captura ainda nao existe" de "eu
+            # cliquei errado" — e essas tres coisas pedem tres acoes
+            # diferentes de quem esta na frente do computador.
+            aviso = str(getattr(self, "aviso_fundo", "") or "")
+            self.canvas.create_text(
+                (x1 + x2) // 2, (y1 + y2) // 2 + 46,
+                text="GRÁFICO AO FUNDO: LIGADO, SEM IMAGEM"
+                     + (f"\n{aviso}" if aviso else ""),
+                font=("Courier", 8), fill=COR_TEXT_MUTED,
+                justify="center", width=max(160, (x2 - x1) - 40))
             return
         try:
             self.canvas.create_image((x1 + x2) // 2, (y1 + y2) // 2,
@@ -282,14 +317,20 @@ class CyberHUDCanvasRenderer:
         except Exception:
             pass
 
-    def definir_fundo_de_contexto(self, imagem_tk, ligado=True):
+    def definir_fundo_de_contexto(self, imagem_tk, ligado=True, aviso=""):
         """Recebe a captura ja convertida para Tk e diz se ela deve aparecer.
 
         A referencia fica GUARDADA aqui: o Tkinter nao segura imagem sozinho,
         e sem alguem guardando o coletor de lixo leva e o fundo some sem erro
-        nenhum — o tipo de defeito que parece 'o recurso nao funciona'."""
+        nenhum — o tipo de defeito que parece 'o recurso nao funciona'.
+
+        `aviso` e o texto que o quadro escreve quando esta LIGADO e sem
+        imagem. Ele chega de fora porque quem sabe o motivo e quem tentou
+        abrir o arquivo — este modulo so recebe uma imagem ou um None, e um
+        None sozinho nao carrega historia nenhuma."""
         self.imagem_fundo = imagem_tk
         self.contexto_de_fundo = bool(ligado)
+        self.aviso_fundo = str(aviso or "")
 
     def definir_rosto_de_imagem(self, imagem_tk):
         """O PNG que substitui o rosto vetorial, quando o tema pede.

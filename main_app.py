@@ -242,7 +242,8 @@ def restaurar_backup_dados(caminho_zip):
 # --------------------------------------------------------------------
 # ====================================================================
 # CHECKLIST DE RELEASE — fazer os 3 passos, sempre nesta ordem:
-#   1. Incrementar VERSAO_ATUAL abaixo (ex: 1.0.0 -> 1.1.0)
+#   1. Editar o campo "versao" do arquivo versao.json (é a ÚNICA fonte —
+#      o programa lê dele, não existe mais número escrito à mão aqui)
 #   2. Compilar o .exe e subir o .zip na pasta do Google Drive
 #   3. Editar o gist e trocar o campo "versao" para o MESMO número:
 #      https://gist.github.com/JOSEVANSANTANA/186b63b2de425d236abef4afcf9d1b33
@@ -250,7 +251,62 @@ def restaurar_backup_dados(caminho_zip):
 # Se o gist ficar com número MAIOR que o VERSAO_ATUAL de um cliente,
 # ele vê o banner verde de atualização. Se ficarem iguais, não vê nada.
 # ====================================================================
-VERSAO_ATUAL = "2.53.0"
+def _versao_do_pacote(base=None, padrao="0.0.0"):
+    """A versão sai do `versao.json` que VIAJA JUNTO com este arquivo.
+
+    ESTA FUNÇÃO NASCEU DE UM IMPASSE REAL, E É A CORREÇÃO MAIS IMPORTANTE
+    DESTA ENTREGA. `VERSAO_ATUAL` era um literal escrito à mão aqui dentro,
+    e o passo "1. Incrementar VERSAO_ATUAL" do checklist de release foi
+    esquecido por catorze versões seguidas: o `versao.json` chegou em 2.67.2
+    enquanto o programa continuava se apresentando como **2.53.0** — no
+    cabeçalho do HUD, no rodapé do relatório, no log.
+
+    O estrago não é cosmético, são três defeitos de verdade:
+
+      1. NINGUÉM CONSEGUE DIZER QUE BUILD ESTÁ RODANDO. Ele me mandou um log
+         pedindo para eu resolver um defeito de uma vez, e nem ele nem eu
+         tínhamos como saber se aquele log era da build com a correção ou da
+         build sem ela. Passamos as duas últimas rodadas discutindo sintoma
+         de um binário cuja identidade o próprio binário escondia.
+      2. O AVISO DE ATUALIZAÇÃO FICAVA PRESO NO VERDE. `_verificar_atualizacao`
+         compara o JSON remoto com este número: 2.67.2 > 2.53.0 para sempre,
+         então mesmo quem tinha ACABADO de instalar a última via que havia
+         uma "nova versão disponível". Aviso que nunca apaga é aviso que se
+         aprende a ignorar — e no dia de um aviso que importa, ele ignora.
+      3. Suporte a cliente vira adivinhação pelo mesmo motivo.
+
+    Fonte única: o `versao.json` já é o arquivo que o instalador consulta e
+    já viaja dentro do zip, ao lado deste. Ler dele elimina a possibilidade
+    de divergir, porque não sobra um segundo lugar para esquecer de editar.
+
+    O padrão só entra se o arquivo sumiu ou está corrompido — e é "0.0.0" de
+    propósito: um número absurdo grita no cabeçalho e faz alguém perguntar,
+    enquanto um número plausível chutado aqui recriaria exatamente a mentira
+    silenciosa que esta função existe para matar.
+    """
+    base = base or os.path.dirname(os.path.abspath(__file__))
+    try:
+        with open(os.path.join(base, "versao.json"), "r", encoding="utf-8") as fh:
+            v = str((json.load(fh) or {}).get("versao", "") or "").strip()
+        return v or padrao
+    except Exception:
+        return padrao
+
+
+def _data_do_arquivo(caminho):
+    """Data de modificação de um arquivo, curta, ou '?' se não der para ler.
+
+    Acompanha a versão no carimbo de arranque porque as duas respondem a
+    perguntas diferentes: a versão diz qual release ele instalou, a data diz
+    se o arquivo que está rodando é mesmo o daquela release — que é o que
+    pega o caso de ter descompactado por cima pela metade."""
+    try:
+        return time.strftime("%d/%m %H:%M", time.localtime(os.path.getmtime(caminho)))
+    except Exception:
+        return "?"
+
+
+VERSAO_ATUAL = _versao_do_pacote()
 
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU ARQUIVO versao.json <<<
@@ -12034,6 +12090,12 @@ class SmcQuantApp(ctk.CTk):
         # de Tela está concedida? o Node foi encontrado apesar do PATH pobre
         # do Finder? Sem isso, o sintoma aparece só na hora do pregão.
         try:
+            # A BUILD SE IDENTIFICA NA PRIMEIRA LINHA DO LOG. Qualquer log que
+            # ele copie e cole passa a dizer de que versão veio — sem isso,
+            # investigar defeito relatado é adivinhar qual código está rodando,
+            # que foi exatamente onde as duas últimas rodadas se perderam.
+            self.log(f"🏷️ SMC Quant Pro v{VERSAO_ATUAL} — "
+                     f"main_app.py de {_data_do_arquivo(__file__)}")
             for linha in plataforma.diagnostico().split("\n"):
                 self.log(f"🖥️ {linha}")
             if plataforma.E_MACOS and not plataforma.permissao_de_tela_ok():
@@ -16822,15 +16884,39 @@ class SmcQuantApp(ctk.CTk):
         rosto desenhado e ao fundo escuro. Painel feio abre; painel quebrado
         esconde posicao aberta.
         """
-        alvo = getattr(self, "hud_embutido", None)
-        r = getattr(alvo, "renderer", None)
-        if r is None:
-            return self._porque_sem_fundo("o HUD embutido ainda não está montado")
+        # OS DOIS HUDs, e não só o embutido.
+        #
+        # Esta função alimentava apenas `hud_embutido`. Quem clicava em
+        # "Desacoplar HUD (Solta)" ficava com uma janela que NUNCA recebia
+        # fundo nem rosto — sem erro, sem log, sem nada. O botão está no
+        # cabeçalho, ao lado do "HUD Jarvis": é um caminho que o usuário toma
+        # sozinho, e o recurso simplesmente não existia lá.
+        #
+        # `_trocar_tema_orbe` já percorria os dois. Esta não percorria, e a
+        # diferença entre as duas passou despercebida justamente porque o
+        # caminho de falha era mudo.
+        renderizadores = []
+        for _alvo in (getattr(self, "hud_embutido", None),
+                      getattr(self, "_hud_jarvis", None)):
+            _r = getattr(_alvo, "renderer", None)
+            if _r is not None:
+                renderizadores.append(_r)
+        if not renderizadores:
+            return self._porque_sem_fundo("nenhum HUD está montado ainda")
         try:
             from PIL import Image, ImageTk
         except Exception as e:
             return self._porque_sem_fundo(f"o Pillow não carregou ({e})")
         cfg = carregar_config()
+        for r in renderizadores:
+            self._alimentar_um_orbe(r, cfg, Image, ImageTk)
+
+    def _alimentar_um_orbe(self, r, cfg, Image, ImageTk):
+        """Monta as camadas 0 e 1 de UM renderizador. Ver `_alimentar_grafico_do_orbe`.
+
+        Cada HUD tem largura própria, então a imagem é redimensionada por HUD
+        — a mesma `PhotoImage` em dois tamanhos diferentes ficaria certa em um
+        e esticada no outro."""
 
         # ---- CAMADA 0: o grafico ao fundo ----
         if hasattr(r, "definir_fundo_de_contexto"):
@@ -16850,9 +16936,12 @@ class SmcQuantApp(ctk.CTk):
             caminho = (info or {}).get("caminho") if isinstance(info, dict) else None
             if not caminho or not os.path.exists(caminho):
                 caminho = ULTIMO_PRINT_FILE if os.path.exists(ULTIMO_PRINT_FILE) else None
+            aviso = ""
             if not ligado:
                 self._sem_fundo_dito = None      # desligado não é defeito
             elif not caminho:
+                aviso = ("aguardando a primeira captura do motor "
+                         "(ela nasce no 1º ciclo de análise)")
                 self._porque_sem_fundo(
                     "ainda não existe captura de gráfico em disco — ela nasce "
                     "no primeiro ciclo de análise do motor")
@@ -16881,20 +16970,36 @@ class SmcQuantApp(ctk.CTk):
                         larg = max(320, int(getattr(r, "largura", 900) * 0.42))
                         alt = max(180, int(getattr(r, "altura", 320) * 0.82))
                     img = Image.open(caminho).convert("RGB")
+                    _orig = f"{img.width}x{img.height}"
                     img.thumbnail((larg, alt))
                     tk_fundo = ImageTk.PhotoImage(img)
                     self._sem_fundo_dito = None
+                    # O RECIBO DO QUE DEU CERTO, guardado para o interruptor
+                    # poder mostrar. Sucesso mudo é o que obriga a abrir o log
+                    # para descobrir se o clique fez alguma coisa.
+                    self._fundo_aplicado = (
+                        f"{os.path.basename(caminho)} · {_orig} → "
+                        f"{img.width}x{img.height} no quadro de {larg}x{alt}")
                 except Exception as e:
                     # ImageTk.PhotoImage precisa do Tk vivo e da thread certa.
                     # Falhar aqui em silêncio foi o que deixou ele sem saber
                     # se o recurso estava quebrado ou se ele tinha errado algo.
                     tk_fundo = None
+                    aviso = f"falhou ao converter a captura: {e}"
+                    self._fundo_aplicado = None
                     self._porque_sem_fundo(
                         f"não consegui converter a captura para o painel ({e})")
+            if tk_fundo is None and ligado:
+                self._fundo_aplicado = None
             try:
+                # O AVISO VAI PARA DENTRO DO QUADRO. Quando o fundo está
+                # ligado e não há imagem, o quadro escreve o porquê na própria
+                # tela — ele não deveria precisar caçar uma linha de log para
+                # saber se o recurso quebrou ou se ainda não chegou a hora.
+                r.definir_fundo_de_contexto(tk_fundo, ligado=ligado, aviso=aviso)
+            except TypeError:
+                # Renderizador antigo, sem o parâmetro `aviso`.
                 r.definir_fundo_de_contexto(tk_fundo, ligado=ligado)
-            except Exception:
-                pass
 
         # ---- CAMADA 1: o rosto em PNG ----
         if hasattr(r, "definir_rosto_de_imagem"):
@@ -16963,12 +17068,35 @@ class SmcQuantApp(ctk.CTk):
         self._alimentar_grafico_do_orbe()
 
     def _alternar_contexto_de_fundo(self):
-        """Liga/desliga a CAMADA 0 (o gráfico ao fundo do cluster)."""
+        """Liga/desliga a CAMADA 0 e DIZ O QUE ACONTECEU no próprio clique.
+
+        Antes esta função dizia "LIGADO." e parava — a mesma frase saía tendo
+        a imagem entrado ou não. Ele ligou o interruptor, leu "LIGADO", não viu
+        gráfico nenhum e escreveu: "ESTÁ LIGADO, MAS NÃO SUBIU". Não havia como
+        ele saber; a linha confirmava a INTENÇÃO, não o resultado.
+
+        Num interruptor manual, sucesso tem de ser tão barulhento quanto falha:
+        quem acabou de clicar está olhando para a tela agora, e é agora que a
+        resposta vale. `_porque_sem_fundo` fala uma vez por causa, para não
+        inundar o log a 12 quadros por segundo — aqui, no clique, o recibo sai
+        sempre, com o arquivo e as medidas que entraram."""
         ligado = bool(self._var_ctx_fundo.get())
         salvar_config({"contexto_de_fundo": ligado})
-        self.log("🖼️ Gráfico ao fundo do Orbe: "
-                 + ("LIGADO." if ligado else "desligado — cluster escuro, só rosto e telemetria."))
+        if not ligado:
+            self.log("🖼️ Gráfico ao fundo do Orbe: desligado — "
+                     "cluster escuro, só rosto e telemetria.")
+            self._alimentar_grafico_do_orbe()
+            return
+        self._sem_fundo_dito = None          # no clique, quero ouvir de novo
+        self._fundo_aplicado = None
         self._alimentar_grafico_do_orbe()
+        aplicado = getattr(self, "_fundo_aplicado", None)
+        if aplicado:
+            self.log(f"🖼️ Gráfico ao fundo do Orbe: LIGADO — {aplicado}.")
+        else:
+            self.log("🖼️ Gráfico ao fundo do Orbe: LIGADO, mas ainda sem "
+                     "imagem para mostrar — o motivo está na linha acima, e "
+                     "o próprio quadro do Orbe repete ele na tela.")
 
     def _trocar_voz(self, _rotulo=None):
         """Grava a voz, RELÊ do disco e fala uma frase com ela — confirmação
@@ -20771,8 +20899,14 @@ class SmcQuantApp(ctk.CTk):
         # cadencia, mesma fonte. Ver `_alimentar_grafico_do_orbe`.
         try:
             self._alimentar_grafico_do_orbe()
-        except Exception:
-            pass
+        except Exception as e:
+            # ERA `except Exception: pass`. Se `_alimentar_grafico_do_orbe`
+            # levantasse antes de chegar aos seus próprios diagnósticos, este
+            # bloco apagava o rastro — e o sintoma na tela ficava idêntico ao
+            # de "ainda não há captura". Enfeite não pode derrubar o pregão,
+            # então continua sendo engolido para a telemetria seguir; mas
+            # agora sai uma linha, uma vez, com o erro de verdade.
+            self._porque_sem_fundo(f"a camada de fundo levantou um erro ({e})")
         try:
             r = self.hud_embutido.renderer
             ua = getattr(self, "_ultima_analise", None) or {}

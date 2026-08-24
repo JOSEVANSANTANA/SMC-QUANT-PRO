@@ -97,6 +97,7 @@ COMUM = [
     "tests/test_atr_pela_fita.py",
     "tests/test_orbe_temas.py",
     "tests/test_rr_exibido_e_o_que_aprovou.py",
+    "tests/test_versao_e_fundo_do_orbe.py",
     "tests/test_ambiente_replay.py",
     "tests/test_notificacao.py",
     "tests/test_piso_qualidade.py",

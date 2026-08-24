@@ -265,14 +265,26 @@ class TestAsCamadasDoCluster(unittest.TestCase):
         """Sem véu, o gráfico compete em brilho com o rosto e o equalizador,
         e o cockpit vira sopa visual."""
         i = self.hud.index("def _desenhar_fundo_de_contexto")
-        self.assertIn("stipple", self.hud[i:i + 2000])
+        self.assertIn("stipple", self.hud[i:i + 4200])
 
-    def test_sem_captura_o_fundo_apenas_NAO_desenha(self):
-        """Fundo ausente é fundo escuro, não é erro."""
+    def test_sem_captura_o_fundo_DIZ_o_motivo_em_vez_de_so_calar(self):
+        """ESTA REGRA MUDOU, E MUDOU POR CAUSA DELE.
+
+        A versão anterior deste teste cravava "fundo ausente é fundo escuro,
+        não é erro" — e estava errada pela metade. Fundo ausente de fato não é
+        erro, mas ele ligou o interruptor duas vezes, viu o mesmo nada, e
+        escreveu "ESTÁ LIGADO, MAS NÃO SUBIU". Um quadro vazio não distingue
+        três situações que pedem três ações diferentes: o recurso quebrou, a
+        captura ainda não existe, ou o clique não pegou.
+
+        A regra nova: sem imagem, continua sem `create_image` — mas o quadro
+        ESCREVE na tela por que está vazio. Silêncio segue proibido; o que
+        deixou de valer é tratar ausência como resposta suficiente."""
         i = self.hud.index("def _desenhar_fundo_de_contexto")
-        trecho = self.hud[i:i + 2600]
+        trecho = self.hud[i:i + 4200]
         self.assertIn("if img is None:", trecho)
-        self.assertIn("return", trecho)
+        self.assertIn("SEM IMAGEM", trecho)
+        self.assertIn("aviso_fundo", trecho)
 
     def test_as_referencias_das_DUAS_imagens_sao_guardadas(self):
         """O Tkinter não segura imagem sozinho: sem alguém guardando, o
@@ -469,7 +481,10 @@ class TestOSeletorNaAbaDeConfiguracoes(unittest.TestCase):
     def test_o_interruptor_do_fundo_existe_e_e_guardado(self):
         self.assertIn("def _alternar_contexto_de_fundo", self.fonte)
         i = self.fonte.index("def _alternar_contexto_de_fundo")
-        self.assertIn('salvar_config({"contexto_de_fundo"', self.fonte[i:i + 800])
+        # Janela larga porque a docstring desta função cresceu ao explicar o
+        # "ESTÁ LIGADO, MAS NÃO SUBIU". Janela curta demais mede a prosa e
+        # acusa ausência de código que está logo abaixo dela.
+        self.assertIn('salvar_config({"contexto_de_fundo"', self.fonte[i:i + 2200])
 
     def test_escolher_imagem_DIZ_quando_o_arquivo_nao_serve(self):
         """Guardar um caminho ruim em silêncio faria ele achar que escolheu
