@@ -16858,9 +16858,30 @@ class SmcQuantApp(ctk.CTk):
                     "no primeiro ciclo de análise do motor")
             else:
                 try:
-                    larg = max(320, int(getattr(r, "largura", 900) * 0.52))
+                    # O TAMANHO SAI DA ÁREA REAL DO CLUSTER, não de um palpite.
+                    #
+                    # Antes era `largura * 0.52` — um chute que não conhece a
+                    # geometria: os cards laterais ocupam 290 a 420px cada, e
+                    # num HUD largo esse 52% jogava o gráfico para debaixo
+                    # deles. Ele pediu o contrário: "certifique-se do gráfico
+                    # ficar posicionado naquele quadrado mais escuro cedido ao
+                    # Orbe, por trás do Orbe".
+                    #
+                    # O renderizador publica o retângulo em `area_do_cluster`.
+                    # Antes do primeiro desenho ele é None — aí vale a
+                    # estimativa, e o quadro seguinte já sai no lugar certo.
+                    area = None
+                    if hasattr(r, "area_do_cluster"):
+                        area = r.area_do_cluster()
+                    if area:
+                        _x1, _y1, _x2, _y2 = area
+                        larg = max(200, int(_x2 - _x1) - 8)
+                        alt = max(140, int(_y2 - _y1) - 8)
+                    else:
+                        larg = max(320, int(getattr(r, "largura", 900) * 0.42))
+                        alt = max(180, int(getattr(r, "altura", 320) * 0.82))
                     img = Image.open(caminho).convert("RGB")
-                    img.thumbnail((larg, max(180, int(getattr(r, "altura", 320) * 0.9))))
+                    img.thumbnail((larg, alt))
                     tk_fundo = ImageTk.PhotoImage(img)
                     self._sem_fundo_dito = None
                 except Exception as e:

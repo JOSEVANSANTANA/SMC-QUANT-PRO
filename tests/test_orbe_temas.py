@@ -259,7 +259,7 @@ class TestAsCamadasDoCluster(unittest.TestCase):
 
     def test_a_camada_0_e_desligavel(self):
         i = self.hud.index("def _desenhar_fundo_de_contexto")
-        self.assertIn('getattr(self, "contexto_de_fundo", True)', self.hud[i:i + 900])
+        self.assertIn('getattr(self, "contexto_de_fundo", True)', self.hud[i:i + 2600])
 
     def test_o_fundo_leva_veu_escuro(self):
         """Sem véu, o gráfico compete em brilho com o rosto e o equalizador,
@@ -270,7 +270,7 @@ class TestAsCamadasDoCluster(unittest.TestCase):
     def test_sem_captura_o_fundo_apenas_NAO_desenha(self):
         """Fundo ausente é fundo escuro, não é erro."""
         i = self.hud.index("def _desenhar_fundo_de_contexto")
-        trecho = self.hud[i:i + 900]
+        trecho = self.hud[i:i + 2600]
         self.assertIn("if img is None:", trecho)
         self.assertIn("return", trecho)
 
@@ -279,6 +279,58 @@ class TestAsCamadasDoCluster(unittest.TestCase):
         coletor leva e some sem erro nenhum."""
         self.assertIn("self.imagem_fundo = imagem_tk", self.hud)
         self.assertIn("self.imagem_rosto = imagem_tk", self.hud)
+
+    def test_o_QUADRO_ESCURO_sai_sempre_ligado_ou_nao(self):
+        """Pedido dele: "certifique-se do gráfico ficar posicionado naquele
+        quadrado mais escuro cedido ao Orbe, por trás do Orbe".
+
+        O quadro é a MOLDURA, não o conteúdo: sem ele, desligar o fundo
+        deixava um vazio sem forma no meio do cockpit."""
+        i = self.hud.index("def _desenhar_fundo_de_contexto")
+        trecho = self.hud[i:i + 2600]
+        i_quadro = trecho.index("create_rectangle")
+        i_guarda = trecho.index('getattr(self, "contexto_de_fundo", True)')
+        self.assertLess(i_quadro, i_guarda,
+                        "o quadro escuro tem de ser desenhado ANTES do "
+                        "interruptor — ele é a moldura, não o conteúdo")
+
+    def test_a_area_do_cluster_e_PUBLICADA_para_quem_redimensiona(self):
+        """Quem tem o Pillow é o main_app; quem sabe a geometria é o
+        renderizador. Sem publicar, o main_app volta a chutar."""
+        self.assertIn("def area_do_cluster", self.hud)
+        self.assertIn("self._area_cluster = (x1, y1, x2, y2)", self.hud)
+
+    def test_a_imagem_e_dimensionada_pela_AREA_e_nao_por_palpite(self):
+        fonte = _fonte("main_app.py")
+        i = fonte.index("CAMADA 0: o grafico ao fundo")
+        trecho = fonte[i:i + 3000]
+        self.assertIn("area_do_cluster()", trecho)
+        self.assertNotIn('largura", 900) * 0.52', trecho)
+
+    def test_sem_area_ainda_publicada_NAO_quebra(self):
+        """Antes do primeiro desenho ela é None — vale a estimativa, e o
+        quadro seguinte já sai no lugar certo."""
+        fonte = _fonte("main_app.py")
+        i = fonte.index("area_do_cluster()")
+        self.assertIn("if area:", fonte[i:i + 400])
+        self.assertIn("else:", fonte[i:i + 700])
+
+    def test_o_chute_antigo_ESTOURAVA_o_quadro(self):
+        """A régua em Python, com a mesma geometria do renderizador. Em HUD
+        de 1400px o 52% dava 728px num quadro de 532px — o gráfico ia parar
+        debaixo dos painéis laterais."""
+        for w, h in ((1400, 700), (900, 420)):
+            pw = max(290, min(420, int(w * 0.30))) if w > 600 else 0
+            lc = w - 2 * pw if pw > 0 else w
+            meia = max(120, int(lc * 0.5) - 14)
+            largura_do_quadro = 2 * meia
+            self.assertGreater(int(w * 0.52), largura_do_quadro,
+                               f"em {w}px o chute antigo cabia — escolha outro caso")
+
+    def test_o_veu_fica_contido_no_MESMO_retangulo(self):
+        """Véu maior que o quadro escureceria a telemetria ao lado."""
+        i = self.hud.index("VEU ESCURO POR CIMA")
+        self.assertIn("create_rectangle(x1, y1, x2, y2", self.hud[i:i + 600])
 
     def test_o_fundo_le_o_ARQUIVO_e_nao_so_o_atributo_em_memoria(self):
         """O DEFEITO QUE ELE PEGOU: "não carregou, mesmo ligado".

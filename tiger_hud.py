@@ -218,35 +218,67 @@ class CyberHUDCanvasRenderer:
         return orbe_temas.barras_do_equalizador(
             self.estado, getattr(self, "envelope_voz", None), self.fase_onda, n=n)
 
+    def area_do_cluster(self):
+        """O RETÂNGULO CEDIDO AO ORBE — (x1, y1, x2, y2), ou None.
+
+        Pedido dele: "certifique-se do gráfico ficar posicionado naquele
+        quadrado mais escuro cedido ao Orbe, por trás do Orbe".
+
+        Este é o retângulo entre os dois cards laterais. Ele passou a ser
+        CALCULADO E PUBLICADO porque a primeira versão dimensionava a imagem
+        em "52% da largura total" — um chute que não conhece a geometria e
+        que, num HUD largo, jogava o gráfico para debaixo dos painéis.
+
+        Quem redimensiona a imagem é o `main_app` (é lá que está o Pillow), e
+        ele precisa saber ESTE número, não estimar. Devolve None antes do
+        primeiro desenho — aí o chamador usa uma estimativa e o quadro
+        seguinte já sai certo."""
+        return getattr(self, "_area_cluster", None)
+
     def _desenhar_fundo_de_contexto(self, cx, cy, largura_centro, h):
-        """CAMADA 0 — a ultima captura do grafico, como FUNDO do cluster.
+        """CAMADA 0 — o quadro escuro do Orbe, e a captura DENTRO dele.
 
-        Nao e um feed ao vivo paralelo: e a MESMA imagem que o motor analisou
-        no ultimo ciclo. Fica atras de tudo de proposito — contexto e o que
-        fica atras, informacao e o que fica na frente.
+        Duas coisas acontecem aqui, nesta ordem:
 
-        DESLIGAVEL. `contexto_de_fundo` False deixa o cluster escuro, so com o
-        rosto e a telemetria. Num pregao lateral, fundo demais atrapalha ler o
-        numero — e quem decide isso e ele, nao eu.
+          1. o QUADRO ESCURO e desenhado sempre, ligado ou desligado. Ele e o
+             "quadrado cedido ao Orbe" — a moldura que separa o cluster
+             central dos dois cards laterais. Sem ele, desligar o fundo
+             deixava um vazio sem forma no meio do cockpit;
+
+          2. a captura entra DENTRO desse quadro, centrada, com veu por cima.
+
+        A AREA E PUBLICADA em `self._area_cluster` para o `main_app` saber em
+        que tamanho redimensionar a imagem. Antes eu dimensionava em "52% da
+        largura total" — um chute que, num HUD largo, empurrava o grafico para
+        debaixo dos paineis laterais.
         """
+        # O retangulo cedido ao Orbe: entre os dois cards, com respiro.
+        meia = max(120, int(largura_centro * 0.5) - 14)
+        x1, x2 = cx - meia, cx + meia
+        y1, y2 = 46, max(60, h - 40)
+        self._area_cluster = (x1, y1, x2, y2)
+
+        # O quadro escuro sai SEMPRE. Ele e a moldura, nao o conteudo.
+        self.canvas.create_rectangle(x1, y1, x2, y2,
+                                     fill="#01060f", outline="#0a2036", width=1)
+
         if not getattr(self, "contexto_de_fundo", True):
             return
         img = getattr(self, "imagem_fundo", None)
         if img is None:
             return
         try:
-            self.canvas.create_image(cx, cy, image=img, anchor="center")
+            self.canvas.create_image((x1 + x2) // 2, (y1 + y2) // 2,
+                                     image=img, anchor="center")
         except Exception:
             return
-        # VEU ESCURO POR CIMA. Sem ele, o grafico compete com o rosto e com o
-        # equalizador em brilho, e o cockpit vira sopa visual. O Canvas do
-        # Tkinter nao tem transparencia real por pixel, entao o veu e feito
-        # com um retangulo do stipple — que e o jeito que existe aqui.
+        # VEU ESCURO POR CIMA, contido no MESMO retangulo. Sem ele, o grafico
+        # compete em brilho com o rosto e com o equalizador, e o cockpit vira
+        # sopa visual. O Canvas do Tkinter nao tem transparencia por pixel;
+        # `stipple` e a que existe aqui.
         try:
-            meia_l = int(largura_centro * 0.5)
-            self.canvas.create_rectangle(
-                cx - meia_l, cy - h // 2, cx + meia_l, cy + h // 2,
-                fill=COR_FUNDO_DEEP, outline="", stipple="gray50")
+            self.canvas.create_rectangle(x1, y1, x2, y2, fill=COR_FUNDO_DEEP,
+                                         outline="", stipple="gray50")
         except Exception:
             pass
 
