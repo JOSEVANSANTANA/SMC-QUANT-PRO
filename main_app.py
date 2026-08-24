@@ -16783,6 +16783,27 @@ class SmcQuantApp(ctk.CTk):
         self.log(f"🎨 Estilo do Orbe: {rotulo}. Só o visual mudou — "
                  "telemetria, plano e motor seguem iguais.")
 
+    def _porque_sem_fundo(self, motivo):
+        """Diz UMA VEZ por que o gráfico de fundo não apareceu.
+
+        ESTE MÉTODO NASCEU DE UM ERRO MEU. A primeira versão da camada 0
+        engolia toda falha em `except Exception: pass` — sem arquivo, sem
+        Pillow, sem conversão para Tk, tudo virava o mesmo nada. Ele ligou o
+        interruptor, não viu fundo nenhum e não tinha como saber se estava
+        quebrado, se faltava captura ou se ele tinha errado alguma coisa.
+
+        É a mesma regra que este projeto aplica ao delta e à posição, e que eu
+        não apliquei aqui: ausência de dado não é conclusão — é uma pergunta
+        que precisa de resposta. Falha de enfeite não derruba o pregão, mas
+        falha MUDA de enfeite consome a tarde de quem está tentando usar.
+
+        UMA VEZ por motivo, e não a cada redesenho: o HUD redesenha ~12 vezes
+        por segundo, e repetir isso encheria o log e esconderia o resto."""
+        if motivo and motivo != getattr(self, "_sem_fundo_dito", None):
+            self._sem_fundo_dito = motivo
+            self.log(f"🖼️ Gráfico ao fundo do Orbe não apareceu: {motivo}.")
+        return None
+
     def _alimentar_grafico_do_orbe(self):
         """CAMADA 0 e CAMADA 1 do Orbe: o fundo de contexto e o rosto em PNG.
 
@@ -16804,27 +16825,51 @@ class SmcQuantApp(ctk.CTk):
         alvo = getattr(self, "hud_embutido", None)
         r = getattr(alvo, "renderer", None)
         if r is None:
-            return
+            return self._porque_sem_fundo("o HUD embutido ainda não está montado")
         try:
             from PIL import Image, ImageTk
-        except Exception:
-            return
+        except Exception as e:
+            return self._porque_sem_fundo(f"o Pillow não carregou ({e})")
         cfg = carregar_config()
 
         # ---- CAMADA 0: o grafico ao fundo ----
         if hasattr(r, "definir_fundo_de_contexto"):
             ligado = bool(cfg.get("contexto_de_fundo", True))
             tk_fundo = None
+            # O ARQUIVO EM DISCO É A FONTE, e não o atributo em memória.
+            #
+            # A primeira versão disto lia `self._ultimo_print`, que só existe
+            # depois que um ciclo de análise roda E popula o atributo naquela
+            # instância. O resultado foi o que ele relatou: "não carregou,
+            # mesmo ligado". A captura estava lá, em `ultimo_print.png`; quem
+            # não estava era o atributo.
+            #
+            # O arquivo sobrevive a tudo — reinício do HUD, troca de aba,
+            # thread diferente. Se um ciclo já rodou alguma vez, ele existe.
             info = getattr(self, "_ultimo_print", None)
             caminho = (info or {}).get("caminho") if isinstance(info, dict) else None
-            if ligado and caminho and os.path.exists(caminho):
+            if not caminho or not os.path.exists(caminho):
+                caminho = ULTIMO_PRINT_FILE if os.path.exists(ULTIMO_PRINT_FILE) else None
+            if not ligado:
+                self._sem_fundo_dito = None      # desligado não é defeito
+            elif not caminho:
+                self._porque_sem_fundo(
+                    "ainda não existe captura de gráfico em disco — ela nasce "
+                    "no primeiro ciclo de análise do motor")
+            else:
                 try:
                     larg = max(320, int(getattr(r, "largura", 900) * 0.52))
                     img = Image.open(caminho).convert("RGB")
                     img.thumbnail((larg, max(180, int(getattr(r, "altura", 320) * 0.9))))
                     tk_fundo = ImageTk.PhotoImage(img)
-                except Exception:
+                    self._sem_fundo_dito = None
+                except Exception as e:
+                    # ImageTk.PhotoImage precisa do Tk vivo e da thread certa.
+                    # Falhar aqui em silêncio foi o que deixou ele sem saber
+                    # se o recurso estava quebrado ou se ele tinha errado algo.
                     tk_fundo = None
+                    self._porque_sem_fundo(
+                        f"não consegui converter a captura para o painel ({e})")
             try:
                 r.definir_fundo_de_contexto(tk_fundo, ligado=ligado)
             except Exception:

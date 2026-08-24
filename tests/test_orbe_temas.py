@@ -280,6 +280,49 @@ class TestAsCamadasDoCluster(unittest.TestCase):
         self.assertIn("self.imagem_fundo = imagem_tk", self.hud)
         self.assertIn("self.imagem_rosto = imagem_tk", self.hud)
 
+    def test_o_fundo_le_o_ARQUIVO_e_nao_so_o_atributo_em_memoria(self):
+        """O DEFEITO QUE ELE PEGOU: "não carregou, mesmo ligado".
+
+        A primeira versão lia só `self._ultimo_print`, que só existe depois
+        que um ciclo popula o atributo NAQUELA instância. A captura estava em
+        disco o tempo todo; quem não estava era o atributo. O arquivo
+        sobrevive a reinício do HUD, troca de aba e thread diferente."""
+        fonte = _fonte("main_app.py")
+        i = fonte.index("CAMADA 0: o grafico ao fundo")
+        trecho = fonte[i:i + 2500]
+        self.assertIn("ULTIMO_PRINT_FILE", trecho)
+        self.assertIn("os.path.exists(ULTIMO_PRINT_FILE)", trecho)
+
+    def test_toda_falha_do_fundo_TEM_MOTIVO_dito(self):
+        """A versão anterior engolia tudo em `except: pass` — sem arquivo,
+        sem Pillow, sem conversão, tudo virava o mesmo nada, e ele não tinha
+        como saber se estava quebrado ou se faltava captura."""
+        fonte = _fonte("main_app.py")
+        self.assertIn("def _porque_sem_fundo", fonte)
+        i = fonte.index("CAMADA 0: o grafico ao fundo")
+        trecho = fonte[i:i + 2500]
+        self.assertIn("_porque_sem_fundo", trecho)
+        for causa in ("Pillow", "captura de gráfico em disco", "converter a captura"):
+            self.assertIn(causa, fonte, f"a causa '{causa}' precisa ser dita")
+
+    def test_o_motivo_sai_UMA_vez_e_nao_a_cada_quadro(self):
+        """O HUD redesenha ~12x por segundo. Repetir encheria o log e
+        esconderia o resto."""
+        fonte = _fonte("main_app.py")
+        i = fonte.index("def _porque_sem_fundo")
+        self.assertIn("_sem_fundo_dito", fonte[i:i + 1600])
+
+    def test_DESLIGADO_nao_e_tratado_como_defeito(self):
+        """Quem desligou sabe por que desligou. Avisar ali seria ruído."""
+        # Ancorado DENTRO da camada 0: existe outro "if not ligado:" no
+        # caminho de desligar o motor, e casar com ele testaria outra coisa.
+        fonte = _fonte("main_app.py")
+        i = fonte.index("CAMADA 0: o grafico ao fundo")
+        trecho = fonte[i:i + 2500]
+        j = trecho.index("if not ligado:")
+        self.assertIn("_sem_fundo_dito = None", trecho[j:j + 220])
+        self.assertIn("desligado não é defeito", trecho[j:j + 220])
+
     def test_o_fundo_vem_da_MESMA_captura_que_o_motor_analisou(self):
         fonte = _fonte("main_app.py")
         i = fonte.index("def _alimentar_grafico_do_orbe")
