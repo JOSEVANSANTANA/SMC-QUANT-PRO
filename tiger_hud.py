@@ -65,6 +65,9 @@ class CyberHUDCanvasRenderer:
         # segura imagem sozinho — sem isso o coletor leva e some sem erro.
         self.imagem_fundo = None
         self.contexto_de_fundo = True
+        # Onde o gráfico mora: 'esquerda' (padrão), 'fundo' ou 'nenhum'.
+        # Ver `_lugar`. O padrão mudou a pedido dele na v2.69.
+        self.lugar_do_grafico = "esquerda"
         self.aviso_fundo = ""
         self.imagem_rosto = None
         self.angulo_rotacao = 0.0
@@ -236,41 +239,26 @@ class CyberHUDCanvasRenderer:
         seguinte já sai certo."""
         return getattr(self, "_area_cluster", None)
 
-    def _desenhar_fundo_de_contexto(self, cx, cy, largura_centro, h):
-        """CAMADA 0 — o quadro escuro do Orbe, e a captura DENTRO dele.
+    def area_do_grafico(self):
+        """O RETÂNGULO ONDE O GRÁFICO VAI, seja lá onde ele esteja agora.
 
-        Duas coisas acontecem aqui, nesta ordem:
+        UMA função para os dois lugares, e não uma por lugar. Quem redimensiona
+        a imagem é o `main_app` (é lá que está o Pillow), e ele não tem por que
+        saber se o gráfico está atrás do Orbe ou no painel esquerdo: ele
+        pergunta o retângulo e desenha nele. Quando essa escolha vazou para o
+        outro lado uma vez, o resultado foi uma imagem dimensionada por
+        palpite, que cabia num monitor e estourava no outro."""
+        return getattr(self, "_area_grafico", None)
 
-          1. o QUADRO ESCURO e desenhado sempre, ligado ou desligado. Ele e o
-             "quadrado cedido ao Orbe" — a moldura que separa o cluster
-             central dos dois cards laterais. Sem ele, desligar o fundo
-             deixava um vazio sem forma no meio do cockpit;
+    def _desenhar_quadro_do_grafico(self, x1, y1, x2, y2, etiqueta="◱ CONTEXTO"):
+        """O quadro do gráfico: moldura, imagem dentro, véu por cima.
 
-          2. a captura entra DENTRO desse quadro, centrada, com veu por cima.
-
-        A AREA E PUBLICADA em `self._area_cluster` para o `main_app` saber em
-        que tamanho redimensionar a imagem. Antes eu dimensionava em "52% da
-        largura total" — um chute que, num HUD largo, empurrava o grafico para
-        debaixo dos paineis laterais.
-        """
-        # O retangulo cedido ao Orbe: entre os dois cards, com respiro.
-        meia = max(120, int(largura_centro * 0.5) - 14)
-        x1, x2 = cx - meia, cx + meia
-        y1, y2 = 46, max(60, h - 40)
-        self._area_cluster = (x1, y1, x2, y2)
-
-        # O QUADRO SAI SEMPRE, E AGORA DA PARA VE-LO.
-        #
-        # A versao anterior pintava #01060f com contorno #0a2036 sobre um
-        # fundo #030712: tres tons de quase-preto separados por menos de 3%
-        # de luminancia. Eu disse a ele "o quadrado mais escuro cedido ao
-        # Orbe" — mas na tela dele nao havia quadrado nenhum para achar, e ele
-        # nao tinha como saber se o quadro nao existia ou se a imagem e que
-        # nao tinha entrado. Sao dois defeitos diferentes com a mesma cara.
-        #
-        # Contorno visivel + cantos marcados + etiqueta: o quadro passa a ser
-        # um lugar identificavel, e "esta vazio" vira uma informacao em vez de
-        # uma duvida.
+        ESTE MÉTODO É O MESMO PARA O FUNDO DO ORBE E PARA O PAINEL ESQUERDO.
+        Antes de existir, mudar o gráfico de lugar significaria duplicar
+        moldura, véu, aviso e publicação de área — e duas cópias divergem: a
+        primeira correção entra numa e esquece a outra, e o defeito volta só
+        em um dos modos, que é o mais difícil de reproduzir."""
+        self._area_grafico = (x1, y1, x2, y2)
         self.canvas.create_rectangle(x1, y1, x2, y2,
                                      fill="#01060f", outline="#123a5e", width=1)
         cl = 14
@@ -279,28 +267,24 @@ class CyberHUDCanvasRenderer:
                                  (x1, y2 - cl, x1, y2), (x1, y2, x1 + cl, y2),
                                  (x2 - cl, y2, x2, y2), (x2, y2, x2, y2 - cl)):
             self.canvas.create_line(ax, ay, bx, by, fill=COR_CYAN_DIM, width=2)
-        self.canvas.create_text(x1 + 10, y1 + 10, anchor="nw",
-                                text="◱ CONTEXTO", font=("Courier", 7, "bold"),
-                                fill=COR_TEXT_MUTED)
-
-        if not getattr(self, "contexto_de_fundo", True):
-            return
+        if etiqueta:
+            self.canvas.create_text(x1 + 10, y1 + 10, anchor="nw", text=etiqueta,
+                                    font=("Courier", 7, "bold"), fill=COR_TEXT_MUTED)
         img = getattr(self, "imagem_fundo", None)
         if img is None:
             # LIGADO E SEM IMAGEM: o quadro DIZ o porque, na tela.
             #
-            # A alternativa era o quadro vazio, que e exatamente o que ele
-            # viu duas vezes seguidas. Um quadro vazio nao distingue "o
-            # recurso esta quebrado" de "a captura ainda nao existe" de "eu
-            # cliquei errado" — e essas tres coisas pedem tres acoes
-            # diferentes de quem esta na frente do computador.
+            # A alternativa era o quadro vazio, que e exatamente o que ele viu
+            # duas vezes seguidas. Um quadro vazio nao distingue "o recurso
+            # esta quebrado" de "a captura ainda nao existe" de "eu cliquei
+            # errado" — e essas tres coisas pedem tres acoes diferentes de quem
+            # esta na frente do computador.
             aviso = str(getattr(self, "aviso_fundo", "") or "")
             self.canvas.create_text(
-                (x1 + x2) // 2, (y1 + y2) // 2 + 46,
-                text="GRÁFICO AO FUNDO: LIGADO, SEM IMAGEM"
-                     + (f"\n{aviso}" if aviso else ""),
+                (x1 + x2) // 2, (y1 + y2) // 2,
+                text="GRÁFICO: LIGADO, SEM IMAGEM" + (f"\n{aviso}" if aviso else ""),
                 font=("Courier", 8), fill=COR_TEXT_MUTED,
-                justify="center", width=max(160, (x2 - x1) - 40))
+                justify="center", width=max(140, (x2 - x1) - 30))
             return
         try:
             self.canvas.create_image((x1 + x2) // 2, (y1 + y2) // 2,
@@ -317,7 +301,99 @@ class CyberHUDCanvasRenderer:
         except Exception:
             pass
 
-    def definir_fundo_de_contexto(self, imagem_tk, ligado=True, aviso=""):
+    def _lugar(self):
+        """Onde o gráfico mora: 'esquerda', 'fundo' ou 'nenhum'.
+
+        O padrão é ESQUERDA por pedido dele — "considere desligar o gráfico que
+        está por detrás do orbe e tenta colocar ali do lado esquerdo mesmo como
+        recomendado anteriormente, fixo". Atrás do Orbe continua existindo
+        porque foi construído e funciona; deixou de ser o padrão."""
+        # O INTERRUPTOR ANTIGO MANDA NO LUGAR NOVO, e não ao contrário.
+        # `contexto_de_fundo=False` e `lugar='fundo'` são duas verdades
+        # contrárias sobre a mesma coisa, e duas verdades sobre o mesmo
+        # assunto sempre divergem. Aqui uma resolve a outra: desligado é
+        # desligado, esteja o lugar em que estiver.
+        if not getattr(self, "contexto_de_fundo", True):
+            return "nenhum"
+        lugar = str(getattr(self, "lugar_do_grafico", "") or "").lower()
+        return lugar if lugar in ("esquerda", "fundo", "nenhum") else "esquerda"
+
+    def _desenhar_fundo_de_contexto(self, cx, cy, largura_centro, h):
+        """CAMADA 0 — o grafico ATRAS DO ORBE, quando esse for o lugar dele.
+
+        DEIXOU DE SER O PADRAO por pedido dele: "considere desligar o grafico
+        que esta por detras do orbe e tenta colocar ali do lado esquerdo mesmo
+        como recomendado anteriormente, fixo". O modo continua existindo — foi
+        construido, funciona, e alguem pode preferi-lo — mas quando o lugar
+        escolhido nao e o fundo, NADA e desenhado aqui: nem o quadro.
+
+        Isso e deliberado. Enquanto o grafico morava aqui, o quadro escuro era
+        a moldura do cluster e precisava existir sempre, senao desligar deixava
+        um vazio sem forma no meio do cockpit. Com o grafico morando a
+        esquerda, o mesmo quadro vira uma caixa vazia em volta do Orbe — um
+        elemento que nao contem nada e nao explica nada.
+        """
+        if self._lugar() != "fundo":
+            self._area_cluster = None
+            return
+        # O retangulo cedido ao Orbe: entre os dois cards, com respiro.
+        meia = max(120, int(largura_centro * 0.5) - 14)
+        x1, x2 = cx - meia, cx + meia
+        y1, y2 = 46, max(60, h - 40)
+        self._area_cluster = (x1, y1, x2, y2)
+        self._desenhar_quadro_do_grafico(x1, y1, x2, y2, "\u25f1 CONTEXTO")
+
+    def _desenhar_grafico_lateral(self, px1, px2, topo, py2):
+        """O GRAFICO FIXO NO PAINEL ESQUERDO, abaixo de POSICAO.
+
+        E o lugar que ele desenhou para mim duas vezes: "a ideia era deixar a
+        janela do grafico ali do lado, abaixo de (posicao), como na imagem
+        dois, ate coloquei um quadro branco ali para deixar reservado".
+
+        Aqui o grafico e INFORMACAO, e nao pano de fundo: fica ao lado da
+        telemetria que ele ja le, no espaco que sobrava vazio dentro do card.
+        Por isso ele tem titulo proprio e nao se mistura com o Orbe.
+
+        Nao desenha nada quando o espaco e menor que o minimo legivel — um
+        quadro de 40px de altura nao mostra grafico nenhum e so tira espaco de
+        quem tem o que dizer."""
+        if self._lugar() != "esquerda":
+            return
+        alto = py2 - topo
+        if alto < 90 or (px2 - px1) < 140:
+            # SEM ESPACO ELE DIZ, em vez de sumir.
+            #
+            # Some era o comportamento anterior, e e o mesmo defeito que ele
+            # ja relatou duas vezes com outro nome: a configuracao diz "no
+            # painel esquerdo", a tela nao mostra nada, e nao ha como
+            # distinguir "quebrou" de "nao coube". Uma linha ocupa 12px e
+            # transforma a ausencia em instrucao.
+            self._area_grafico = None
+            self._grafico_sem_espaco = True
+            if alto > 14 and (px2 - px1) > 120:
+                self.canvas.create_text(
+                    (px1 + px2) // 2, topo + 6, anchor="n",
+                    text="grafico: sem altura aqui \u2014 use o Modo Dividido",
+                    font=("Courier", 7), fill=COR_TEXT_MUTED)
+            return
+        self._grafico_sem_espaco = False
+        self._desenhar_quadro_do_grafico(px1 + 8, topo, px2 - 8, py2 - 8,
+                                         "\u25f1 GRAFICO DO ATIVO")
+
+    def grafico_sem_espaco(self):
+        """True quando o lugar escolhido nao coube nesta altura de HUD.
+
+        Existe porque nem sempre da para escrever o aviso na tela: num HUD de
+        280px os cinco itens da telemetria ja consomem o card inteiro, e nao
+        sobra nem a linha de texto que explicaria a ausencia. Quem tem voz
+        nesse caso e o log, e quem sabe do problema e este modulo \u2014 entao ele
+        publica o fato e o `main_app` fala.
+
+        Sem isto, a configuracao diria "no painel esquerdo", a tela nao
+        mostraria nada, e nao haveria como distinguir de um defeito."""
+        return bool(getattr(self, "_grafico_sem_espaco", False))
+
+    def definir_fundo_de_contexto(self, imagem_tk, ligado=True, aviso="", lugar=""):
         """Recebe a captura ja convertida para Tk e diz se ela deve aparecer.
 
         A referencia fica GUARDADA aqui: o Tkinter nao segura imagem sozinho,
@@ -331,6 +407,8 @@ class CyberHUDCanvasRenderer:
         self.imagem_fundo = imagem_tk
         self.contexto_de_fundo = bool(ligado)
         self.aviso_fundo = str(aviso or "")
+        if lugar:
+            self.lugar_do_grafico = str(lugar)
 
     def definir_rosto_de_imagem(self, imagem_tk):
         """O PNG que substitui o rosto vetorial, quando o tema pede.
@@ -400,6 +478,12 @@ class CyberHUDCanvasRenderer:
 
     def desenhar(self):
         self.canvas.delete("all")
+        # A ÁREA DO GRÁFICO MORRE A CADA QUADRO e renasce onde ele for
+        # desenhado. Guardá-la entre quadros faria o `main_app` dimensionar a
+        # imagem por um retângulo que já não existe — depois de trocar o lugar
+        # ou de redimensionar a janela, a medida velha continuaria valendo e a
+        # imagem sairia no tamanho do lugar anterior.
+        self._area_grafico = None
         w, h = self.largura, self.altura
         cx, cy = w // 2, h // 2 - 8
 
@@ -766,6 +850,14 @@ class CyberHUDCanvasRenderer:
                                      self.confluencias_txt, "#ffffff", item_h)
             self._desenhar_mini_item(px1, item_y + (item_h + 5) * 4, px2, "POSIÇÃO",
                                      self.posicao_txt, COR_GOLD_CYBER, item_h)
+
+            # O GRÁFICO ENTRA AQUI, no espaço que sobrava vazio abaixo de
+            # POSIÇÃO — exatamente onde ele desenhou o quadro branco no
+            # esboço que mandou. O topo sai da conta dos itens acima e não de
+            # um número fixo: `item_h` encolhe em HUD baixo, e um "y = 300"
+            # cravado colidiria com POSIÇÃO na primeira janela pequena.
+            self._desenhar_grafico_lateral(
+                px1, px2, item_y + (item_h + 5) * 5 + 6, py2)
 
         # Painel Direito: MOTOR IA CLOUD & LOGS EM TEMPO REAL
         if w > 600:

@@ -166,10 +166,10 @@ ttk = types.ModuleType("tkinter.ttk"); tk.ttk = ttk
 sys.modules["tkinter"] = tk; sys.modules["tkinter.ttk"] = ttk
 import tiger_hud as T
 
-w, h, ligado, tem_img, aviso = %(args)r
+w, h, ligado, tem_img, aviso, lugar = %(args)r
 c = _C()
 r = T.CyberHUDCanvasRenderer(c, largura=w, altura=h)
-r.definir_fundo_de_contexto("<IMG>" if tem_img else None, ligado=ligado, aviso=aviso)
+r.definir_fundo_de_contexto("<IMG>" if tem_img else None, ligado=ligado, aviso=aviso, lugar=lugar)
 r.desenhar()
 textos = [k.get("text", "") for n, a, k in c.ch if n == "create_text"]
 imgs = [i for i, (n, a, k) in enumerate(c.ch) if n == "create_image"]
@@ -177,6 +177,7 @@ quadro = [i for i, (n, a, k) in enumerate(c.ch)
           if n == "create_rectangle" and k.get("fill") == "#01060f"]
 print(json.dumps({
     "area": r.area_do_cluster(),
+    "area_cluster": r.area_do_cluster(),
     "imagens": imgs,
     "quadro": quadro,
     "textos": textos,
@@ -185,14 +186,20 @@ print(json.dumps({
 '''
 
 
-def _desenhar(w=1400, h=700, ligado=True, tem_img=True, aviso=""):
+def _desenhar(w=1400, h=700, ligado=True, tem_img=True, aviso="", lugar="fundo"):
     """Roda o renderizador NUM SUBPROCESSO, com tkinter substituído por um
     Canvas que só anota o que foi pedido.
+
+    O padrão aqui é `lugar="fundo"` DE PROPÓSITO: este arquivo testa o modo
+    ATRÁS DO ORBE, que foi o que a v2.67.2 consertou. Na v2.69 ele deixou de
+    ser o padrão do programa (o gráfico passou ao painel esquerdo, a pedido
+    dele), mas continua existindo — e as regras dele continuam valendo, que é
+    justamente o que estes testes garantem.
 
     Subprocesso, e não stub em `sys.modules`, porque trocar o tkinter do
     processo estragaria qualquer outro teste da suíte que rode depois — e um
     teste que quebra o vizinho é pior que teste nenhum."""
-    codigo = _ESPIAO % {"raiz": RAIZ, "args": (w, h, ligado, tem_img, aviso)}
+    codigo = _ESPIAO % {"raiz": RAIZ, "args": (w, h, ligado, tem_img, aviso, lugar)}
     saida = subprocess.run([sys.executable, "-c", codigo],
                            capture_output=True, text=True, timeout=60)
     assert saida.returncode == 0, saida.stderr
@@ -220,11 +227,33 @@ class TestOQuadroDoOrbeDesenhaOGrafico(unittest.TestCase):
         self.assertLess(d["quadro"][0], d["imagens"][0])
 
     def test_o_quadro_existe_mesmo_com_o_fundo_DESLIGADO(self):
-        """Ele é a MOLDURA, não o conteúdo. Sem isto, desligar o fundo deixa
-        um vazio sem forma no meio do cockpit."""
-        d = _desenhar(ligado=False)
-        self.assertEqual(len(d["quadro"]), 1)
+        """ESTA REGRA MUDOU NA v2.69, E A MUDANÇA É O PONTO.
+
+        Enquanto o gráfico morava atrás do Orbe, o quadro escuro era a MOLDURA
+        do cluster e precisava existir sempre: sem ele, desligar o fundo
+        deixava um vazio sem forma no meio do cockpit. Era a regra certa para
+        aquele desenho.
+
+        Com o gráfico mudado para o painel esquerdo — "considere desligar o
+        gráfico que está por detrás do orbe e tenta colocar ali do lado
+        esquerdo mesmo, fixo" — o mesmo quadro vira uma caixa vazia em volta do
+        Orbe: um elemento que não contém nada e não explica nada. Então ele
+        passa a existir só enquanto o gráfico mora lá.
+
+        O que NÃO mudou é o que interessa: continua não havendo estado em que
+        o cockpit mostre um retângulo sem dono."""
+        d = _desenhar(ligado=False)                      # lugar 'fundo', desligado
+        self.assertEqual(len(d["quadro"]), 0)
         self.assertEqual(len(d["imagens"]), 0)
+        self.assertIsNone(d["area"])
+
+        ligado_no_fundo = _desenhar(ligado=True, lugar="fundo")
+        self.assertEqual(len(ligado_no_fundo["quadro"]), 1)
+
+    def test_com_o_grafico_a_ESQUERDA_o_meio_do_cockpit_fica_limpo(self):
+        """O quadro central some junto com o gráfico, e não fica órfão."""
+        d = _desenhar(lugar="esquerda")
+        self.assertIsNone(d["area_cluster"])
 
     def test_o_quadro_tem_etiqueta_para_poder_ser_APONTADO(self):
         """Eu disse a ele 'o quadrado mais escuro cedido ao Orbe' e ele não
@@ -260,8 +289,13 @@ class TestAAssinaturaAntigaContinuaValendo(unittest.TestCase):
         fora de sincronia não derrube o HUD — painel que não abre esconde
         posição aberta."""
         fonte = _fonte("tiger_hud.py")
-        self.assertIn("def definir_fundo_de_contexto(self, imagem_tk, ligado=True, aviso=\"\")",
-                      fonte)
+        # Só os PADRÕES importam, e não a lista exata de parâmetros: a v2.69
+        # acrescentou `lugar`, e cravar a assinatura inteira transformaria
+        # cada parâmetro novo em falha de teste sem defeito nenhum.
+        assinatura = fonte[fonte.index("def definir_fundo_de_contexto"):]
+        assinatura = assinatura[:assinatura.index("\n")]
+        self.assertIn("ligado=True", assinatura)
+        self.assertIn('aviso=""', assinatura)
 
     def test_o_chamador_tem_rede_para_renderizador_antigo(self):
         codigo = _sem_comentarios(_fonte("main_app.py"))

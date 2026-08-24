@@ -28,6 +28,14 @@ import plataforma
 # funciona, no ícone não. Completar o PATH aqui, no arranque, evita isso.
 plataforma.garantir_path_do_sistema()
 
+# LEITURA DO EXTRATO DE ORDENS EM PDF (ver extrato_pdf.py). Entra com guarda
+# porque é recurso de conveniência: uma instalação sem ele tem de continuar
+# operando, e o botão é que some — programa que não abre esconde posição.
+try:
+    import extrato_pdf
+except Exception:
+    extrato_pdf = None
+
 SISTEMA = plataforma.SISTEMA
 E_MACOS = plataforma.E_MACOS
 E_WINDOWS = plataforma.E_WINDOWS
@@ -3889,6 +3897,228 @@ def atualizar_posicoes_com_preco(preco, ativo=None, exigir_confirmacao_plataform
         eventos.append((desfecho, dict(pos)))
     salvar_posicoes(lista)
     return eventos
+
+ORIGEM_EXTRATO = "EXTRATO"
+
+# ONDE O GRÁFICO DO ATIVO APARECE NO HUD. O rótulo diz o que a escolha FAZ,
+# e não onde ela fica: "esquerda" sozinho não explica que ali o gráfico deixa
+# de ser pano de fundo e passa a ser informação ao lado da telemetria.
+_ROTULO_DO_LUGAR = {
+    "esquerda": "no painel esquerdo, fixo (abaixo de POSIÇÃO)",
+    "fundo": "atrás do Orbe, como pano de fundo",
+    "nenhum": "não mostrar",
+}
+
+
+def lugar_do_grafico_pelo_rotulo(rotulo):
+    """O rótulo do menu vira a chave guardada. Rótulo desconhecido devolve
+    None, e quem chamou não grava nada — gravar um padrão aqui trocaria a
+    escolha dele por uma minha sem avisar."""
+    for chave, texto in _ROTULO_DO_LUGAR.items():
+        if texto == rotulo:
+            return chave
+    return None
+
+
+def chave_da_operacao_importada(op):
+    """A identidade de uma operação vinda do extrato: entrada>saída.
+
+    OS NÚMEROS DE ORDEM DA CORRETORA SÃO A CHAVE, e não a data ou o preço.
+    Ele vai importar o extrato mais de uma vez — no fim do dia, e de novo
+    amanhã quando o relatório do dia seguinte trouxer os dois dias. Sem uma
+    identidade estável, cada importação duplicaria o que já estava lá, e o
+    diário passaria a contar duas vezes o mesmo dinheiro.
+
+    Data e preço não servem de identidade: duas saídas parciais no mesmo
+    segundo, pelo mesmo preço, são operações diferentes e teriam a mesma
+    chave. O par de números de ordem é único por construção da corretora."""
+    return f"{op.get('id_entrada', '')}>{op.get('id_saida', '')}"
+
+
+def separar_ja_importadas(fechadas, posicoes):
+    """(novas, repetidas) — o que ainda não está no diário, e o que já está.
+
+    Devolve as duas listas em vez de só filtrar porque o programa vai DIZER
+    quantas ignorou. Importação que silenciosamente pula metade das linhas é
+    indistinguível de importação que falhou pela metade."""
+    conhecidas = {p.get("chave_extrato") for p in (posicoes or [])
+                  if p.get("chave_extrato")}
+    novas, repetidas = [], []
+    for op in fechadas or []:
+        (repetidas if chave_da_operacao_importada(op) in conhecidas else novas).append(op)
+    return novas, repetidas
+
+
+STATUS_SUBSTITUIDA = "SUBSTITUIDA"
+
+
+def periodo_coberto_pelo_extrato(fechadas, sobras=None, formato_data="MDY"):
+    """Por ativo, o PRIMEIRO e o ÚLTIMO instante que o extrato cobre.
+
+    ISTO EXISTE PORQUE O EXTRATO É A VERDADE DA CORRETORA. Pedido dele:
+    "certifique-se de não duplicar os registros do diário com os que serem
+    importados, o que sempre tem mais validade são os importados".
+
+    Ele está certo, e o buraco era maior do que a chave de importação cobria.
+    Aquela chave impede importar o MESMO PDF duas vezes. Mas o extrato traz
+    TODAS as ordens da conta — inclusive as que o próprio robô enviou, que já
+    estão no diário como origem ROBO, e as que ele lançou na mão. Sem isto, a
+    primeira importação contaria em dobro o dia inteiro.
+
+    E a saída não é casar operação com operação — isso exigiria supor qual
+    registro do diário corresponde a qual execução do PDF, e preço e horário
+    nem sempre batem (o robô grava o preço que PEDIU; a corretora grava o que
+    EXECUTOU). A saída é usar uma propriedade que o documento tem de verdade:
+    dentro do período que ele cobre, ele é COMPLETO. Então, naquele intervalo,
+    o que veio dele substitui o que estava lá.
+
+    O RECORTE POR TEMPO É O QUE TORNA ISSO SEGURO. Ele gerou este extrato às
+    14:21 com o pregão ainda aberto; substituir "o dia todo" apagaria uma
+    operação que fechasse às 15:00 e que o extrato não tinha como conter.
+    Fora da janela coberta, nada é tocado.
+    """
+    faixas = {}
+    for op in list(fechadas or []) + list(sobras or []):
+        ativo = op.get("ativo")
+        if not ativo:
+            continue
+        for campo in ("abertura", "fechamento"):
+            dt = _parse_dt(extrato_pdf.data_br(op.get(campo, ""), formato_data))
+            if dt is None:
+                continue
+            ini, fim = faixas.get(ativo, (dt, dt))
+            faixas[ativo] = (min(ini, dt), max(fim, dt))
+    return faixas
+
+
+def posicoes_substituidas_pelo_extrato(posicoes, faixas, conta_id=None):
+    """As posições do diário que o extrato importado torna obsoletas.
+
+    QUATRO CONDIÇÕES, E CADA UMA TIRA UM RISCO:
+      · status FECHADA — posição aberta não é resultado e não tem par no que
+        foi importado;
+      · origem diferente de EXTRATO — uma importação anterior já é filtrada
+        pela chave de ordem, e substituir importação por importação começaria
+        a apagar histórico legítimo;
+      · mesmo ativo — o extrato de MESU6 não fala nada sobre MNQU6;
+      · fechamento DENTRO da janela coberta — ver `periodo_coberto_pelo_extrato`.
+
+    Devolve a lista em vez de já marcar, porque o programa mostra o número
+    ANTES de gravar. Substituir registro de dinheiro em silêncio seria trocar
+    um erro (contar em dobro) por outro pior (apagar sem avisar)."""
+    alvos = []
+    for p in posicoes or []:
+        if p.get("status") != "FECHADA" or p.get("origem") == ORIGEM_EXTRATO:
+            continue
+        if conta_id is not None and p.get("conta_id") != conta_id:
+            continue
+        faixa = faixas.get(p.get("ativo"))
+        if not faixa:
+            continue
+        dt = _parse_dt(p.get("data_fechamento"))
+        if dt is None:
+            # SEM CARIMBO LEGÍVEL, NÃO SUBSTITUI. Não dá para provar que está
+            # dentro da janela, e apagar por suposição é exatamente o que esta
+            # função existe para não fazer.
+            continue
+        if faixa[0] <= dt <= faixa[1]:
+            alvos.append(p)
+    return alvos
+
+
+def marcar_substituidas_pelo_extrato(ids):
+    """Tira do cálculo as posições que o extrato substituiu, SEM APAGAR.
+
+    O registro continua no disco com status SUBSTITUIDA. Todo somatório do
+    programa filtra por FECHADA, então esta única troca já as remove de
+    dashboard, taxa de acerto, evolução patrimonial e relatório — sem precisar
+    tocar em dez lugares que contam dinheiro.
+
+    Não apagar é deliberado: se um dia a substituição se mostrar errada, o que
+    havia antes ainda está lá para ser conferido. Linha apagada não se
+    audita."""
+    alvo = set(ids or [])
+    if not alvo:
+        return 0
+    lista = carregar_posicoes()
+    n = 0
+    for p in lista:
+        if p.get("id") in alvo and p.get("status") == "FECHADA":
+            p["status"] = STATUS_SUBSTITUIDA
+            p["substituida_em"] = time.strftime('%d/%m/%Y %H:%M')
+            n += 1
+    if n:
+        salvar_posicoes(lista)
+    return n
+
+
+def importar_operacoes_do_extrato(fechadas, formato_data="MDY"):
+    """Grava no diário as operações fechadas lidas do extrato. Devolve as
+    posições criadas.
+
+    STOP E ALVO FICAM VAZIOS, e isso é a resposta certa. Dá para enxergá-los
+    no relatório — as `multibracket` canceladas ao lado de uma entrada são a
+    proteção que morreu junto com ela. Mas amarrar bracket a entrada exige
+    supor qual pertence a qual, porque o relatório não traz o vínculo. Como
+    stop e alvo não entram na conta do resultado (só entrada, saída e
+    quantidade entram), supor isso custaria risco de erro sem comprar nada.
+    Vazio aqui quer dizer 'o documento não disse'.
+
+    AS DATAS SÃO AS DO EXTRATO, não as de agora. É por `data_fechamento` que
+    o resultado é atribuído a um pregão; carimbar com a hora da importação
+    jogaria o dia inteiro de ontem para dentro do pregão de hoje."""
+    criadas = []
+    for op in fechadas or []:
+        pos = abrir_posicao(ORIGEM_EXTRATO, op["direcao"], op["ativo"],
+                            op["entrada"], None, None, None, op["contratos"],
+                            status_inicial="ABERTA")
+        abertura = extrato_pdf.data_br(op.get("abertura", ""), formato_data)
+        fechamento = extrato_pdf.data_br(op.get("fechamento", ""), formato_data)
+        lista = carregar_posicoes()
+        for p in lista:
+            if p["id"] != pos["id"]:
+                continue
+            p["chave_extrato"] = chave_da_operacao_importada(op)
+            p["rotulo_extrato"] = op.get("rotulo", "")
+            if abertura:
+                p["data_criacao"] = abertura
+                p["data_abertura"] = abertura
+            p["status"] = "FECHADA"
+            p["data_fechamento"] = fechamento or abertura or p["data_criacao"]
+            p["preco_atual"] = op["saida"]
+            p["pnl_final"] = calcular_pnl_posicao(p, op["saida"])
+            p["pnl_atual"] = p["pnl_final"]
+            criadas.append(dict(p))
+            break
+        salvar_posicoes(lista)
+    return criadas
+
+
+def conferir_multiplicador_do_extrato(fechadas):
+    """Onde o multiplicador do extrato discorda do que o programa usa.
+
+    O extrato traz `quantidade x preço x multiplicador` na coluna nocional, e
+    o programa tem a sua própria tabela em `valor_por_ponto_do_ativo`. Quando
+    os dois discordam, o P&L do diário sai errado por um fator — o tipo de
+    erro que não parece erro, porque o número continua plausível. Devolve a
+    lista de divergências para o programa DIZER antes de gravar."""
+    fora = []
+    for op in fechadas or []:
+        do_pdf = op.get("multiplicador")
+        if not do_pdf:
+            continue
+        meu = valor_por_ponto_do_ativo(op.get("ativo"))
+        if meu and abs(float(meu) - float(do_pdf)) > 0.01:
+            fora.append({"ativo": op.get("ativo"), "do_extrato": float(do_pdf),
+                         "do_programa": float(meu)})
+    # Um por ativo: repetir a mesma divergência 55 vezes esconderia as outras.
+    unicos, vistos = [], set()
+    for f in fora:
+        if f["ativo"] not in vistos:
+            vistos.add(f["ativo"])
+            unicos.append(f)
+    return unicos
+
 
 def fechar_posicao_manual(pos_id, preco_saida=None):
     lista = carregar_posicoes()
@@ -12618,17 +12848,25 @@ class SmcQuantApp(ctk.CTk):
             # ---- CAMADA 0: o gráfico ao fundo ----
             linha_ctx = ctk.CTkFrame(sec_voz, fg_color="transparent")
             linha_ctx.pack(anchor="w", padx=12, pady=(4, 2))
-            self._var_ctx_fundo = tk.BooleanVar(
-                value=bool(carregar_config().get("contexto_de_fundo", True)))
-            ctk.CTkCheckBox(
-                linha_ctx, text="Gráfico ao fundo do Orbe (contexto)",
-                variable=self._var_ctx_fundo, onvalue=True, offvalue=False,
-                command=self._alternar_contexto_de_fundo).pack(side="left")
-            ctk.CTkLabel(
-                linha_ctx,
-                text="desligado, o cluster fica escuro — só rosto e telemetria",
-                text_color="#4a5163",
-                font=ctk.CTkFont(size=10)).pack(side="left", padx=8)
+            # DEIXOU DE SER LIGA/DESLIGA E VIROU ONDE. Pedido dele: "considere
+            # desligar o gráfico que está por detrás do orbe e tenta colocar
+            # ali do lado esquerdo mesmo como recomendado anteriormente, fixo".
+            #
+            # Uma caixinha só não dava conta de três estados, e a escolha
+            # importa: atrás do Orbe o gráfico é PANO DE FUNDO, à esquerda ele
+            # é INFORMAÇÃO, ao lado da telemetria que ele já lê.
+            _cfg_g = carregar_config()
+            _lugar = str(_cfg_g.get("lugar_do_grafico", "") or "").lower()
+            if _lugar not in _ROTULO_DO_LUGAR:
+                _lugar = "esquerda" if _cfg_g.get("contexto_de_fundo", True) else "nenhum"
+            ctk.CTkLabel(linha_ctx, text="Gráfico do ativo:", text_color=COR["dim"],
+                         font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 6))
+            self._var_lugar_gr = tk.StringVar(value=_ROTULO_DO_LUGAR[_lugar])
+            ctk.CTkOptionMenu(
+                linha_ctx, variable=self._var_lugar_gr, width=260,
+                values=list(_ROTULO_DO_LUGAR.values()),
+                fg_color=COR["input"],
+                command=self._trocar_lugar_do_grafico).pack(side="left")
         except Exception:
             pass
 
@@ -16920,7 +17158,18 @@ class SmcQuantApp(ctk.CTk):
 
         # ---- CAMADA 0: o grafico ao fundo ----
         if hasattr(r, "definir_fundo_de_contexto"):
-            ligado = bool(cfg.get("contexto_de_fundo", True))
+            # ONDE O GRÁFICO MORA. Pedido dele: "considere desligar o gráfico
+            # que está por detrás do orbe e tenta colocar ali do lado esquerdo
+            # mesmo como recomendado anteriormente, fixo". 'esquerda' passou a
+            # ser o padrão; 'fundo' continua disponível para quem preferir.
+            #
+            # O interruptor antigo (`contexto_de_fundo`) continua sendo lido:
+            # quem já tinha desligado o fundo não pode ver o gráfico voltar
+            # sozinho num canto novo só porque o padrão mudou.
+            lugar = str(cfg.get("lugar_do_grafico", "") or "").lower()
+            if lugar not in ("esquerda", "fundo", "nenhum"):
+                lugar = "esquerda" if cfg.get("contexto_de_fundo", True) else "nenhum"
+            ligado = lugar != "nenhum"
             tk_fundo = None
             # O ARQUIVO EM DISCO É A FONTE, e não o atributo em memória.
             #
@@ -16960,7 +17209,9 @@ class SmcQuantApp(ctk.CTk):
                     # Antes do primeiro desenho ele é None — aí vale a
                     # estimativa, e o quadro seguinte já sai no lugar certo.
                     area = None
-                    if hasattr(r, "area_do_cluster"):
+                    if hasattr(r, "area_do_grafico"):
+                        area = r.area_do_grafico()
+                    if area is None and hasattr(r, "area_do_cluster"):
                         area = r.area_do_cluster()
                     if area:
                         _x1, _y1, _x2, _y2 = area
@@ -16991,14 +17242,25 @@ class SmcQuantApp(ctk.CTk):
                         f"não consegui converter a captura para o painel ({e})")
             if tk_fundo is None and ligado:
                 self._fundo_aplicado = None
+            if (ligado and tk_fundo is not None and lugar == "esquerda"
+                    and hasattr(r, "grafico_sem_espaco") and r.grafico_sem_espaco()):
+                # A imagem carregou, mas o painel esquerdo não tem altura para
+                # ela nesta janela. Sem esta linha, a configuração diria "no
+                # painel esquerdo", a tela não mostraria nada, e não haveria
+                # como distinguir isso de defeito — que é exatamente a queixa
+                # que gerou a v2.68.
+                self._porque_sem_fundo(
+                    "o painel esquerdo não tem altura para o gráfico nesta "
+                    "janela — abra o Modo Dividido ou aumente o HUD")
             try:
                 # O AVISO VAI PARA DENTRO DO QUADRO. Quando o fundo está
                 # ligado e não há imagem, o quadro escreve o porquê na própria
                 # tela — ele não deveria precisar caçar uma linha de log para
                 # saber se o recurso quebrou ou se ainda não chegou a hora.
-                r.definir_fundo_de_contexto(tk_fundo, ligado=ligado, aviso=aviso)
+                r.definir_fundo_de_contexto(tk_fundo, ligado=ligado,
+                                            aviso=aviso, lugar=lugar)
             except TypeError:
-                # Renderizador antigo, sem o parâmetro `aviso`.
+                # Renderizador antigo, sem `aviso`/`lugar`.
                 r.definir_fundo_de_contexto(tk_fundo, ligado=ligado)
 
         # ---- CAMADA 1: o rosto em PNG ----
@@ -17066,6 +17328,36 @@ class SmcQuantApp(ctk.CTk):
             pass
         self.log("🖼️ Imagem do Orbe removida — voltando ao rosto do tema.")
         self._alimentar_grafico_do_orbe()
+
+    def _trocar_lugar_do_grafico(self, rotulo=None):
+        """Guarda ONDE o gráfico do ativo aparece e dá o recibo do que houve.
+
+        Mesma regra do interruptor que ele reclamou: quem acabou de escolher
+        está olhando para a tela agora, e "escolhi" não é resposta — o que
+        vale é se a imagem entrou, de que arquivo, em que tamanho."""
+        chave = lugar_do_grafico_pelo_rotulo(rotulo or self._var_lugar_gr.get())
+        if not chave:
+            return
+        # `contexto_de_fundo` continua sendo gravado junto porque instalações
+        # antigas e o próprio renderizador ainda o consultam. Duas verdades
+        # sobre o mesmo assunto divergem; esta linha as mantém coladas.
+        salvar_config({"lugar_do_grafico": chave,
+                       "contexto_de_fundo": chave != "nenhum"})
+        if chave == "nenhum":
+            self.log("🖼️ Gráfico do ativo: não mostrar.")
+            self._alimentar_grafico_do_orbe()
+            return
+        self._sem_fundo_dito = None
+        self._fundo_aplicado = None
+        self._alimentar_grafico_do_orbe()
+        onde = _ROTULO_DO_LUGAR[chave]
+        aplicado = getattr(self, "_fundo_aplicado", None)
+        if aplicado:
+            self.log(f"🖼️ Gráfico do ativo: {onde} — {aplicado}.")
+        else:
+            self.log(f"🖼️ Gráfico do ativo: {onde}, mas ainda sem imagem para "
+                     "mostrar — o motivo está na linha acima, e o próprio "
+                     "quadro repete ele na tela.")
 
     def _alternar_contexto_de_fundo(self):
         """Liga/desliga a CAMADA 0 e DIZ O QUE ACONTECEU no próprio clique.
@@ -19663,6 +19955,32 @@ class SmcQuantApp(ctk.CTk):
             text_color=COR["dim"], font=ctk.CTkFont(size=10))
         self.lbl_dica_manual.grid(row=3, column=0, columnspan=6, padx=10, pady=(2, 10), sticky="w")
 
+        # ---- IMPORTAR O EXTRATO DE ORDENS DA CORRETORA (PDF) ----
+        #
+        # Pedido dele: "inclua uma opção de enviar o PDF do extrato de ordens
+        # gerado pela Tradovate ou qualquer outra corretora para preenchimento
+        # dos envios de ordens manuais, e o motor preencher automaticamente".
+        #
+        # Ele fica AQUI, colado no lançamento manual, porque resolve o mesmo
+        # problema: a operação que aconteceu fora da sugestão do robô. Um dia
+        # dele tem 111 ordens; lançar uma a uma não acontece, e o que não
+        # acontece vira diário incompleto — que é pior que diário nenhum,
+        # porque a taxa de acerto passa a sair de uma amostra torta sem
+        # ninguém saber.
+        linha_pdf = ctk.CTkFrame(frame_manual, fg_color="transparent")
+        linha_pdf.grid(row=4, column=0, columnspan=8, padx=10, pady=(0, 10), sticky="w")
+        ctk.CTkButton(
+            linha_pdf, text="📄 Importar extrato de ordens (PDF)", width=250,
+            fg_color="#1f3a5f", hover_color="#2a4d7a",
+            command=self._importar_extrato_pdf).pack(side="left")
+        ctk.CTkLabel(
+            linha_pdf, justify="left", anchor="w", text_color=COR["dim"],
+            font=ctk.CTkFont(size=10), wraplength=430,
+            text="Leio o relatório, caso as execuções por FIFO e mostro o que vai "
+                 "entrar ANTES de gravar. Ordem cancelada, rejeitada ou ainda "
+                 "aberta não vira operação."
+            ).pack(side="left", padx=(10, 0))
+
         # ================= SINAIS =================
         sec_sinais = self._secao(scroll, "📋  SUGESTÕES E ACOMPANHAMENTO",
                                   "sinais", aberta_padrao=True)
@@ -19891,6 +20209,132 @@ class SmcQuantApp(ctk.CTk):
             self.lbl_dica_manual.configure(
                 text="Em andamento: o P&L é acompanhado até bater stop ou alvo.")
             self.lbl_dica_manual.grid(row=3, column=0, columnspan=6, sticky="w")
+
+    def _importar_extrato_pdf(self):
+        """Lê o PDF do extrato da corretora e lança as operações no diário.
+
+        A CONFERÊNCIA VEM ANTES DA GRAVAÇÃO, e não é formalidade. O diário é a
+        base do cálculo de acerto: uma operação a mais ou a menos ali muda um
+        número que ele usa para decidir dinheiro. Então o programa lê, mostra
+        o que entendeu — quantas ordens, quantas viraram operação, quantas
+        ficaram de fora e POR QUÊ — e só grava depois do sim.
+
+        Nenhum caminho de falha é mudo. Sem leitor de PDF, ele diz o que
+        instalar. Arquivo que não é extrato, ele diz que não achou ordem
+        nenhuma em vez de gravar zero operações com cara de sucesso."""
+        from tkinter import filedialog, messagebox
+        if extrato_pdf is None:
+            messagebox.showerror(
+                "Importar extrato",
+                "O módulo de leitura de PDF (extrato_pdf.py) não carregou "
+                "nesta instalação. Reinstale o pacote completo.")
+            return
+        caminho = filedialog.askopenfilename(
+            title="Extrato de ordens da corretora (PDF)",
+            filetypes=[("PDF", "*.pdf"), ("Todos", "*.*")])
+        if not caminho:
+            return
+        try:
+            texto = extrato_pdf.texto_do_pdf(caminho)
+        except extrato_pdf.SemLeitorDePdf as e:
+            self.log(f"📄 Não consegui abrir o PDF: {e}")
+            messagebox.showerror("Importar extrato", str(e))
+            return
+        except Exception as e:
+            self.log(f"📄 Não consegui abrir o PDF: {e}")
+            messagebox.showerror("Importar extrato", f"Não consegui abrir o arquivo: {e}")
+            return
+
+        ordens = extrato_pdf.ler_ordens(texto)
+        if not ordens:
+            msg = ("Não encontrei ordem nenhuma neste arquivo. Ele é mesmo o "
+                   "relatório de ORDENS (Orders) da corretora? Extrato de "
+                   "posições ou de conta tem outro formato e não serve aqui.")
+            self.log(f"📄 {msg}")
+            messagebox.showwarning("Importar extrato", msg)
+            return
+
+        total = extrato_pdf.total_declarado(texto)
+        fechadas, sobras, recusadas = extrato_pdf.operacoes_fechadas(ordens)
+        novas, repetidas = separar_ja_importadas(fechadas, carregar_posicoes())
+        formato = extrato_pdf.formato_de_data(texto)
+
+        partes = [extrato_pdf.resumo_da_leitura(ordens, fechadas, sobras,
+                                                recusadas, total)]
+        if repetidas:
+            partes.append(f"Já estavam no diário e NÃO vou repetir: "
+                          f"{len(repetidas)} operação(ões).")
+        if formato is None:
+            # Ver `extrato_pdf.formato_de_data`: nenhuma data do arquivo tinha
+            # componente maior que 12, então o documento não desempatou entre
+            # 08/07 ser 8 de julho ou 7 de agosto. A suposição é dita em voz
+            # alta em vez de virar data errada em silêncio.
+            partes.append("⚠️ Nenhuma data deste arquivo desempata mês e dia. "
+                          "Vou assumir o formato americano (mês/dia), que é o "
+                          "da Tradovate — confira os dias depois de importar.")
+        divergentes = conferir_multiplicador_do_extrato(novas)
+        for d in divergentes:
+            partes.append(
+                f"⚠️ {d['ativo']}: o extrato diz que 1 ponto vale US$ "
+                f"{d['do_extrato']:.2f} e eu uso US$ {d['do_programa']:.2f}. "
+                "O P&L vai sair pelo MEU valor — se o certo for o do extrato, "
+                "corrija o ativo antes de importar.")
+        # O QUE O EXTRATO SUBSTITUI. Pedido dele: "certifique-se de não
+        # duplicar os registros do diário com os que serem importados, o que
+        # sempre tem mais validade são os importados".
+        faixas = periodo_coberto_pelo_extrato(fechadas, sobras, formato or "MDY")
+        substituir = posicoes_substituidas_pelo_extrato(
+            carregar_posicoes(), faixas, conta_ativa_id())
+        if substituir:
+            por_origem = {}
+            for p in substituir:
+                o = p.get("origem") or "?"
+                por_origem[o] = por_origem.get(o, 0) + 1
+            velho = sum(float(p.get("pnl_final") or 0) for p in substituir)
+            partes.append(
+                f"\nO extrato MANDA no período que ele cobre. Vou aposentar "
+                f"{len(substituir)} registro(s) do diário que caem dentro dele "
+                f"(" + " · ".join(f"{k.lower()} {v}" for k, v in sorted(por_origem.items()))
+                + f"), que somavam US$ {velho:+,.2f}. Eles NÃO são apagados — "
+                "ficam marcados como substituídos e saem das contas.")
+        if not novas:
+            partes.append("\nNão há operação NOVA para incluir.")
+            self.log("📄 " + " ".join(partes))
+            messagebox.showinfo("Importar extrato", "\n".join(partes))
+            return
+
+        soma = sum(op["pontos"] * op["contratos"]
+                   * (valor_por_ponto_do_ativo(op["ativo"]) or 0) for op in novas)
+        partes.append(f"\nVou incluir {len(novas)} operação(ões) fechada(s), "
+                      f"somando US$ {soma:+,.2f}.")
+        partes.append("Incluir no diário agora?")
+        texto_final = "\n".join(partes)
+        self.log("📄 Extrato lido: " + texto_final.replace("\n", " "))
+        if not messagebox.askyesno("Importar extrato de ordens", texto_final):
+            self.log("📄 Importação cancelada por você. Nada foi gravado.")
+            return
+
+        # A APOSENTADORIA VEM ANTES DA INCLUSÃO, de propósito: se o programa
+        # cair no meio, o pior estado possível é o diário sem os registros
+        # antigos e sem os novos — falta dinheiro, e falta é visível. Na ordem
+        # inversa o pior estado seria com os dois, ou seja, tudo em dobro: um
+        # número maior, plausível, que ninguém questiona.
+        aposentadas = marcar_substituidas_pelo_extrato([p["id"] for p in substituir])
+        criadas = importar_operacoes_do_extrato(novas, formato or "MDY")
+        realizado = sum(float(p.get("pnl_final") or 0) for p in criadas)
+        if aposentadas:
+            self.log(f"📄 {aposentadas} registro(s) do diário marcados como "
+                     f"SUBSTITUÍDOS pelo extrato — continuam no disco, mas "
+                     f"saíram das contas.")
+        self.log(f"📄 Extrato importado: {len(criadas)} operação(ões) no diário, "
+                 f"resultado US$ {realizado:+,.2f}. Origem '{ORIGEM_EXTRATO}' — "
+                 f"dá para separá-las das suas e das do robô no diário.")
+        messagebox.showinfo(
+            "Importar extrato",
+            f"Incluí {len(criadas)} operação(ões).\n"
+            f"Resultado somado: US$ {realizado:+,.2f}"
+            + (f"\nRegistros antigos aposentados: {aposentadas}" if aposentadas else ""))
+        self._atualizar_dashboard()
 
     def _adicionar_operacao_manual(self):
         from tkinter import messagebox

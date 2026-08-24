@@ -258,14 +258,23 @@ class TestAsCamadasDoCluster(unittest.TestCase):
         self.assertLess(i_fundo, i_rosto)
 
     def test_a_camada_0_e_desligavel(self):
-        i = self.hud.index("def _desenhar_fundo_de_contexto")
-        self.assertIn('getattr(self, "contexto_de_fundo", True)', self.hud[i:i + 2600])
+        """O interruptor mudou de casa na v2.69, e a regra ficou mais forte.
+
+        Antes cada lugar de desenho consultava `contexto_de_fundo` por conta
+        própria. Agora quem responde é `_lugar()`, e ele resolve o conflito:
+        `contexto_de_fundo=False` com `lugar='fundo'` são duas verdades
+        contrárias sobre a mesma coisa, e desligado tem de vencer esteja o
+        lugar onde estiver."""
+        i = self.hud.index("def _lugar")
+        trecho = self.hud[i:i + 1400]
+        self.assertIn('getattr(self, "contexto_de_fundo", True)', trecho)
+        self.assertIn('return "nenhum"', trecho)
 
     def test_o_fundo_leva_veu_escuro(self):
         """Sem véu, o gráfico compete em brilho com o rosto e o equalizador,
         e o cockpit vira sopa visual."""
-        i = self.hud.index("def _desenhar_fundo_de_contexto")
-        self.assertIn("stipple", self.hud[i:i + 4200])
+        i = self.hud.index("def _desenhar_quadro_do_grafico")
+        self.assertIn("stipple", self.hud[i:i + 3600])
 
     def test_sem_captura_o_fundo_DIZ_o_motivo_em_vez_de_so_calar(self):
         """ESTA REGRA MUDOU, E MUDOU POR CAUSA DELE.
@@ -280,8 +289,8 @@ class TestAsCamadasDoCluster(unittest.TestCase):
         A regra nova: sem imagem, continua sem `create_image` — mas o quadro
         ESCREVE na tela por que está vazio. Silêncio segue proibido; o que
         deixou de valer é tratar ausência como resposta suficiente."""
-        i = self.hud.index("def _desenhar_fundo_de_contexto")
-        trecho = self.hud[i:i + 4200]
+        i = self.hud.index("def _desenhar_quadro_do_grafico")
+        trecho = self.hud[i:i + 3600]
         self.assertIn("if img is None:", trecho)
         self.assertIn("SEM IMAGEM", trecho)
         self.assertIn("aviso_fundo", trecho)
@@ -292,19 +301,29 @@ class TestAsCamadasDoCluster(unittest.TestCase):
         self.assertIn("self.imagem_fundo = imagem_tk", self.hud)
         self.assertIn("self.imagem_rosto = imagem_tk", self.hud)
 
-    def test_o_QUADRO_ESCURO_sai_sempre_ligado_ou_nao(self):
-        """Pedido dele: "certifique-se do gráfico ficar posicionado naquele
-        quadrado mais escuro cedido ao Orbe, por trás do Orbe".
+    def test_o_QUADRO_ANDA_JUNTO_com_o_grafico_e_nao_fica_orfao(self):
+        """ESTA REGRA MUDOU NA v2.69, E A MUDANÇA É O PONTO.
 
-        O quadro é a MOLDURA, não o conteúdo: sem ele, desligar o fundo
-        deixava um vazio sem forma no meio do cockpit."""
+        Ela dizia: "o quadro escuro sai SEMPRE, ligado ou desligado, porque é
+        a MOLDURA e não o conteúdo". Estava certa enquanto o gráfico morava
+        atrás do Orbe — sem o quadro, desligar deixava um vazio sem forma no
+        meio do cockpit.
+
+        Ele então pediu o gráfico no painel esquerdo, fixo. Com o gráfico
+        fora do meio, o mesmo quadro vira uma caixa vazia em volta do Orbe:
+        um elemento que não contém nada e não explica nada.
+
+        O que não mudou é o que interessa, e é isto que o teste crava: não
+        existe estado em que o cockpit mostre retângulo sem dono. O quadro
+        aparece com o gráfico e some com ele."""
         i = self.hud.index("def _desenhar_fundo_de_contexto")
-        trecho = self.hud[i:i + 2600]
-        i_quadro = trecho.index("create_rectangle")
-        i_guarda = trecho.index('getattr(self, "contexto_de_fundo", True)')
-        self.assertLess(i_quadro, i_guarda,
-                        "o quadro escuro tem de ser desenhado ANTES do "
-                        "interruptor — ele é a moldura, não o conteúdo")
+        trecho = self.hud[i:i + 1800]
+        i_guarda = trecho.index('self._lugar() != "fundo"')
+        i_quadro = trecho.index("_desenhar_quadro_do_grafico")
+        self.assertLess(i_guarda, i_quadro,
+                        "o quadro do meio só pode ser desenhado quando o "
+                        "gráfico mora lá")
+        self.assertIn("self._area_cluster = None", trecho)
 
     def test_a_area_do_cluster_e_PUBLICADA_para_quem_redimensiona(self):
         """Quem tem o Pillow é o main_app; quem sabe a geometria é o
@@ -315,17 +334,19 @@ class TestAsCamadasDoCluster(unittest.TestCase):
     def test_a_imagem_e_dimensionada_pela_AREA_e_nao_por_palpite(self):
         fonte = _fonte("main_app.py")
         i = fonte.index("CAMADA 0: o grafico ao fundo")
-        trecho = fonte[i:i + 3000]
-        self.assertIn("area_do_cluster()", trecho)
+        trecho = fonte[i:i + 3400]
+        # `area_do_grafico` na v2.69: UMA área para os dois lugares, porque
+        # quem redimensiona não tem por que saber onde o gráfico está.
+        self.assertIn("area_do_grafico()", trecho)
         self.assertNotIn('largura", 900) * 0.52', trecho)
 
     def test_sem_area_ainda_publicada_NAO_quebra(self):
         """Antes do primeiro desenho ela é None — vale a estimativa, e o
         quadro seguinte já sai no lugar certo."""
         fonte = _fonte("main_app.py")
-        i = fonte.index("area_do_cluster()")
-        self.assertIn("if area:", fonte[i:i + 400])
-        self.assertIn("else:", fonte[i:i + 700])
+        i = fonte.index("area_do_grafico()")
+        self.assertIn("if area:", fonte[i:i + 500])
+        self.assertIn("else:", fonte[i:i + 800])
 
     def test_o_chute_antigo_ESTOURAVA_o_quadro(self):
         """A régua em Python, com a mesma geometria do renderizador. Em HUD
@@ -389,10 +410,10 @@ class TestAsCamadasDoCluster(unittest.TestCase):
 
     def test_o_fundo_vem_da_MESMA_captura_que_o_motor_analisou(self):
         fonte = _fonte("main_app.py")
-        i = fonte.index("def _alimentar_grafico_do_orbe")
+        i = fonte.index("def _alimentar_um_orbe")
         trecho = fonte[i:i + 3000]
         self.assertIn("_ultimo_print", trecho)
-        self.assertIn("nao um feed ao vivo paralelo", trecho)
+        self.assertIn("ULTIMO_PRINT_FILE", trecho)
 
 
 class TestORostoEmImagem(unittest.TestCase):

@@ -121,10 +121,24 @@ class TestOIncertoNAOVIRANUMERO(unittest.TestCase):
         trataria None como zero e o buraco viraria 'empate'."""
         fonte = fonte_do_arquivo()
         alvo = 'status") == "FECHADA"'
-        for i, linha in enumerate(fonte.splitlines()):
+        linhas = fonte.splitlines()
+        for i, linha in enumerate(linhas):
             if alvo not in linha:
                 continue
-            janela = "\n".join(fonte.splitlines()[i:i + 3])
+            janela = "\n".join(linhas[i:i + 3])
+            # NEM TODA LEITURA DE 'FECHADA' É UMA SOMA, e o guarda precisa
+            # saber a diferença. Este teste caça AGREGAÇÃO — a lista de
+            # posições fechadas cujo pnl_final vai ser somado. Um trecho que
+            # TROCA o status (importação do extrato aposentando um registro,
+            # por exemplo) também compara com 'FECHADA', mas não soma nada:
+            # exigir `pnl_final is not None` ali não protege coisa nenhuma e
+            # empurraria quem escreve o código a disfarçar a comparação para
+            # escapar do teste — que é como um guarda bom vira teatro.
+            #
+            # A assinatura de quem escreve, e não soma, é a atribuição a
+            # ["status"] dentro da mesma janela.
+            if '["status"] =' in janela:
+                continue
             self.assertIn('pnl_final") is not None', janela,
                           f"linha {i + 1} agrega FECHADA sem checar pnl_final")
 
