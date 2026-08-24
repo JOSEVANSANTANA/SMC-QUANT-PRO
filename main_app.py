@@ -12372,19 +12372,38 @@ class SmcQuantApp(ctk.CTk):
             for linha in plataforma.diagnostico().split("\n"):
                 self.log(f"🖥️ {linha}")
             if plataforma.E_MACOS and not plataforma.permissao_de_tela_ok():
-                self.log(
-                    "⚠️ macOS: NÃO estou conseguindo ler o TÍTULO das janelas — "
-                    "elas vão aparecer só com o nome do aplicativo, e a captura "
-                    "pode sair preta.\n"
-                    "   Existem DUAS permissões, e basta uma delas funcionar:\n"
-                    "   1) Ajustes do Sistema → Privacidade e Segurança → "
-                    "GRAVAÇÃO DE TELA\n"
-                    "   2) Ajustes do Sistema → Privacidade e Segurança → "
-                    "ACESSIBILIDADE\n"
-                    "   Ligue o SMC Quant Pro (ou o Terminal, se abriu por ele) "
-                    "nas DUAS e REABRA o programa.\n"
-                    "   Depois clique em '🩺 Diagnosticar janelas' para conferir "
-                    "qual das duas passou a responder.")
+                # O AVISO SÓ SAI SE AFETAR O QUE ELE ESTÁ LENDO. Aba do Chrome
+                # é capturada pelo próprio Chrome e não passa pelo macOS — ver
+                # `plataforma.visao_em_risco`. Repetir a permissão para quem
+                # só monitora abas é gastar a atenção dele com um problema que
+                # ele não tem.
+                _risco, _quais = plataforma.visao_em_risco(
+                    janelas_monitoradas(), False)
+                _app, _cam = plataforma.quem_precisa_da_permissao()
+                if _risco:
+                    self.log(
+                        "⚠️ macOS: NÃO estou conseguindo ler o TÍTULO das "
+                        f"janelas, e {_quais}.\n"
+                        "   Existem DUAS permissões, e basta uma delas "
+                        "funcionar:\n"
+                        "   1) Ajustes do Sistema → Privacidade e Segurança → "
+                        "GRAVAÇÃO DE TELA\n"
+                        "   2) Ajustes do Sistema → Privacidade e Segurança → "
+                        "ACESSIBILIDADE\n"
+                        f"   MARQUE ESTE PROCESSO: {_app}  ({_cam})\n"
+                        "   É ele que o macOS vê rodando — marcar outro nome "
+                        "da lista não vale, e é o engano mais comum aqui.\n"
+                        "   Depois FECHE e reabra o programa: a permissão só é "
+                        "lida quando o processo nasce.")
+                else:
+                    self.log(
+                        "ℹ️ macOS: a permissão de Gravação de Tela não está "
+                        "concedida, mas ISSO NÃO TE ATRAPALHA AGORA: tudo que "
+                        "você monitora são abas do Chrome, e elas são "
+                        "capturadas pelo próprio navegador, sem passar pelo "
+                        "macOS. Só passa a importar no dia em que você "
+                        f"monitorar uma janela de outro aplicativo — aí marque "
+                        f"{_app} ({_cam}) em Gravação de Tela.")
         except Exception as e:
             self.log(f"⚠️ Não consegui montar o diagnóstico do sistema: {e}")
 
@@ -20206,15 +20225,40 @@ class SmcQuantApp(ctk.CTk):
             return
         if ok is not False:      # None = não se aplica (Windows). True = ok.
             return
+        # A PERMISSÃO AFETA O QUE EU ESTOU LENDO? Reclamação dele: "mas está
+        # capturando, aliás está tudo autorizado no Mac, não sei por que
+        # continua pedindo autorização".
+        #
+        # Ele estava certo. Todas as janelas dele são abas do Chrome, lidas
+        # pelo protocolo de depuração, que não toca no macOS — o diagnóstico
+        # do próprio programa já dizia "estas capturam SEM permissão do
+        # macOS". As duas informações existiam e ninguém as cruzava, então o
+        # alerta saía no log, no chat E no WhatsApp a cada arranque, sem ter
+        # o que alertar. Mesmo estrago do alarme de ordem inventada: aviso que
+        # aparece quando não há problema ensina a ignorar aviso.
+        try:
+            em_risco, quais = plataforma.visao_em_risco(
+                janelas_monitoradas(), ok)
+        except Exception:
+            em_risco, quais = True, ""
+        if not em_risco:
+            return
+        try:
+            app, caminho = plataforma.quem_precisa_da_permissao()
+        except Exception:
+            app, caminho = "SMC Quant Pro", ""
         aviso = (
             "⚠️ ATENÇÃO — VOU OPERAR SOZINHA COM A VISÃO EM RISCO: a permissão "
-            "de GRAVAÇÃO DE TELA do macOS não está concedida. Sem ela os "
-            "títulos das janelas vêm vazios e a captura pode sair PRETA — e "
-            "uma leitura de tela preta pode virar ordem. Enquanto isso, eu "
-            "suspendo a análise se a imagem vier em branco, mas o certo é "
-            "ligar agora: Ajustes do Sistema → Privacidade e Segurança → "
-            "Gravação de Tela (e Acessibilidade), marque o SMC Quant Pro e "
-            "REABRA o programa.")
+            "de GRAVAÇÃO DE TELA do macOS não está concedida, e "
+            f"{quais}. Sem ela os títulos das janelas vêm vazios e a captura "
+            "pode sair PRETA — e uma leitura de tela preta pode virar ordem. "
+            "Enquanto isso, eu suspendo a análise se a imagem vier em branco. "
+            "Para resolver: Ajustes do Sistema → Privacidade e Segurança → "
+            f"Gravação de Tela, e marque **{app}**"
+            + (f" ({caminho})" if caminho else "")
+            + ". É ESTE processo que o macOS vê rodando — marcar outro nome da "
+            "lista não vale. Depois FECHE e reabra o programa: o macOS só lê a "
+            "permissão quando o processo nasce.")
         self.log(aviso)
         try:
             self._chat_feed(aviso)

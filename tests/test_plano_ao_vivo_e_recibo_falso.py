@@ -205,7 +205,10 @@ class TestOAvisoDeTelaCegaSaiOndeEleOLHA(unittest.TestCase):
     def _corpo(self):
         fonte = fonte_do_arquivo()
         i = fonte.index("def _avisar_olho_cego_no_autonomo")
-        return fonte[i:i + 2600]
+        # Janela larga: a v2.70 acrescentou aqui a checagem de QUAIS janelas
+        # dependem da permissão (abas do Chrome não dependem) e o nome do
+        # processo a autorizar. Janela curta mede a prosa e não o código.
+        return fonte[i:i + 5200]
 
     def test_usa_a_funcao_que_JA_existia_na_plataforma(self):
         """`permissao_de_tela_ok` estava em plataforma.py sem ninguém chamar."""
@@ -239,7 +242,25 @@ class TestOAvisoDeTelaCegaSaiOndeEleOLHA(unittest.TestCase):
     def test_diz_ONDE_ligar_a_permissao(self):
         corpo = self._corpo()
         self.assertIn("Privacidade e Segurança", corpo)
-        self.assertIn("REABRA", corpo)
+        # SEM OLHAR A CAIXA DA LETRA: a regra é "mandar reabrir o programa",
+        # porque o macOS só lê a permissão quando o processo nasce. Cravar
+        # "REABRA" em maiúsculas transformava uma escolha de redação em
+        # falha de teste.
+        self.assertIn("reabra o programa", corpo.lower())
+
+    def test_diz_QUAL_PROCESSO_o_macOS_precisa_autorizar(self):
+        """Ele reclamou: "está tudo autorizado no Mac, não sei por que
+        continua pedindo autorização". Pode estar autorizado — para o
+        aplicativo errado. O macOS concede ao processo RESPONSÁVEL, não ao
+        nome do produto: quem abre pelo Terminal marca o Terminal."""
+        self.assertIn("quem_precisa_da_permissao", self._corpo())
+
+    def test_NAO_alarma_quando_a_permissao_nao_afeta_o_que_ele_le(self):
+        """A outra metade da reclamação: "mas está capturando". Estava — todas
+        as janelas dele são abas do Chrome, que o navegador captura sozinho,
+        sem passar pelo macOS. O alarme olhava só a permissão e nunca
+        perguntava o que estava sendo lido."""
+        self.assertIn("visao_em_risco", self._corpo())
 
 
 if __name__ == "__main__":

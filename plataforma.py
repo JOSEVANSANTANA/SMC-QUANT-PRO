@@ -688,8 +688,86 @@ def abas_chrome(porta=PORTA_CDP_PADRAO, forcar=False):
     return list(abas)
 
 
+ROTULO_ABA = "🌐 Chrome · "
+
+
 def _rotulo_aba(aba):
-    return "🌐 Chrome · " + aba["titulo"][:70]
+    return ROTULO_ABA + aba["titulo"][:70]
+
+
+def e_aba_de_navegador(rotulo):
+    """A janela é uma aba do Chrome capturada pelo próprio Chrome?
+
+    IMPORTA PORQUE ABA NÃO PRECISA DE PERMISSÃO DO macOS. Quem tira a foto é
+    o navegador, pelo protocolo de depuração: não passa por Gravação de Tela,
+    não precisa da janela visível, e não pega a moldura — só o conteúdo.
+
+    Sem esta pergunta, o programa não conseguia distinguir "estou cega" de
+    "estou enxergando por outro caminho", e gritava as duas com a mesma
+    frase. Ver `visao_em_risco`."""
+    return str(rotulo or "").strip().startswith(ROTULO_ABA)
+
+
+def visao_em_risco(janelas, permissao_ok):
+    """(em_risco, motivo) — a permissão do macOS AFETA o que está sendo lido?
+
+    ISTO NASCEU DE UMA RECLAMAÇÃO DELE, E ELE ESTAVA CERTO: "mas está
+    capturando, aliás está tudo autorizado no Mac, não sei por que continua
+    pedindo autorização".
+
+    O programa gritava "VOU OPERAR SOZINHA COM A VISÃO EM RISCO" sempre que
+    `permissao_de_tela_ok()` desse falso — e nunca perguntava o que ele estava
+    de fato capturando. No caso dele, TODAS as janelas monitoradas eram abas
+    do Chrome, lidas pelo protocolo de depuração, que não toca no macOS. O
+    diagnóstico do próprio programa já imprimia isso com todas as letras:
+    "ABAS DO CHROME — estas capturam SEM permissão do macOS". As duas
+    informações existiam; ninguém as cruzava.
+
+    E o estrago é o mesmo do alarme de ordem inventada que ele pegou no mesmo
+    dia: aviso que aparece quando não há problema ensina a ignorar aviso. Este
+    saía no log, no chat E no WhatsApp a cada arranque.
+
+    A regra: só há risco se ALGUMA janela monitorada depender da captura do
+    sistema. Uma só que dependa já justifica o alerta — mas aí o alerta diz
+    QUAL, em vez de acusar o conjunto."""
+    if permissao_ok is not False:
+        return False, ""                  # concedida, ou não se aplica
+    do_sistema = [j for j in (janelas or []) if not e_aba_de_navegador(j)]
+    if not janelas:
+        return True, ("nenhuma janela escolhida ainda — quando você escolher "
+                      "uma que não seja aba do Chrome, ela vai depender desta "
+                      "permissão")
+    if not do_sistema:
+        return False, ""
+    return True, ("depende(m) da captura do sistema: "
+                  + " · ".join(str(j)[:50] for j in do_sistema[:4]))
+
+
+def quem_precisa_da_permissao():
+    """O NOME DO PROCESSO QUE O macOS VAI LISTAR nos Ajustes.
+
+    A OUTRA METADE DA RECLAMAÇÃO DELE: "está tudo autorizado no Mac". Pode
+    estar — para o aplicativo errado. O macOS concede a permissão ao processo
+    RESPONSÁVEL, e não ao nome do produto. Quem abre o programa pelo Terminal
+    tem de marcar o **Terminal**; quem abre o .app tem de marcar o .app; quem
+    roda pelo Python do Homebrew pode ver "Python" na lista. A nossa mensagem
+    dizia "marque o SMC Quant Pro" — que, para ele, podia ser exatamente a
+    linha errada da lista.
+
+    Dizer o caminho do executável tira a adivinhação: ele confere na tela de
+    Ajustes se o que está marcado é ISTO."""
+    caminho = sys.executable or ""
+    nome = os.path.basename(caminho) or "?"
+    congelado = bool(getattr(sys, "frozen", False))
+    if congelado:
+        # Num .app empacotado o executável mora em Contents/MacOS/<nome>.
+        alvo = nome
+        for parte in caminho.split(os.sep):
+            if parte.endswith(".app"):
+                alvo = parte[:-4]
+                break
+        return alvo, caminho
+    return nome, caminho
 
 
 def capturar_aba_cdp(id_aba, porta=PORTA_CDP_PADRAO):
@@ -2097,9 +2175,18 @@ def diagnostico():
     if E_MACOS:
         linhas.append(f"Quartz (pyobjc): {'ok' if QUARTZ_DISPONIVEL else 'AUSENTE — instale pyobjc-framework-Quartz'}")
         perm = permissao_de_tela_ok()
+        # O NOME QUE O macOS VAI LISTAR NOS AJUSTES. Ele disse "está tudo
+        # autorizado no Mac" e o programa continuava reclamando: pode estar
+        # autorizado para o aplicativo ERRADO. O macOS concede ao processo
+        # responsável, não ao nome do produto — quem abre pelo Terminal marca
+        # o Terminal, quem abre o .app marca o .app. Sem esta linha ele fica
+        # procurando "SMC Quant Pro" numa lista onde talvez nem exista.
+        app, caminho = quem_precisa_da_permissao()
         linhas.append("Gravação de Tela: " + (
             "concedida" if perm else
-            "NÃO concedida — os títulos das janelas vêm vazios e a captura sai preta"))
+            "NÃO concedida — os títulos das janelas vêm vazios e a captura "
+            "pelo sistema sai preta (abas do Chrome NÃO dependem disto)"))
+        linhas.append(f"Autorize ESTE processo: {app}  ({caminho})")
         ok_sc, _ = _rodar(["which", "screencapture"], timeout=5)
         linhas.append(f"screencapture: {'ok' if ok_sc else 'AUSENTE (inesperado no macOS)'}")
     janelas = listar_janelas()
