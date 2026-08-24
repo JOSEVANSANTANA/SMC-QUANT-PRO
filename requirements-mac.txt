@@ -74,6 +74,12 @@ pyobjc-framework-AVFoundation>=10.0
 pyobjc-framework-Vision>=10.0
 
 # ------------------------------------------------------------------
+# LEITURA DO EXTRATO DE ORDENS EM PDF (aba Plano de Trading).
+# OPCIONAL: o programa tem um leitor proprio embutido, que usa so a
+# biblioteca padrao e da conta do relatorio da Tradovate. O pypdf entra
+# como reforco para PDFs de outras corretoras com fonte incomum.
+pypdf>=4.0.0
+
 # EMPACOTAR EM .app (só para gerar o aplicativo; não é preciso para rodar)
 # ------------------------------------------------------------------
 # pyinstaller>=6.3.0

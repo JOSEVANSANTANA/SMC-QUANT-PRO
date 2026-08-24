@@ -65,9 +65,9 @@ class CyberHUDCanvasRenderer:
         # segura imagem sozinho — sem isso o coletor leva e some sem erro.
         self.imagem_fundo = None
         self.contexto_de_fundo = True
-        # Onde o gráfico mora: 'esquerda' (padrão), 'fundo' ou 'nenhum'.
-        # Ver `_lugar`. O padrão mudou a pedido dele na v2.69.
-        self.lugar_do_grafico = "esquerda"
+        # Onde o gráfico mora: 'esquerda', 'fundo' ou 'nenhum' (padrão).
+        # Ver `_lugar`. Desligado por padrão desde a v2.70, a pedido dele.
+        self.lugar_do_grafico = "nenhum"
         self.aviso_fundo = ""
         self.imagem_rosto = None
         self.angulo_rotacao = 0.0
@@ -304,10 +304,15 @@ class CyberHUDCanvasRenderer:
     def _lugar(self):
         """Onde o gráfico mora: 'esquerda', 'fundo' ou 'nenhum'.
 
-        O padrão é ESQUERDA por pedido dele — "considere desligar o gráfico que
-        está por detrás do orbe e tenta colocar ali do lado esquerdo mesmo como
-        recomendado anteriormente, fixo". Atrás do Orbe continua existindo
-        porque foi construído e funciona; deixou de ser o padrão."""
+        O PADRÃO É "NENHUM" DESDE A v2.70, e a razão está na fala dele:
+        "o gráfico não apareceu, também desliga essa função do gráfico,
+        desisto dela, nem apareceu atrás do orbe, nem do lado, deixa para lá".
+
+        Os dois lugares continuam inteiros e testados — nada foi arrancado, e
+        o menu de Configurações liga qualquer um dos dois em um clique. O que
+        mudou foi só o padrão. Enfeite ligado que não aparece cobra atenção no
+        meio do pregão, e atenção no pregão é o recurso mais caro que ele
+        tem."""
         # O INTERRUPTOR ANTIGO MANDA NO LUGAR NOVO, e não ao contrário.
         # `contexto_de_fundo=False` e `lugar='fundo'` são duas verdades
         # contrárias sobre a mesma coisa, e duas verdades sobre o mesmo
@@ -316,7 +321,7 @@ class CyberHUDCanvasRenderer:
         if not getattr(self, "contexto_de_fundo", True):
             return "nenhum"
         lugar = str(getattr(self, "lugar_do_grafico", "") or "").lower()
-        return lugar if lugar in ("esquerda", "fundo", "nenhum") else "esquerda"
+        return lugar if lugar in ("esquerda", "fundo", "nenhum") else "nenhum"
 
     def _desenhar_fundo_de_contexto(self, cx, cy, largura_centro, h):
         """CAMADA 0 — o grafico ATRAS DO ORBE, quando esse for o lugar dele.

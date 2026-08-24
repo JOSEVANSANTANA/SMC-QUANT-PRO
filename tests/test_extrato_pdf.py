@@ -64,6 +64,25 @@ if RAIZ not in sys.path:
 import extrato_pdf as E          # noqa: E402
 
 
+def _so_codigo(texto):
+    """Tira comentário e docstring: o teste mede o CÓDIGO, não a prosa que o
+    explica (lição da casa — ver test_conta_orfa.py)."""
+    linhas, dentro = [], False
+    for ln in texto.splitlines():
+        n = ln.count('"""') + ln.count("'''")
+        if dentro:
+            if n % 2 == 1:
+                dentro = False
+            continue
+        if n % 2 == 1:
+            dentro = True
+            continue
+        if n >= 2 or ln.strip().startswith("#"):
+            continue
+        linhas.append(ln.split("  # ")[0])
+    return "\n".join(linhas)
+
+
 # O CABEÇALHO É COPIADO DO RELATÓRIO REAL, com as quebras onde elas caem de
 # verdade. Um cabeçalho "limpo" aqui testaria um documento que não existe.
 CAB = ("Order ID B/S Quantity Contract Type Limit \nPrice\nStop \nPrice\n"
@@ -405,3 +424,98 @@ class TestSemLeitorDePdfELEDIZOQueInstalar(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestOLeitorQueVIAJAJUNTO(unittest.TestCase):
+    """NA MÁQUINA DELE NÃO HAVIA LEITOR NENHUM, e o recurso nasceu morto.
+
+    Log de 24/08:
+        📄 Não consegui abrir o PDF: achei um leitor de PDF mas ele não
+           conseguiu abrir este arquivo (_texto_pdftotext: [Errno 2] No such
+           file or directory: 'pdftotext')
+
+    Duas coisas erradas numa linha só:
+
+      1. A MENSAGEM MENTIA O DIAGNÓSTICO. `pdftotext` ausente levanta
+         FileNotFoundError, e só o ImportError era tratado como "não existe".
+         Então "o programa não está instalado" foi classificado como "o
+         programa tentou e não conseguiu abrir este arquivo" — e a frase
+         mandava ele conferir o PDF quando o problema era a instalação. Era
+         exatamente a distinção que a classe `SemLeitorDePdf` existe para
+         preservar, e que eu perdi na implementação.
+
+      2. NENHUM dos quatro leitores existia ali: nem pypdf, nem pdfplumber,
+         nem pymupdf, nem o binário do poppler. Um recurso que só funciona em
+         metade das instalações é um recurso que ele não pode usar no dia que
+         precisa, e "roda pip install" não é resposta para quem abre o
+         programa pelo ícone.
+
+    Agora existe um leitor embutido que usa só a biblioteca padrão (zlib), e
+    ele lê o extrato real de ponta a ponta.
+    """
+
+    PDF_REAL = None          # preenchido no setUpClass quando houver um
+
+    def test_o_binario_ausente_e_tratado_como_leitor_INEXISTENTE(self):
+        """FileNotFoundError tem de cair no mesmo caminho do ImportError."""
+        fonte = open(os.path.join(RAIZ, "extrato_pdf.py"), encoding="utf-8").read()
+        i = fonte.index("def texto_do_pdf")
+        corpo = fonte[i:i + 2000]
+        self.assertIn("except (ImportError, FileNotFoundError)", corpo)
+
+    def test_o_leitor_embutido_e_a_ULTIMA_tentativa(self):
+        """As bibliotecas de verdade vêm antes: elas lidam com PDFs que o
+        leitor simples não alcança (fonte com CMap próprio, por exemplo)."""
+        fonte = open(os.path.join(RAIZ, "extrato_pdf.py"), encoding="utf-8").read()
+        i = fonte.index("for tentativa in (")
+        ordem = fonte[i:i + 200]
+        self.assertLess(ordem.index("_texto_pypdf"), ordem.index("_texto_embutido"))
+
+    def test_o_leitor_embutido_usa_SO_biblioteca_padrao(self):
+        """Se ele passar a depender de pacote, deixa de ser a rede de
+        segurança e vira mais um leitor que pode faltar."""
+        fonte = open(os.path.join(RAIZ, "extrato_pdf.py"), encoding="utf-8").read()
+        i = fonte.index("def _texto_embutido")
+        j = fonte.index("def _texto_do_fluxo")
+        # SEM A DOCSTRING: ela CITA os outros leitores para explicar por que
+        # este existe, e um teste que procura texto no fonte casaria com a
+        # explicação e puniria a documentação. Lição já paga neste projeto.
+        corpo = _so_codigo(fonte[i:j])
+        self.assertIn("import zlib", corpo)
+        for pacote in ("pypdf", "PyPDF2", "pdfplumber", "fitz", "subprocess"):
+            self.assertNotIn(pacote, corpo, f"o leitor embutido não pode usar {pacote}")
+
+    def test_arquivo_que_nao_e_PDF_e_recusado_de_cara(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fh:
+            fh.write(b"isto nao e um PDF de jeito nenhum")
+            caminho = fh.name
+        try:
+            with self.assertRaises(Exception):
+                E._texto_embutido(caminho)
+        finally:
+            os.unlink(caminho)
+
+    def test_os_escapes_de_string_do_PDF_sao_desfeitos(self):
+        self.assertEqual(E._texto_de_literal(rb"MES\(U6\)"), "MES(U6)")
+        self.assertEqual(E._texto_de_literal(rb"a\\b"), "a\\b")
+        self.assertEqual(E._texto_de_literal(rb"\101\102"), "AB")
+
+    def test_os_operadores_de_linha_viram_QUEBRA_DE_LINHA(self):
+        """Sem isso a tabela inteira sairia numa linha só e as colunas de uma
+        ordem grudariam na seguinte — que é o defeito que fez o título de
+        seção virar valor nocional na primeira versão do leitor."""
+        fluxo = b"BT (7000.00) Tj 0 -12 Td (Filled) Tj ET"
+        saida = E._texto_do_fluxo(fluxo)
+        self.assertIn("7000.00", saida)
+        self.assertIn("Filled", saida)
+        self.assertIn("\n", saida)
+
+    def test_pedacos_de_texto_saem_SEPARADOS_e_nao_colados(self):
+        """Separar de menos colaria dois números em um só, e aí a leitura
+        vira ficção."""
+        saida = E._texto_do_fluxo(b"BT [(7000) -300 (8000)] TJ ET")
+        self.assertIn("7000", saida)
+        self.assertIn("8000", saida)
+        self.assertNotIn("70008000", saida,
+                         "os dois números grudaram e viraram um só")

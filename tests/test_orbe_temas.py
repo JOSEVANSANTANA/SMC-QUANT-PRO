@@ -334,7 +334,7 @@ class TestAsCamadasDoCluster(unittest.TestCase):
     def test_a_imagem_e_dimensionada_pela_AREA_e_nao_por_palpite(self):
         fonte = _fonte("main_app.py")
         i = fonte.index("CAMADA 0: o grafico ao fundo")
-        trecho = fonte[i:i + 3400]
+        trecho = fonte[i:i + 5200]
         # `area_do_grafico` na v2.69: UMA área para os dois lugares, porque
         # quem redimensiona não tem por que saber onde o gráfico está.
         self.assertIn("area_do_grafico()", trecho)
@@ -385,7 +385,10 @@ class TestAsCamadasDoCluster(unittest.TestCase):
         fonte = _fonte("main_app.py")
         self.assertIn("def _porque_sem_fundo", fonte)
         i = fonte.index("CAMADA 0: o grafico ao fundo")
-        trecho = fonte[i:i + 2500]
+        # Janela larga: o bloco que escolhe ONDE o gráfico mora entrou no
+        # topo deste trecho na v2.70, e janela curta passa a medir o
+        # comentário em vez do código.
+        trecho = fonte[i:i + 4200]
         self.assertIn("_porque_sem_fundo", trecho)
         for causa in ("Pillow", "captura de gráfico em disco", "converter a captura"):
             self.assertIn(causa, fonte, f"a causa '{causa}' precisa ser dita")
@@ -395,7 +398,7 @@ class TestAsCamadasDoCluster(unittest.TestCase):
         esconderia o resto."""
         fonte = _fonte("main_app.py")
         i = fonte.index("def _porque_sem_fundo")
-        self.assertIn("_sem_fundo_dito", fonte[i:i + 1600])
+        self.assertIn("ditos.get(chave)", fonte[i:i + 2600])
 
     def test_DESLIGADO_nao_e_tratado_como_defeito(self):
         """Quem desligou sabe por que desligou. Avisar ali seria ruído."""
@@ -405,7 +408,10 @@ class TestAsCamadasDoCluster(unittest.TestCase):
         i = fonte.index("CAMADA 0: o grafico ao fundo")
         trecho = fonte[i:i + 2500]
         j = trecho.index("if not ligado:")
-        self.assertIn("_sem_fundo_dito = None", trecho[j:j + 220])
+        # O silenciador virou um por HUD na v2.70 (ver `_porque_sem_fundo`):
+        # com um valor só, o HUD que dava certo apagava o aviso do que
+        # dava errado e a mesma linha voltava a cada quadro.
+        self.assertIn("_esquecer_motivo_do_fundo(chave)", trecho[j:j + 260])
         self.assertIn("desligado não é defeito", trecho[j:j + 220])
 
     def test_o_fundo_vem_da_MESMA_captura_que_o_motor_analisou(self):

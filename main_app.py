@@ -11104,6 +11104,35 @@ _RE_ACAO_INVENTADA = re.compile(
     r"✅\s*enviado\b)",
     re.IGNORECASE)
 
+# DESCRIÇÃO DE ESTADO NÃO É CONFISSÃO DE AÇÃO.
+#
+# 24/08, 12:08. Ela respondeu "Print capturado às doze e oito... Estou com a
+# posição zerada na mesa e o motor ligado fazendo a varredura" — e levou o
+# alarme vermelho inteiro em cima: "EU NÃO FIZ NADA DISSO. O texto acima diz
+# que uma ordem foi cancelada, enviada ou que a posição foi encerrada."
+#
+# Só que o texto NÃO dizia nada disso. Dizia que a posição ESTÁ zerada, que é
+# leitura de tela, não ação na corretora. O culpado é o `(foi\s+)?` do padrão
+# de cima: com o "foi" opcional, "posição zerada" dispara igual a "a posição
+# foi zerada".
+#
+# E o estrago não é cosmético. Este é o alarme mais importante do programa —
+# o que separa "ela mexeu na sua conta" de "ela só falou". Alarme que toca
+# sozinho ensina a ignorar alarme, e no dia em que o modelo de fato inventar
+# um cancelamento, ele vai passar o olho e seguir em frente.
+#
+# A regra: a frase que TAMBÉM descreve estado ("estou com", "está", "segue",
+# "permanece", "continua") não é acusada. A conferência é por FRASE, e não
+# pelo texto inteiro — senão "Cancelei todas as ordens, estou com a posição
+# zerada" viraria um jeito de escapar do alarme escrevendo uma frase inocente
+# ao lado da mentira.
+_RE_DESCRICAO_DE_ESTADO = re.compile(
+    r"\b(estou|est[aá]|estava|estamos|continu[ao]|segue|permanece|permanecem|"
+    r"sigo|fiquei|ficou|encontra-se|consta|aparece|mostra|indica)\b"
+    r"|\bcom\s+a\s+posi[çc][aã]o\b"
+    r"|\bposi[çc][aã]o\s+atual\b",
+    re.IGNORECASE)
+
 
 def censurar_acao_inventada(resposta):
     """A TIGER disse que MEXEU na corretora? Devolve (texto, mentiu).
@@ -11125,7 +11154,21 @@ def censurar_acao_inventada(resposta):
     # Não censura descrições de tela, prints ou histórico do gráfico
     if "comando de print" in t_lower or "capturou a tela" in t_lower or "última leitura do motor" in t_lower or "relatório" in t_lower:
         return texto, False
-    if not _RE_ACAO_INVENTADA.search(texto):
+    # FRASE A FRASE. Ver `_RE_DESCRICAO_DE_ESTADO`: uma frase que descreve
+    # estado ("estou com a posição zerada") não é a mesma coisa que uma que
+    # confessa ação ("a posição foi zerada"), e olhar o texto inteiro de uma
+    # vez confundia as duas — o alarme mais importante do programa passou a
+    # tocar sozinho em cima de leitura de tela.
+    #
+    # Por frase, e não pelo texto todo, também na direção contrária: assim
+    # "Cancelei todas as ordens, estou com a posição zerada" continua sendo
+    # pego, porque a frase da mentira é julgada sozinha.
+    culpada = None
+    for frase in re.split(r"(?<=[.!?])\s+|\n+", texto):
+        if _RE_ACAO_INVENTADA.search(frase) and not _RE_DESCRICAO_DE_ESTADO.search(frase):
+            culpada = frase
+            break
+    if culpada is None:
         return texto, False
     aviso = (
         "\n\n🛑 ATENÇÃO — EU NÃO FIZ NADA DISSO. O texto acima diz que uma "
@@ -12858,7 +12901,7 @@ class SmcQuantApp(ctk.CTk):
             _cfg_g = carregar_config()
             _lugar = str(_cfg_g.get("lugar_do_grafico", "") or "").lower()
             if _lugar not in _ROTULO_DO_LUGAR:
-                _lugar = "esquerda" if _cfg_g.get("contexto_de_fundo", True) else "nenhum"
+                _lugar = "nenhum"
             ctk.CTkLabel(linha_ctx, text="Gráfico do ativo:", text_color=COR["dim"],
                          font=ctk.CTkFont(size=11)).pack(side="left", padx=(0, 6))
             self._var_lugar_gr = tk.StringVar(value=_ROTULO_DO_LUGAR[_lugar])
@@ -17083,7 +17126,7 @@ class SmcQuantApp(ctk.CTk):
         self.log(f"🎨 Estilo do Orbe: {rotulo}. Só o visual mudou — "
                  "telemetria, plano e motor seguem iguais.")
 
-    def _porque_sem_fundo(self, motivo):
+    def _porque_sem_fundo(self, motivo, chave="geral"):
         """Diz UMA VEZ por que o gráfico de fundo não apareceu.
 
         ESTE MÉTODO NASCEU DE UM ERRO MEU. A primeira versão da camada 0
@@ -17098,11 +17141,38 @@ class SmcQuantApp(ctk.CTk):
         falha MUDA de enfeite consome a tarde de quem está tentando usar.
 
         UMA VEZ por motivo, e não a cada redesenho: o HUD redesenha ~12 vezes
-        por segundo, e repetir isso encheria o log e esconderia o resto."""
-        if motivo and motivo != getattr(self, "_sem_fundo_dito", None):
-            self._sem_fundo_dito = motivo
-            self.log(f"🖼️ Gráfico ao fundo do Orbe não apareceu: {motivo}.")
+        por segundo, e repetir isso encheria o log e esconderia o resto.
+
+        UMA VEZ POR MOTIVO **E POR HUD** — e este `chave` nasceu de um defeito
+        que o log dele mostrou com todas as letras. Existem dois HUDs (o
+        embutido e o solto), e o silenciador era um valor só. Quando um deles
+        conseguia a imagem e o outro não, o que conseguia zerava o silenciador
+        e o que falhava dizia o motivo de novo — a cada quadro, para sempre.
+        No log dele a mesma frase saiu quase trinta vezes, empurrando para
+        cima do rolo as linhas de ordem enviada e de posição encerrada, que
+        são as que importam. Log entupido por enfeite é enfeite atrapalhando
+        a mesa."""
+        ditos = getattr(self, "_sem_fundo_dito", None)
+        if not isinstance(ditos, dict):
+            ditos = self._sem_fundo_dito = {}
+        if motivo and motivo != ditos.get(chave):
+            ditos[chave] = motivo
+            self.log(f"🖼️ Gráfico do ativo não apareceu: {motivo}.")
         return None
+
+    def _esquecer_motivo_do_fundo(self, chave=None):
+        """Zera o silenciador — de UM HUD, ou de todos quando `chave` é None.
+
+        Zerar o de todos a partir do sucesso de um só foi exatamente o que
+        criou a repetição infinita. Aqui a escolha é explícita."""
+        ditos = getattr(self, "_sem_fundo_dito", None)
+        if not isinstance(ditos, dict):
+            self._sem_fundo_dito = {}
+            return
+        if chave is None:
+            ditos.clear()
+        else:
+            ditos.pop(chave, None)
 
     def _alimentar_grafico_do_orbe(self):
         """CAMADA 0 e CAMADA 1 do Orbe: o fundo de contexto e o rosto em PNG.
@@ -17146,10 +17216,13 @@ class SmcQuantApp(ctk.CTk):
         except Exception as e:
             return self._porque_sem_fundo(f"o Pillow não carregou ({e})")
         cfg = carregar_config()
-        for r in renderizadores:
-            self._alimentar_um_orbe(r, cfg, Image, ImageTk)
+        for n, r in enumerate(renderizadores):
+            # A CHAVE IDENTIFICA O HUD. Ver `_porque_sem_fundo`: com um
+            # silenciador só, o HUD que dava certo apagava o aviso do que
+            # dava errado, e a mesma linha voltava a cada quadro.
+            self._alimentar_um_orbe(r, cfg, Image, ImageTk, chave=f"hud{n}")
 
-    def _alimentar_um_orbe(self, r, cfg, Image, ImageTk):
+    def _alimentar_um_orbe(self, r, cfg, Image, ImageTk, chave="geral"):
         """Monta as camadas 0 e 1 de UM renderizador. Ver `_alimentar_grafico_do_orbe`.
 
         Cada HUD tem largura própria, então a imagem é redimensionada por HUD
@@ -17166,9 +17239,16 @@ class SmcQuantApp(ctk.CTk):
             # O interruptor antigo (`contexto_de_fundo`) continua sendo lido:
             # quem já tinha desligado o fundo não pode ver o gráfico voltar
             # sozinho num canto novo só porque o padrão mudou.
+            #
+            # O PADRÃO PASSOU A SER "NÃO MOSTRAR" NA v2.70, A PEDIDO DELE:
+            # "o gráfico não apareceu, também desliga essa função do gráfico,
+            # desisto dela, nem apareceu atrás do orbe, nem do lado, deixa
+            # para lá". O recurso continua inteiro no menu para o dia em que
+            # ele quiser tentar de novo — o que mudou foi só o padrão, porque
+            # enfeite ligado que não aparece custa atenção no meio do pregão.
             lugar = str(cfg.get("lugar_do_grafico", "") or "").lower()
             if lugar not in ("esquerda", "fundo", "nenhum"):
-                lugar = "esquerda" if cfg.get("contexto_de_fundo", True) else "nenhum"
+                lugar = "nenhum"
             ligado = lugar != "nenhum"
             tk_fundo = None
             # O ARQUIVO EM DISCO É A FONTE, e não o atributo em memória.
@@ -17187,13 +17267,13 @@ class SmcQuantApp(ctk.CTk):
                 caminho = ULTIMO_PRINT_FILE if os.path.exists(ULTIMO_PRINT_FILE) else None
             aviso = ""
             if not ligado:
-                self._sem_fundo_dito = None      # desligado não é defeito
+                self._esquecer_motivo_do_fundo(chave)   # desligado não é defeito
             elif not caminho:
                 aviso = ("aguardando a primeira captura do motor "
                          "(ela nasce no 1º ciclo de análise)")
                 self._porque_sem_fundo(
                     "ainda não existe captura de gráfico em disco — ela nasce "
-                    "no primeiro ciclo de análise do motor")
+                    "no primeiro ciclo de análise do motor", chave)
             else:
                 try:
                     # O TAMANHO SAI DA ÁREA REAL DO CLUSTER, não de um palpite.
@@ -17224,7 +17304,7 @@ class SmcQuantApp(ctk.CTk):
                     _orig = f"{img.width}x{img.height}"
                     img.thumbnail((larg, alt))
                     tk_fundo = ImageTk.PhotoImage(img)
-                    self._sem_fundo_dito = None
+                    self._esquecer_motivo_do_fundo(chave)
                     # O RECIBO DO QUE DEU CERTO, guardado para o interruptor
                     # poder mostrar. Sucesso mudo é o que obriga a abrir o log
                     # para descobrir se o clique fez alguma coisa.
@@ -17239,7 +17319,8 @@ class SmcQuantApp(ctk.CTk):
                     aviso = f"falhou ao converter a captura: {e}"
                     self._fundo_aplicado = None
                     self._porque_sem_fundo(
-                        f"não consegui converter a captura para o painel ({e})")
+                        f"não consegui converter a captura para o painel ({e})",
+                        chave)
             if tk_fundo is None and ligado:
                 self._fundo_aplicado = None
             if (ligado and tk_fundo is not None and lugar == "esquerda"
@@ -17251,7 +17332,7 @@ class SmcQuantApp(ctk.CTk):
                 # que gerou a v2.68.
                 self._porque_sem_fundo(
                     "o painel esquerdo não tem altura para o gráfico nesta "
-                    "janela — abra o Modo Dividido ou aumente o HUD")
+                    "janela — abra o Modo Dividido ou aumente o HUD", chave)
             try:
                 # O AVISO VAI PARA DENTRO DO QUADRO. Quando o fundo está
                 # ligado e não há imagem, o quadro escreve o porquê na própria
@@ -17347,7 +17428,7 @@ class SmcQuantApp(ctk.CTk):
             self.log("🖼️ Gráfico do ativo: não mostrar.")
             self._alimentar_grafico_do_orbe()
             return
-        self._sem_fundo_dito = None
+        self._esquecer_motivo_do_fundo()
         self._fundo_aplicado = None
         self._alimentar_grafico_do_orbe()
         onde = _ROTULO_DO_LUGAR[chave]
@@ -17379,7 +17460,7 @@ class SmcQuantApp(ctk.CTk):
                      "cluster escuro, só rosto e telemetria.")
             self._alimentar_grafico_do_orbe()
             return
-        self._sem_fundo_dito = None          # no clique, quero ouvir de novo
+        self._esquecer_motivo_do_fundo()     # no clique, quero ouvir de novo
         self._fundo_aplicado = None
         self._alimentar_grafico_do_orbe()
         aplicado = getattr(self, "_fundo_aplicado", None)

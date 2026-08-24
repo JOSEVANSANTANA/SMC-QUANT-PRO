@@ -348,7 +348,7 @@ class TestOInterruptorDaRecibo(unittest.TestCase):
     def test_o_clique_zera_o_silenciador_para_ouvir_a_causa_de_novo(self):
         """`_porque_sem_fundo` fala uma vez por causa para não inundar o log a
         12 quadros por segundo. No clique manual, ele PRECISA ouvir de novo."""
-        self.assertIn("_sem_fundo_dito = None", self.corpo)
+        self.assertIn("_esquecer_motivo_do_fundo()", self.corpo)
 
     def test_o_recibo_traz_o_arquivo_e_as_medidas(self):
         i = self.codigo.index("def _alimentar_um_orbe")

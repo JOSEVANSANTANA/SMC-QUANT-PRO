@@ -124,12 +124,22 @@ def texto_do_pdf(caminho):
     pacote específico transformaria "importar extrato" num recurso que só
     funciona em metade das instalações."""
     erros = []
-    for tentativa in (_texto_pypdf, _texto_pdfplumber, _texto_fitz, _texto_pdftotext):
+    for tentativa in (_texto_pypdf, _texto_pdfplumber, _texto_fitz,
+                      _texto_pdftotext, _texto_embutido):
         try:
             txt = tentativa(caminho)
             if txt and txt.strip():
                 return txt
-        except ImportError:
+        except (ImportError, FileNotFoundError):
+            # LEITOR QUE NÃO EXISTE NÃO É LEITOR QUE FALHOU, e a diferença
+            # mandou ele para o conserto errado. `pdftotext` ausente levanta
+            # FileNotFoundError, não ImportError — então a primeira versão
+            # classificava "o programa não está instalado" como "o programa
+            # tentou e não conseguiu abrir este arquivo", e a mensagem dizia
+            # para ele conferir o PDF quando o problema era a instalação.
+            #
+            # Foi exatamente a distinção que eu escrevi a classe de exceção
+            # para preservar, e que eu mesmo perdi na implementação.
             continue
         except Exception as e:                      # leitor existe mas falhou
             erros.append(f"{tentativa.__name__}: {e}")
@@ -138,8 +148,149 @@ def texto_do_pdf(caminho):
             "achei um leitor de PDF mas ele não conseguiu abrir este arquivo "
             "(" + " | ".join(erros) + ")")
     raise SemLeitorDePdf(
-        "não há leitor de PDF nesta instalação. Instale um destes: "
-        "'pip install pypdf' (o mais leve), pdfplumber ou pymupdf.")
+        "não consegui extrair texto deste PDF. Ele pode ser um PDF de imagem "
+        "(digitalizado), que precisa de OCR. Para PDFs de texto, "
+        "'pip install pypdf' costuma resolver.")
+
+
+# ---------------------------------------------------------------------------
+# 1b. O LEITOR QUE VIAJA JUNTO
+# ---------------------------------------------------------------------------
+def _texto_embutido(caminho):
+    """Extrai o texto SEM depender de nada instalado. Última tentativa.
+
+    POR QUE ISTO EXISTE, E NÃO É CAPRICHO. Na máquina dele nenhum dos quatro
+    leitores anteriores existia — nem pypdf, nem pdfplumber, nem pymupdf, nem
+    o binário `pdftotext` do poppler. O recurso nasceu morto ali, e a mensagem
+    de erro ainda mandava conferir o arquivo. Um recurso que só funciona em
+    metade das instalações é um recurso que ele não pode usar no dia que
+    precisa, e "roda `pip install`" não é resposta para quem abriu o programa
+    pelo ícone.
+
+    COMO FUNCIONA: um PDF de texto guarda o conteúdo em objetos `stream`,
+    quase sempre comprimidos com Flate — que é zlib, e zlib é biblioteca
+    padrão do Python. Dentro do fluxo descomprimido, o texto aparece nos
+    operadores de exibição: `(texto) Tj`, `[(a) -300 (b)] TJ`, `'` e `"`.
+
+    O QUE ELE NÃO FAZ, e é importante dizer: não lida com fonte de codificação
+    própria (Identity-H com CMap embutido), em que os bytes são números de
+    glifo e não letras. Nesse caso ele devolve lixo — e lixo aqui não vira
+    diário errado, porque nenhuma linha do lixo casa com o formato de ordem e
+    o programa responde "não encontrei ordem nenhuma neste arquivo". Falhar
+    dizendo "não achei" é o pior desfecho aceitável; o inaceitável seria
+    importar números inventados.
+    """
+    import re as _re
+    import zlib
+    with open(caminho, "rb") as fh:
+        bruto = fh.read()
+    if not bruto.startswith(b"%PDF"):
+        raise ValueError("não parece um PDF (falta a assinatura %PDF)")
+
+    partes = []
+    for m in _re.finditer(rb"stream\r?\n(.*?)endstream", bruto, _re.S):
+        dados = m.group(1)
+        try:
+            dados = zlib.decompress(dados)
+        except zlib.error:
+            try:
+                # Alguns geradores deixam bytes soltos depois do fluxo; o
+                # descompressor tolerante aproveita o que der.
+                dados = zlib.decompressobj().decompress(dados)
+            except zlib.error:
+                continue                    # fluxo de imagem ou fonte: pula
+        if b"Tj" not in dados and b"TJ" not in dados:
+            continue                        # não é fluxo de conteúdo de texto
+        partes.append(_texto_do_fluxo(dados))
+    texto = "\n".join(p for p in partes if p.strip())
+    if not texto.strip():
+        raise ValueError("PDF sem fluxo de texto legível (pode ser digitalizado)")
+    return texto
+
+
+_RE_TEXTO_PDF = re.compile(
+    rb"\((?:\\.|[^\\()])*\)\s*(?:Tj|TJ|'|\")"     # (texto) Tj
+    rb"|\[(?:[^\[\]\\]|\\.)*\]\s*TJ"              # [(a) -300 (b)] TJ
+    rb"|<[0-9A-Fa-f\s]*>\s*(?:Tj|TJ)"             # <hex> Tj
+    rb"|(?:Td|TD|T\*|Tm)",                        # quebras de linha
+    re.S)
+
+
+def _texto_do_fluxo(dados):
+    """Texto de UM fluxo de conteúdo já descomprimido.
+
+    Os operadores de posicionamento (`Td`, `TD`, `T*`, `Tm`) viram quebra de
+    linha. Sem isso, a tabela inteira sairia numa linha só e as colunas de uma
+    ordem grudariam na seguinte — que é justamente o defeito que fez o título
+    de seção virar valor nocional na primeira versão do leitor."""
+    saida = []
+    for m in _RE_TEXTO_PDF.finditer(dados):
+        peca = m.group(0)
+        if peca[:1] not in (b"(", b"[", b"<"):
+            saida.append("\n")
+            continue
+        if peca.startswith(b"<"):
+            hexa = re.sub(rb"[^0-9A-Fa-f]", b"", peca[1:peca.rindex(b">")])
+            try:
+                saida.append(bytes.fromhex(hexa.decode()).decode("latin-1"))
+            except ValueError:
+                pass
+            saida.append(" ")
+            continue
+        # O DESLOCAMENTO DENTRO DE UM `TJ` DECIDE SE HÁ ESPAÇO ALI.
+        #
+        # `[(7000) -300 (8000)] TJ` são dois pedaços separados por um recuo.
+        # A primeira versão emitia os literais em sequência e só punha um
+        # espaço no fim da peça inteira — então isso virava "70008000". No
+        # extrato da Tradovate não deu problema porque ela emite um `Tj` por
+        # pedaço, mas era um defeito à espera do primeiro PDF de outra
+        # corretora: dois números colados viram um terceiro que não existe, e
+        # a leitura vira ficção sem nada acusando.
+        #
+        # O número é em milésimos de "em" e negativo empurra para a direita.
+        # Espaço de palavra fica na casa de -250 a -350; ajuste fino entre
+        # letras raramente passa de -80. O corte em -100 separa palavra de
+        # ajuste sem picotar "Order" em "Or der" — o que quebraria o
+        # reconhecimento do cabeçalho da tabela.
+        for t in re.finditer(rb"\((?:\\.|[^\\()])*\)|-?\d+(?:\.\d+)?", peca):
+            bruto = t.group(0)
+            if bruto.startswith(b"("):
+                saida.append(_texto_de_literal(bruto[1:-1]))
+            else:
+                try:
+                    if float(bruto) <= -100:
+                        saida.append(" ")
+                except ValueError:
+                    pass
+        saida.append(" ")
+    return "".join(saida)
+
+
+def _texto_de_literal(cru):
+    """Desfaz os escapes de uma string literal de PDF."""
+    fora, i = [], 0
+    escapes = {b"n": "\n", b"r": "\n", b"t": "\t", b"b": "", b"f": "",
+               b"(": "(", b")": ")", b"\\": "\\"}
+    while i < len(cru):
+        c = cru[i:i + 1]
+        if c != b"\\":
+            fora.append(c.decode("latin-1"))
+            i += 1
+            continue
+        prox = cru[i + 1:i + 2]
+        if prox in escapes:
+            fora.append(escapes[prox])
+            i += 2
+        elif prox.isdigit():
+            oct_ = cru[i + 1:i + 4]
+            try:
+                fora.append(chr(int(oct_, 8)))
+            except ValueError:
+                pass
+            i += 1 + len(oct_)
+        else:
+            i += 2
+    return "".join(fora)
 
 
 def _texto_pypdf(caminho):

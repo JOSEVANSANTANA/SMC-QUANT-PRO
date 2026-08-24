@@ -65,6 +65,12 @@ winrt-Windows.Graphics.Imaging>=2.0.0
 winrt-Windows.Storage>=2.0.0
 
 # ------------------------------------------------------------------
+# LEITURA DO EXTRATO DE ORDENS EM PDF (aba Plano de Trading).
+# OPCIONAL: o programa tem um leitor proprio embutido, que usa so a
+# biblioteca padrao e da conta do relatorio da Tradovate. O pypdf entra
+# como reforco para PDFs de outras corretoras com fonte incomum.
+pypdf>=4.0.0
+
 # EMPACOTAR EM .EXE (só para gerar o executável; não é preciso para rodar)
 # ------------------------------------------------------------------
 # pyinstaller>=6.3.0

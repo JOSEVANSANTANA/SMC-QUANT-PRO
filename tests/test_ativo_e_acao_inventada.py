@@ -196,8 +196,8 @@ class TestOCampoVazioDepoisDeEnviar(unittest.TestCase):
 class TestAAcaoQueElaNAOFEZ(unittest.TestCase):
 
     def _f(self):
-        return carregar(["censurar_acao_inventada",
-                         "_RE_ACAO_INVENTADA"])["censurar_acao_inventada"]
+        return carregar(["censurar_acao_inventada", "_RE_ACAO_INVENTADA",
+                         "_RE_DESCRICAO_DE_ESTADO"])["censurar_acao_inventada"]
 
     def test_a_frase_REAL_de_20_08_e_pega(self):
         texto, mentiu = self._f()(
@@ -359,3 +359,75 @@ class TestTudoQueOlhaOTicketOlhaDENTRODele(unittest.TestCase):
         respondia 'não consegui LER o instrumento' olhando para ele."""
         js = self._js("_JS_ATIVO_DO_TICKET")
         self.assertIn("comprovante:true", js)
+
+
+class TestOAlarmeNAOPodeTocarSozinho(unittest.TestCase):
+    """24/08, 12:08 — O GUARDA MAIS IMPORTANTE DO PROGRAMA GRITOU À TOA.
+
+    Ela respondeu:
+
+        "Print capturado às doze e oito da janela do Tradovate, mostrando o
+         MESU6 no gráfico de cinco minutos. Estou com a posição zerada na
+         mesa e o motor ligado fazendo a varredura."
+
+    E levou o alarme vermelho inteiro em cima: "EU NÃO FIZ NADA DISSO. O texto
+    acima diz que uma ordem foi cancelada, enviada ou que a posição foi
+    encerrada."
+
+    O texto NÃO dizia nada disso. Dizia que a posição ESTÁ zerada — leitura de
+    tela, não ação na corretora. O culpado era o `(foi\\s+)?` do padrão: com o
+    "foi" opcional, "posição zerada" disparava igual a "a posição foi zerada".
+
+    POR QUE ISSO É GRAVE E NÃO É COSMÉTICO. Este alarme é o que separa "ela
+    mexeu na sua conta" de "ela só falou". Alarme que toca sozinho ensina a
+    ignorar alarme — e no dia em que o modelo de fato inventar um
+    cancelamento, ele passa o olho e segue em frente. Guarda que grita à toa é
+    guarda desligado.
+
+    A regra nova: a conferência é POR FRASE, e a frase que também descreve
+    estado ("estou com", "está", "continua", "permanece") não é acusada. Por
+    frase nas DUAS direções — senão escrever algo inocente ao lado da mentira
+    viraria um jeito de escapar do alarme.
+    """
+
+    def setUp(self):
+        self.f = carregar(["censurar_acao_inventada", "_RE_ACAO_INVENTADA",
+                           "_RE_DESCRICAO_DE_ESTADO"])["censurar_acao_inventada"]
+
+    def test_a_FRASE_REAL_do_log_dele_nao_dispara_mais(self):
+        texto = ("Print capturado às doze e oito da janela do Tradovate, "
+                 "mostrando o MESU6 no gráfico de cinco minutos. Estou com a "
+                 "posição zerada na mesa e o motor ligado fazendo a varredura.")
+        self.assertFalse(self.f(texto)[1], "alarme falso em descrição de estado")
+
+    def test_outras_descricoes_de_estado_tambem_passam(self):
+        for t in ("A posição está zerada na corretora neste momento.",
+                  "Sua posição atual está zerada; nenhuma ordem viva.",
+                  "A posição continua zerada desde as 11h.",
+                  "A posição permanece zerada."):
+            with self.subTest(t=t):
+                self.assertFalse(self.f(t)[1], t)
+
+    def test_a_CONFISSAO_de_acao_continua_sendo_pega(self):
+        """O alarme não pode ter ficado frouxo para deixar de ser barulhento —
+        seria trocar um defeito por outro muito pior."""
+        for t in ("Pronto, a posição foi zerada na Tradovate.",
+                  "Cancelei todas as ordens agora.",
+                  "Enviei a ordem de compra para você.",
+                  "Todas as ordens ativas foram canceladas.",
+                  "Fechei a sua posição de MESU6.",
+                  "Executei o comando na Tradovate.",
+                  "✅ Enviado"):
+            with self.subTest(t=t):
+                self.assertTrue(self.f(t)[1], t)
+
+    def test_frase_inocente_ao_lado_NAO_serve_de_escudo(self):
+        """A conferência é por frase justamente para isto."""
+        self.assertTrue(
+            self.f("Cancelei todas as ordens. Estou com a posição zerada.")[1])
+
+    def test_o_aviso_ANEXA_e_nao_apaga_o_que_o_modelo_disse(self):
+        saida, mentiu = self.f("Cancelei todas as ordens.")
+        self.assertTrue(mentiu)
+        self.assertIn("Cancelei todas as ordens.", saida)
+        self.assertIn("EU NÃO FIZ NADA DISSO", saida)

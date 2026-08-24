@@ -118,15 +118,29 @@ def _desenhar(w=1400, h=700, lugar="esquerda", tem_img=True, aviso=""):
 
 class TestOGraficoVaiParaOPainelEsquerdo(unittest.TestCase):
 
-    def test_o_padrao_e_o_painel_esquerdo(self):
-        """Ele pediu três vezes. O padrão passa a ser o lugar que ele quer,
-        e não o que estava construído."""
-        d = _desenhar(lugar="")
+    def test_ESCOLHIDO_o_painel_esquerdo_o_quadro_nasce_dentro_do_card(self):
+        """ESTE TESTE MUDOU DE REGRA NA v2.70, E A MUDANÇA É O PEDIDO DELE.
+
+        Ele dizia "o padrão é o painel esquerdo". Deixou de ser: "o gráfico
+        não apareceu, também desliga essa função do gráfico, desisto dela,
+        nem apareceu atrás do orbe, nem do lado, deixa para lá".
+
+        O padrão virou "não mostrar" — mas o lugar continua inteiro, e é isso
+        que se mede aqui: ESCOLHIDO o painel esquerdo, o quadro nasce dentro
+        do card, no lugar certo. Desligar por padrão não podia virar desculpa
+        para deixar o caminho apodrecer sem teste."""
+        d = _desenhar(lugar="esquerda")
         self.assertIsNotNone(d["area"])
         x1, y1, x2, y2 = d["area"]
         cx1, cy1, cx2, cy2 = d["card_esquerdo"]
         self.assertGreaterEqual(x1, cx1)
         self.assertLessEqual(x2, cx2)
+
+    def test_sem_escolha_nenhuma_o_grafico_NAO_aparece(self):
+        """O padrão pedido por ele."""
+        d = _desenhar(lugar="")
+        self.assertIsNone(d["area"])
+        self.assertEqual(len(d["imagens"]), 0)
 
     def test_o_quadro_CABE_no_card_esquerdo_em_toda_largura(self):
         """Foi um dimensionamento por palpite que na v2.67 jogou a imagem para
@@ -278,17 +292,22 @@ class TestAEscolhaNaConfiguracao(unittest.TestCase):
 
 class TestQuemJaTinhaDesligadoNaoVeOGraficoVoltar(unittest.TestCase):
 
-    def test_a_preferencia_antiga_e_respeitada_quando_nao_ha_a_nova(self):
-        """O padrão mudou. Quem já tinha desligado o fundo não pode ver o
-        gráfico reaparecer sozinho num canto novo só por causa disso."""
+    def test_configuracao_ausente_NAO_liga_o_grafico_sozinha(self):
+        """A REGRA FICOU MAIS SIMPLES, E MAIS SEGURA, NA v2.70.
+
+        Na v2.69 este teste cobrava uma ponte: como o padrão era "painel
+        esquerdo", quem já tinha desligado o fundo antes não podia ver o
+        gráfico voltar sozinho num canto novo — então a preferência velha
+        (`contexto_de_fundo`) decidia.
+
+        Com o padrão em "não mostrar", a ponte deixou de ser necessária: o
+        caso que ela protegia — ligar sozinho — não existe mais. O que este
+        teste garante agora é o essencial e vale para todo mundo: sem escolha
+        explícita, nada liga."""
         codigo = _sem_comentarios(_fonte("main_app.py"))
-        # Ancorado na LEITURA da configuração, e não no primeiro lugar onde o
-        # nome aparece — âncora frouxa mede o trecho errado do arquivo e falha
-        # (ou passa) sem relação com a regra.
         i = codigo.index('cfg.get("lugar_do_grafico"')
-        trecho = codigo[i:i + 500]
-        self.assertIn("contexto_de_fundo", trecho)
-        self.assertIn("nenhum", trecho)
+        trecho = codigo[i:i + 400]
+        self.assertIn('lugar = "nenhum"', trecho)
 
     def test_a_troca_grava_as_DUAS_chaves_juntas(self):
         """Duas verdades sobre o mesmo assunto divergem."""
@@ -308,3 +327,141 @@ class TestQuemJaTinhaDesligadoNaoVeOGraficoVoltar(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestDescricaoDeEstadoNAOEConfissaoDeAcao(unittest.TestCase):
+    """O ALARME MAIS IMPORTANTE DO PROGRAMA ESTAVA TOCANDO SOZINHO.
+
+    24/08, 12:08. Ela respondeu:
+
+        "Print capturado às doze e oito da janela do Tradovate, mostrando o
+         MESU6 no gráfico de cinco minutos. Estou com a posição zerada na
+         mesa e o motor ligado fazendo a varredura."
+
+    E levou o alarme vermelho inteiro em cima: "EU NÃO FIZ NADA DISSO. O texto
+    acima diz que uma ordem foi cancelada, enviada ou que a posição foi
+    encerrada."
+
+    Só que o texto NÃO dizia nada disso. Dizia que a posição ESTÁ zerada —
+    leitura de tela, não ação na corretora. O culpado era o `(foi\s+)?` do
+    padrão: com o "foi" opcional, "posição zerada" disparava igual a "a
+    posição foi zerada".
+
+    E o estrago não é cosmético. Este alarme é o que separa "ela mexeu na sua
+    conta" de "ela só falou". Alarme que toca sozinho ensina a ignorar alarme,
+    e no dia em que o modelo de fato inventar um cancelamento, ele passa o
+    olho e segue em frente. Um guarda que grita à toa é um guarda desligado.
+    """
+
+    def setUp(self):
+        self.ns = carregar(["censurar_acao_inventada", "_RE_ACAO_INVENTADA",
+                            "_RE_DESCRICAO_DE_ESTADO"])
+        self.f = self.ns["censurar_acao_inventada"]
+
+    def test_a_FRASE_REAL_do_log_dele_nao_dispara_mais(self):
+        texto = ("Print capturado às doze e oito da janela do Tradovate, "
+                 "mostrando o MESU6 no gráfico de cinco minutos. Estou com a "
+                 "posição zerada na mesa e o motor ligado fazendo a varredura.")
+        _saida, mentiu = self.f(texto)
+        self.assertFalse(mentiu, "alarme falso na descrição de estado")
+
+    def test_outras_descricoes_de_estado_tambem_passam(self):
+        for t in ("A posição está zerada na corretora neste momento.",
+                  "Sua posição atual está zerada; nenhuma ordem viva.",
+                  "A posição continua zerada desde as 11h.",
+                  "A posição permanece zerada."):
+            with self.subTest(t=t):
+                self.assertFalse(self.f(t)[1], t)
+
+    def test_a_CONFISSAO_de_acao_continua_sendo_pega(self):
+        """O alarme não pode ter ficado frouxo para deixar de ser barulhento."""
+        for t in ("Pronto, a posição foi zerada na Tradovate.",
+                  "Cancelei todas as ordens agora.",
+                  "Enviei a ordem de compra para você.",
+                  "Todas as ordens ativas foram canceladas.",
+                  "Fechei a sua posição de MESU6.",
+                  "Executei o comando na Tradovate.",
+                  "✅ Enviado"):
+            with self.subTest(t=t):
+                self.assertTrue(self.f(t)[1], t)
+
+    def test_frase_inocente_ao_lado_NAO_serve_de_escudo(self):
+        """A conferência é POR FRASE justamente para isto: escrever uma frase
+        verdadeira ao lado da mentira não pode virar um jeito de escapar."""
+        texto = "Cancelei todas as ordens. Estou com a posição zerada na mesa."
+        self.assertTrue(self.f(texto)[1])
+
+    def test_o_aviso_ANEXA_e_nao_apaga_o_que_o_modelo_disse(self):
+        """Ele tem de ler o que ela disse E saber que aquilo não aconteceu.
+        Apagar esconderia o defeito; deixar sozinho repetiria a mentira."""
+        texto = "Cancelei todas as ordens."
+        saida, mentiu = self.f(texto)
+        self.assertTrue(mentiu)
+        self.assertIn("Cancelei todas as ordens.", saida)
+        self.assertIn("EU NÃO FIZ NADA DISSO", saida)
+
+
+class TestOSilenciadorDoGraficoEPorHUD(unittest.TestCase):
+    """A MESMA LINHA SAIU QUASE TRINTA VEZES NO LOG DELE.
+
+        🖼️ Gráfico ao fundo do Orbe não apareceu: o painel esquerdo não tem
+           altura para o gráfico nesta janela — abra o Modo Dividido...
+
+    Existem DOIS HUDs (o embutido e o solto) e o silenciador era um valor só.
+    Quando um conseguia a imagem e o outro não, o que conseguia ZERAVA o
+    silenciador e o que falhava dizia o motivo de novo — a cada quadro, para
+    sempre. As linhas de ordem enviada e de posição encerrada, que são as que
+    importam, foram empurradas para cima do rolo por enfeite.
+    """
+
+    def setUp(self):
+        self.codigo = _fonte("main_app.py")
+
+    def test_o_silenciador_guarda_um_motivo_POR_HUD(self):
+        i = self.codigo.index("def _porque_sem_fundo")
+        corpo = self.codigo[i:i + 2200]
+        self.assertIn("chave", corpo)
+        self.assertIn("ditos.get(chave)", corpo)
+
+    def test_o_sucesso_de_um_HUD_nao_apaga_o_aviso_do_outro(self):
+        """Era exatamente a linha `self._sem_fundo_dito = None` no caminho de
+        sucesso que criava a repetição infinita."""
+        i = self.codigo.index("def _alimentar_um_orbe")
+        corpo = self.codigo[i:i + 4000]
+        self.assertIn("_esquecer_motivo_do_fundo(chave)", corpo)
+        self.assertNotIn("_sem_fundo_dito = None", corpo)
+
+    def test_cada_renderizador_recebe_a_sua_chave(self):
+        i = self.codigo.index("def _alimentar_grafico_do_orbe")
+        corpo = self.codigo[i:i + 2500]
+        self.assertIn("chave=f\"hud", corpo)
+
+
+class TestOGraficoNasceDESLIGADO(unittest.TestCase):
+    """Pedido dele: "o gráfico não apareceu, também desliga essa função do
+    gráfico, desisto dela, nem apareceu atrás do orbe, nem do lado, deixa
+    para lá".
+
+    NADA FOI ARRANCADO. Os dois lugares continuam inteiros e testados, e o
+    menu de Configurações liga qualquer um em um clique. O que mudou foi o
+    PADRÃO — enfeite ligado que não aparece cobra atenção no meio do pregão, e
+    atenção no pregão é o recurso mais caro que ele tem.
+    """
+
+    def test_o_renderizador_nasce_sem_grafico(self):
+        fonte = _fonte("tiger_hud.py")
+        self.assertIn('self.lugar_do_grafico = "nenhum"', fonte)
+
+    def test_configuracao_ausente_ou_estranha_cai_em_NENHUM(self):
+        fonte = _fonte("tiger_hud.py")
+        i = fonte.index("def _lugar")
+        self.assertIn('else "nenhum"', fonte[i:i + 1600])
+
+    def test_os_dois_lugares_continuam_existindo(self):
+        """Desligar por padrão não é apagar: ele pode voltar atrás."""
+        fonte = _fonte("tiger_hud.py")
+        self.assertIn("def _desenhar_grafico_lateral", fonte)
+        self.assertIn("def _desenhar_fundo_de_contexto", fonte)
+        ns = carregar(["_ROTULO_DO_LUGAR"])
+        self.assertEqual(set(ns["_ROTULO_DO_LUGAR"]),
+                         {"esquerda", "fundo", "nenhum"})
