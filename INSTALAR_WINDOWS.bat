@@ -5,22 +5,14 @@ title SMC Quant Pro - Instalacao no Windows
 REM =====================================================================
 REM  SMC Quant Pro - instalacao no Windows.  DE DOIS CLIQUES NESTE ARQUIVO.
 REM
-REM  ELE INSTALA O QUE FALTAR. Pedido dele: "era para ta tudo incluso no
-REM  pacote, certifique-se de incluir ja na opcao do cmd o download do
-REM  python se o cliente nao tiver".
+REM  ELE INSTALA O QUE FALTAR: Python, Node.js e as bibliotecas. O cliente
+REM  nao precisa saber o que e nada disso.
 REM
-REM  Antes este arquivo so DIZIA "baixe o Python em python.org" e parava.
-REM  Mandar o cliente para uma pagina de download no meio da instalacao e
-REM  onde a instalacao morre: ele nao sabe qual versao, nao sabe que tem de
-REM  marcar "Add python.exe to PATH", e some.
-REM
-REM  DUAS COISAS SOBRE ESTE ARQUIVO SEREM ASCII E TEREM QUEBRA CRLF:
-REM  o cmd.exe do Windows EXIGE CRLF. Com quebra de linha do Unix ele le o
-REM  arquivo errado e passa a executar cada linha de comentario como se
-REM  fosse comando -- foi exatamente o que apareceu na tela do cliente:
-REM  "'PASSO' nao e reconhecido como um comando interno". E acento depende
-REM  da pagina de codigo do console, que varia de maquina. Os dois juntos
-REM  transformam o instalador em lixo na tela.
+REM  ASCII PURO E QUEBRA CRLF, e isso nao e estilo. O cmd.exe EXIGE CRLF:
+REM  com quebra de linha do Unix ele executa cada COMENTARIO como se fosse
+REM  comando, e a tela do cliente encheu de "'PASSO' nao e reconhecido como
+REM  um comando interno". Acento depende da pagina de codigo do console,
+REM  que varia de maquina, e e outra forma de virar lixo na tela.
 REM =====================================================================
 
 cd /d "%~dp0"
@@ -38,6 +30,60 @@ echo ======================================================================
 echo.
 
 REM ---------------------------------------------------------------------
+REM ANTES DE TUDO: ELE DESCOMPACTOU O ZIP?
+REM
+REM O Windows deixa dar DOIS CLIQUES NUM ARQUIVO DENTRO DO ZIP. Ele extrai
+REM para uma pasta temporaria, roda, e depois APAGA. A instalacao inteira
+REM iria para o lixo sem ninguem entender por que o programa "sumiu".
+REM
+REM E o sintoma seguinte seria pior: o ABRIR nao acharia o main_app.py e o
+REM cliente concluiria que o pacote veio quebrado.
+REM ---------------------------------------------------------------------
+echo %CD% | find /i "\Temp\" >nul && goto DENTRO_DO_ZIP
+echo %CD% | find /i "\AppData\Local\Temp" >nul && goto DENTRO_DO_ZIP
+if not exist "main_app.py" goto DENTRO_DO_ZIP
+goto PASTA_OK
+
+:DENTRO_DO_ZIP
+echo  [X] PARE: parece que voce esta rodando de DENTRO do arquivo ZIP.
+echo.
+echo      O Windows deixa clicar em arquivos dentro do zip, mas eles rodam
+echo      numa pasta temporaria que ele APAGA depois. A instalacao iria
+echo      toda para o lixo.
+echo.
+echo      FACA ASSIM:
+echo        1. Clique com o botao DIREITO no arquivo .zip
+echo        2. Escolha "Extrair Tudo..."  (ou "Extract All...")
+echo        3. Escolha uma pasta simples, por exemplo:  C:\SMC_QUANT_PRO
+echo        4. ENTRE na pasta extraida e de dois cliques neste arquivo
+echo.
+echo      Pasta atual: %CD%
+echo.
+pause
+exit /b 1
+
+:PASTA_OK
+
+REM ---------------------------------------------------------------------
+REM ONEDRIVE: o mesmo problema que o iCloud causa no Mac.
+REM
+REM O OneDrive tira do disco os arquivos que voce nao usa ha um tempo e
+REM deixa so um marcador. Quando o programa for ler um deles, ele nao vai
+REM estar la -- e a falha aparece no meio do pregao, sem explicacao, num
+REM arquivo que funcionava ontem. NAO PARA a instalacao: e um aviso, e a
+REM decisao e dele.
+REM ---------------------------------------------------------------------
+echo %CD% | find /i "OneDrive" >nul
+if not errorlevel 1 (
+  echo  [!] AVISO: esta pasta esta dentro do OneDrive.
+  echo      O OneDrive tira arquivos do disco para poupar espaco e deixa so
+  echo      um marcador. Quando o programa for ler um deles no meio do
+  echo      pregao, ele pode nao estar la.
+  echo      O ideal e mover a pasta para algo como  C:\SMC_QUANT_PRO
+  echo.
+)
+
+REM ---------------------------------------------------------------------
 REM COMO BAIXAR. O curl.exe vem no Windows 10 (1803+) e no 11. Onde nao
 REM houver, o PowerShell resolve. Duas tentativas porque uma so falharia
 REM em maquina antiga sem dizer por que.
@@ -50,11 +96,6 @@ if not defined BAIXAR (
 
 REM ---------------------------------------------------------------------
 REM PASSO 1 - PYTHON
-REM
-REM `py -3` (o Python Launcher) e tentado ANTES de `python`, porque no
-REM Windows o comando `python` pode cair na loja da Microsoft e abrir uma
-REM pagina em vez de rodar -- beco sem saida que ja fez gente achar que o
-REM Python nao estava instalado quando estava.
 REM ---------------------------------------------------------------------
 call :ACHAR_PYTHON
 if defined PY goto PYTHON_OK
@@ -109,8 +150,8 @@ if not exist "%TEMP%\smc_python_setup.exe" (
 
 echo      Instalando o Python. NAO feche esta janela.
 REM InstallAllUsers=0 instala SO para este usuario: nao pede senha de
-REM administrador. PrependPath=1 e a caixa "Add python.exe to PATH" que
-REM todo mundo esquece de marcar -- aqui ela vem marcada por padrao.
+REM administrador, que e onde metade das instalacoes para. PrependPath=1 e
+REM a caixa "Add python.exe to PATH" que todo mundo esquece de marcar.
 "%TEMP%\smc_python_setup.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_pip=1 Include_launcher=1
 del /q "%TEMP%\smc_python_setup.exe" >nul 2>&1
 
@@ -132,6 +173,19 @@ if not defined PY (
 :PYTHON_OK
 for /f "delims=" %%v in ('%PY% --version 2^>^&1') do set "VPY=%%v"
 echo  [ok] Python: !VPY!
+
+REM O PYTHON PODE SER VELHO DEMAIS. Uma maquina com 3.7 instalado passa em
+REM "achei o Python" e depois falha pacote por pacote, sem dizer a causa.
+%PY% -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>&1
+if errorlevel 1 (
+  echo.
+  echo  [X] Este Python e ANTIGO DEMAIS para o programa ^(precisa ser 3.9+^).
+  echo      Instale o 3.12 em https://www.python.org/downloads/ e marque
+  echo      "Add python.exe to PATH" na primeira tela.
+  echo.
+  pause
+  exit /b 1
+)
 
 REM ---------------------------------------------------------------------
 REM PASSO 2 - NODE.JS (o motor do WhatsApp)
@@ -179,44 +233,77 @@ echo  [ok] Node.js: !VNODE!
 
 REM ---------------------------------------------------------------------
 REM PASSO 3 - BIBLIOTECAS
+REM
+REM UM PACOTE RUIM NAO PODE DERRUBAR A INSTALACAO INTEIRA, e essa era a
+REM armadilha: `pip install -r requirements.txt` e tudo-ou-nada. A lista
+REM tem itens que so existem em certas versoes do Windows e do Python --
+REM os `winrt-*`, que servem SO para leitura de texto na tela. Se um deles
+REM nao tivesse pacote pronto para a maquina do cliente, o pip devolvia
+REM erro, o instalador parava, e o cliente ficava sem o programa por causa
+REM de um recurso que ele talvez nem use.
+REM
+REM Agora: tenta a lista inteira; se falhar, instala um por um; e no fim
+REM CONFERE O QUE IMPORTA DE VERDADE. O que faltar e dito pelo nome, com o
+REM que se perde -- em vez de um "erro" generico.
 REM ---------------------------------------------------------------------
 echo.
-echo  Instalando as bibliotecas do programa. Na primeira vez leva alguns
-echo  minutos -- e normal a tela ficar parada durante o download.
+echo  Instalando as bibliotecas. Na primeira vez leva alguns minutos --
+echo  e normal a tela ficar parada durante o download.
 echo.
 %PY% -m pip install --upgrade pip
 %PY% -m pip install -r requirements.txt
-if errorlevel 1 (
+if not errorlevel 1 goto CONFERIR
+
+echo.
+echo  [!] A lista inteira nao passou de uma vez. Vou instalar um por um,
+echo      para que um pacote problematico nao leve os outros junto.
+echo.
+for /f "usebackq tokens=* delims=" %%p in ("requirements.txt") do (
+  set "LINHA=%%p"
+  set "LINHA=!LINHA: =!"
+  if not "!LINHA!"=="" (
+    if not "!LINHA:~0,1!"=="#" (
+      echo      - !LINHA!
+      %PY% -m pip install "!LINHA!" >nul 2>&1 || echo        ^(falhou: !LINHA!^)
+    )
+  )
+)
+
+:CONFERIR
+REM CONFERIR IMPORTANDO E A UNICA PROVA REAL. `pip install` pode terminar
+REM sem erro e ainda deixar o pywin32 sem registrar as extensoes -- a mesma
+REM regra que o programa aplica aos campos da corretora: nao basta
+REM escrever, tem de ler de volta.
+echo.
+echo  Conferindo o que entrou de verdade...
+set "FALTOU="
+call :CONFERIR_UM customtkinter "a janela do programa"
+call :CONFERIR_UM PIL           "a leitura das imagens do grafico"
+call :CONFERIR_UM requests      "a conversa com a internet"
+call :CONFERIR_UM win32gui      "listar janelas e capturar o grafico"
+
+if defined FALTOU (
   echo.
-  echo  [X] A INSTALACAO DAS BIBLIOTECAS FALHOU.
-  echo      Leia a ultima linha vermelha acima: ela costuma dizer qual
-  echo      biblioteca falhou e por que. O item que NAO pode faltar e o
-  echo      pywin32 -- sem ele o programa nao lista as janelas abertas e
-  echo      nao consegue capturar o grafico.
+  echo  [X] FALTA COISA ESSENCIAL: !FALTOU!
+  echo      Sem isso o programa nao abre. Tente rodar este arquivo de novo;
+  echo      se insistir, tire uma foto desta tela.
   echo.
   pause
   exit /b 1
 )
 
-REM CONFERENCIA: o pywin32 entrou MESMO?
-REM `pip install` pode terminar sem erro e ainda assim deixar o pywin32 sem
-REM registrar as extensoes. Conferir importando e a unica prova real -- a
-REM mesma regra que o programa aplica aos campos da corretora: nao basta
-REM escrever, tem de ler de volta.
+REM O pywin32 as vezes instala e nao registra. Vale uma tentativa antes de
+REM desistir -- e barato, e evita uma ida e volta com o suporte.
 %PY% -c "import win32gui" >nul 2>&1
 if errorlevel 1 (
-  echo  [!] O pywin32 instalou mas nao esta importando. Tentando consertar...
   %PY% -m pip install --force-reinstall pywin32 >nul 2>&1
-  %PY% -c "import win32gui" >nul 2>&1
-  if errorlevel 1 (
-    echo  [!] Ainda nao importa. O programa vai abrir, mas nao vai
-    echo      conseguir listar as janelas nem capturar o grafico.
-  ) else (
-    echo  [ok] pywin32 consertado.
-  )
-) else (
-  echo  [ok] pywin32 conferido - o programa consegue ver as janelas.
 )
+
+echo.
+echo  Conferindo os opcionais ^(o programa abre sem eles^)...
+call :OPCIONAL "winrt.windows.media.ocr" "ler texto da tela por OCR"
+call :OPCIONAL "sounddevice"             "falar com a TIGER pelo microfone"
+call :OPCIONAL "pypdf"                   "ler PDF de outras corretoras (ja existe leitor proprio)"
 
 echo.
 echo ======================================================================
@@ -225,14 +312,41 @@ echo.
 echo   Para usar o programa, de DOIS CLIQUES em:
 echo       ABRIR_SMC_QUANT_PRO.bat
 echo.
-echo   O passo a passo completo esta no LEIA-ME_WINDOWS.txt
+echo   Na primeira vez ele vai pedir a CHAVE DE LICENCA - e a que voce
+echo   recebeu ao adquirir o produto.
 echo ======================================================================
 echo.
 pause
 exit /b 0
 
 REM ---------------------------------------------------------------------
+:CONFERIR_UM
+%PY% -c "import %~1" >nul 2>&1
+if errorlevel 1 (
+  set "FALTOU=!FALTOU! %~1"
+  echo  [X] %~1 - sem ele nao ha %~2
+) else (
+  echo  [ok] %~1 - %~2
+)
+goto :eof
+
+:OPCIONAL
+%PY% -c "import %~1" >nul 2>&1
+if errorlevel 1 (
+  echo  [--] %~1 nao entrou. O que fica de fora: %~2.
+  echo       O programa abre e opera normalmente.
+) else (
+  echo  [ok] %~1 - %~2
+)
+goto :eof
+
+REM ---------------------------------------------------------------------
 REM ACHAR O PYTHON, inclusive o que acabou de ser instalado.
+REM
+REM `py -3` (o Python Launcher) vem ANTES de `python` porque no Windows o
+REM comando `python` pode cair na loja da Microsoft e abrir uma pagina em
+REM vez de rodar -- beco sem saida que ja fez gente achar que o Python nao
+REM estava instalado quando estava.
 REM
 REM Os dois ultimos caminhos existem porque a mudanca de PATH nao vale na
 REM janela que ja esta aberta. Sem procurar neles, o instalador acabaria de

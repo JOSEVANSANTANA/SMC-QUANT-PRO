@@ -134,6 +134,9 @@ SO_WINDOWS = [
     # uma tela de programador sem ter o que fazer ali.
     "INSTALAR_WINDOWS.bat",
     "ABRIR_SMC_QUANT_PRO.bat",
+    # FERRAMENTA DELE: gera o setup.exe que o cliente recebe. Sai do pacote
+    # do cliente junto com a pasta instalador/ (ver SO_SEU).
+    "GERAR_INSTALADOR_WINDOWS.bat",
     "instalador/LEIA-ME.md",
     "instalador/SMC_Quant_Pro.iss",
     # O abridor do painel EXISTIA só no Mac. No Windows o painel ia junto no
@@ -190,6 +193,7 @@ SO_SEU = [
     # Nao era. A pasta nunca deveria ter saido daqui.
     "instalador/LEIA-ME.md",
     "instalador/SMC_Quant_Pro.iss",
+    "GERAR_INSTALADOR_WINDOWS.bat",
 ]
 
 # E dentro dos LEIA-ME há trechos que também são só seus (a seção do painel, o

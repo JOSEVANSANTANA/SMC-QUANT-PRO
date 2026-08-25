@@ -16,6 +16,20 @@ REM =====================================================================
 
 cd /d "%~dp0"
 
+if not exist "main_app.py" (
+  echo.
+  echo  [X] Nao achei o main_app.py nesta pasta.
+  echo.
+  echo      Se voce clicou neste arquivo DE DENTRO do zip, o Windows o
+  echo      copiou para uma pasta temporaria sozinho. Extraia o zip
+  echo      primeiro ^(botao direito - "Extrair Tudo"^) e rode de la.
+  echo.
+  echo      Pasta atual: %CD%
+  echo.
+  pause
+  exit /b 1
+)
+
 call :ACHAR_PYTHON
 if not defined PY (
   echo.
@@ -27,12 +41,14 @@ if not defined PY (
   exit /b 1
 )
 
-if not exist "main_app.py" (
+REM AS BIBLIOTECAS ENTRARAM? Perguntar aqui evita o pior desfecho: o
+REM programa abrir, estourar um ModuleNotFoundError no meio, e o cliente
+REM concluir que o produto esta quebrado.
+%PY% -c "import customtkinter" >nul 2>&1
+if errorlevel 1 (
   echo.
-  echo  [X] Nao achei o main_app.py nesta pasta.
-  echo      Este arquivo precisa ficar DENTRO da pasta SMC_QUANT_PRO,
-  echo      junto com o resto do programa.
-  echo      Pasta atual: %CD%
+  echo  [X] As bibliotecas do programa nao estao instaladas.
+  echo      De dois cliques em INSTALAR_WINDOWS.bat primeiro.
   echo.
   pause
   exit /b 1
@@ -72,4 +88,6 @@ python --version >nul 2>&1 && set "PY=python" && goto :eof
 for /d %%d in ("%LOCALAPPDATA%\Programs\Python\Python3*") do (
   if exist "%%d\python.exe" set "PY="%%d\python.exe""
 )
+if defined PY goto :eof
+if exist "%LOCALAPPDATA%\Programs\Python\Launcher\py.exe" set "PY="%LOCALAPPDATA%\Programs\Python\Launcher\py.exe" -3"
 goto :eof

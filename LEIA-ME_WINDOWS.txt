@@ -3,6 +3,63 @@
   Comece por aqui.
 ========================================================================
 
+O CAMINHO CURTO — DOIS CLIQUES, E SO
+------------------------------------
+1. Se voce ainda nao extraiu o zip: clique nele com o BOTAO DIREITO e
+   escolha "Extrair Tudo...". Escolha uma pasta simples, por exemplo
+   C:\SMC_QUANT_PRO.
+
+   NAO clique nos arquivos de dentro do zip sem extrair. O Windows deixa,
+   mas ele copia para uma pasta temporaria e APAGA depois — a instalacao
+   inteira iria para o lixo. O instalador barra isso e avisa, mas e mais
+   simples extrair primeiro.
+
+2. Entre na pasta extraida e de DOIS CLIQUES em:
+
+       INSTALAR_WINDOWS.bat
+
+   Ele confere o que ja existe e instala o que faltar: Python, Node.js e
+   as bibliotecas. Se o Python nao estiver na maquina, ele mostra o
+   endereco oficial e pergunta se pode baixar — e uma instalacao so para o
+   seu usuario, sem senha de administrador.
+
+3. Depois, para usar o programa, de DOIS CLIQUES em:
+
+       ABRIR_SMC_QUANT_PRO.bat
+
+   A janela preta que abrir e o LOG do motor: ordem enviada, posicao
+   encerrada, ciclo de analise. Ela fica aberta de proposito. Fechar
+   aquela janela fecha o programa.
+
+4. Na primeira abertura ele pede a CHAVE DE LICENCA — a que voce recebeu
+   ao adquirir o produto.
+
+SE O WINDOWS OU O ANTIVIRUS RECLAMAR
+------------------------------------
+Arquivo baixado da internet chega marcado, e o Windows pode mostrar
+"O Windows protegeu o computador". Clique em "Mais informacoes" e depois
+em "Executar assim mesmo".
+
+Alguns antivirus tambem estranham um .bat que baixa e instala programas —
+que e exatamente o que o INSTALAR_WINDOWS.bat faz, e por isso ele mostra
+os enderecos antes e pergunta. Se o antivirus bloquear, os enderecos sao
+oficiais e voce pode instalar na mao:
+    Python:  https://www.python.org/downloads/   (marque "Add python.exe
+             to PATH" na PRIMEIRA tela — e a caixa que todo mundo esquece)
+    Node.js: https://nodejs.org  (versao LTS)
+Depois rode o INSTALAR_WINDOWS.bat de novo: ele reconhece o que ja existe
+e so instala o que falta.
+
+SE A PASTA ESTIVER NO ONEDRIVE
+------------------------------
+O OneDrive tira do disco os arquivos que voce nao usa ha um tempo e deixa
+so um marcador. Quando o programa for ler um deles, ele pode nao estar la
+— e a falha aparece no meio do pregao. Prefira uma pasta comum, como
+C:\SMC_QUANT_PRO. O instalador avisa se detectar isso, mas nao impede.
+
+O QUE VEM ABAIXO E O PASSO A PASSO NA MAO, para quem prefere ou para
+quando algo der errado no caminho curto.
+
 O CÓDIGO É O MESMO DO MAC
 -------------------------
 Vale saber, porque muda o jeito de pensar as atualizações: main_app.py,

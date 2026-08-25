@@ -46,7 +46,13 @@
 ;  {#SourcePath} e a pasta ONDE ESTE .iss ESTA, resolvida pelo proprio Inno
 ;  Setup. Com ela o script funciona em qualquer maquina sem ninguem editar
 ;  nada -- inclusive na minha.
-#define SourceApp        SourcePath + "..\dist"
+;  A PASTA E `dist\SMC_Quant_Pro`, E NAO `dist`. O SMC_Quant_Pro.spec
+;  termina em COLLECT, que produz uma PASTA com o .exe dentro:
+;      dist\SMC_Quant_Pro\SMC_Quant_Pro.exe
+;  Apontar para `dist` copiaria a pasta inteira para dentro de {app}, e o
+;  atalho -- que procura {app}\SMC_Quant_Pro.exe -- apontaria para o nada.
+;  O programa instalava e o icone nao abria nada.
+#define SourceApp        SourcePath + "..\dist\SMC_Quant_Pro"
 
 ; Ícone do aplicativo (.ico). O .exe já tem ícone embutido; isto é só para o
 ; assistente de instalação e o item no Painel de Controle. Deixe "" se não tiver.

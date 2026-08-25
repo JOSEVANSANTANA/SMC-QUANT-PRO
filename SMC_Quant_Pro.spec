@@ -58,6 +58,13 @@ a = Analysis(
     datas=[
         # O motor Node inteiro (com node_modules pronto, se houver).
         ('motor', 'motor'),
+        # O versao.json TEM de viajar dentro do executavel. Desde a v2.68 o
+        # programa le a versao dele em vez de um numero escrito a mao; sem
+        # esta linha, o build congelado nao acha o arquivo e todo cliente ve
+        # "0.0.0" no cabecalho. O icone entra junto para o instalador e o
+        # Painel de Controle terem o que mostrar.
+        ('versao.json', '.'),
+        ('icone.ico', '.'),
     ],
     hiddenimports=[
         # A camada de plataforma é importada por nome; garantimos que entra.

@@ -817,3 +817,259 @@ class TestOInstaladorBAIXAOQueFaltar(unittest.TestCase):
         bat = self._bat()
         self.assertIn("curl", bat)
         self.assertIn("Invoke-WebRequest", bat)
+
+
+class TestOsBatSaoSINTATICAMENTEVALIDOS(unittest.TestCase):
+    """CONFERE A LOGICA DO .BAT SEM PODER RODAR O cmd.exe.
+
+    Esta suíte roda em Linux, então não dá para executar um .bat de verdade.
+    O que DÁ para conferir — e é o que quebra na prática — é a estrutura:
+    um `goto` para um rótulo que não existe manda o cliente para o fim do
+    arquivo em silêncio, e um parêntese sobrando faz o cmd engolir o resto
+    do bloco. Nos dois casos o script "roda" e não faz o que devia.
+
+    É a mesma ideia da conferência pela coluna nocional no leitor de PDF:
+    quando não dá para provar executando, procura-se a contradição interna.
+    """
+
+    def _conferir(self, caminho):
+        import re
+        txt = open(caminho, "rb").read().decode("ascii").replace("\r\n", "\n")
+        linhas = txt.split("\n")
+        rotulos = {l.strip()[1:].split()[0].lower() for l in linhas
+                   if l.strip().startswith(":") and not l.strip().startswith("::")}
+        problemas = []
+        for n, l in enumerate(linhas, 1):
+            if l.strip().upper().startswith("REM"):
+                continue
+            for m in re.finditer(r"\bgoto\s+:?(\w+)", l, re.I):
+                if m.group(1).lower() != "eof" and m.group(1).lower() not in rotulos:
+                    problemas.append(f"linha {n}: goto {m.group(1)} sem rótulo")
+            for m in re.finditer(r"\bcall\s+:(\w+)", l, re.I):
+                if m.group(1).lower() not in rotulos:
+                    problemas.append(f"linha {n}: call :{m.group(1)} sem rótulo")
+        saldo = 0
+        for n, l in enumerate(linhas, 1):
+            s = l.strip()
+            if s.upper().startswith("REM") or s.startswith("::"):
+                continue
+            limpa = re.sub(r'"[^"]*"', '""', l).replace("^(", "").replace("^)", "")
+            saldo += limpa.count("(") - limpa.count(")")
+            if saldo < 0:
+                problemas.append(f"linha {n}: parêntese fechado a mais")
+                saldo = 0
+        if saldo:
+            problemas.append(f"sobraram {saldo} parêntese(s) abertos")
+        return problemas
+
+    def test_todo_goto_e_call_aponta_para_rotulo_que_existe(self):
+        """Um `goto` errado não dá erro: o cmd pula para o fim do arquivo e
+        o script termina fingindo que fez o trabalho."""
+        import glob
+        for caminho in glob.glob(os.path.join(RAIZ, "*.bat")):
+            with self.subTest(arquivo=os.path.basename(caminho)):
+                self.assertEqual(self._conferir(caminho), [])
+
+
+class TestOInstaladorNAODeixaOClienteNaMao(unittest.TestCase):
+    """Pedido dele: "certifique-se de que o cliente nao tera nenhuma
+    dificuldade na instalacao e no processo de execucao do programa".
+
+    Cada teste aqui é um jeito conhecido de a instalação morrer.
+    """
+
+    def _bat(self, nome="INSTALAR_WINDOWS.bat"):
+        with open(os.path.join(RAIZ, nome), encoding="ascii") as f:
+            return f.read()
+
+    def test_barra_quem_clicou_DENTRO_do_zip(self):
+        """O Windows deixa dar dois cliques num arquivo dentro do zip: ele
+        extrai para uma pasta temporária, roda, e APAGA. A instalação
+        inteira iria para o lixo, e o sintoma seguinte seria o programa
+        'sumir' sem ninguém entender."""
+        bat = self._bat()
+        self.assertIn("DENTRO_DO_ZIP", bat)
+        self.assertIn("Extrair Tudo", bat)
+
+    def test_avisa_do_OneDrive_mas_NAO_para(self):
+        """Mesmo problema que o iCloud causa no Mac: o OneDrive tira do disco
+        o que não é usado e deixa um marcador, e a falha aparece no meio do
+        pregão. É aviso, não bloqueio — a decisão é dele."""
+        bat = self._bat()
+        self.assertIn("OneDrive", bat)
+        i = bat.index("OneDrive")
+        self.assertNotIn("exit /b 1", bat[i:i + 700])
+
+    def test_recusa_Python_ANTIGO_DEMAIS_dizendo_o_porque(self):
+        """Máquina com 3.7 passa em 'achei o Python' e depois falha pacote
+        por pacote, sem dizer a causa."""
+        bat = self._bat()
+        self.assertIn("version_info >= (3, 9)", bat)
+
+    def test_UM_pacote_ruim_NAO_derruba_a_instalacao_inteira(self):
+        """`pip install -r` é tudo-ou-nada, e a lista tem itens que só
+        existem em certas versões do Windows e do Python (os winrt-*, que
+        servem só para OCR). Um deles sem pacote pronto travava o cliente
+        por causa de um recurso que ele talvez nem use."""
+        bat = self._bat()
+        i = bat.index("pip install -r requirements.txt")
+        depois = bat[i:]
+        self.assertIn("um por um", depois)
+        self.assertIn("for /f", depois)
+
+    def test_CONFERE_importando_e_separa_essencial_de_opcional(self):
+        """`pip install` pode terminar sem erro e ainda deixar o pywin32 sem
+        registrar as extensões. E o cliente precisa saber a diferença entre
+        'não abre' e 'abre sem OCR'."""
+        bat = self._bat()
+        self.assertIn(":CONFERIR_UM", bat)
+        self.assertIn(":OPCIONAL", bat)
+        for essencial in ("customtkinter", "PIL", "requests", "win32gui"):
+            self.assertIn(essencial, bat)
+
+    def test_o_opcional_que_falta_DIZ_o_que_se_perde(self):
+        """'[--] winrt nao entrou' não diz nada a ele. 'o que fica de fora:
+        ler texto da tela por OCR' diz."""
+        bat = self._bat()
+        # Âncora na DEFINIÇÃO da sub-rotina (início de linha), e não na
+        # primeira chamada dela, que aparece antes no arquivo.
+        i = bat.index("\n:OPCIONAL")
+        self.assertIn("O que fica de fora", bat[i:i + 500])
+
+    def test_avisa_da_CHAVE_DE_LICENCA_no_fim(self):
+        """O programa pede a chave na primeira abertura. Descobrir isso só
+        na hora, sem aviso, parece defeito."""
+        self.assertIn("CHAVE DE LICENCA", self._bat())
+
+    def test_o_ABRIR_confere_as_bibliotecas_ANTES_de_abrir(self):
+        """Evita o pior desfecho: o programa abrir, estourar
+        ModuleNotFoundError no meio, e o cliente concluir que o produto está
+        quebrado."""
+        bat = self._bat("ABRIR_SMC_QUANT_PRO.bat")
+        self.assertIn("import customtkinter", bat)
+        self.assertIn("INSTALAR_WINDOWS.bat", bat)
+
+    def test_os_dois_bat_procuram_o_Python_do_MESMO_jeito(self):
+        """Se o ABRIR procurasse em menos lugares que o INSTALAR, daria para
+        instalar com sucesso e não conseguir abrir em seguida."""
+        for nome in ("INSTALAR_WINDOWS.bat", "ABRIR_SMC_QUANT_PRO.bat"):
+            bat = self._bat(nome)
+            i = bat.index(":ACHAR_PYTHON")
+            corpo = bat[i:]
+            with self.subTest(arquivo=nome):
+                self.assertIn("py -3", corpo)
+                self.assertIn("LOCALAPPDATA", corpo)
+                self.assertIn("Launcher", corpo)
+
+
+class TestACadeiaQueGeraOEXEDoCliente(unittest.TestCase):
+    """O CLIENTE RECEBE UM setup.exe. SO ISSO.
+
+    Correção dele, e estava certo: "o cliente nao tem que abrir prompt de
+    comando, ta errado isso, precisa ser o pacote, com o executavel exe,
+    simples".
+
+    A cadeia é: PyInstaller monta `dist\\SMC_Quant_Pro\\SMC_Quant_Pro.exe`,
+    o Inno Setup embrulha isso num `SMC_Quant_Pro_Setup_<versao>.exe`, e é
+    esse arquivo único que vai para o cliente. Sem Python, sem pip, sem
+    .bat, sem prompt.
+
+    DOIS DEFEITOS REAIS ESTAVAM NA CADEIA, e os dois só apareceriam na
+    máquina do cliente:
+
+      1. O `versao.json` não ia dentro do executável. Desde a v2.68 o
+         programa lê a versão dele em vez de um número escrito à mão — e no
+         build congelado o arquivo não estaria lá. TODO cliente veria
+         "0.0.0" no cabeçalho.
+
+      2. O .spec termina em COLLECT, que produz uma PASTA
+         (`dist\\SMC_Quant_Pro\\`), e o .iss apontava para `dist`. O
+         instalador copiaria a pasta para dentro de {app} e o atalho — que
+         procura `{app}\\SMC_Quant_Pro.exe` — apontaria para o nada. O
+         programa instalava e o ícone não abria nada.
+    """
+
+    def _mod(self):
+        import importlib.util
+        caminho = os.path.join(RAIZ, "empacotar.py")
+        spec = importlib.util.spec_from_file_location("empacotar", caminho)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_o_versao_json_viaja_DENTRO_do_executavel(self):
+        """Sem isto, todo cliente vê 0.0.0 — o número que eu escolhi para
+        gritar quando algo está errado. Ele gritaria certo, pelo motivo
+        errado."""
+        for spec in ("SMC_Quant_Pro.spec", "SMC_Quant_Pro_MAC.spec"):
+            with self.subTest(spec=spec), open(os.path.join(RAIZ, spec),
+                                               encoding="utf-8") as f:
+                datas = f.read().split("datas=[")[1].split("]")[0]
+                self.assertIn("versao.json", datas)
+
+    def test_o_programa_acha_o_versao_json_DENTRO_do_pacote_congelado(self):
+        """O PyInstaller põe os dados numa pasta temporária publicada em
+        `sys._MEIPASS`, e `__file__` aponta para dentro do pacote."""
+        with open(os.path.join(RAIZ, "main_app.py"), encoding="utf-8") as f:
+            codigo = f.read()
+        i = codigo.index("def _versao_do_pacote")
+        self.assertIn("_MEIPASS", codigo[i:i + 3000])
+
+    def test_o_instalador_aponta_para_a_pasta_QUE_O_SPEC_PRODUZ(self):
+        """COLLECT gera uma PASTA. Apontar para `dist` deixava o atalho do
+        cliente apontando para um arquivo que não existe."""
+        with open(os.path.join(RAIZ, "instalador", "SMC_Quant_Pro.iss"),
+                  encoding="utf-8") as f:
+            iss = f.read()
+        codigo = "\n".join(l for l in iss.splitlines()
+                           if not l.lstrip().startswith(";"))
+        self.assertIn(r"dist\SMC_Quant_Pro", codigo)
+
+    def test_existe_UM_CLIQUE_que_gera_o_instalador(self):
+        """Ele não deveria ter de lembrar da sequência PyInstaller -> Inno
+        Setup, nem dos caminhos de cada um."""
+        self.assertTrue(_existe("GERAR_INSTALADOR_WINDOWS.bat"))
+
+    def test_o_gerador_e_FERRAMENTA_DELE_e_nao_vai_ao_cliente(self):
+        m = self._mod()
+        self.assertIn("GERAR_INSTALADOR_WINDOWS.bat", m.SO_WINDOWS)
+        self.assertIn("GERAR_INSTALADOR_WINDOWS.bat", m.SO_SEU)
+
+    def test_o_gerador_LIMPA_antes_de_compilar(self):
+        """O PyInstaller reaproveita o que achar em build\\ e dist\\, e um
+        resto de compilação anterior entra no pacote novo sem avisar — já é
+        o bastante para o cliente receber código velho dentro de um
+        instalador com número novo."""
+        with open(os.path.join(RAIZ, "GERAR_INSTALADOR_WINDOWS.bat"),
+                  encoding="ascii") as f:
+            bat = f.read()
+        i = bat.index("PyInstaller --noconfirm")
+        self.assertIn('rd /s /q "dist"', bat[:i])
+        self.assertIn('rd /s /q "build"', bat[:i])
+
+    def test_o_gerador_PARA_se_o_exe_nao_saiu(self):
+        """Seguir para o Inno Setup depois de uma compilação falha produz um
+        instalador incompleto — pior que instalador nenhum, porque só falha
+        na máquina do cliente."""
+        with open(os.path.join(RAIZ, "GERAR_INSTALADOR_WINDOWS.bat"),
+                  encoding="ascii") as f:
+            bat = f.read()
+        self.assertIn(r'if not exist "dist\SMC_Quant_Pro\SMC_Quant_Pro.exe" goto FALHOU_COMPILAR',
+                      bat)
+
+    def test_o_gerador_acha_o_Inno_Setup_sozinho(self):
+        """O Inno Setup não põe o ISCC.exe no PATH por conta própria."""
+        with open(os.path.join(RAIZ, "GERAR_INSTALADOR_WINDOWS.bat"),
+                  encoding="ascii") as f:
+            bat = f.read()
+        self.assertIn("ISCC.exe", bat)
+        self.assertIn("ProgramFiles(x86)", bat)
+
+    def test_sem_Inno_Setup_ele_DIZ_que_o_exe_ja_esta_pronto(self):
+        """Metade do trabalho feito é uma informação útil: dá para entregar
+        a pasta compactada enquanto ele instala o Inno."""
+        with open(os.path.join(RAIZ, "GERAR_INSTALADOR_WINDOWS.bat"),
+                  encoding="ascii") as f:
+            bat = f.read()
+        i = bat.index("Inno Setup nao esta instalado")
+        self.assertIn("JA ESTA PRONTO", bat[i:i + 600])

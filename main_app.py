@@ -292,7 +292,15 @@ def _versao_do_pacote(base=None, padrao="0.0.0"):
     enquanto um número plausível chutado aqui recriaria exatamente a mentira
     silenciosa que esta função existe para matar.
     """
-    base = base or os.path.dirname(os.path.abspath(__file__))
+    # DENTRO DO .EXE O ARQUIVO MORA EM OUTRO LUGAR, e isto quase virou um
+    # defeito em todo cliente. Quando o PyInstaller congela o programa, os
+    # dados vao para uma pasta temporaria que ele publica em `sys._MEIPASS`,
+    # e `__file__` aponta para dentro do pacote. Sem olhar ali primeiro, o
+    # `versao.json` nao seria encontrado e TODO cliente veria "0.0.0" no
+    # cabecalho -- justamente o numero absurdo que eu escolhi para gritar
+    # quando algo esta errado. Ele gritaria certo, mas pelo motivo errado.
+    if base is None:
+        base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
     try:
         with open(os.path.join(base, "versao.json"), "r", encoding="utf-8") as fh:
             v = str((json.load(fh) or {}).get("versao", "") or "").strip()
