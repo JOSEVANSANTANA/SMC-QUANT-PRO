@@ -14,7 +14,12 @@
 ;    3. Abra este .iss no Inno Setup Compiler e clique em "Compile" (ou F9)
 ;    4. O setup.exe sai na pasta definida em OutputDir
 ;
-;  REGRA DE VERSÃO: sempre que subir uma versão, altere MyAppVersion abaixo
+;  A VERSÃO NÃO SE ESCREVE MAIS À MÃO AQUI. O empacotador carimba o número
+;  do versao.json ao montar o pacote (ver `carimbar_versao` em empacotar.py).
+;  Esta linha ficou parada em 2.19.0 enquanto o produto ia para a 2.70 —
+;  cinquenta e uma versões — e o setup.exe sairia se apresentando como 2.19.0
+;  em "Adicionar ou Remover Programas".
+;  REGRA ANTIGA (não vale mais): sempre que subir uma versão, altere MyAppVersion abaixo
 ;  para bater com VERSAO_ATUAL do main_app.py e com o campo "versao" do gist.
 ; ============================================================================
 
@@ -30,7 +35,18 @@
 ; A sua pasta "dist" JÁ é o pacote completo: contém o SMC_Quant_Pro.exe (onefile)
 ; e a pasta motor\ ao lado dele. O instalador copia tudo que estiver aqui dentro.
 ; >>> Confira que a pasta motor\ dentro da dist tem o node_modules pronto. <<<
-#define SourceApp        "C:\Users\jovan\Documents\SMC_QUANT_PRO\dist"
+;  CAMINHO RELATIVO, e nao o da minha maquina.
+;  Ate a v2.70.1 esta linha era "C:\Users\jovan\Documents\SMC_QUANT_PRO\dist"
+;  -- o caminho do MEU Windows, cravado no arquivo. Dois estragos:
+;    1. o cliente que abriu este script recebeu na cara
+;         "Line 85: No files found matching C:\Users\jovan\...\dist\*"
+;       porque aquela pasta so existe aqui;
+;    2. e todo pacote entregue mostrava o meu nome de usuario e o desenho
+;       das minhas pastas para quem abrisse o arquivo.
+;  {#SourcePath} e a pasta ONDE ESTE .iss ESTA, resolvida pelo proprio Inno
+;  Setup. Com ela o script funciona em qualquer maquina sem ninguem editar
+;  nada -- inclusive na minha.
+#define SourceApp        SourcePath + "..\dist"
 
 ; Ícone do aplicativo (.ico). O .exe já tem ícone embutido; isto é só para o
 ; assistente de instalação e o item no Painel de Controle. Deixe "" se não tiver.
@@ -39,7 +55,11 @@
 ; Instalador do Node.js para incluir no pacote (opcional, mas recomendado).
 ; Baixe o .msi LTS x64 em https://nodejs.org e aponte aqui.
 ; Deixe vazio ("") se NÃO quiser embutir o Node.js no setup.
-#define NodeInstaller    "C:\Users\jovan\Documents\SMC_QUANT_PRO\node-v20.17.0-x64.msi"
+;  VAZIO POR PADRAO, e de proposito. Antes vinha com o caminho do .msi na
+;  MINHA maquina: quem compilasse em qualquer outro lugar levava erro de
+;  arquivo nao encontrado antes mesmo de comecar. Para embutir o Node no
+;  setup, baixe o .msi LTS x64 e ponha o caminho dele aqui.
+#define NodeInstaller    ""
 
 ; ----------------------------------------------------------------------------
 

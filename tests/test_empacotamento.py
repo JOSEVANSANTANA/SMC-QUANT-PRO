@@ -513,3 +513,165 @@ class TestOGuiaDeRevendaTambemENaoVaiParaOCliente(unittest.TestCase):
             self.assertNotIn(proibido, notas,
                              f"as notas da versão mencionam '{proibido}' — "
                              "e elas viajam no pacote do cliente")
+
+
+class TestOPacoteDoClienteNAOLevaFerramentaDeCompilacao(unittest.TestCase):
+    """O CLIENTE ABRIU O INNO SETUP. Foto de 24/08.
+
+    Ele recebeu o zip do Windows, abriu a pasta, não achou nada para dar dois
+    cliques, foi vasculhar — e achou `instalador\\SMC_Quant_Pro.iss`. O Windows
+    abriu no Inno Setup Compiler e ele ficou olhando para uma tela de
+    programador. Perguntou: "era para ir desse jeito mesmo?".
+
+    Não era. Aquela pasta é a ferramenta que gera o setup.exe. Três estragos
+    de uma vez:
+
+      1. NÃO TEM USO PARA O CLIENTE. É script de compilação.
+      2. VAZAVA O CAMINHO DA MÁQUINA DELE. O .iss trazia
+         "C:\\Users\\jovan\\Documents\\SMC_QUANT_PRO\\dist" cravado — o nome de
+         usuário e o desenho das pastas dele, em todo pacote entregue.
+      3. E QUEBRAVA. Quando o cliente tentou compilar, o erro foi
+         "Line 85: No files found matching C:\\Users\\jovan\\...\\dist\\*",
+         porque aquela pasta só existe na máquina dele.
+    """
+
+    def _mod(self):
+        import importlib.util
+        caminho = os.path.join(RAIZ, "empacotar.py")
+        spec = importlib.util.spec_from_file_location("empacotar", caminho)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_a_pasta_instalador_sai_do_pacote_do_CLIENTE(self):
+        m = self._mod()
+        for arquivo in m.SO_SEU:
+            if arquivo.startswith("instalador/"):
+                break
+        else:
+            self.fail("a pasta instalador/ voltou a ir no pacote do cliente")
+
+    def test_o_iss_continua_indo_no_pacote_DELE(self):
+        """Tirar do cliente não pode significar sumir: é com ele que ele gera
+        o setup.exe."""
+        m = self._mod()
+        self.assertIn("instalador/SMC_Quant_Pro.iss", m.SO_WINDOWS)
+
+    def test_o_iss_NAO_carrega_caminho_de_maquina_nenhuma(self):
+        with open(os.path.join(RAIZ, "instalador", "SMC_Quant_Pro.iss"),
+                  encoding="utf-8") as f:
+            iss = f.read()
+        # Só o CÓDIGO: os comentários citam o caminho antigo para explicar o
+        # defeito, e punir a documentação seria o teste errado.
+        codigo = "\n".join(l for l in iss.splitlines()
+                           if not l.lstrip().startswith(";"))
+        self.assertNotIn("C:\\Users\\", codigo,
+                         "voltou a cravar o caminho de uma máquina no .iss")
+        self.assertIn("SourcePath", codigo,
+                      "o caminho tem de ser relativo à pasta do .iss")
+
+
+class TestOWindowsTEMOndeClicar(unittest.TestCase):
+    """A ASSIMETRIA QUE MANDOU O CLIENTE PARA O INNO SETUP.
+
+    O pacote do Mac sempre teve seis arquivos de dois cliques. O do Windows
+    tinha ZERO — só o do painel de licenças, que nem vai para o cliente. Quem
+    abria o zip no Windows não tinha o que clicar, e ia procurar.
+    """
+
+    def _mod(self):
+        import importlib.util
+        caminho = os.path.join(RAIZ, "empacotar.py")
+        spec = importlib.util.spec_from_file_location("empacotar", caminho)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_existe_um_instalador_de_dois_cliques(self):
+        self.assertTrue(_existe("INSTALAR_WINDOWS.bat"))
+        self.assertIn("INSTALAR_WINDOWS.bat", self._mod().SO_WINDOWS)
+
+    def test_existe_um_abridor_de_dois_cliques(self):
+        self.assertTrue(_existe("ABRIR_SMC_QUANT_PRO.bat"))
+        self.assertIn("ABRIR_SMC_QUANT_PRO.bat", self._mod().SO_WINDOWS)
+
+    def test_cada_par_do_MAC_tem_o_par_do_WINDOWS(self):
+        """Foi a assimetria que criou o problema. Cravada, ela não volta."""
+        pares = [("INSTALAR_MAC.command", "INSTALAR_WINDOWS.bat"),
+                 ("ABRIR_SMC_QUANT_PRO.command", "ABRIR_SMC_QUANT_PRO.bat")]
+        for do_mac, do_win in pares:
+            self.assertTrue(_existe(do_mac), do_mac)
+            self.assertTrue(_existe(do_win),
+                            f"'{do_mac}' existe e '{do_win}' não — o cliente "
+                            "do Windows fica sem o que clicar")
+
+    def test_o_instalador_tenta_o_py_launcher_ANTES_do_python(self):
+        """No Windows o comando `python` pode cair na loja da Microsoft e
+        abrir uma página em vez de rodar — beco sem saída que já fez gente
+        achar que o Python não estava instalado quando estava."""
+        with open(os.path.join(RAIZ, "INSTALAR_WINDOWS.bat"), encoding="utf-8") as f:
+            bat = f.read()
+        self.assertLess(bat.index("py -3"), bat.index("python --version"))
+
+    def test_o_abridor_NAO_fecha_a_janela_engolindo_o_erro(self):
+        """Sem o `pause` no caminho de erro, a janela some no instante da
+        falha e leva a mensagem junto — o cliente vê um piscar e não tem o
+        que relatar."""
+        with open(os.path.join(RAIZ, "ABRIR_SMC_QUANT_PRO.bat"), encoding="utf-8") as f:
+            bat = f.read()
+        i = bat.index('if not "%SAIDA%"=="0"')
+        self.assertIn("pause", bat[i:])
+
+
+class TestAVersaoNAOSeEscreveMaisAMao(unittest.TestCase):
+    """A MESMA DOENÇA DO main_app.py, QUE SOBREVIVEU NOS ARQUIVOS AO LADO.
+
+        instalador/SMC_Quant_Pro.iss  ->  MyAppVersion "2.19.0"
+        LEIA-ME_WINDOWS.txt           ->  "SMC QUANT PRO v2.37.0"
+        versao.json                   ->  2.70.1
+
+    Cinquenta e uma versões de defasagem numa, trinta e três na outra. O
+    setup.exe sairia com o nome `SMC_Quant_Pro_Setup_2.19.0.exe` e apareceria
+    como 2.19.0 em "Adicionar ou Remover Programas" — o cliente instalaria a
+    versão mais nova achando que instalou uma de meses atrás.
+    """
+
+    def _mod(self):
+        import importlib.util
+        caminho = os.path.join(RAIZ, "empacotar.py")
+        spec = importlib.util.spec_from_file_location("empacotar", caminho)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_o_iss_recebe_a_versao_do_versao_json(self):
+        m = self._mod()
+        saida = m.carimbar_versao('#define MyAppVersion     "2.19.0"',
+                                  "9.9.9", "x.iss")
+        self.assertIn('"9.9.9"', saida)
+        self.assertNotIn("2.19.0", saida)
+
+    def test_o_cabecalho_do_LEIA_ME_recebe_a_versao(self):
+        m = self._mod()
+        saida = m.carimbar_versao("  SMC QUANT PRO v2.37.0 — WINDOWS\n",
+                                  "9.9.9", "a.txt")
+        self.assertIn("v9.9.9", saida)
+
+    def test_o_CHANGELOG_do_LEIA_ME_e_PRESERVADO(self):
+        """Mais abaixo os LEIA-ME trazem 'O QUE MUDOU NA v2.37.0', que é
+        história e está certo. Trocar tudo apagaria o registro do que
+        aconteceu em cada versão."""
+        m = self._mod()
+        texto = ("  SMC QUANT PRO v2.37.0 — WINDOWS\n" + ("\n" * 200)
+                 + "  O QUE MUDOU NA v2.37.0\n")
+        saida = m.carimbar_versao(texto, "9.9.9", "a.txt")
+        self.assertIn("O QUE MUDOU NA v2.37.0", saida)
+
+    def test_o_pacote_montado_LEVA_a_versao_certa(self):
+        """Ponta a ponta, no repositório real."""
+        m = self._mod()
+        with open(os.path.join(RAIZ, "instalador", "SMC_Quant_Pro.iss"),
+                  encoding="utf-8") as f:
+            iss = f.read()
+        saida = m.carimbar_versao(iss, m.versao(), "instalador/SMC_Quant_Pro.iss")
+        self.assertIn(f'#define MyAppVersion     "{m.versao()}"', saida)

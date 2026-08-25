@@ -124,6 +124,16 @@ SO_WINDOWS = [
     "SMC_Quant_Pro.spec",
     "COMPILAR.md",
     "LEIA-ME_WINDOWS.txt",
+    # OS DOIS ARQUIVOS DE DOIS CLIQUES QUE O WINDOWS NAO TINHA.
+    #
+    # O pacote do Mac sempre teve seis .command; o do Windows tinha ZERO --
+    # so o do painel de licencas, que nem vai para o cliente. Quem recebia o
+    # zip no Windows abria a pasta, nao achava nada para clicar, e ia
+    # procurar. O primeiro cliente achou o instalador/SMC_Quant_Pro.iss e
+    # abriu no Inno Setup, a ferramenta de COMPILACAO. Ficou olhando para
+    # uma tela de programador sem ter o que fazer ali.
+    "INSTALAR_WINDOWS.bat",
+    "ABRIR_SMC_QUANT_PRO.bat",
     "instalador/LEIA-ME.md",
     "instalador/SMC_Quant_Pro.iss",
     # O abridor do painel EXISTIA só no Mac. No Windows o painel ia junto no
@@ -165,7 +175,22 @@ PAINEL = "painel_licencas.html"
 # arquivo não vaza a senha, mas entrega ao cliente o desenho inteiro do
 # negócio — inclusive que existe um painel, que é justamente o que ele não
 # deveria saber. Sai junto com o painel, pelo mesmo motivo.
-SO_SEU = ["ENTREGA_AO_CLIENTE.md"]
+SO_SEU = [
+    "ENTREGA_AO_CLIENTE.md",
+    # A PASTA instalador/ E FERRAMENTA DELE, NAO ENTREGA DE CLIENTE.
+    #
+    # Ali dentro esta o script do Inno Setup que ELE usa para gerar o
+    # setup.exe. Para o cliente aquilo nao tem uso nenhum: e codigo de
+    # compilacao, com caminhos da maquina dele e instrucoes de build.
+    #
+    # E nao e hipotetico. O primeiro cliente a instalar no Windows abriu a
+    # pasta, nao achou nada para dar dois cliques, foi vasculhar, achou o
+    # .iss e abriu -- caiu no Inno Setup Compiler, olhando para uma tela de
+    # programador. Ele ate perguntou: "era para ir desse jeito mesmo?".
+    # Nao era. A pasta nunca deveria ter saido daqui.
+    "instalador/LEIA-ME.md",
+    "instalador/SMC_Quant_Pro.iss",
+]
 
 # E dentro dos LEIA-ME há trechos que também são só seus (a seção do painel, o
 # item do changelog que explica a revenda). Ali não dá para tirar o arquivo
@@ -195,6 +220,39 @@ def texto_do_pacote(conteudo, com_painel=True):
         if not pulando:
             saida.append(linha)
     return "".join(saida)
+
+
+def carimbar_versao(texto, v, rel=""):
+    """Escreve a versão REAL nos arquivos de casca, na hora de empacotar.
+
+    A MESMA DOENÇA QUE JÁ MATEI NO main_app.py, E QUE SOBREVIVEU AQUI.
+    `VERSAO_ATUAL` era um número escrito à mão e ficou catorze versões
+    parado. Corrigi lá — e não olhei para os arquivos ao lado:
+
+        instalador/SMC_Quant_Pro.iss  ->  #define MyAppVersion "2.19.0"
+        LEIA-ME_WINDOWS.txt           ->  "SMC QUANT PRO v2.37.0"
+
+    enquanto o versao.json já estava em 2.70.1. Cinquenta e uma versões de
+    defasagem numa, trinta e três na outra. O setup.exe sairia com o nome
+    `SMC_Quant_Pro_Setup_2.19.0.exe` e apareceria como 2.19.0 em "Adicionar
+    ou Remover Programas" — o cliente instalaria a versão mais nova achando
+    que instalou uma de meses atrás.
+
+    Número que depende de alguém lembrar de atualizar não é regra, é sorte.
+    Agora quem carimba é o empacotador, na fonte única (`versao.json`).
+
+    SÓ O CABEÇALHO DOS LEIA-ME é trocado, e isso importa: mais abaixo eles
+    trazem CHANGELOG ("O QUE MUDOU NA v2.37.0"), que é história e está certo.
+    Trocar tudo apagaria o registro do que aconteceu em cada versão."""
+    import re as _re
+    if rel.endswith(".iss"):
+        return _re.sub(r'(#define\s+MyAppVersion\s+")[^"]*(")',
+                       r"\g<1>" + v + r"\g<2>", texto)
+    if rel.endswith(".txt") or rel.endswith(".md"):
+        cabeca, resto = texto[:400], texto[400:]
+        cabeca = _re.sub(r"(SMC QUANT PRO\s+)v\d+\.\d+\.\d+", r"\g<1>v" + v, cabeca)
+        return cabeca + resto
+    return texto
 
 
 def versao():
@@ -255,7 +313,12 @@ def montar(sistema, com_painel=True):
                 # listar aqui continuaria vazando, e a regra que depende de eu
                 # lembrar não é regra.
                 with open(origem, encoding="utf-8") as f:
-                    z.writestr(destino, texto_do_pacote(f.read(), com_painel))
+                    z.writestr(destino, carimbar_versao(
+                        texto_do_pacote(f.read(), com_painel), v, rel))
+            elif rel.endswith(".iss"):
+                # O .iss também é texto, e também carregava versão à mão.
+                with open(origem, encoding="utf-8") as f:
+                    z.writestr(destino, carimbar_versao(f.read(), v, rel))
             else:
                 z.write(origem, destino)
 
