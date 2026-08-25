@@ -675,3 +675,145 @@ class TestAVersaoNAOSeEscreveMaisAMao(unittest.TestCase):
             iss = f.read()
         saida = m.carimbar_versao(iss, m.versao(), "instalador/SMC_Quant_Pro.iss")
         self.assertIn(f'#define MyAppVersion     "{m.versao()}"', saida)
+
+
+class TestQuebraDeLinhaCERTAPorSistema(unittest.TestCase):
+    """O .bat VIROU LIXO NA TELA DO CLIENTE. Foto de 25/08.
+
+    Os .bat foram escritos num Linux, com quebra de linha do Unix. O cmd.exe
+    do Windows EXIGE CRLF: com LF ele lê o arquivo errado e passa a executar
+    cada linha de comentário como se fosse comando. A tela dele encheu de
+
+        'PASSO' nao e reconhecido como um comando interno
+        'Windows' nao e reconhecido como um comando interno
+        'pagina' nao e reconhecido como um comando interno
+
+    — que são pedaços dos MEUS comentários sendo executados. O instalador
+    virou lixo antes de fazer qualquer coisa.
+
+    E não era só o arquivo novo: o ABRIR_PAINEL_LICENCAS.bat, que existia há
+    versões, estava igual. Ninguém tinha notado porque ninguém tinha rodado.
+
+    O caminho contrário também quebra: um .command com CRLF faz o bash
+    reclamar de `\\r` no fim de cada linha e o Mac não abre nada.
+    """
+
+    def _mod(self):
+        import importlib.util
+        caminho = os.path.join(RAIZ, "empacotar.py")
+        spec = importlib.util.spec_from_file_location("empacotar", caminho)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_bat_sai_com_CRLF(self):
+        self.assertEqual(
+            self._mod().quebra_de_linha_do_sistema(b"a\nb\n", "x.bat"),
+            b"a\r\nb\r\n")
+
+    def test_bat_que_JA_tem_CRLF_nao_duplica(self):
+        """Converter duas vezes daria \\r\\r\\n, que o cmd também não entende."""
+        self.assertEqual(
+            self._mod().quebra_de_linha_do_sistema(b"a\r\nb\r\n", "x.bat"),
+            b"a\r\nb\r\n")
+
+    def test_command_do_Mac_sai_com_LF(self):
+        """CRLF num .command faz o bash reclamar de `\\r` em cada linha."""
+        self.assertEqual(
+            self._mod().quebra_de_linha_do_sistema(b"a\r\nb\r\n", "x.command"),
+            b"a\nb\n")
+
+    def test_TODO_bat_do_repositorio_ja_esta_em_CRLF(self):
+        """O empacotador conserta na hora de montar, mas o arquivo no
+        repositório também tem de estar certo — senão quem roda direto da
+        pasta clonada leva o mesmo defeito."""
+        import glob
+        bats = glob.glob(os.path.join(RAIZ, "*.bat"))
+        self.assertTrue(bats, "sumiram os .bat do repositório")
+        for caminho in bats:
+            with open(caminho, "rb") as f:
+                dados = f.read()
+            nome = os.path.basename(caminho)
+            self.assertNotIn(b"\n", dados.replace(b"\r\n", b""),
+                             f"{nome} tem linha terminada em LF puro")
+
+    def test_TODO_bat_e_ASCII_puro(self):
+        """Acento em .bat depende da página de código do console, que varia
+        de máquina — é outra forma de virar lixo na tela."""
+        import glob
+        for caminho in glob.glob(os.path.join(RAIZ, "*.bat")):
+            with open(caminho, "rb") as f:
+                dados = f.read()
+            try:
+                dados.decode("ascii")
+            except UnicodeDecodeError:
+                self.fail(f"{os.path.basename(caminho)} tem caractere fora do ASCII")
+
+    def test_o_command_do_Mac_continua_em_LF(self):
+        import glob
+        for caminho in glob.glob(os.path.join(RAIZ, "*.command")):
+            with open(caminho, "rb") as f:
+                dados = f.read()
+            self.assertNotIn(b"\r\n", dados,
+                             f"{os.path.basename(caminho)} ganhou CRLF")
+
+
+class TestOInstaladorBAIXAOQueFaltar(unittest.TestCase):
+    """Pedido dele: "era para ta tudo incluso no pacote, certifique-se de
+    incluir ja na opcao do cmd o download do python se o cliente nao tiver".
+
+    Antes o .bat só DIZIA "baixe o Python em python.org" e parava. Mandar o
+    cliente para uma página de download no meio da instalação é onde a
+    instalação morre: ele não sabe qual versão, não sabe que tem de marcar
+    "Add python.exe to PATH", e some.
+    """
+
+    def _bat(self):
+        with open(os.path.join(RAIZ, "INSTALAR_WINDOWS.bat"), encoding="ascii") as f:
+            return f.read()
+
+    def test_baixa_o_python_do_site_OFICIAL(self):
+        bat = self._bat()
+        self.assertIn("https://www.python.org/ftp/python/", bat)
+
+    def test_instala_SEM_pedir_senha_de_administrador(self):
+        """InstallAllUsers=0 instala só para o usuário: sem elevação. Pedir
+        senha de administrador é onde metade das instalações para."""
+        self.assertIn("InstallAllUsers=0", self._bat())
+
+    def test_marca_o_PATH_que_todo_mundo_esquece(self):
+        """PrependPath=1 é a caixa "Add python.exe to PATH" da primeira tela
+        — a que faz o Windows não achar o Python mesmo instalado."""
+        self.assertIn("PrependPath=1", self._bat())
+
+    def test_MOSTRA_o_endereco_e_PERGUNTA_antes_de_baixar(self):
+        """É a máquina do cliente e é um executável: ele lê o endereço e
+        autoriza. Baixar e rodar instalador sem avisar seria o tipo de coisa
+        que um antivírus e uma pessoa sensata tratam do mesmo jeito."""
+        bat = self._bat()
+        self.assertIn("Endereco exato", bat)
+        self.assertIn("set /p", bat)
+
+    def test_procura_o_python_recem_instalado_no_caminho_dele(self):
+        """A mudança de PATH não vale na janela que já está aberta: o PATH é
+        lido quando o processo nasce. Sem procurar no LOCALAPPDATA, o
+        instalador acabaria de instalar o Python e diria em seguida que não
+        achou Python nenhum."""
+        self.assertIn("LOCALAPPDATA", self._bat())
+
+    def test_o_Node_NAO_bloqueia_a_instalacao(self):
+        """O programa abre e opera sem o Node; o que fica de fora é o envio
+        de relatório pelo WhatsApp. Parar tudo custaria o programa inteiro
+        por causa de um recurso."""
+        bat = self._bat()
+        i = bat.index("NODE_URL=")
+        trecho = bat[i:]
+        self.assertIn("goto NODE_FIM", trecho)
+
+    def test_tem_DOIS_jeitos_de_baixar(self):
+        """curl vem no Windows 10 (1803+) e no 11. Onde não houver, o
+        PowerShell resolve — uma tentativa só falharia em máquina antiga sem
+        dizer por quê."""
+        bat = self._bat()
+        self.assertIn("curl", bat)
+        self.assertIn("Invoke-WebRequest", bat)

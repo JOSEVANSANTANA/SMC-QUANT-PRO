@@ -222,6 +222,38 @@ def texto_do_pacote(conteudo, com_painel=True):
     return "".join(saida)
 
 
+def quebra_de_linha_do_sistema(dados, rel):
+    """O .bat sai com CRLF; o .command sai com LF. SEMPRE.
+
+    ISTO NAO E DETALHE DE ESTILO -- FOI O QUE QUEBROU NA MAO DO CLIENTE.
+    Os .bat foram escritos aqui, num Linux, com quebra de linha do Unix. O
+    `cmd.exe` do Windows EXIGE CRLF: com LF ele le o arquivo errado e passa
+    a executar cada linha de comentario como se fosse comando. A tela dele
+    encheu de
+
+        'PASSO' nao e reconhecido como um comando interno
+        'Windows' nao e reconhecido como um comando interno
+        'pagina' nao e reconhecido como um comando interno
+
+    -- que sao pedacos dos MEUS comentarios sendo executados. O instalador
+    virou lixo na tela antes de fazer qualquer coisa.
+
+    E nao era so o arquivo novo: o ABRIR_PAINEL_LICENCAS.bat, que existia ha
+    versoes, estava igual. Ninguem tinha notado porque ninguem tinha rodado.
+
+    O caminho contrario tambem quebra: um .command com CRLF faz o bash
+    reclamar de `\r` no fim de cada linha e o Mac nao abre nada. Por isso a
+    conversao e nos DOIS sentidos, decidida pela extensao -- e feita aqui,
+    no empacotador, e nao "lembrando de configurar o editor". Regra que
+    depende de alguem lembrar nao e regra.
+    """
+    if rel.endswith(".bat"):
+        return dados.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    if rel.endswith((".command", ".sh")):
+        return dados.replace(b"\r\n", b"\n")
+    return dados
+
+
 def carimbar_versao(texto, v, rel=""):
     """Escreve a versão REAL nos arquivos de casca, na hora de empacotar.
 
@@ -297,7 +329,7 @@ def montar(sistema, com_painel=True):
         for rel in arquivos:
             origem = os.path.join(RAIZ, rel)
             destino = f"SMC_QUANT_PRO/{rel}"
-            if rel.endswith(".command"):
+            if rel.endswith((".command", ".sh", ".bat")):
                 # O zip do Python NÃO leva a permissão de execução por padrão.
                 # Sem ela, o duplo-clique no .command não faz nada no Mac e o
                 # trader precisa descobrir sozinho o `chmod +x`. A permissão vai
@@ -306,7 +338,7 @@ def montar(sistema, com_painel=True):
                 info.external_attr = (0o755 << 16)
                 info.compress_type = zipfile.ZIP_DEFLATED
                 with open(origem, "rb") as f:
-                    z.writestr(info, f.read())
+                    z.writestr(info, quebra_de_linha_do_sistema(f.read(), rel))
             elif rel.endswith((".txt", ".md")):
                 # Passa pelo filtro dos trechos só-seus. Vale para TODOS os
                 # textos: um trecho marcado num arquivo que eu esqueça de
