@@ -995,68 +995,185 @@ def listar_janelas():
     return []
 
 
-def encontrar_janela(nome_parcial):
-    """Handle da janela pelo título. Prefere o título EXATO (o dropdown guarda
-    o título completo); se não houver, cai para correspondência parcial.
-    Devolve None se não encontrar — e None aqui significa 'não achei', nunca
-    'pode seguir assim mesmo'."""
-    if not nome_parcial:
+# --------------------------------------------------------------------
+# TÍTULO QUE MUDA SOZINHO
+# --------------------------------------------------------------------
+# "Janela 'MGC1! 4.704,5 ▲ +0.21% Sem nome - Google Chrome' não encontrada."
+#
+# Estava tudo aberto. O título é que tinha PREÇO DENTRO. O TradingView escreve
+# a cotação na aba, então o título muda a cada tique — e o que ficou gravado na
+# lista de janelas foi a fotografia de um instante que nunca mais volta.
+#
+# Por isso só a Tradovate funcionava: o título dela ("Tradovate - SMC QUANT
+# PRO") é o mesmo o pregão inteiro. Não era preferência por corretora nenhuma;
+# era o único título que não se mexia.
+#
+# A correção é olhar para o que NÃO muda: tira do título tudo que é número,
+# seta e porcentagem, e compara o que sobra ("mgc1 sem nome google chrome").
+# E há uma trava: o pedaço que identifica o ATIVO (qualquer palavra com dígito
+# — MGC1, MNQ1, MESU6) é OBRIGATÓRIO. Sem ela, o programa recusa e diz que
+# recusou. Analisar o gráfico do ouro achando que é o do índice seria muito
+# pior do que perder um ciclo.
+_ORNAMENTOS = "()[]{}<>·—–-|,;:!?.\"'“”‘’*•▲▼△▽↑↓●○«»"
+
+# Enfeites que o PRÓPRIO programa acrescenta ao rótulo e que não fazem parte
+# do nome da janela.
+_RE_DECORACAO = re.compile(
+    r"\s*—\s*janela\s+\d+\s*\(\d+x\d+\)\s*$|\[outra área de trabalho\]",
+    re.I)
+
+
+def _tokens_estaveis(titulo):
+    """As palavras do título que sobrevivem ao próximo tique.
+
+    Fora: preço ("4.704,5"), variação ("+0,21%"), seta ("▲"), contador de
+    mensagens ("(78)"). Dentro: qualquer coisa com letra — inclusive o código
+    do ativo, que é justamente o que identifica a janela.
+    """
+    texto = _RE_DECORACAO.sub(" ", str(titulo or ""))
+    if texto.strip().startswith(ROTULO_ABA.strip()[:1]):
+        texto = texto.replace(ROTULO_ABA, " ")
+    fora = []
+    for pedaco in texto.lower().split():
+        p = pedaco.strip(_ORNAMENTOS)
+        if not p:
+            continue
+        if not re.search(r"[^\W\d_]", p, re.UNICODE):
+            continue                     # nenhuma letra: número, seta ou %
+        fora.append(p)
+    return fora
+
+
+def esqueleto_do_titulo(titulo):
+    """O título sem nada que se mexa sozinho. Só para comparar e para log."""
+    return " ".join(_tokens_estaveis(titulo))
+
+
+def titulo_muda_sozinho(titulo):
+    """Tem cotação, variação ou contador dentro do título? Então ele muda a
+    cada tique, e guardar o texto de hoje não serve para achar a janela
+    amanhã. Serve para AVISAR o trader na hora em que ele inclui a janela."""
+    texto = _RE_DECORACAO.sub(" ", str(titulo or ""))
+    for pedaco in texto.split():
+        p = pedaco.strip(_ORNAMENTOS)
+        if p and not re.search(r"[^\W\d_]", p, re.UNICODE):
+            return True
+    return False
+
+
+def _tokens_obrigatorios(tokens):
+    """As palavras que IDENTIFICAM a janela: as que têm dígito colado à letra.
+
+    MGC1, MNQ1!, MESU6 — é o código do ativo. Casar sem ela seria trocar um
+    gráfico pelo outro."""
+    return {t for t in tokens if any(c.isdigit() for c in t)}
+
+
+def melhor_janela_por_titulo(alvo, candidatos):
+    """Qual dos títulos abertos é o que foi salvo? Devolve o ÍNDICE, ou None.
+
+    None significa 'não tenho certeza' — e não ter certeza aqui é motivo para
+    pular a janela e dizer isso, nunca para chutar."""
+    alvo_txt = _RE_DECORACAO.sub(" ", str(alvo or "")).strip()
+    lista = [str(c or "") for c in candidatos]
+    if not alvo_txt or not lista:
         return None
-    alvo = str(nome_parcial).strip().lower()
+
+    baixo = [c.strip().lower() for c in lista]
+    a = alvo_txt.lower()
+    for i, t in enumerate(baixo):                 # 1) igualzinho
+        if t == a:
+            return i
+    # 2) o salvo cabe dentro do aberto — mas só se couber em UMA. Se o título
+    #    guardado é pedaço de duas janelas abertas, ele não identifica nenhuma.
+    dentro = [i for i, t in enumerate(baixo) if a in t]
+    if len(dentro) == 1:
+        return dentro[0]
+    if len(dentro) > 1:
+        return None
+
+    tk_alvo = _tokens_estaveis(alvo_txt)
+    if not tk_alvo:
+        return None
+    tks = [_tokens_estaveis(c) for c in lista]
+    for i, t in enumerate(tks):                   # 3) mesmo esqueleto
+        if t == tk_alvo:
+            return i
+
+    # 4) O que sobrou do título ainda identifica a janela?
+    conj_alvo = set(tk_alvo)
+    exigidos = _tokens_obrigatorios(conj_alvo)
+    notas = []
+    for i, t in enumerate(tks):
+        conj = set(t)
+        if not exigidos <= conj:
+            continue                       # outro ativo: nem entra na disputa
+        comuns = conj_alvo & conj
+        if len(comuns) * 2 < len(conj_alvo):
+            continue                       # coincidência solta, não é a janela
+        nota = len(comuns) * 10 - abs(len(conj) - len(conj_alvo))
+        notas.append((nota, i, frozenset(conj)))
+    if not notas:
+        return None
+    notas.sort(key=lambda n: (-n[0], n[1]))
+    if len(notas) > 1 and notas[1][0] == notas[0][0] and notas[1][2] != notas[0][2]:
+        return None                        # duas janelas empatadas: não chuta
+    return notas[0][1]
+
+
+def resolver_janela(nome_parcial):
+    """(handle, título com que ele REALMENTE casou).
+
+    O segundo valor existe para o log poder dizer com qual janela ficou quando
+    o título salvo já mudou. A lista guardada NÃO é reescrita de propósito: o
+    histórico de cada janela (cenário ativo, imagem anterior, preço anterior)
+    é guardado sob o nome salvo, e trocar esse nome a cada tique jogaria fora
+    a memória da janela toda volta do ciclo."""
+    if not nome_parcial:
+        return None, ""
+    alvo = str(nome_parcial).strip()
 
     if E_WINDOWS:
         if not PYWIN32_DISPONIVEL:
-            return None
-        achado = {"exato": None, "parcial": None}
+            return None, ""
+        abertas = []
 
         def callback(hwnd, _extra):
             if win32gui.IsWindowVisible(hwnd):
                 titulo = win32gui.GetWindowText(hwnd)
-                if titulo:
-                    t = titulo.strip().lower()
-                    if t == alvo and achado["exato"] is None:
-                        achado["exato"] = hwnd
-                    elif alvo in t and achado["parcial"] is None:
-                        achado["parcial"] = hwnd
+                if titulo and titulo.strip():
+                    abertas.append((hwnd, titulo))
             return True
 
         try:
             win32gui.EnumWindows(callback, None)
         except Exception:
             pass
-        return achado["exato"] or achado["parcial"]
+        i = melhor_janela_por_titulo(alvo, [t for _h, t in abertas])
+        return (abertas[i][0], abertas[i][1]) if i is not None else (None, "")
 
     # ABA DO CHROME (vale em qualquer sistema): o rótulo começa com o globo.
-    if str(nome_parcial).strip().startswith("🌐 Chrome · "):
-        buscado = str(nome_parcial).strip()[len("🌐 Chrome · "):].strip().lower()
-        for a in abas_chrome():
-            if a["titulo"][:70].strip().lower() == buscado:
-                return _PREFIXO_CDP + a["id"]
-        for a in abas_chrome():          # o título da aba muda o tempo todo
-            if buscado[:25] and buscado[:25] in a["titulo"].lower():
-                return _PREFIXO_CDP + a["id"]
-        return None
+    if alvo.startswith(ROTULO_ABA):
+        buscado = alvo[len(ROTULO_ABA):].strip()
+        abas = abas_chrome()
+        i = melhor_janela_por_titulo(buscado, [a["titulo"][:70] for a in abas])
+        if i is None:
+            return None, ""
+        return _PREFIXO_CDP + abas[i]["id"], _rotulo_aba(abas[i])
 
     if E_MACOS:
         # O item de aviso não é janela: escolher ele não pode virar captura.
-        if alvo.startswith("(⚠"):
-            return None
+        if alvo.lower().startswith("(⚠"):
+            return None, ""
         janelas = sorted(_janelas_macos(),
                          key=lambda j: (j["app"].lower(), j["y"], j["x"]))
-        # O rótulo salvo pode carregar o sufixo de área de trabalho.
-        alvo = alvo.replace("[outra área de trabalho]", "").strip()
-        for j in janelas:                       # 1) rótulo completo, exato
-            if j["titulo"].strip().lower() == alvo:
-                return j["id"]
-        for j in janelas:                       # 2) trecho do rótulo
-            if alvo in j["titulo"].strip().lower():
-                return j["id"]
-        # 3) O rótulo pode ter sido salvo com a numeração de OUTRO momento
-        #    ("Google Chrome — janela 2 (1512x982)"). Reaproveita o que dele é
-        #    estável: o aplicativo e o TAMANHO da janela.
-        import re as _re
-        m = _re.search(r"^(.*?)\s+—\s+janela\s+\d+\s+\((\d+)x(\d+)\)$",
-                       str(nome_parcial).strip(), _re.I)
+        # SEM TÍTULO, O TAMANHO É O NOME. Quando falta a permissão de Gravação
+        # de Tela o macOS devolve todas as janelas do Chrome com nome vazio, e
+        # o programa as rotula "Google Chrome — janela 2 (1512x982)". Aí o
+        # único traço que distingue uma da outra é a MEDIDA — por isso esta
+        # comparação vem ANTES: pelo texto, as três seriam a mesma coisa.
+        m = re.search(r"^(.*?)\s+—\s+janela\s+\d+\s+\((\d+)x(\d+)\)$",
+                      alvo, re.I)
         if m:
             app_alvo = m.group(1).strip().lower()
             lg, at = int(m.group(2)), int(m.group(3))
@@ -1064,16 +1181,32 @@ def encontrar_janela(nome_parcial):
                 if (j["app"].strip().lower() == app_alvo
                         and abs(j["largura"] - lg) <= 4
                         and abs(j["altura"] - at) <= 4):
-                    return j["id"]
+                    return j["id"], j["titulo"]
             for j in janelas:                   # mesmo app, tamanho mudou
                 if j["app"].strip().lower() == app_alvo:
-                    return j["id"]
-        for j in janelas:                       # 4) só o nome do aplicativo
-            if alvo in j["app"].strip().lower():
-                return j["id"]
-        return None
+                    return j["id"], j["titulo"]
+        i = melhor_janela_por_titulo(alvo, [j["titulo"] for j in janelas])
+        if i is not None:
+            return janelas[i]["id"], janelas[i]["titulo"]
+        # ÚLTIMO RECURSO: o nome do aplicativo. Só quando o título salvo NÃO
+        # traz código de ativo e só quando existe UMA janela daquele programa —
+        # com duas, cair no aplicativo seria escolher no par ou ímpar entre
+        # dois gráficos diferentes.
+        if not _tokens_obrigatorios(set(_tokens_estaveis(alvo))):
+            alvo_baixo = alvo.lower()
+            do_app = [j for j in janelas
+                      if j["app"].strip().lower() in alvo_baixo]
+            if len(do_app) == 1:
+                return do_app[0]["id"], do_app[0]["titulo"]
+        return None, ""
 
-    return None
+    return None, ""
+
+
+def encontrar_janela(nome_parcial):
+    """Handle da janela pelo título. Devolve None se não encontrar — e None
+    aqui significa 'não achei', nunca 'pode seguir assim mesmo'."""
+    return resolver_janela(nome_parcial)[0]
 
 
 def janela_existe(handle):

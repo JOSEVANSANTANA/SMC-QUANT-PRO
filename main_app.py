@@ -6512,8 +6512,11 @@ def atualizar_decisao_sinal(sinal_id, decisao):
 # PW_RENDERFULLCONTENT, necessária para capturar corretamente conteúdo
 # renderizado por GPU — como uma aba do Chrome (o Tradovate roda em Chrome).
 def encontrar_janela_por_titulo(nome_parcial: str):
-    """Handle da janela pelo título. Prefere o título EXATO (o dropdown guarda
-    o título completo); se não houver, cai para correspondência parcial.
+    """Handle da janela pelo título — o par sem o nome, para quem só quer o
+    handle. O motor usa `plataforma.resolver_janela`, que devolve TAMBÉM o
+    título com que casou: é assim que o log diz com qual janela ele ficou
+    quando o título salvo tinha preço dentro e já mudou.
+
     None significa NÃO ACHEI — nunca "pode seguir assim mesmo".
 
     No Windows o handle é um HWND; no macOS, o número da janela do Quartz.
@@ -12319,11 +12322,14 @@ class SmcQuantApp(ctk.CTk):
         #     recursos extras de ordem/posição por CDP) ---
         self.plataforma_atual = carregar_config().get("plataforma", "tradovate")
 
-        # Cache do handle da janela da corretora. O título do Chrome muda com a
-        # aba ativa; fixar o hwnd evita "não encontrei a janela" quando a aba da
-        # corretora não está em foco.
-        self._hwnd_cache = None
-        self._hwnd_cache_nome = None
+        # Cache do handle DE CADA janela monitorada. O título muda com a aba
+        # ativa e com o preço que a plataforma escreve nele; fixar o handle
+        # evita "não encontrei a janela" a cada tique. Um por janela: com um
+        # cache só, a segunda janela do ciclo apagava o handle da primeira.
+        self._hwnd_por_janela = {}
+        # Quantas vezes seguidas cada janela falhou. Serve para não repetir o
+        # mesmo aviso no WhatsApp a cada ciclo.
+        self._falhas_por_janela = {}
 
         # Poller dos comandos recebidos por WhatsApp (ACATAR/DISPENSAR). Roda
         # em segundo plano por toda a vida do app; se o motor estiver fora do
@@ -13498,12 +13504,32 @@ class SmcQuantApp(ctk.CTk):
         if titulo in lista:
             self.log(f"ℹ️ '{titulo}' já está na lista de gráficos analisados.")
             return
+        # A MESMA JANELA DUAS VEZES, COM PREÇOS DIFERENTES. Quem inclui o
+        # TradingView hoje e de novo amanhã guarda dois títulos que parecem
+        # distintos e apontam para a mesma janela — o motor analisaria o mesmo
+        # gráfico duas vezes por ciclo, gastando cota em dobro. O esqueleto
+        # (título sem preço, sem seta, sem porcentagem) revela que é uma só.
+        _novo = plataforma.esqueleto_do_titulo(titulo)
+        for t in lista:
+            if _novo and plataforma.esqueleto_do_titulo(t) == _novo:
+                self.log(f"ℹ️ Esta é a MESMA janela que já está na lista como "
+                         f"'{t}' — o que mudou no título foi só o preço. "
+                         "Não incluí de novo para não analisar o mesmo "
+                         "gráfico duas vezes por ciclo.")
+                return
         lista.append(titulo)
         salvar_janelas_monitoradas(lista)
         self._render_lista_janelas()
         self.log(f"🪟 '{titulo}' entrou na análise. Agora são {len(lista)} gráfico(s) "
                   "por ciclo — cada um com cenário e histórico próprios. "
                   "Lembre: cada gráfico a mais consome cota da API por ciclo.")
+        if plataforma.titulo_muda_sozinho(titulo):
+            # Título com preço dentro muda a cada tique. Dizer isso agora
+            # evita o susto de ver no painel um nome que já não existe.
+            self.log("   ℹ️ O título desta janela tem cotação dentro e vai mudar "
+                     "sozinho. Eu sigo reconhecendo ela pelo que não muda "
+                     f"({plataforma.esqueleto_do_titulo(titulo)}) — o nome na "
+                     "lista fica com o preço do momento em que você incluiu.")
 
     def _remover_janela_monitorada(self, titulo):
         lista = [t for t in janelas_monitoradas() if t != titulo]
@@ -20663,25 +20689,51 @@ class SmcQuantApp(ctk.CTk):
 
     # ------------------------------------------------------------------
     def _resolver_hwnd_corretora(self, nome_janela):
-        """Resolve o hwnd da janela da corretora REUSANDO o handle já achado
-        enquanto a janela existir. O título do Chrome muda conforme a aba ativa,
-        então buscar por título todo ciclo falha quando a aba da corretora não
-        está em foco. Fixando o hwnd, seguimos capturando a MESMA janela mesmo
-        com a aba trocada; só rebuscamos se ela fechar ou o alvo mudar."""
-        cache = self._hwnd_cache
-        if cache and self._hwnd_cache_nome == nome_janela:
+        """Resolve o handle da janela REUSANDO o que já foi achado enquanto ela
+        existir. O título muda sozinho — a aba ativa do Chrome, o preço que o
+        TradingView escreve na barra — então rebuscar por título todo ciclo é
+        justamente o que falhava. Fixando o handle, seguimos capturando A MESMA
+        janela; só rebuscamos se ela fechar.
+
+        UM CACHE POR JANELA. Enquanto era um só, com duas janelas monitoradas
+        cada volta do laço sobrescrevia o handle da anterior e o cache nunca
+        acertava — quem tinha mais de um gráfico pagava uma busca completa por
+        janela, por ciclo, e via a linha de 'janela fixada' repetir para sempre.
+        """
+        cache = self._hwnd_por_janela.get(nome_janela)
+        if cache:
             try:
-                if PYWIN32_DISPONIVEL and plataforma.janela_existe(cache):
+                if plataforma.janela_existe(cache):
                     return cache
             except Exception:
                 pass
-        hwnd = encontrar_janela_por_titulo(nome_janela)
-        self._hwnd_cache = hwnd
-        self._hwnd_cache_nome = nome_janela
+            self._hwnd_por_janela.pop(nome_janela, None)
+            self.log(f"🔄 A janela '{nome_janela}' mudou de handle ou foi "
+                     "reaberta — procurando de novo.")
+        hwnd, titulo_real = plataforma.resolver_janela(nome_janela)
         if hwnd:
-            self.log(f"🔗 Janela da corretora fixada (handle {hwnd}) — seguirei "
-                     "capturando ela mesmo se a aba/título mudar.")
+            self._hwnd_por_janela[nome_janela] = hwnd
+            extra = ""
+            if titulo_real and titulo_real.strip() != str(nome_janela).strip():
+                # O título salvo tinha preço dentro. Dizer com QUAL janela ele
+                # casou é o que permite conferir que não pegou o gráfico errado.
+                extra = f" Título agora: '{titulo_real}'."
+            self.log(f"🔗 Janela '{nome_janela}' fixada (handle {hwnd}) — "
+                     f"seguirei capturando ela mesmo se o título mudar.{extra}")
         return hwnd
+
+    def _janelas_abertas_para_log(self, limite=12):
+        """Os títulos que o sistema está mostrando AGORA. Entra na mensagem de
+        erro: 'não encontrei' sem dizer o que existe não ajuda ninguém."""
+        try:
+            abertas = [t for t in (plataforma.listar_janelas() or []) if t]
+        except Exception:
+            return ""
+        if not abertas:
+            return " Nenhuma janela visível foi listada pelo sistema."
+        corte = abertas[:limite]
+        resto = "" if len(abertas) <= limite else f" (+{len(abertas) - limite})"
+        return " Abertas agora: " + " · ".join(corte) + resto
 
     # ==================================================================
     # CONTATOS QUE RECEBEM RELATÓRIO (WhatsApp) — gerência pelo app.
@@ -23951,15 +24003,33 @@ class SmcQuantApp(ctk.CTk):
                         if nome_janela:
                             hwnd = self._resolver_hwnd_corretora(nome_janela)
                             if not hwnd:
-                                self.log(f"⚠️ ERRO DE VISUALIZAÇÃO: não encontrei a janela '{nome_janela}'. "
-                                          "Pulando este ciclo.")
-                                enviar_relatorio_whatsapp(
-                                    f"⚠️ *Erro de Visualização*\nJanela '{nome_janela}' não encontrada. "
-                                    "Verifique se a corretora está aberta. Ciclo pulado.",
-                                    None, self.log
-                                )
-                                falar("Atenção. Janela da corretora não encontrada. Ciclo pulado.")
+                                # NÃO É O CICLO QUE É PULADO — é ESTA janela.
+                                # As outras da lista seguem sendo analisadas
+                                # logo abaixo, no mesmo laço. Dizer "ciclo
+                                # pulado" fazia parecer que o robô tinha parado.
+                                _n_falhas = self._falhas_por_janela.get(nome_janela, 0) + 1
+                                self._falhas_por_janela[nome_janela] = _n_falhas
+                                _outras = len(_janelas_ciclo) - 1
+                                self.log(
+                                    f"⚠️ ERRO DE VISUALIZAÇÃO: não encontrei a janela '{nome_janela}'."
+                                    + self._janelas_abertas_para_log()
+                                    + (f" Sigo com as outras {_outras} janelas deste ciclo."
+                                       if _outras > 0 else " Pulando este ciclo."))
+                                # Aviso no WhatsApp só na PRIMEIRA falha e a
+                                # cada 20 ciclos depois: repetir a mesma queixa
+                                # a cada volta ensina a ignorar o aviso.
+                                if _n_falhas == 1 or _n_falhas % 20 == 0:
+                                    enviar_relatorio_whatsapp(
+                                        f"⚠️ *Erro de Visualização*\nNão encontrei a janela "
+                                        f"'{nome_janela}'.\nAbra-a de novo ou reescolha-a na "
+                                        "aba Configurações → Janelas monitoradas."
+                                        + (f"\nAs outras {_outras} janelas seguem sendo analisadas."
+                                           if _outras > 0 else ""),
+                                        None, self.log
+                                    )
+                                    falar("Atenção. Não encontrei uma das janelas monitoradas.")
                                 continue
+                            self._falhas_por_janela[nome_janela] = 0
 
                             self.log(f"📸 [{hora_atual}] Capturando '{nome_janela}' em segundo plano...")
 
