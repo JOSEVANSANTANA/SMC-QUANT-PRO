@@ -1073,3 +1073,52 @@ class TestACadeiaQueGeraOEXEDoCliente(unittest.TestCase):
             bat = f.read()
         i = bat.index("Inno Setup nao esta instalado")
         self.assertIn("JA ESTA PRONTO", bat[i:i + 600])
+
+
+class TestOInstaladorCONFEREQueONodeEntrou(unittest.TestCase):
+    """O CLIENTE AUTORIZOU, "INSTALOU", E NAO TINHA NODE.
+
+    O `msiexec /qn` (quieto, sem interface) instala o Node PARA A MAQUINA
+    INTEIRA — e isso exige elevação. Sem UAC para pedir a senha, ele desiste
+    SEM MOSTRAR NADA. O instalador seguia em frente como se tivesse dado
+    certo, e o cliente ficava achando que autorizou algo que aconteceu.
+    """
+
+    def _bat(self):
+        with open(os.path.join(RAIZ, "INSTALAR_WINDOWS.bat"), encoding="ascii") as f:
+            return f.read()
+
+    def test_CONFERE_depois_de_instalar_em_vez_de_supor(self):
+        bat = self._bat()
+        i = bat.index("msiexec /i")
+        self.assertIn("call :ACHAR_NODE", bat[i:i + 400])
+
+    def test_se_o_silencioso_falhar_ele_ABRE_o_instalador_com_telas(self):
+        """Uma instalação com dois cliques a mais é muito melhor que uma que
+        falha calada: com as telas, o Windows pede a senha e o cliente vê o
+        que está acontecendo."""
+        bat = self._bat()
+        self.assertIn("start /wait", bat)
+        i = bat.index("start /wait")
+        self.assertLess(bat.index("/qn /norestart"), i,
+                        "o silencioso tem de vir ANTES do interativo")
+
+    def test_procura_o_node_nos_lugares_conhecidos_e_nao_so_no_PATH(self):
+        """O PATH é lido quando o processo nasce: logo depois de instalar, a
+        janela ainda não enxerga o Node."""
+        bat = self._bat()
+        # Âncora na DEFINIÇÃO (início de linha), não na primeira chamada —
+        # `call :ACHAR_NODE` aparece antes no arquivo. É o mesmo tropeço de
+        # âncora frouxa que já mediu o trecho errado outras vezes aqui.
+        i = bat.index("\n:ACHAR_NODE")
+        corpo = bat[i:i + 1200]
+        self.assertIn("ProgramFiles", corpo)
+        self.assertIn("LOCALAPPDATA", corpo)
+
+    def test_sem_Node_ele_DIZ_que_o_programa_abre_do_mesmo_jeito(self):
+        """Sem o Node o programa opera igual; o que fica de fora é o
+        relatório por WhatsApp. Deixar o cliente achando que ficou sem
+        produto seria pior que o defeito."""
+        bat = self._bat()
+        i = bat.index("ainda nao aparece")
+        self.assertIn("VAI ABRIR", bat[i:i + 400])

@@ -183,3 +183,59 @@ class TestOAvisoNoMotorUsaARegraNova(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestOProgramaACHAOnodeNoWindows(unittest.TestCase):
+    """O CLIENTE AUTORIZOU A INSTALACAO DO NODE E O PAINEL DIZIA QUE NAO TINHA.
+
+    Foto de 25/08: "STATUS: Node.js não encontrado", em vermelho, num
+    Windows onde o cliente tinha acabado de autorizar a instalação — e ela
+    tinha funcionado.
+
+    A CAUSA. `caminho_node()` procurava no PATH e, se não achasse, ia aos
+    lugares conhecidos — SÓ QUE ESSA SEGUNDA BUSCA existia apenas para o
+    macOS. No Windows ele parava no `shutil.which("node")`.
+
+    E o PATH é lido quando o PROCESSO NASCE. O instalador do Node acrescenta
+    a pasta ao PATH do sistema, mas nenhuma janela já aberta — nem o Explorer
+    que lançou o programa — enxerga a mudança até ser reiniciada. Então o
+    Node estava lá, instalado e funcionando, e o programa dizia que não.
+
+    O mais irritante: o comentário da própria função já dizia a regra certa
+    — "'não achei no PATH' não é a mesma coisa que 'não está instalado'".
+    A regra estava escrita; faltava aplicá-la ao outro sistema.
+    """
+
+    def test_existe_lista_de_pastas_conhecidas_do_Windows(self):
+        self.assertTrue(hasattr(P, "_PASTAS_BIN_WINDOWS"))
+        self.assertGreaterEqual(len(P._PASTAS_BIN_WINDOWS), 3)
+
+    def test_a_lista_cobre_onde_o_instalador_oficial_poe_o_node(self):
+        """O instalador do nodejs.org põe em Program Files\\nodejs; a
+        instalação por usuário vai para LOCALAPPDATA\\Programs."""
+        juntas = " ".join(P._PASTAS_BIN_WINDOWS).lower()
+        self.assertIn("nodejs", juntas)
+        self.assertIn("programs", juntas)
+
+    def test_caminho_node_procura_no_Windows_e_nao_so_no_PATH(self):
+        fonte = _fonte("plataforma.py")
+        i = fonte.index("def caminho_node")
+        corpo = fonte[i:i + 2200]
+        self.assertIn("E_WINDOWS", corpo)
+        self.assertIn("_PASTAS_BIN_WINDOWS", corpo)
+        self.assertIn("node.exe", corpo)
+
+    def test_garantir_path_completa_o_PATH_no_Windows_tambem(self):
+        """Antes ele devolvia lista vazia fora do Mac, e o resto do programa
+        seguia com o PATH que a janela tinha ao nascer."""
+        fonte = _fonte("plataforma.py")
+        i = fonte.index("def garantir_path_do_sistema")
+        corpo = fonte[i:i + 2500]
+        self.assertIn("E_WINDOWS", corpo)
+        self.assertIn("_PASTAS_BIN_WINDOWS", corpo)
+
+    def test_a_busca_do_Mac_continua_intacta(self):
+        """Consertar um sistema não pode quebrar o outro."""
+        fonte = _fonte("plataforma.py")
+        i = fonte.index("def caminho_node")
+        self.assertIn("_PASTAS_BIN_MACOS", fonte[i:i + 2200])

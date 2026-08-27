@@ -1737,13 +1737,46 @@ def _pastas_nvm():
             if os.path.isdir(os.path.join(raiz, v, "bin"))]
 
 
+_PASTAS_BIN_WINDOWS = (
+    # O instalador oficial do nodejs.org poe aqui, para todos os usuarios.
+    os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "nodejs"),
+    os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "nodejs"),
+    # Instalacao so para o usuario atual, e os gerenciadores de versao.
+    os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "nodejs"),
+    os.path.join(os.environ.get("APPDATA", ""), "npm"),
+    os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "nodejs", "bin"),
+    r"C:\nodejs",
+)
+
+
 def garantir_path_do_sistema():
     """Completa o PATH do processo com as pastas de binários do Mac.
     Idempotente: chamar várias vezes não duplica nada. Devolve o que foi
     acrescentado, para o log poder dizer exatamente o que mudou."""
+    # NO WINDOWS TAMBEM, e a falta disto apareceu na mao de um cliente.
+    #
+    # 25/08: ele autorizou a instalacao do Node durante o setup, ela rodou, e
+    # o programa continuou dizendo "Node.js nao encontrado" no painel. O
+    # motivo e o mesmo que ja resolvemos para o Python no instalador: o PATH
+    # e lido quando o PROCESSO NASCE. O instalador do Node acrescenta a pasta
+    # ao PATH do sistema, mas nenhuma janela ja aberta -- nem o Explorer que
+    # lancou o programa -- enxerga a mudanca ate ser reiniciada.
+    #
+    # A funcao `caminho_node` logo abaixo ja dizia a regra certa no proprio
+    # comentario: "nao achei no PATH nao e a mesma coisa que nao esta
+    # instalado". So que a busca em lugares conhecidos existia SO para o Mac.
+    atual = os.environ.get("PATH", "").split(os.pathsep)
+    if E_WINDOWS:
+        acrescentados = []
+        for pasta in _PASTAS_BIN_WINDOWS:
+            if pasta and os.path.isdir(pasta) and pasta not in atual:
+                atual.append(pasta)
+                acrescentados.append(pasta)
+        if acrescentados:
+            os.environ["PATH"] = os.pathsep.join(atual)
+        return acrescentados
     if not E_MACOS:
         return []
-    atual = os.environ.get("PATH", "").split(os.pathsep)
     acrescentados = []
     candidatas = [p for p in _PASTAS_BIN_MACOS if not p.endswith("versions/node")]
     candidatas += _pastas_nvm()
@@ -1769,6 +1802,18 @@ def caminho_node():
         for pasta in list(_PASTAS_BIN_MACOS) + _pastas_nvm():
             alvo = os.path.join(pasta, "node")
             if os.path.isfile(alvo) and os.access(alvo, os.X_OK):
+                return alvo
+    if E_WINDOWS:
+        # A METADE QUE FALTAVA. O comentario desta funcao sempre disse que
+        # "nao achei no PATH" nao e "nao esta instalado" -- mas a busca em
+        # lugares conhecidos so existia para o Mac. Um cliente autorizou a
+        # instalacao do Node, ela funcionou, e o painel continuou dizendo que
+        # nao havia Node: o processo tinha nascido antes da mudanca de PATH.
+        for pasta in _PASTAS_BIN_WINDOWS:
+            if not pasta:
+                continue
+            alvo = os.path.join(pasta, "node.exe")
+            if os.path.isfile(alvo):
                 return alvo
     return None
 

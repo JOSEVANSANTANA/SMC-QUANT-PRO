@@ -194,8 +194,8 @@ REM NAO PARA A INSTALACAO se o cliente recusar: o programa abre e opera sem
 REM o Node, e o que fica de fora e o envio de relatorio pelo WhatsApp.
 REM Parar tudo aqui custaria o programa inteiro por causa de um recurso.
 REM ---------------------------------------------------------------------
-node -v >nul 2>&1
-if not errorlevel 1 goto NODE_OK
+call :ACHAR_NODE
+if defined NODE goto NODE_OK
 
 echo.
 echo  [!] O Node.js nao esta instalado. Ele serve para UMA coisa: mandar o
@@ -222,13 +222,45 @@ if not exist "%TEMP%\smc_node_setup.msi" (
   goto NODE_FIM
 )
 echo      Instalando o Node.js...
+REM ---------------------------------------------------------------------
+REM O /qn PRECISA DE ADMINISTRADOR, E FALHA EM SILENCIO SEM ELE.
+REM
+REM 25/08, cliente: autorizou o download do Node, a instalacao "rodou", e o
+REM programa continuou dizendo "Node.js nao encontrado". O msiexec com /qn
+REM (quieto, sem interface) instala PARA A MAQUINA INTEIRA -- e isso exige
+REM elevacao. Sem UAC para pedir, ele desiste sem mostrar nada, e o cliente
+REM fica achando que autorizou algo que aconteceu.
+REM
+REM Duas saidas, nesta ordem: primeiro tenta quieto (funciona se a janela ja
+REM estiver elevada); se nao der, ABRE O INSTALADOR NORMAL, com as telas --
+REM ai o Windows pede a senha e o cliente ve o que esta acontecendo. Uma
+REM instalacao com dois cliques a mais e muito melhor que uma que falha
+REM calada.
+REM ---------------------------------------------------------------------
 msiexec /i "%TEMP%\smc_node_setup.msi" /qn /norestart
+call :ACHAR_NODE
+if defined NODE goto NODE_INSTALADO
+
+echo      A instalacao silenciosa nao passou (o Windows costuma exigir
+echo      senha de administrador para o Node). Vou abrir o instalador
+echo      normal: siga as telas, e ACEITE se ele pedir permissao.
+echo.
+start /wait "" msiexec /i "%TEMP%\smc_node_setup.msi" /norestart
+call :ACHAR_NODE
+
+:NODE_INSTALADO
 del /q "%TEMP%\smc_node_setup.msi" >nul 2>&1
+if defined NODE (
+  echo  [ok] Node.js instalado: !NODE!
+) else (
+  echo  [!] O Node.js ainda nao aparece. O programa VAI ABRIR e operar
+  echo      normalmente -- o que fica de fora e so o envio de relatorio
+  echo      pelo WhatsApp. Da para instalar depois por https://nodejs.org
+)
 goto NODE_FIM
 
 :NODE_OK
-for /f "delims=" %%n in ('node -v 2^>^&1') do set "VNODE=%%n"
-echo  [ok] Node.js: !VNODE!
+echo  [ok] Node.js: !NODE!
 :NODE_FIM
 
 REM ---------------------------------------------------------------------
@@ -352,6 +384,18 @@ REM Os dois ultimos caminhos existem porque a mudanca de PATH nao vale na
 REM janela que ja esta aberta. Sem procurar neles, o instalador acabaria de
 REM instalar o Python e diria em seguida que nao achou Python nenhum.
 REM ---------------------------------------------------------------------
+:ACHAR_NODE
+REM PROCURA NO PATH **E** NOS LUGARES CONHECIDOS. O PATH e lido quando o
+REM processo nasce: logo depois de instalar o Node, esta janela ainda nao o
+REM enxerga. Foi assim que um cliente autorizou a instalacao, ela funcionou,
+REM e o programa continuou dizendo que nao havia Node.
+set "NODE="
+where node >nul 2>&1 && set "NODE=node" && goto :eof
+if exist "%ProgramFiles%\nodejs\node.exe" set "NODE=%ProgramFiles%\nodejs\node.exe" && goto :eof
+if exist "%ProgramFiles(x86)%\nodejs\node.exe" set "NODE=%ProgramFiles(x86)%\nodejs\node.exe" && goto :eof
+if exist "%LOCALAPPDATA%\Programs\nodejs\node.exe" set "NODE=%LOCALAPPDATA%\Programs\nodejs\node.exe" && goto :eof
+goto :eof
+
 :ACHAR_PYTHON
 set "PY="
 py -3 --version >nul 2>&1 && set "PY=py -3" && goto :eof
