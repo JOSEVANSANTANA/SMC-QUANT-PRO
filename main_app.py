@@ -11275,6 +11275,68 @@ _RE_DESCRICAO_DE_ESTADO = re.compile(
     re.IGNORECASE)
 
 
+# PROMESSA QUE ELA NÃO TEM COMO CUMPRIR.
+#
+# 28/08, 10:38 e 10:40. Ele pediu que a ferramenta passasse a acompanhar
+# agendas de eventos. Respostas:
+#
+#     "Vou encaminhar ao time de desenvolvimento a sugestão de integrar um
+#      calendário de eventos econômicos..."
+#     "Já encaminhei sua solicitação ao time de desenvolvimento para incluir
+#      alertas automáticos... Atualização em breve."
+#
+# NÃO HÁ TIME DE DESENVOLVIMENTO DO OUTRO LADO DO CHAT, não há fila de
+# solicitações e não há nada agendado. Ele ficou esperando uma novidade que
+# nunca vinha — e a espera é o dano: quem confia numa promessa dessas para de
+# procurar o dado por conta própria bem na hora em que precisa dele.
+#
+# É o mesmo defeito do alarme de ordem inventada, com outro verbo: afirmar
+# que fez uma coisa que não tem caminho para fazer. Lá era a corretora; aqui é
+# um time, um cadastro, um alerta futuro.
+_RE_PROMESSA_IMPOSSIVEL = re.compile(
+    r"((vou|irei)\s+(encaminhar|repassar|passar|reportar|avisar\s+o|"
+    r"comunicar|registrar|solicitar\s+ao)|"
+    r"(encaminhei|repassei|reportei|registrei|anotei\s+seu|abri\s+um)\s+"
+    r"(a\s+|o\s+|sua\s+|seu\s+)?(sugest|solicita|pedido|chamado|ticket|"
+    r"requisi)|"
+    r"(ao|para\s+o|com\s+o)\s+(time|equipe|setor|suporte)\s+"
+    r"(de\s+)?(desenvolvimento|t[ée]cnic|produto|engenharia)|"
+    r"(vou|irei|posso)\s+te\s+(alertar|avisar|notificar)\s+"
+    r"(automaticamente|quando|assim que)|"
+    r"atualiza[çc][ãa]o\s+em\s+breve|"
+    r"assim\s+que\s+houver\s+novidades?)",
+    re.IGNORECASE)
+
+
+def censurar_promessa_impossivel(resposta):
+    """A TIGER prometeu uma coisa que não tem caminho para fazer?
+
+    Devolve (texto, prometeu). Ela não encaminha nada a ninguém, não abre
+    chamado, não agenda alerta futuro e não tem time do outro lado. O aviso
+    vai ANEXADO, como no alarme de ordem inventada: ele precisa ler o que o
+    modelo disse E saber que aquilo não vai acontecer.
+
+    Função PURA."""
+    texto = str(resposta or "")
+    if not texto.strip():
+        return texto, False
+    culpada = None
+    for frase in re.split(r"(?<=[.!?])\s+|\n+", texto):
+        if _RE_PROMESSA_IMPOSSIVEL.search(frase):
+            culpada = frase
+            break
+    if culpada is None:
+        return texto, False
+    return texto + (
+        "\n\n🛑 ATENÇÃO — ISSO NÃO VAI ACONTECER. O texto acima promete "
+        "encaminhar um pedido, abrir um chamado ou te avisar automaticamente "
+        "mais tarde. EU NÃO TENHO ESSE CAMINHO: não existe time do outro lado "
+        "deste chat, não há fila de solicitações e eu não consigo agendar "
+        "aviso nenhum para depois. NÃO FIQUE ESPERANDO. Se é um recurso que "
+        "falta, quem constrói é o desenvolvedor do programa — fale com ele "
+        "direto."), True
+
+
 def censurar_acao_inventada(resposta):
     """A TIGER disse que MEXEU na corretora? Devolve (texto, mentiu).
 
@@ -11940,19 +12002,55 @@ def interpretar_intencao(texto):
     # NOTÍCIA E COTAÇÃO: buscadas na web pela PRÓPRIA ferramenta, sem chave de
     # API. É o que impede ela de responder "o S&P sobe por causa da inflação"
     # de cabeça, sem ter visto manchete nenhuma.
+    # AGENDA DE EVENTO É BUSCA, NÃO É MEMÓRIA DE MODELO.
+    #
+    # 28/08, 10:37. Ele: "que horas é o discurso de Kevin Warsh hoje". A
+    # primeira resposta foi CERTA e honesta — "não tenho acesso a agendas de
+    # eventos externos". Ele insistiu, e a segunda inventou quatro coisas numa
+    # tacada: que Kevin Warsh seria "CTO da Tradovate" (ele é ex-diretor do
+    # Federal Reserve, e um discurso dele mexe com juro), que não havia
+    # discurso listado, uma data de payroll que não existe, e que a
+    # solicitação tinha sido "encaminhada ao time de desenvolvimento".
+    #
+    # A pergunta não casava aqui por uma palavra: o filtro pedia
+    # "agenda/calendário/notícia" e ele escreveu "discurso". Sem casar, foi
+    # para o modelo — que não tem calendário nenhum e respondeu de cabeça.
+    # A ferramenta TEM busca na web sem chave de API; o que faltava era a
+    # pergunta chegar nela.
     if not re.search(r"\b(replay|motor|gr[aá]fico|tela|print|ordem|setup)\b", t) and \
             re.search(r"\b(not[íi]cias?|manchetes?|aconteceu|acontecendo|movend[oa]|"
-                      r"movimentou|agenda|calend[áa]rio|fato relevante)\b", t) and \
+                      r"movimentou|agenda|calend[áa]rio|fato relevante|"
+                      r"discurso|palestra|fala d[eo]|reuni[ãa]o|ata\b|"
+                      r"payroll|nfp|cpi|pce|fomc|copom|evento|"
+                      r"divulga[çc][ãa]o|que horas)\b", t) and \
             re.search(r"\b(mercado|s&p|sp500|nasdaq|d[óo]lar|ouro|bitcoin|hoje|"
-                      r"agora|economia|fed|juros|infla[çc][ãa]o|not[íi]cias?)\b", t):
+                      r"agora|economia|fed|juros|infla[çc][ãa]o|not[íi]cias?|"
+                      r"powell|warsh|walsh|banco central|bce|fomc|copom|"
+                      r"amanh[ãa]|semana)\b", t):
         return "NOTICIAS"
+    # "VERIFICA PARA MIM O ÍNDICE BOVESPA FUTURO WINV26" (28/08, 10:46).
+    # A resposta foi "não está listado nos dados da mesa". O verbo dele —
+    # verificar — não estava na lista, e a pergunta nunca chegou à busca de
+    # cotação que a ferramenta TEM, de graça, sem chave de API.
     if re.search(r"\b(cota[çc][ãa]o|pre[çc]o|quanto (est[áa]|vale|custa)|"
                  r"em quanto|quanto t[áa]|fechamento|fechou|fechando|abertura|abriu|"
-                 r"m[áa]xima|m[íi]nima|pontua[çc][ãa]o|valor|como est[áa]|como foi|como terminou)\b", t) and \
-            (simbolo_do_texto(t) or re.search(r"\b(mercado|bolsa|índice|indice|dia|hoje)\b", t)):
+                 r"m[áa]xima|m[íi]nima|pontua[çc][ãa]o|valor|como est[áa]|como foi|como terminou|"
+                 r"verific\w+|confer(e|ir|indo)|checa\w*|consulta\w*)\b", t) and \
+            (simbolo_do_texto(t) or re.search(r"\b(mercado|bolsa|índice|indice|dia|hoje|"
+                                              r"futuro|bovespa|ibov\w*|win\w*|dol\w*|"
+                                              r"ouro|d[óo]lar|petr[óo]leo|bitcoin)\b", t)):
         return "COTACAO"
+    # "VERIFICA NA WEB" → "Não tenho acesso direto à web". ELA TEM.
+    #
+    # 28/08, 10:46. Ele pediu três vezes, a última com "PRECISO QUE VOCE FACA
+    # ISSO", e as três vezes ouviu que não havia acesso — enquanto o programa
+    # busca cotação no Yahoo, manchete por RSS e o resto no DuckDuckGo, tudo
+    # sem chave de API. O modelo não sabe do que o programa é capaz; quem sabe
+    # é este roteador. E aqui faltava UMA palavra: a lista tinha "na internet"
+    # e não tinha "na web".
     if re.search(r"\b(pesquis(a|ar|e)|busc(a|ar|e)|procur(a|ar|e)|"
-                 r"d[áa] uma olhada na (internet|web)|na internet|no google)\b", t):
+                 r"d[áa] uma olhada na (internet|web)|na internet|na web|"
+                 r"pela web|no google|online)\b", t):
         return "PESQUISAR"
     # O QUE ELA SABE SEM GASTAR COTA: os assuntos da base nativa.
     if re.search(r"\b(sabe|conhece|domina|treinada|treinado|treinamento|"
@@ -13698,6 +13796,29 @@ class SmcQuantApp(ctk.CTk):
         self.log(f"🪟 '{titulo}' entrou na análise. Agora são {len(lista)} gráfico(s) "
                   "por ciclo — cada um com cenário e histórico próprios. "
                   "Lembre: cada gráfico a mais consome cota da API por ciclo.")
+        # JANELA DE APLICATIVO NO MAC PRECISA DA PERMISSÃO — e a hora de dizer
+        # isso é AGORA, não depois de três ciclos de captura preta.
+        #
+        # 28/08: ele abriu o Profit no Mac, foi incluir a janela e o
+        # diagnóstico dele dizia, lá no arranque, "Gravação de Tela: NÃO
+        # concedida". Aba do Chrome não depende disso (quem captura é o
+        # próprio navegador, pelo CDP); QUALQUER outra janela depende, e sem a
+        # permissão a imagem sai preta sem erro nenhum.
+        try:
+            if (E_MACOS and not plataforma.e_aba_de_navegador(titulo)
+                    and plataforma.permissao_de_tela_ok() is False):
+                app, caminho = plataforma.quem_precisa_da_permissao()
+                self.log(
+                    "   ⚠️ ESTA JANELA É DE APLICATIVO, NÃO É ABA DO CHROME — "
+                    "e no macOS a captura dela depende da permissão de "
+                    "GRAVAÇÃO DE TELA, que NÃO está concedida. Do jeito que "
+                    "está, a imagem vai sair preta e o ciclo será pulado. "
+                    f"Abra Ajustes → Privacidade e Segurança → Gravação de "
+                    f"Tela e marque {app} ({caminho}); depois REABRA o "
+                    "programa, porque o macOS só lê essa permissão quando o "
+                    "processo nasce.")
+        except Exception:
+            pass
         if plataforma.titulo_muda_sozinho(titulo):
             # Título com preço dentro muda a cada tique. Dizer isso agora
             # evita o susto de ver no painel um nome que já não existe.
@@ -17268,6 +17389,16 @@ class SmcQuantApp(ctk.CTk):
             self.log("🛑 TIGER: a resposta afirmava ter cancelado/enviado ordem "
                      "ou encerrado posição. ELA NÃO TEM ESSE CAMINHO — aviso "
                      "anexado à resposta. Nada foi executado na plataforma.")
+        # ELA PROMETEU ENCAMINHAR AO "TIME DE DESENVOLVIMENTO"? Também não tem
+        # esse caminho — ver `censurar_promessa_impossivel`. O dano é a espera:
+        # quem acredita numa promessa dessas para de procurar o dado sozinho
+        # exatamente quando precisa dele.
+        resposta, prometeu = censurar_promessa_impossivel(resposta)
+        if prometeu:
+            self.log("🛑 TIGER: a resposta prometeu encaminhar um pedido, abrir "
+                     "chamado ou avisar automaticamente depois. NÃO EXISTE ESSE "
+                     "CAMINHO — aviso anexado. Nada foi agendado nem enviado a "
+                     "ninguém.")
         registrar_msg_chat("ia", resposta)
         self._tiger_dialogo_ate = time.time() + 20.0
         self._ia_falar(resposta, forcar=bool(getattr(self, "_chat_por_voz", False)))

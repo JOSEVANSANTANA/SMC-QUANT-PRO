@@ -250,9 +250,16 @@ class TestAAcaoQueElaNAOFEZ(unittest.TestCase):
         fonte = fonte_do_arquivo()
         self.assertIn("resposta, inventou_acao = censurar_acao_inventada(", fonte)
         i = fonte.index("resposta, inventou_acao = censurar_acao_inventada(")
-        depois = fonte[i:i + 900]
+        # A JANELA CRESCEU porque `censurar_promessa_impossivel` entrou logo
+        # depois desta, no mesmo trecho (28/08: "já encaminhei sua solicitação
+        # ao time de desenvolvimento" — não existe time nenhum). São duas
+        # guardas irmãs, e as duas têm de rodar antes de gravar a resposta.
+        depois = fonte[i:i + 2200]
         self.assertIn("registrar_msg_chat", depois,
                       "a censura tem de vir ANTES de gravar a resposta")
+        self.assertLess(depois.index("censurar_promessa_impossivel"),
+                        depois.index("registrar_msg_chat"),
+                        "a guarda da promessa também vem antes de gravar")
 
     def test_a_guarda_e_de_CODIGO_e_nao_so_de_prompt(self):
         """A regra já existia no prompt e o modelo passou por cima. Instrução

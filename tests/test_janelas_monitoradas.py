@@ -241,7 +241,9 @@ class TestOPainelAvisaQueOTituloVaiMudar(unittest.TestCase):
     def test_o_painel_avisa_que_o_titulo_tem_preco_dentro(self):
         codigo = _fonte("main_app.py")
         i = codigo.index("def _incluir_janela_monitorada")
-        corpo = codigo[i:i + 2400]
+        # A JANELA CRESCEU: entre a barreira de duplicata e este aviso entrou
+        # o alerta de permissão de Gravação de Tela (28/08, o Profit no Mac).
+        corpo = codigo[i:i + 4200]
         self.assertIn("titulo_muda_sozinho", corpo)
 
 

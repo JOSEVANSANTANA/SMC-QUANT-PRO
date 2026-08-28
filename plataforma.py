@@ -477,6 +477,11 @@ _DONOS_DE_SISTEMA = {
 }
 
 
+# O QUE FOI DESCARTADO NA ÚLTIMA LISTAGEM, e por quê. Preenchido por
+# `_janelas_macos` e lido só pelo diagnóstico — ver o comentário de `_fora`.
+_DESCARTADAS = []
+
+
 def _pids_de_aplicativos():
     """PIDs dos aplicativos DE VERDADE — os que têm ícone no Dock.
 
@@ -866,6 +871,23 @@ def _janelas_macos(so_na_tela=False):
         return []
     _na_tela = _ids_na_tela()
     pids_ok = _pids_de_aplicativos()
+    _DESCARTADAS.clear()
+
+    def _fora(w, motivo):
+        """Guarda o que foi jogado fora e POR QUÊ, para o diagnóstico.
+
+        Existe por causa de 28/08: o Profit estava aberto, em tela cheia, e
+        não aparecia na lista. O diagnóstico mostrava as janelas que SOBRARAM
+        — nunca as que tinham sido descartadas — então não havia como saber
+        qual filtro tinha comido a janela. Uma lista que só mostra o que
+        passou não diagnostica ausência."""
+        b = w.get("kCGWindowBounds") or {}
+        _DESCARTADAS.append({
+            "app": str(w.get("kCGWindowOwnerName") or "?"),
+            "pid": int(w.get("kCGWindowOwnerPID", -1) or -1),
+            "camada": int(w.get("kCGWindowLayer", 0) or 0),
+            "largura": int(b.get("Width", 0)), "altura": int(b.get("Height", 0)),
+            "motivo": motivo})
 
     janelas = []
     for w in bruto:
@@ -873,18 +895,38 @@ def _janelas_macos(so_na_tela=False):
             # Camada 0 = janela normal. Acima disso é menu, dock, overlay do
             # sistema — nada que contenha um gráfico de trading.
             if int(w.get("kCGWindowLayer", 0)) != 0:
+                _fora(w, "camada != 0 (menu, dock ou overlay do sistema)")
                 continue
-            # SÓ JANELA DE APLICATIVO DE VERDADE. Sem este filtro o seletor
-            # mostrava "Accessibility Services" e companhia — processos do
-            # sistema que nunca serão o gráfico de ninguém.
-            if pids_ok is not None:
-                if int(w.get("kCGWindowOwnerPID", -1)) not in pids_ok:
-                    continue
-            elif str(w.get("kCGWindowOwnerName") or "").strip().lower() in _DONOS_DE_SISTEMA:
+            # PROCESSO DO SISTEMA, PELO NOME. Este filtro é o que resolve a
+            # queixa original ("o seletor mostrava Accessibility Services") e
+            # é seguro: é uma lista de nomes conhecidos.
+            dono = str(w.get("kCGWindowOwnerName") or "").strip()
+            if dono.lower() in _DONOS_DE_SISTEMA:
+                _fora(w, "processo do sistema (lista de nomes conhecidos)")
                 continue
+            # O "TEM ÍCONE NO DOCK" DEIXOU DE SER PORTEIRO E VIROU ORDEM.
+            #
+            # 28/08: o Profit estava aberto na frente, em tela cheia, e não
+            # aparecia. A JANELA DO PRÓPRIO SMC QUANT PRO também não aparecia
+            # na lista dele — e essa é a prova, porque ela existe, está na
+            # tela e é inegavelmente um aplicativo. Por eliminação (camada 0,
+            # opaca, enorme, com dono), o único filtro capaz de comer uma
+            # janela dessas era este: `activationPolicy == Regular`.
+            #
+            # Essa política mente em mais casos do que eu supunha ao escrevê-la
+            # — programa rodando por camada de compatibilidade, por máquina
+            # virtual, ou lançado de um jeito que o macOS não reconhece como
+            # aplicativo comum. E o preço do erro é assimétrico: mostrar uma
+            # janela a mais custa uma linha no seletor; esconder a janela do
+            # gráfico custa o pregão inteiro, sem nem dizer que escondeu.
+            #
+            # Agora ela ORDENA (as do Dock primeiro) em vez de EXCLUIR.
+            pid = int(w.get("kCGWindowOwnerPID", -1) or -1)
+            do_dock = (pids_ok is None) or (pid in pids_ok)
             # Janela transparente não é janela que dê para ver nem capturar.
             try:
                 if float(w.get("kCGWindowAlpha", 1.0)) <= 0.01:
+                    _fora(w, "janela transparente (alpha 0)")
                     continue
             except Exception:
                 pass
@@ -896,6 +938,7 @@ def _janelas_macos(so_na_tela=False):
             # janela, eram sombras e camadas de barra. As janelas de verdade
             # tinham 1710x985.
             if larg < 120 or alt < 80:
+                _fora(w, f"pequena demais para ser janela ({larg}x{alt})")
                 continue
             nome_bruto = str(w.get("kCGWindowName") or "").strip()
             # SEM titulo o unico criterio que resta e a forma. Uma janela util
@@ -903,16 +946,20 @@ def _janelas_macos(so_na_tela=False):
             # sempre camada auxiliar. COM titulo, nada disso se aplica: se o
             # sistema deu nome, e janela de verdade e entra.
             if not nome_bruto and (alt < 200 or (larg > 600 and alt < 250)):
+                _fora(w, f"sem título e com forma de camada auxiliar "
+                         f"({larg}x{alt})")
                 continue
             app = str(w.get("kCGWindowOwnerName") or "").strip()
             nome = str(w.get("kCGWindowName") or "").strip()
             if not app:
+                _fora(w, "o sistema não disse de qual aplicativo ela é")
                 continue
             _id = int(w.get("kCGWindowNumber", 0))
             janelas.append({
                 "id": _id,
                 "app": app,
                 "nome": nome,
+                "do_dock": do_dock,
                 "titulo": f"{app} — {nome}" if nome else app,
                 "x": int(b.get("X", 0)), "y": int(b.get("Y", 0)),
                 "largura": larg, "altura": alt,
@@ -972,8 +1019,14 @@ def listar_janelas():
         # Sem `set`: cada janela é uma linha. Ordena pelo nome do aplicativo e
         # depois pela posição na tela, para a lista sair estável entre uma
         # atualização e outra.
+        # AS DO DOCK PRIMEIRO. O "tem ícone no Dock" deixou de excluir janela
+        # (ver `_janelas_macos`) e passou a ordenar: o que o macOS reconhece
+        # como aplicativo comum sobe, o resto desce — mas TUDO aparece, porque
+        # esconder a janela do gráfico custa o pregão e mostrar uma a mais
+        # custa uma linha.
         js = sorted(_janelas_macos(),
-                    key=lambda j: (j["app"].lower(), j["y"], j["x"]))
+                    key=lambda j: (not j.get("do_dock", True),
+                                   j["app"].lower(), j["y"], j["x"]))
         # ABAS DO CHROME NA FRENTE. Sao as unicas entradas que trazem o nome
         # certo SEMPRE e que capturam sem depender de permissao do macOS --
         # exatamente o caso da corretora. Se houver Chrome de depuracao
@@ -987,9 +1040,15 @@ def listar_janelas():
         # A LISTA MENTE SE A PERMISSÃO FALTA — e mente calada. Sem Gravação de
         # Tela os títulos vêm vazios e o trader não descobre o motivo sozinho.
         # Então o próprio seletor diz.
+        # O AVISO VAI PARA O FIM, e não para o começo. Na primeira posição ele
+        # virava a opção SELECIONADA por padrão no seletor — a foto de 28/08
+        # mostra exatamente isso: o campo escolhido era o aviso, que não é
+        # janela nenhuma. O primeiro item de uma lista de escolha tem de ser
+        # uma escolha válida.
         if rotulos and permissao_de_tela_ok() is False:
-            rotulos.insert(0, "(⚠️ SEM permissão de Gravação de Tela — os "
-                              "títulos das janelas vêm vazios; veja o log)")
+            rotulos.append("(⚠️ SEM permissão de Gravação de Tela — os títulos "
+                           "vêm vazios e a captura de janela de APLICATIVO sai "
+                           "preta; abas do Chrome não dependem disto)")
         return rotulos
 
     return []
@@ -2302,9 +2361,28 @@ def diagnostico_janelas():
                + (" [via Acessibilidade]" if j.get("origem_titulo") else "")
                if j["nome"] else "  (SEM TÍTULO — nem Quartz nem Acessibilidade)")
             + f"  {j['largura']}x{j['altura']} em ({j['x']},{j['y']})"
+            + ("" if j.get("do_dock", True) else "  [sem ícone no Dock]")
             + ("" if j.get("na_tela") else "  ← outra área de trabalho"))
     if not todas:
         linhas.append("  (nenhuma — algo está bloqueando o acesso às janelas)")
+
+    # O QUE FOI JOGADO FORA. Esta seção existe por causa de 28/08: o Profit
+    # estava aberto, em tela cheia, e não aparecia no seletor. O diagnóstico
+    # mostrava as janelas que SOBRARAM — nunca as descartadas — e por isso não
+    # havia como saber qual filtro tinha comido a janela. Uma lista que só
+    # mostra o que passou não diagnostica ausência: para achar o que sumiu é
+    # preciso ver o que foi descartado, e o motivo.
+    if _DESCARTADAS:
+        linhas.append("")
+        linhas.append(f"DESCARTADAS ({len(_DESCARTADAS)}) — se a janela que "
+                      "você procura está aqui, é este filtro que precisa "
+                      "mudar:")
+        for d in _DESCARTADAS[:40]:
+            linhas.append(f"  ✗ {d['app']} (pid {d['pid']}) "
+                          f"{d['largura']}x{d['altura']} camada {d['camada']}"
+                          f" — {d['motivo']}")
+        if len(_DESCARTADAS) > 40:
+            linhas.append(f"  … e mais {len(_DESCARTADAS) - 40}.")
     # AS ABAS DO CHROME são o caminho que não depende de permissão nenhuma.
     # Se elas estão aqui, o problema de título/captura está resolvido para a
     # corretora, independentemente do que o macOS libere ou deixe de liberar.

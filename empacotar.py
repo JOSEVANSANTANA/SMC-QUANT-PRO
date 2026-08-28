@@ -107,6 +107,7 @@ COMUM = [
     "tests/test_janelas_monitoradas.py",
     "tests/test_plano_recomendado.py",
     "tests/test_resposta_quebrada.py",
+    "tests/test_janela_do_profit.py",
     "tests/test_ambiente_replay.py",
     "tests/test_notificacao.py",
     "tests/test_piso_qualidade.py",
