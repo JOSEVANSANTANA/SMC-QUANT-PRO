@@ -431,3 +431,107 @@ class TestElaTEMAcessoAWebEDizQueNaoTem(unittest.TestCase):
         self.assertEqual(self._intencao("olha o gráfico"), "VER_GRAFICO")
         self.assertNotIn(self._intencao("tira um print"),
                          ("COTACAO", "PESQUISAR"))
+
+
+class TestElaSeCONFUNDIACOMSIMESMA(unittest.TestCase):
+    """'EMBORA JA TENHA PERMITIDO ELA CONTINUA PEDINDO PERMISSAO' (28/08).
+
+    A foto dos Ajustes mostra 'SMC Quant Pro' marcado em Gravação de Tela. E
+    no MESMO log do programa, duas linhas se contradiziam:
+
+        🖥️ Gravação de Tela: NÃO concedida         (banner do arranque)
+           Permissão de Gravação de Tela: concedida  (diagnóstico, depois)
+
+    A regra era: 'se existe janela de OUTRO aplicativo com título legível, a
+    permissão vale'. A comparação era por NOME DE EXECUTÁVEL —
+    basename(sys.executable) dá 'python-smc', e o macOS reporta a janela dele
+    como aplicativo 'Python'. 'python-smc' não está contido em 'python', então
+    a PRÓPRIA janela passava no teste de 'é de outro aplicativo'.
+
+    E o título da própria janela é legível SEMPRE, com permissão ou sem. Ou
+    seja: o programa podia declarar 'concedida' só de enxergar a si mesmo, e
+    'NÃO concedida' no arranque, quando sua janela ainda não tinha título. A
+    resposta oscilava com o MOMENTO, não com a permissão — e ele levava a
+    culpa por uma coisa que já tinha feito certo."""
+
+    def _com(self, janelas, meu_pid):
+        # A função sob teste É `permissao_de_tela_ok`, então ela NÃO pode
+        # entrar no cenário como stub — aqui a verdadeira é reposta por cima.
+        import os as _os
+        salvo_pid, verdadeira = _os.getpid, P.permissao_de_tela_ok
+        try:
+            _os.getpid = lambda: meu_pid
+            cen = _Cenario()
+            cen.JANELAS = janelas
+            cen.PIDS_REGULAR = {j["kCGWindowOwnerPID"] for j in janelas}
+            with cen:
+                P.permissao_de_tela_ok = verdadeira
+                return P.permissao_de_tela_ok()
+        finally:
+            _os.getpid = salvo_pid
+
+    def test_ver_a_PROPRIA_janela_com_titulo_NAO_prova_permissao(self):
+        """O caso exato: a única janela titulada é a dele, e o macOS a chama
+        de 'Python' enquanto o executável se chama 'python-smc'."""
+        so_a_dele = [_janela("Python", pid=4240, larg=1710, alt=1012,
+                             nome="SMC Quant Pro - Trader Institucional AI",
+                             wid=1)]
+        self.assertFalse(self._com(so_a_dele, meu_pid=4240))
+
+    def test_janela_de_OUTRO_processo_com_titulo_prova(self):
+        com_outra = [
+            _janela("Python", pid=4240, larg=1710, alt=1012,
+                    nome="SMC Quant Pro", wid=1),
+            _janela("Profit", pid=18760, larg=2000, alt=1250,
+                    nome="Profit Pro - WINFUT", wid=2),
+        ]
+        self.assertTrue(self._com(com_outra, meu_pid=4240))
+
+    def test_ninguem_com_titulo_e_permissao_faltando(self):
+        """Sem a permissão, o macOS entrega a lista SEM os títulos."""
+        sem_titulo = [
+            _janela("Python", pid=4240, larg=1710, alt=1012, wid=1),
+            _janela("Profit", pid=18760, larg=2000, alt=1250, wid=2),
+        ]
+        self.assertFalse(self._com(sem_titulo, meu_pid=4240))
+
+    def test_o_PID_viaja_com_a_janela(self):
+        """É o dado que substituiu a comparação por nome."""
+        with _Cenario():
+            pids = {j["app"]: j.get("pid") for j in P._janelas_macos()}
+        self.assertEqual(pids["Profit"], 900)
+        self.assertEqual(pids["Terminal"], 903)
+
+
+class TestAViradaDaPermissaoEANUNCIADA(unittest.TestCase):
+    """Ele concedeu no meio do pregão e não recebeu retorno nenhum de que
+    tinha dado certo — a pergunta só era feita uma vez, no arranque do motor.
+    Ficar calado depois de ter reclamado alto é o que faz alguém refazer uma
+    configuração que já estava certa."""
+
+    def setUp(self):
+        self.codigo = _fonte("main_app.py")
+        i = self.codigo.index("def _avisar_olho_cego_no_autonomo")
+        self.corpo = self.codigo[i:i + 4200]
+
+    def test_a_virada_para_CONCEDIDA_e_anunciada(self):
+        self.assertIn("GRAVAÇÃO DE TELA CONCEDIDA", self.corpo)
+
+    def test_o_anuncio_so_sai_se_ELA_TINHA_reclamado(self):
+        """Elogio a cada ciclo é tão ruim quanto queixa a cada ciclo."""
+        self.assertIn("_avisou_sem_permissao", self.corpo)
+
+    def test_a_QUEIXA_tambem_sai_uma_vez_por_virada(self):
+        """A função passou a rodar a cada ciclo; sem trava, a queixa iria ao
+        log, ao chat E ao WhatsApp de cinco em cinco minutos — o defeito do
+        alarme que toca sozinho, já consertado uma vez aqui."""
+        self.assertIn("UMA VEZ POR VIRADA, NUNCA A CADA CICLO", self.corpo)
+
+    def test_o_motor_reconfere_a_cada_ciclo(self):
+        i = self.codigo.index("_janelas_ciclo = janelas_para_analisar()")
+        antes = self.codigo[max(0, i - 900):i]
+        self.assertIn("_avisar_olho_cego_no_autonomo", antes)
+
+    def test_a_mensagem_NAO_manda_mais_reiniciar_a_toa(self):
+        """Antes ela mandava fechar e reabrir. Agora ela mesma percebe."""
+        self.assertIn("não precisa", self.corpo.lower())

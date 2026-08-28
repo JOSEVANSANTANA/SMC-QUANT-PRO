@@ -207,8 +207,10 @@ class TestOAvisoDeTelaCegaSaiOndeEleOLHA(unittest.TestCase):
         i = fonte.index("def _avisar_olho_cego_no_autonomo")
         # Janela larga: a v2.70 acrescentou aqui a checagem de QUAIS janelas
         # dependem da permissão (abas do Chrome não dependem) e o nome do
-        # processo a autorizar. Janela curta mede a prosa e não o código.
-        return fonte[i:i + 5200]
+        # processo a autorizar; a v2.75 acrescentou o anúncio da VIRADA (ele
+        # concedeu no meio do pregão e não recebia retorno) e a trava de uma
+        # vez por virada. Janela curta mede a prosa e não o código.
+        return fonte[i:i + 8000]
 
     def test_usa_a_funcao_que_JA_existia_na_plataforma(self):
         """`permissao_de_tela_ok` estava em plataforma.py sem ninguém chamar."""
@@ -242,11 +244,17 @@ class TestOAvisoDeTelaCegaSaiOndeEleOLHA(unittest.TestCase):
     def test_diz_ONDE_ligar_a_permissao(self):
         corpo = self._corpo()
         self.assertIn("Privacidade e Segurança", corpo)
-        # SEM OLHAR A CAIXA DA LETRA: a regra é "mandar reabrir o programa",
-        # porque o macOS só lê a permissão quando o processo nasce. Cravar
-        # "REABRA" em maiúsculas transformava uma escolha de redação em
-        # falha de teste.
-        self.assertIn("reabra o programa", corpo.lower())
+        # A REGRA MUDOU EM 28/08, E A NOVA É MELHOR. Antes o aviso mandava
+        # reabrir o programa, porque o macOS lê a permissão quando o processo
+        # nasce. Só que o log dele provou que o título das janelas volta a ser
+        # legível na MESMA execução — e ele concedeu no meio do pregão, com
+        # posição aberta. Mandar reiniciar ali é mandar desligar o motor à
+        # toa. Agora o programa reconfere a cada ciclo e avisa quando passa a
+        # valer; o teste passou a prender ISSO.
+        baixo = corpo.lower()
+        self.assertNotIn("reabra o programa", baixo)
+        self.assertIn("confiro sozinha", baixo)
+        self.assertIn("gravação de tela concedida", baixo)
 
     def test_diz_QUAL_PROCESSO_o_macOS_precisa_autorizar(self):
         """Ele reclamou: "está tudo autorizado no Mac, não sei por que

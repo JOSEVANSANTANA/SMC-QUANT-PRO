@@ -165,12 +165,27 @@ class TestOAvisoNoMotorUsaARegraNova(unittest.TestCase):
         trecho = self.codigo[max(0, i - 2000):i + 1800]
         self.assertIn("quem_precisa_da_permissao", trecho)
 
-    def test_o_alarme_manda_REABRIR_o_programa(self):
-        """O macOS só lê a permissão quando o processo nasce. Sem isso ele
-        marca a caixinha, não vê mudar nada e conclui que não funciona."""
+    def test_o_alarme_NAO_manda_mais_reiniciar_a_toa(self):
+        """REGRA TROCADA EM 28/08, e a nova é melhor.
+
+        A antiga mandava fechar e reabrir, porque o macOS lê a permissão
+        quando o processo nasce. Só que o log dele PROVOU que o título das
+        janelas volta a ser legível na mesma execução, sem reinício — e ele
+        concedeu a permissão no meio do pregão, com posição aberta. Mandar
+        reiniciar ali é mandar desligar o motor à toa.
+
+        Agora o programa reconfere a cada ciclo e ANUNCIA quando passa a
+        valer. A instrução certa deixou de ser 'reabra' e passou a ser
+        'marque, que eu percebo sozinha'."""
         i = self.codigo.index("VOU OPERAR SOZINHA COM A VISÃO EM RISCO")
-        trecho = self.codigo[i:i + 1800]
-        self.assertIn("reabra o programa", trecho.lower())
+        trecho = self.codigo[i:i + 1800].lower()
+        self.assertNotIn("reabra o programa", trecho)
+        self.assertIn("não precisa", trecho)
+
+    def test_o_alarme_promete_CONFERIR_sozinha_depois(self):
+        i = self.codigo.index("VOU OPERAR SOZINHA COM A VISÃO EM RISCO")
+        trecho = self.codigo[i:i + 1800].lower()
+        self.assertIn("confiro sozinha", trecho)
 
     def test_o_aviso_de_arranque_tem_o_ramo_SEM_RISCO(self):
         """Quando só há abas, o programa explica em vez de alarmar — e diz

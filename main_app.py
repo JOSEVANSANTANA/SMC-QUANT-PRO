@@ -20673,6 +20673,24 @@ class SmcQuantApp(ctk.CTk):
         except Exception:
             return
         if ok is not False:      # None = não se aplica (Windows). True = ok.
+            # ELE CONCEDEU E O PROGRAMA CONTINUAVA RECLAMANDO.
+            #
+            # 28/08, 11:30: a foto dos Ajustes mostra "SMC Quant Pro" marcado
+            # em Gravação de Tela, e o programa seguia dizendo que faltava —
+            # porque a pergunta só era feita UMA VEZ, no arranque do motor.
+            # Quem concede a permissão no meio do pregão (que é quando a
+            # ferramenta pede) ficava sem retorno nenhum de que deu certo.
+            #
+            # Agora ela é refeita a cada ciclo e a virada é ANUNCIADA. Dizer
+            # "agora está valendo" custa uma linha e encerra a dúvida; ficar
+            # calado depois de ter reclamado alto é o que faz alguém repetir
+            # uma configuração que já estava certa.
+            if getattr(self, "_avisou_sem_permissao", False):
+                self._avisou_sem_permissao = False
+                self.log("✅ GRAVAÇÃO DE TELA CONCEDIDA — acabei de conferir e "
+                         "agora está valendo. Consigo ler o título das janelas "
+                         "e capturar janela de aplicativo (Profit, MetaTrader, "
+                         "TradingView de mesa). Não precisa mexer em mais nada.")
             return
         # A PERMISSÃO AFETA O QUE EU ESTOU LENDO? Reclamação dele: "mas está
         # capturando, aliás está tudo autorizado no Mac, não sei por que
@@ -20692,6 +20710,13 @@ class SmcQuantApp(ctk.CTk):
             em_risco, quais = True, ""
         if not em_risco:
             return
+        # UMA VEZ POR VIRADA, NUNCA A CADA CICLO. Esta função passou a ser
+        # chamada a cada volta do motor (para perceber quando ele concede a
+        # permissão no meio do pregão); sem esta trava, a queixa iria ao log,
+        # ao chat E ao WhatsApp de cinco em cinco minutos — que é exatamente
+        # o defeito do alarme que toca sozinho, já consertado uma vez aqui.
+        if getattr(self, "_avisou_sem_permissao", False):
+            return
         try:
             app, caminho = plataforma.quem_precisa_da_permissao()
         except Exception:
@@ -20706,8 +20731,13 @@ class SmcQuantApp(ctk.CTk):
             f"Gravação de Tela, e marque **{app}**"
             + (f" ({caminho})" if caminho else "")
             + ". É ESTE processo que o macOS vê rodando — marcar outro nome da "
-            "lista não vale. Depois FECHE e reabra o programa: o macOS só lê a "
-            "permissão quando o processo nasce.")
+            "lista não vale. Assim que você marcar, eu confiro sozinha no "
+            "próximo ciclo e te aviso que passou a valer — não precisa "
+            "reiniciar para eu perceber.")
+        # Marca que a queixa SAIU. Sem isto não há como anunciar a virada
+        # depois — e foi ficar calado depois de reclamar alto que fez ele
+        # refazer, em 28/08, uma configuração que já estava certa.
+        self._avisou_sem_permissao = True
         self.log(aviso)
         try:
             self._chat_feed(aviso)
@@ -24397,6 +24427,14 @@ class SmcQuantApp(ctk.CTk):
                 # captura, preço anterior) é POR JANELA — sem isso o robô
                 # confundiria o gráfico de um ativo com o do outro, que é
                 # exatamente o erro que não pode acontecer aqui.
+                # A PERMISSÃO PODE TER SIDO CONCEDIDA DESDE O ARRANQUE. Ela é
+                # reconferida a cada ciclo justamente porque ele concede no
+                # meio do pregão — ver `_avisar_olho_cego_no_autonomo`, que
+                # só fala quando o estado MUDA (não repete queixa nem elogio).
+                try:
+                    self._avisar_olho_cego_no_autonomo()
+                except Exception:
+                    pass
                 _janelas_ciclo = janelas_para_analisar()
                 for _idx_janela, nome_janela in enumerate(_janelas_ciclo):
                     # A PRINCIPAL é a primeira da lista. Só ela conversa com a

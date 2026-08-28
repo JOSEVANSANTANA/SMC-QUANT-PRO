@@ -959,6 +959,11 @@ def _janelas_macos(so_na_tela=False):
                 "id": _id,
                 "app": app,
                 "nome": nome,
+                # O PID VIAJA JUNTO. É por ele que `permissao_de_tela_ok`
+                # distingue a janela DELE da janela dos outros — comparar por
+                # nome de executável fazia o programa se confundir consigo
+                # mesmo ("python-smc" contra o aplicativo "Python").
+                "pid": pid,
                 "do_dock": do_dock,
                 "titulo": f"{app} — {nome}" if nome else app,
                 "x": int(b.get("X", 0)), "y": int(b.get("Y", 0)),
@@ -2404,18 +2409,38 @@ def permissao_de_tela_ok():
     """No macOS, responde se a permissão de Gravação de Tela está concedida.
 
     COMO DÁ PARA SABER SEM CHUTAR: sem a permissão, o macOS entrega a lista de
-    janelas sem o campo de título. Se existe pelo menos uma janela de outro
-    aplicativo COM título legível, a permissão está valendo. Devolve None
-    quando a pergunta não se aplica (Windows) — None é "não se aplica", não é
-    "não".
+    janelas sem o campo de título. Se existe pelo menos uma janela DE OUTRO
+    PROCESSO com título legível, a permissão está valendo. Devolve None quando
+    a pergunta não se aplica (Windows) — None é "não se aplica", não é "não".
+
+    "DE OUTRO PROCESSO", E ISSO É O CONSERTO DE 28/08.
+    ---------------------------------------------------
+    Ele já tinha marcado o SMC Quant Pro nos Ajustes e a ferramenta continuava
+    dizendo que faltava permissão. No MESMO log, duas linhas se contradiziam:
+
+        🖥️ Gravação de Tela: NÃO concedida        (banner do arranque)
+           Permissão de Gravação de Tela: concedida (diagnóstico, minutos depois)
+
+    A comparação era por NOME DE EXECUTÁVEL: `basename(sys.executable)` dá
+    "python-smc", e o macOS reporta a janela dele como aplicativo "Python".
+    "python-smc" não está contido em "python", então a PRÓPRIA janela do
+    programa passava no teste de "é de outro aplicativo" — e o título da
+    própria janela é legível SEMPRE, com permissão ou sem.
+
+    Ou seja: o programa podia declarar "concedida" só de enxergar a si mesmo.
+    E, no arranque, quando a janela dele ainda não tinha título, declarava
+    "NÃO concedida". A resposta oscilava com o momento, não com a permissão —
+    e ele levava a culpa por uma coisa que já tinha feito certo.
+
+    PID não tem esse problema: o do processo é o do processo.
     """
     if not E_MACOS:
         return None
     if not QUARTZ_DISPONIVEL:
         return False
-    meu = os.path.basename(sys.executable or "")
+    meu_pid = os.getpid()
     for j in _janelas_macos():
-        if j["nome"] and meu.lower() not in j["app"].lower():
+        if j["nome"] and j.get("pid") != meu_pid:
             return True
     return False
 
