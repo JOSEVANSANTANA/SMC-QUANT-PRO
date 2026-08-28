@@ -38,7 +38,7 @@ import os
 import sys
 import unittest
 
-from harness import RAIZ
+from harness import RAIZ, funcao_inteira
 
 if RAIZ not in sys.path:
     sys.path.insert(0, RAIZ)
@@ -239,11 +239,12 @@ class TestOPainelAvisaQueOTituloVaiMudar(unittest.TestCase):
         self.assertIn("MESMA janela", corpo)
 
     def test_o_painel_avisa_que_o_titulo_tem_preco_dentro(self):
-        codigo = _fonte("main_app.py")
-        i = codigo.index("def _incluir_janela_monitorada")
-        # A JANELA CRESCEU: entre a barreira de duplicata e este aviso entrou
-        # o alerta de permissão de Gravação de Tela (28/08, o Profit no Mac).
-        corpo = codigo[i:i + 4200]
+        # A FUNÇÃO INTEIRA, NÃO UMA JANELA DE N BYTES. Este teste já foi
+        # remendado uma vez com "a janela cresceu: agora são 4200" — e voltou a
+        # quebrar na correção seguinte, pelo mesmo motivo. Recorte por tamanho
+        # mede a POSIÇÃO da regra, não a regra.
+        corpo = funcao_inteira(_fonte("main_app.py"),
+                               "_incluir_janela_monitorada")
         self.assertIn("titulo_muda_sozinho", corpo)
 
 

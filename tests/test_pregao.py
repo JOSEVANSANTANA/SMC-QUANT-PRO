@@ -34,7 +34,7 @@ não parece cuidadosa — parece quebrada, e isso contamina a confiança em tudo
 import datetime
 import unittest
 
-from harness import carregar, fonte_do_arquivo
+from harness import carregar, fonte_do_arquivo, funcao_inteira
 
 D = datetime.datetime
 VIRA = {"hora_inicio": "19:00", "hora_fim": "17:59"}      # o pregão dele
@@ -284,18 +284,15 @@ class TestPrevisualizacaoDaJanela(unittest.TestCase):
     def test_a_previa_da_um_VEREDITO_e_nao_so_a_imagem(self):
         """O mesmo OCR que lê a VWAP diz se aquilo é um gráfico. Mostrar a
         miniatura e calar seria devolver a adivinhação para ele."""
-        fonte = fonte_do_arquivo()
-        i = fonte.index("def _previa_worker")
-        bloco = fonte[i:i + 2600]
+        bloco = funcao_inteira(fonte_do_arquivo(), "_previa_worker")
         self.assertIn("ler_indicadores_da_legenda", bloco)
         self.assertIn("É um gráfico", bloco)
 
     def test_a_referencia_da_imagem_e_guardada(self):
         """No Tk, imagem sem referência viva some da tela — o clássico
         'apareceu em branco'."""
-        fonte = fonte_do_arquivo()
-        i = fonte.index("def _previa_worker")
-        self.assertIn("self.img_previa.image = foto", fonte[i:i + 2600])
+        self.assertIn("self.img_previa.image = foto",
+                      funcao_inteira(fonte_do_arquivo(), "_previa_worker"))
 
 
 if __name__ == "__main__":

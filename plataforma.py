@@ -122,16 +122,26 @@ def opcoes_subprocess():
     return _sem_console()
 
 
-def _rodar(args, timeout=10, entrada=None):
+def _rodar(args, timeout=10, entrada=None, com_erro=False):
     """Executa um comando e devolve (ok, saída). Nunca levanta exceção — em
-    troca, devolve ok=False, para quem chamou poder avisar o trader."""
+    troca, devolve ok=False, para quem chamou poder avisar o trader.
+
+    `com_erro=True` devolve (ok, saída, stderr). ISSO FALTAVA E CUSTOU UM DIA:
+    o `screencapture` escreve o motivo da recusa no STDERR, e esta função
+    jogava o stderr fora. Com ele no lixo, "não consegui a imagem" era tudo o
+    que sobrava — sem jeito de distinguir permissão negada de janela fora da
+    área de trabalho atual, que são problemas diferentes com soluções
+    diferentes."""
     try:
         r = subprocess.run(args, capture_output=True, timeout=timeout,
                            input=entrada, **_sem_console())
         saida = (r.stdout or b"").decode("utf-8", "ignore").strip()
+        erro = (r.stderr or b"").decode("utf-8", "ignore").strip()
+        if com_erro:
+            return (r.returncode == 0), saida, erro
         return (r.returncode == 0), saida
     except Exception as e:
-        return False, str(e)
+        return (False, str(e), str(e)) if com_erro else (False, str(e))
 
 
 # ====================================================================
@@ -799,8 +809,18 @@ def capturar_aba_cdp(id_aba, porta=PORTA_CDP_PADRAO):
         ws = tradovate_auto._WebSocketMinimo(host, int(prt), "/" + caminho)
         try:
             import json as _json
+            # JPEG, NÃO PNG. O PNG é sem perda, e por isso o Chrome tem que
+            # comprimir a página inteira dentro do processo de renderização —
+            # com o gráfico ao vivo, é o mesmo processo que precisa continuar
+            # desenhando candle. Depois aquilo ainda vai em base64 pelo
+            # WebSocket. Trocar por JPEG de qualidade 92 corta o trabalho de
+            # codificação e o tamanho da mensagem numa ordem de grandeza, e
+            # não custa leitura nenhuma: a imagem é reduzida para 1568px antes
+            # de subir para o modelo de qualquer forma, e a 92 o dígito do
+            # preço sai limpo.
             ws.enviar(_json.dumps({"id": 1, "method": "Page.captureScreenshot",
-                                   "params": {"format": "png"}}))
+                                   "params": {"format": "jpeg",
+                                              "quality": 92}}))
             fim = time.time() + 20
             while time.time() < fim:
                 bruto = ws.receber()
@@ -1407,24 +1427,211 @@ def capturar_janela(handle):
             return None
 
     if E_MACOS:
-        destino = os.path.join(tempfile.gettempdir(),
-                               f"smc_captura_{int(time.time()*1000)}.png")
-        try:
-            # -x  sem o som de câmera (o trader não quer "click" a cada ciclo)
-            # -o  sem a sombra da janela (borda inútil que só ocupa pixel)
-            # -l  captura ESTA janela, mesmo atrás de outras
-            ok, _ = _rodar(["screencapture", "-x", "-o", "-l", str(handle), destino],
-                           timeout=20)
-            if not ok or not os.path.exists(destino):
-                return None
-            return _png_para_pil(destino)
-        finally:
-            try:
-                os.remove(destino)
-            except Exception:
-                pass
+        return capturar_janela_macos(handle)[0]
 
     return None
+
+
+# Motivos possíveis de a captura no macOS não sair. Cada um tem uma solução
+# DIFERENTE, e é por isso que eles precisam ser distinguidos — tratar todos
+# como "não consegui a imagem" foi o que fez o trader passar um dia inteiro
+# mexendo na permissão enquanto o problema era outro.
+FALHA_PERMISSAO = "permissao"
+FALHA_OUTRA_AREA = "outra_area"
+FALHA_MINIMIZADA = "minimizada"
+FALHA_SCREENCAPTURE = "screencapture"
+FALHA_IMAGEM_VAZIA = "imagem_vazia"
+
+
+def _captura_quartz(handle):
+    """A imagem da janela pedida DENTRO deste processo, sem subprocesso algum.
+
+    POR QUE ESTA CAMADA EXISTE, E POR QUE ELA VEM PRIMEIRO
+    ------------------------------------------------------
+    A camada antiga chamava o programa /usr/sbin/screencapture. Isso é UM
+    PROCESSO SEPARADO — e no macOS a permissão de Gravação de Tela não é
+    concedida a um nome de produto, é concedida ao processo RESPONSÁVEL, lido
+    do núcleo. Um binário do sistema disparado por nós pode ser atribuído a um
+    responsável diferente do nosso e ser recusado com a permissão do
+    aplicativo intacta. Aqui a imagem é pedida pela MESMA API que o
+    screencapture usa por baixo (CGWindowListCreateImage), só que dentro do
+    processo que tem a permissão. É uma peça a menos no caminho e uma classe
+    inteira de recusa a menos.
+
+    E é muito mais barato. O caminho antigo pagava, A CADA CAPTURA: fork+exec
+    do binário, codificação PNG, escrita no disco, leitura de volta, decodifi-
+    cação e remoção do arquivo. Aqui os pixels vêm direto da memória do
+    servidor de janelas para o PIL. Some o disco inteiro do caminho crítico.
+
+    NÃO É UM BINÁRIO EM SWIFT — e isso é de propósito. Um wrapper em Swift
+    chamaria exatamente esta função da mesma biblioteca do sistema, e traria
+    junto: um artefato compilado para assinar, uma arquitetura a mais para
+    empacotar (Intel e Apple Silicon) e MAIS um processo separado, que é
+    justamente o problema que esta camada elimina. O PyObjC dá o acesso
+    direto; o Swift daria o mesmo acesso com um processo no meio.
+    """
+    if not (QUARTZ_DISPONIVEL and PIL_DISPONIVEL):
+        return None
+    try:
+        numero = int(handle)
+    except (TypeError, ValueError):
+        return None
+    try:
+        cg = Quartz.CGWindowListCreateImage(
+            Quartz.CGRectNull,
+            Quartz.kCGWindowListOptionIncludingWindow,
+            numero,
+            Quartz.kCGWindowImageBoundsIgnoreFraming
+            | Quartz.kCGWindowImageNominalResolution)
+        if cg is None:
+            return None
+        largura = int(Quartz.CGImageGetWidth(cg))
+        altura = int(Quartz.CGImageGetHeight(cg))
+        if largura <= 0 or altura <= 0:
+            return None
+        dados = Quartz.CGDataProviderCopyData(Quartz.CGImageGetDataProvider(cg))
+        if dados is None:
+            return None
+        # O Quartz devolve BGRA e as linhas podem vir MAIS LARGAS que a
+        # imagem (alinhamento de memória). Passar o passo de linha ao PIL é
+        # o que evita a imagem sair enviesada em diagonal.
+        passo = int(Quartz.CGImageGetBytesPerRow(cg))
+        img = Image.frombuffer("RGBA", (largura, altura), bytes(dados),
+                               "raw", "BGRA", passo, 1)
+        return img.convert("RGB")
+    except Exception:
+        return None
+
+
+def capturar_janela_macos(handle):
+    """(imagem, motivo). `motivo` é "" quando deu certo.
+
+    POR QUE ESTA FUNÇÃO EXISTE, E O QUE EU TINHA ERRADO
+    ----------------------------------------------------
+    28/08. O trader passou o dia mexendo na permissão de Gravação de Tela
+    porque a única coisa que o programa sabia dizer era "não consegui uma
+    imagem desta janela". Eu apontei a permissão duas vezes, e as duas vezes
+    o conserto não resolveu — porque a permissão não era o problema.
+
+    O log dizia, em TODA linha, e eu não li:
+
+        🔗 Janela 'Profit  [outra área de trabalho]' fixada (handle 95)
+        📸 Capturando 'Profit  [outra área de trabalho]'...
+        ⚠️ não consegui uma imagem atual de 'Profit  [outra área de trabalho]'
+
+    "[outra área de trabalho]" quer dizer que a janela está em OUTRO ESPAÇO
+    do Mission Control — e uma janela em tela cheia no macOS vira um espaço
+    só dela, que foi exatamente o caso da foto que ele mandou: o Profit
+    ocupando a tela inteira.
+
+    E ISSO NÃO É PERMISSÃO. O macOS não mantém os pixels de uma janela que
+    está noutro espaço; o compositor descarta o conteúdo de quem não está
+    sendo mostrado. Com Gravação de Tela concedida, negada, ou assinada com
+    a Developer ID da Apple, o resultado é o mesmo: não há o que capturar.
+
+    A solução não é uma permissão — é tirar o Profit da tela cheia e deixá-lo
+    na MESMA área de trabalho do programa. Ele pode ficar atrás de outras
+    janelas; o que não pode é estar noutro espaço.
+    """
+    if not E_MACOS:
+        return None, ""
+    # 1) A PERMISSÃO. Pergunta direta ao sistema, sem deduzir.
+    if permissao_de_tela_ok() is False:
+        return None, FALHA_PERMISSAO
+
+    # 2) TENTAR. Duas camadas, da mais direta para a mais indireta.
+    #
+    # A ORDEM IMPORTA E O "TENTAR ANTES DE CULPAR" TAMBÉM. A primeira versão
+    # desta função recusava de saída quando a janela estava noutro espaço, sem
+    # tentar. Isso troca um diagnóstico errado por outro: há caso em que o
+    # servidor de janelas AINDA tem o conteúdo guardado e a imagem sai. Um
+    # programa que se recusa a tentar não pode afirmar que não dava.
+    img = _captura_quartz(handle)
+    if img is not None:
+        return img, ""
+
+    erro = ""
+    png_ilegivel = False
+    destino = os.path.join(tempfile.gettempdir(),
+                           f"smc_captura_{int(time.time()*1000)}.png")
+    try:
+        # -x  sem o som de câmera (o trader não quer "click" a cada ciclo)
+        # -o  sem a sombra da janela (borda inútil que só ocupa pixel)
+        # -l  captura ESTA janela, mesmo atrás de outras
+        ok, _saida, erro = _rodar(
+            ["screencapture", "-x", "-o", "-l", str(handle), destino],
+            timeout=20, com_erro=True)
+        if ok and os.path.exists(destino):
+            img = _png_para_pil(destino)
+            if img is not None:
+                return img, ""
+            # O macOS ESCREVEU o arquivo e ele não abre. Isso não é espaço de
+            # trabalho nem permissão — é disco ou PIL, e merece nome próprio.
+            png_ilegivel = True
+    finally:
+        try:
+            os.remove(destino)
+        except Exception:
+            pass
+
+    # 3) SÓ AGORA, DEPOIS DE TER TENTADO, DIZER POR QUÊ.
+    # O STDERR do screencapture — que durante todo este tempo ia para o lixo.
+    baixo = (erro or "").lower()
+    if "not authorized" in baixo or "permission" in baixo:
+        return None, FALHA_PERMISSAO
+    if png_ilegivel:
+        return None, FALHA_IMAGEM_VAZIA
+    # O ESPAÇO. Esta é a explicação que faltava, e ela vem depois da tentativa.
+    try:
+        atual = _ids_na_tela()
+    except Exception:
+        atual = set()
+    try:
+        numero = int(handle)
+    except (TypeError, ValueError):
+        numero = None
+    if atual and numero is not None and numero not in atual:
+        return None, FALHA_OUTRA_AREA
+    if erro and erro.strip():
+        return None, erro.strip()
+    return None, FALHA_SCREENCAPTURE
+
+
+def porque_a_captura_falhou(handle, rotulo=""):
+    """O motivo EM PORTUGUÊS, com a solução junto. Texto vazio = sem falha.
+
+    Cada motivo tem uma saída diferente, e dizer a errada custa o dia de quem
+    está do outro lado."""
+    if isinstance(handle, str) and handle.startswith(_PREFIXO_CDP):
+        return ("A aba do Chrome não respondeu ao pedido de imagem. Feche e "
+                "reabra o Chrome de depuração pelo botão da aba Motor.")
+    if not E_MACOS:
+        return ""
+    _img, motivo = capturar_janela_macos(handle)
+    nome = f"'{rotulo}'" if rotulo else "essa janela"
+    if not motivo:
+        return ""
+    if motivo == FALHA_OUTRA_AREA:
+        return (
+            f"{nome} ESTÁ EM OUTRA ÁREA DE TRABALHO (ou em TELA CHEIA, que no "
+            "macOS vira uma área de trabalho só dela). O sistema não guarda a "
+            "imagem de uma janela que não está sendo mostrada — não há pixel "
+            "nenhum para eu ler, e NENHUMA permissão muda isso.\n"
+            "COMO RESOLVER: tire o programa da tela cheia (o botão verde, ou "
+            "Ctrl+Cmd+F) e deixe a janela na MESMA área de trabalho do SMC "
+            "Quant Pro. Ela pode ficar ATRÁS de outras janelas — isso eu leio "
+            "sem problema. O que não dá é ela estar noutro espaço.")
+    if motivo == FALHA_PERMISSAO:
+        return ("Falta a permissão de GRAVAÇÃO DE TELA para o processo que "
+                "está rodando.\n" + como_liberar_gravacao_de_tela())
+    if motivo == FALHA_IMAGEM_VAZIA:
+        return (f"O sistema devolveu um arquivo de imagem inválido para "
+                f"{nome}. Costuma ser disco cheio na pasta temporária.")
+    if motivo == FALHA_SCREENCAPTURE:
+        return (f"O comando screencapture do macOS falhou ao ler {nome} e não "
+                "disse por quê.")
+    # Quando o macOS explicou, a explicação DELE vale mais que a minha.
+    return f"O macOS recusou a captura de {nome}: {motivo}"
 
 
 def capturar_regiao_da_tela(handle):
@@ -1463,6 +1670,30 @@ def capturar_regiao_da_tela(handle):
         alvo = next((j for j in _janelas_macos() if j["id"] == handle), None)
         if not alvo:
             return None, False
+        # JANELA NOUTRA ÁREA DE TRABALHO: RECUSAR, NUNCA RECORTAR.
+        #
+        # Este era o pior defeito dos dois. `_janelas_macos()` enxerga TODAS as
+        # janelas, inclusive as de outros espaços, e traz as coordenadas delas.
+        # Mas `screencapture -R x,y,l,a` recorta um RETÂNGULO DA TELA QUE ESTÁ
+        # SENDO MOSTRADA AGORA. Com o Profit em tela cheia noutro espaço, o
+        # recorte devolvia — sem erro nenhum, com aparência de sucesso — o
+        # pedaço do que estivesse na tela atual naquelas coordenadas, e o motor
+        # registrava "✅ Recuperado via recorte de tela (conteúdo atual)" e
+        # mandava aquilo para a IA analisar como se fosse o gráfico dele.
+        #
+        # Imagem errada analisada como certa é a única classe de erro que
+        # custa dinheiro de verdade: gera sinal, e o sinal vira ordem. Devolver
+        # `sobreposto=True` faz todos os chamadores descartarem a imagem, que é
+        # o comportamento correto — perder o ciclo é barato, operar o gráfico
+        # de outra pessoa não é.
+        # (o conjunto vazio significa "não consegui perguntar", e aí não dá
+        # para acusar ninguém de estar noutro espaço)
+        try:
+            _na_tela = _ids_na_tela()
+        except Exception:
+            _na_tela = set()
+        if _na_tela and alvo["id"] not in _na_tela:
+            return None, True
         # Sobreposição no macOS: a lista do Quartz vem de frente para trás.
         # Se alguma janela ANTES da nossa cruza a mesma área, há algo por cima.
         sobreposto = False

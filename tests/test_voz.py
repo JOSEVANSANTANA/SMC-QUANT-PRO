@@ -74,6 +74,16 @@ class TestOAnalisadorDaListaDoSistema(unittest.TestCase):
         self.assertEqual(plataforma.analisar_lista_de_vozes(None), [])
 
 
+def _nativas(vozes):
+    """Só as vozes do sistema — as neurais do Jarvis marcam o idioma com
+    "(Neural)" justamente para dar para separar as duas famílias."""
+    return [v for v in vozes if "(Neural)" not in v[1]]
+
+
+def _idioma_de(vozes, nome):
+    return next(i for n, i, _e in vozes if n == nome)
+
+
 class TestABibliotecaTemMaisDeUmaOpcao(unittest.TestCase):
     """O defeito, dito como ele o viu: 'não tem outras disponíveis'."""
 
@@ -90,11 +100,24 @@ class TestABibliotecaTemMaisDeUmaOpcao(unittest.TestCase):
             plataforma.E_MACOS, plataforma._rodar = original_mac, original_rodar
 
     def test_a_lista_completa_traz_TODAS_e_nao_so_portugues(self):
+        """A REGRA, NÃO A CONTAGEM.
+
+        Isto exigia `len(todas) == 8`, e as vozes neurais do Jarvis entraram
+        na frente da lista — o número mudou e o teste ficou vermelho sem que
+        nada tivesse quebrado. Contagem cravada é régua, não regra: ela proíbe
+        acrescentar voz, que é justamente o que ele pediu. O que se trava é
+        que a lista completa é MAIOR que a de português e que as vozes nativas
+        do sistema continuam todas lá."""
         todas, so_pt, _melhor = self._todas()
-        self.assertEqual(len(todas), 8)
-        self.assertEqual(len(so_pt), 3)
         self.assertGreater(len(todas), len(so_pt),
                            "a biblioteca voltou a mostrar só português")
+        for nome, _i, _e in _nativas(so_pt):
+            self.assertTrue(_idioma_de(so_pt, nome).lower().startswith("pt"),
+                            f"{nome} entrou na lista de português")
+        nomes = [n for n, _i, _e in todas]
+        for esperada in ("Luciana", "Joana", "Daniel (English (UK))"):
+            self.assertIn(esperada, nomes,
+                          "sumiu uma voz nativa do sistema da lista completa")
 
     def test_portugues_vem_PRIMEIRO(self):
         """As outras estão na lista porque ele pediu a biblioteca inteira —
@@ -110,19 +133,38 @@ class TestABibliotecaTemMaisDeUmaOpcao(unittest.TestCase):
         """Ele opera no Brasil; 'Joana' de Portugal lê os números com outra
         prosódia."""
         todas, _s, _m = self._todas()
-        idiomas = [i for _n, i, _e in todas if i.startswith("pt")]
+        # Só as NATIVAS: as neurais do Jarvis vêm de propósito antes de todas,
+        # e são todas pt_BR — misturá-las aqui mediria outra coisa.
+        idiomas = [i for _n, i, _e in _nativas(todas) if i.startswith("pt")]
         self.assertEqual(idiomas, ["pt_BR", "pt_BR", "pt_PT"])
 
     def test_a_melhor_voz_sai_da_lista_real(self):
-        _t, _s, melhor = self._todas()
-        self.assertEqual(melhor, "Luciana")
+        """Ela pode mudar de nome; o que não pode é ser um nome que ninguém
+        consegue usar. Antes isto cravava "Luciana"; hoje o padrão é a neural
+        do Jarvis, e a regra que importa continua a mesma."""
+        todas, _s, melhor = self._todas()
+        self.assertTrue(melhor)
+        self.assertIn(melhor, [n for n, _i, _e in todas],
+                      "a voz padrão não está na biblioteca — escolher ela "
+                      "deixaria a ferramenta muda")
 
-    def test_fora_do_mac_a_lista_e_vazia_e_nao_levanta(self):
+    def test_fora_do_mac_sobram_as_neurais_e_nenhuma_do_sistema(self):
+        """Isto exigia lista VAZIA fora do Mac, e estava certo enquanto todas
+        as vozes vinham do `say`. As neurais do Jarvis são sintetizadas pela
+        rede (edge-tts) e funcionam no Windows também — devolver vazio ali
+        deixaria o cliente de Windows sem voz nenhuma. O que continua proibido
+        é oferecer voz NATIVA do macOS fora do macOS: escolher uma delas seria
+        escolher algo que não fala."""
         original = plataforma.E_MACOS
         plataforma.E_MACOS = False
         try:
-            self.assertEqual(plataforma.vozes_disponiveis(), [])
-            self.assertIsNone(plataforma.voz_portugues_macos())
+            fora = plataforma.vozes_disponiveis()
+            self.assertTrue(fora, "nenhuma voz sobrou fora do Mac")
+            for nome, _i, _e in fora:
+                self.assertIn("Jarvis", nome,
+                              f"{nome} é voz nativa do macOS e foi oferecida "
+                              "fora do macOS")
+            self.assertTrue(plataforma.voz_portugues_macos())
         finally:
             plataforma.E_MACOS = original
 

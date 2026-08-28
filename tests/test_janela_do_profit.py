@@ -43,7 +43,7 @@ import os
 import sys
 import unittest
 
-from harness import RAIZ
+from harness import RAIZ, funcao_inteira
 
 if RAIZ not in sys.path:
     sys.path.insert(0, RAIZ)
@@ -264,12 +264,40 @@ class TestOProgramaAVISAQuePrecisaDaPermissao(unittest.TestCase):
     depois de três ciclos pulados."""
 
     def setUp(self):
+        # A FUNÇÃO INTEIRA, NÃO UMA JANELA DE N BYTES.
+        #
+        # Isto era `self.codigo[i:i + 3200]`, e a correção de 28/08 acrescentou
+        # um aviso ANTES do da permissão — empurrando o trecho procurado para
+        # fora da janela. Cinco testes ficaram vermelhos sem que nada tivesse
+        # se quebrado. Um recorte por tamanho mede a POSIÇÃO do código, que não
+        # é regra nenhuma; o que se quer medir é se a regra continua no lugar.
         self.codigo = _fonte("main_app.py")
-        i = self.codigo.index("def _incluir_janela_monitorada")
-        self.corpo = self.codigo[i:i + 3200]
+        self.corpo = funcao_inteira(self.codigo, "_incluir_janela_monitorada")
 
     def test_o_aviso_existe_no_caminho_de_incluir(self):
         self.assertIn("GRAVAÇÃO DE TELA", self.corpo)
+
+    def test_a_outra_AREA_DE_TRABALHO_e_avisada_ANTES_da_permissao(self):
+        """A ordem aqui é a lição de 28/08, e por isso está travada.
+
+        Ele passou o dia mexendo na permissão porque foi para lá que a
+        ferramenta o mandou — enquanto o Profit estava em TELA CHEIA, noutra
+        área de trabalho, onde não há pixel para ler e permissão nenhuma
+        resolve. Quem avisa primeiro decide onde a pessoa vai procurar."""
+        area = self.corpo.index("[outra área de trabalho]")
+        permissao = self.corpo.index("permissao_de_tela_ok")
+        self.assertLess(area, permissao,
+                        "o aviso de permissão voltou a vir primeiro — é assim "
+                        "que se manda o trader procurar no lugar errado")
+
+    def test_o_aviso_de_outra_area_DIZ_que_nao_e_permissao(self):
+        trecho = self.corpo[self.corpo.index("[outra área de trabalho]"):]
+        trecho = trecho[:trecho.index("permissao_de_tela_ok")]
+        # A frase é quebrada em duas linhas no fonte ("...ISSO NÃO " + "É
+        # PERMISSÃO:..."), então o teste procura a metade que carrega o
+        # sentido, e não a costura entre as duas.
+        self.assertIn("É PERMISSÃO:", trecho.upper())
+        self.assertIn("Ctrl+Cmd+F", trecho)
 
     def test_ele_so_avisa_para_janela_que_NAO_e_aba(self):
         self.assertIn("e_aba_de_navegador", self.corpo)

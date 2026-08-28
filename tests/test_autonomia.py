@@ -26,7 +26,8 @@ A legenda abaixo é a do print real da Tradovate de 12/08/2026 15:45, candle das
 
 import unittest
 
-from harness import carregar, fonte_do_arquivo, pular_se_faltar, modulo_requests
+from harness import (carregar, fonte_do_arquivo, funcao_inteira,
+                     pular_se_faltar, modulo_requests)
 
 LEGENDA_REAL = """12/08/2026 13:25
 PSAR 7764.20
@@ -529,10 +530,21 @@ class TestVozConfiguravel(unittest.TestCase):
         self.assertIn("🔈 ouvir", fonte)
 
     def test_voz_desinstalada_nao_deixa_a_ferramenta_muda(self):
-        """Voz configurada que sumiu da máquina cai para a melhor e segue."""
-        plat = self._plat()
-        i = plat.index("def voz_escolhida_ou_melhor")
-        self.assertIn("voz_portugues_macos()", plat[i:i + 800])
+        """Voz configurada que sumiu da máquina cai para uma que existe.
+
+        A REGRA, NÃO O NOME DA FUNÇÃO. Este teste procurava a chamada a
+        `voz_portugues_macos()`; quando as vozes neurais entraram, o recuo
+        passou a ser o padrão Jarvis e o teste ficou vermelho sem que nada
+        tivesse quebrado — a ferramenta continua não ficando muda, que é a
+        única coisa que importa aqui. O que se trava agora é que a função
+        SEMPRE devolve alguma voz, nunca None nem string vazia."""
+        corpo = funcao_inteira(self._plat(), "voz_escolhida_ou_melhor")
+        self.assertNotIn("return None", corpo,
+                         "voltou a poder devolver 'nenhuma voz' — é assim que "
+                         "a ferramenta emudece no meio do pregão")
+        ultimo = corpo.rstrip().splitlines()[-1].strip()
+        self.assertTrue(ultimo.startswith("return "), ultimo)
+        self.assertNotIn('return ""', corpo)
 
     def test_a_escolha_e_gravada_e_RELIDA(self):
         fonte = fonte_do_arquivo()
@@ -548,9 +560,8 @@ class TestVozConfiguravel(unittest.TestCase):
     def test_a_velocidade_continua_limitada(self):
         """Fala rápida demais é ininteligível — e no meio do pregão isso é
         pior que não falar."""
-        plat = self._plat()
-        i = plat.index("def falar_nativo")
-        self.assertIn("max(90, min(", plat[i:i + 600])
+        self.assertIn("max(90, min(",
+                      funcao_inteira(self._plat(), "falar_nativo"))
 
 
 class TestMicrofoneDentroDoBundle(unittest.TestCase):

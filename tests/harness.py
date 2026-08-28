@@ -134,6 +134,30 @@ def fonte_do_arquivo(caminho=None):
         return f.read()
 
 
+def funcao_inteira(codigo, nome):
+    """O texto de uma função, do `def` até onde ela REALMENTE acaba.
+
+    POR QUE ISTO EXISTE
+    -------------------
+    Vários testes recortavam "os próximos N bytes depois do def" para procurar
+    uma regra lá dentro. Isso não mede a regra, mede a POSIÇÃO dela: em 28/08
+    uma correção acrescentou um aviso no meio de `_incluir_janela_monitorada`
+    e SEIS testes ficaram vermelhos de uma vez, em duas funções diferentes,
+    sem que nada tivesse se quebrado — o trecho procurado só tinha sido
+    empurrado para fora da janela de bytes.
+
+    Teste que fica vermelho sem defeito é pior que teste nenhum: ensina a
+    ignorar o vermelho, e é o vermelho que segura as travas de dinheiro deste
+    projeto. Com a função inteira, acrescentar linha no meio não quebra nada,
+    e APAGAR a regra quebra — que é o que se queria desde o começo.
+    """
+    for no in ast.walk(ast.parse(codigo)):
+        if isinstance(no, (ast.FunctionDef, ast.AsyncFunctionDef)) and no.name == nome:
+            linhas = codigo.splitlines(keepends=True)
+            return "".join(linhas[no.lineno - 1:no.end_lineno])
+    raise AssertionError(f"não achei a função {nome}")
+
+
 def pular_se_faltar(*relativos):
     """Pula o teste quando o arquivo que ele examina não veio NESTE pacote.
 

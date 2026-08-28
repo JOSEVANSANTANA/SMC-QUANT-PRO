@@ -1581,6 +1581,62 @@ def modelo_visao_recomendado(ram_gb=_RAM_NAO_INFORMADA):
 LADO_MAX_VISAO_LOCAL = 1400
 
 
+# Lado maior, em pixels, da imagem enviada ao modelo de visão NA NUVEM.
+# 1568 não é palpite: o modelo de visão fatia a imagem em ladrilhos de 768px
+# e reamostra o que passa do teto dele. Pixel acima disso é pago na subida e
+# descartado na chegada — não vira leitura melhor, vira espera.
+LADO_MAX_VISAO_NUVEM = 1568
+
+
+def imagem_para_o_modelo(imagem_pil, lado_max=LADO_MAX_VISAO_NUVEM):
+    """A imagem preparada UMA VEZ para ir ao modelo de visão da nuvem.
+
+    O QUE ISTO CORRIGE (medido no fonte, não no chute)
+    ---------------------------------------------------
+    O ciclo entregava o objeto PIL CRU ao SDK. O SDK, a cada chamada, refazia
+    tudo do zero: codificava em PNG SEM PERDA, na resolução de tela cheia de
+    Retina, e subia aquilo em base64. Uma tela de MacBook (3024x1964) dá algo
+    entre 1,5 e 3 MB de PNG — perto de 2 a 4 MB depois do base64.
+
+    E acontecia DE NOVO A CADA MODELO TENTADO. Quando o primeiro devolve 503
+    — que é o caso comum em hora de pico e está no log dele — a MESMA foto era
+    recodificada e resubida para o segundo, o terceiro, e mais uma vez inteira
+    na segunda passada. Numa fila de quatro modelos com repique, até oito
+    subidas da mesma imagem, por um link doméstico de UPLOAD, que é sempre o
+    lado estreito de uma conexão residencial.
+
+    Aqui a imagem é reduzida e codificada UMA vez, e os MESMOS bytes vão para
+    todas as tentativas.
+
+    POR QUE REDUZIR NÃO CUSTA LEITURA: ver o comentário de LADO_MAX_VISAO_NUVEM.
+    O que precisa continuar legível é o dígito do preço, e em 1568px de lado
+    maior ele sobra. `subsampling=0` existe pelo mesmo motivo: é o que preserva
+    a cor na borda do texto fino, e é a borda do texto que forma o número.
+
+    Se qualquer coisa der errado aqui, devolve a imagem como estava. Preparar é
+    otimização — falhar numa otimização não pode custar o ciclo.
+    """
+    img = imagem_pil
+    try:
+        img = imagem_pil.convert("RGB")
+        maior = max(img.size)
+        if lado_max and maior > lado_max:
+            fator = lado_max / float(maior)
+            img = img.resize((max(1, int(img.size[0] * fator)),
+                              max(1, int(img.size[1] * fator))), Image.LANCZOS)
+    except Exception:
+        return imagem_pil
+    try:
+        saida = BytesIO()
+        img.save(saida, format="JPEG", quality=90, subsampling=0, optimize=True)
+        return types.Part.from_bytes(data=saida.getvalue(),
+                                     mime_type="image/jpeg")
+    except Exception:
+        # SDK sem `Part.from_bytes` (versão antiga) ou falha de codificação:
+        # segue com a imagem JÁ REDUZIDA. Metade do ganho é melhor que zero.
+        return img
+
+
 def _b64_da_imagem(imagem_pil, lado_max=LADO_MAX_VISAO_LOCAL):
     """A imagem no formato que o Ollama espera (base64, sem prefixo),
     reduzida ao que o modelo local consegue mastigar."""
@@ -12482,6 +12538,23 @@ ESCALA_LETRA_PADRAO = 1.00
 _FONTE_BASE_CHAT = 11
 _FONTE_BASE_CONSOLE = 10
 
+# ----------------------------------------------------------------------
+# O REGISTRO DE ATIVIDADE
+# Altura do campo do log, em linhas. Deixou de ser um número cravado no
+# código para virar preferência: quem lê o log o dia inteiro quer ele
+# grande, quem só olha de vez em quando quer ele pequeno.
+ALTURA_LOG_PADRAO = 22
+ALTURA_LOG_MIN = 8
+ALTURA_LOG_MAX = 60
+# Quantas linhas o campo guarda. Um pregão inteiro passa de dezenas de
+# milhares de linhas, e a partir de certo ponto o Tk engasga A CADA linha
+# nova — o programa inteiro fica lento por causa do log. Vira uma janela
+# deslizante: guarda as últimas e joga fora o começo. A FOLGA existe para
+# não cortar de linha em linha (cortar é caro): deixa passar do teto e
+# então corta um bloco de uma vez.
+LOG_MAX_LINHAS = 4000
+LOG_FOLGA_LINHAS = 500
+
 def escala_letra_salva():
     """A escala gravada, presa à faixa que a interface oferece. Valor estranho
     no config (editado à mão, arquivo corrompido) volta ao padrão em vez de
@@ -13367,13 +13440,78 @@ class SmcQuantApp(ctk.CTk):
 
         sec_log = self._secao(master, "📋  REGISTRO DE ATIVIDADE (log do motor)",
                               "motor_log", aberta_padrao=True)
-        self.console = tk.Text(sec_log, height=22, bg="#0d0d0d", fg="#00ff00",
+
+        # ESTE CAMPO NÃO DAVA PARA LER, E NÃO ERA IMPRESSÃO: eram TRÊS
+        # defeitos somados, cada um bastando sozinho para inutilizá-lo.
+        #
+        # 1. NÃO TINHA BARRA DE ROLAGEM. Nenhuma. Não havia o que arrastar.
+        #
+        # 2. A RODA DO MOUSE EM CIMA DELE ROLAVA A PÁGINA INTEIRA. O
+        #    CTkScrollableFrame — que é quem embala esta aba — captura a roda
+        #    com bind_all, ou seja, na etiqueta "all" do Tk, que vale para o
+        #    programa todo. Antes de rolar, ele pergunta se o widget sob o
+        #    ponteiro tem rolagem própria; a lista de exceções dele é fechada
+        #    (CTkScrollbar, CTkSlider, CTkTextbox) e um tk.Text NÃO está nela.
+        #    Resultado: o evento subia, a aba andava, e o log ficava parado.
+        #    Era exatamente isto — "se eu rolar a barra, o app inteiro vai
+        #    junto". A cura está em _prender_a_roda: tratar a roda no nível do
+        #    WIDGET e devolver "break". A fila de etiquetas do Tk é widget →
+        #    classe → janela → all; o "break" para a fila antes do "all", que
+        #    é justamente onde mora o sequestro.
+        #
+        # 3. CADA LINHA NOVA CHAMAVA see(END). Com o motor ligado chega linha
+        #    a cada poucos segundos, então mesmo que houvesse barra o texto
+        #    era arrancado de volta para o fim antes de ele terminar de ler.
+        #    Agora a rolagem automática só acontece se ele JÁ estiver no fim.
+        #
+        # E, de quebra, o tamanho virou ajustável e há uma janela grande para
+        # quando o assunto for realmente ler o que o motor fez.
+        barra_log = ctk.CTkFrame(sec_log, fg_color="transparent")
+        barra_log.pack(fill="x", padx=10, pady=(4, 3))
+        ctk.CTkButton(barra_log, text="🔍 Abrir em janela grande", width=195,
+                      fg_color="#2a3f5f", hover_color="#3a5580",
+                      font=ctk.CTkFont(size=11),
+                      command=self._abrir_log_em_janela).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(barra_log, text="📋 Copiar", width=90,
+                      fg_color="#2a3f5f", hover_color="#3a5580",
+                      font=ctk.CTkFont(size=11),
+                      command=self._copiar_log).pack(side="left", padx=(0, 6))
+        self.btn_fim_do_log = ctk.CTkButton(
+            barra_log, text="⤓ está no fim", width=215, fg_color="#2a3f5f",
+            hover_color="#3a5580", font=ctk.CTkFont(size=11),
+            command=self._ir_para_o_fim_do_log)
+        self.btn_fim_do_log.pack(side="left")
+
+        ctk.CTkButton(barra_log, text="＋", width=32, fg_color="#2a3f5f",
+                      hover_color="#3a5580",
+                      command=lambda: self._mudar_altura_do_log(+4)
+                      ).pack(side="right", padx=(4, 0))
+        self.lbl_altura_log = ctk.CTkLabel(
+            barra_log, text=f"{self._altura_do_log()} linhas", width=66,
+            font=ctk.CTkFont(size=10), text_color=COR["dim"])
+        self.lbl_altura_log.pack(side="right")
+        ctk.CTkButton(barra_log, text="－", width=32, fg_color="#2a3f5f",
+                      hover_color="#3a5580",
+                      command=lambda: self._mudar_altura_do_log(-4)
+                      ).pack(side="right", padx=(0, 4))
+
+        linha_console = ctk.CTkFrame(sec_log, fg_color="transparent")
+        linha_console.pack(pady=(0, 8), padx=10, fill="both", expand=True)
+        self.console = tk.Text(linha_console, height=self._altura_do_log(),
+                                bg="#0d0d0d", fg="#00ff00", wrap="word",
                                 font=("Consolas",
                                       max(8, int(round(_FONTE_BASE_CONSOLE *
                                                        getattr(self, "_escala_letra", 1.0))))),
                                 relief="flat", borderwidth=0,
                                 insertbackground="#00ff00")
-        self.console.pack(pady=(0, 8), padx=10, fill="both", expand=True)
+        self.console.pack(side="left", fill="both", expand=True)
+        self.barra_do_console = ctk.CTkScrollbar(
+            linha_console, command=self.console.yview, width=14,
+            fg_color="#0d0d0d", button_color="#1f8b4c",
+            button_hover_color="#25a35a")
+        self.barra_do_console.pack(side="right", fill="y", padx=(4, 0))
+        self.console.configure(yscrollcommand=self._console_rolou)
+        self._prender_a_roda(self.console)
 
         # ---------- AUTOMAÇÃO TRADOVATE (opcional) ----------
         self._montar_painel_tradovate(
@@ -13804,6 +13942,26 @@ class SmcQuantApp(ctk.CTk):
         # concedida". Aba do Chrome não depende disso (quem captura é o
         # próprio navegador, pelo CDP); QUALQUER outra janela depende, e sem a
         # permissão a imagem sai preta sem erro nenhum.
+        # JANELA EM OUTRA ÁREA DE TRABALHO NÃO TEM PIXEL PARA LER.
+        #
+        # Este aviso vem ANTES do da permissão de propósito: é o que estava
+        # acontecendo de verdade em 28/08, e mandar mexer na permissão
+        # primeiro foi o que consumiu o dia dele. Uma janela em tela cheia no
+        # macOS vira uma área de trabalho só dela, e o compositor descarta o
+        # conteúdo de quem não está sendo mostrado. Nenhuma permissão muda isso.
+        if "[outra área de trabalho]" in titulo:
+            self.log(
+                "   ⚠️ ESTA JANELA ESTÁ EM OUTRA ÁREA DE TRABALHO — e no macOS "
+                "uma janela em TELA CHEIA vira uma área de trabalho só dela. "
+                "O sistema costuma não guardar a imagem de uma janela que não "
+                "está sendo mostrada — eu vou TENTAR mesmo assim (às vezes "
+                "sai), mas quando não sair o ciclo dela será pulado. ISSO NÃO "
+                "É PERMISSÃO: nem a Gravação de Tela nem a Acessibilidade "
+                "mudam esse comportamento.\n"
+                "   ➡️ Tire o programa da tela cheia (botão verde, ou "
+                "Ctrl+Cmd+F) e deixe a janela na MESMA área de trabalho do "
+                "SMC Quant Pro. Ela PODE ficar atrás de outras janelas — isso "
+                "eu leio sem problema.")
         try:
             if (E_MACOS and not plataforma.e_aba_de_navegador(titulo)
                     and plataforma.permissao_de_tela_ok() is False):
@@ -15384,9 +15542,19 @@ class SmcQuantApp(ctk.CTk):
             imagem = (capturar_janela_em_segundo_plano(hwnd) if hwnd
                       else plataforma.capturar_tela_inteira())
             if imagem is None or imagem_esta_em_branco(imagem):
-                self.after(0, lambda: self.lbl_previa.configure(
-                    text="Não consegui uma imagem desta janela. Ela pode estar "
-                         "minimizada ou totalmente coberta.", text_color="#ff6b6b"))
+                # O MOTIVO, NÃO O SINTOMA. "Ela pode estar minimizada ou
+                # totalmente coberta" era um palpite — e mandou o trader
+                # procurar no lugar errado o dia inteiro em 28/08, enquanto a
+                # janela do Profit estava em TELA CHEIA, noutra área de
+                # trabalho, onde o macOS não guarda pixel para ninguém ler.
+                try:
+                    motivo = plataforma.porque_a_captura_falhou(hwnd, nome)
+                except Exception:
+                    motivo = ""
+                texto = motivo or ("Não consegui uma imagem desta janela e o "
+                                   "sistema não disse por quê.")
+                self.after(0, lambda t=texto: self.lbl_previa.configure(
+                    text=t, text_color="#ff6b6b"))
                 return
             # O MESMO OCR que responde 'onde está a VWAP'. Se ele acha os
             # rótulos de um gráfico aqui, a janela é a certa — e isso é um
@@ -21354,10 +21522,304 @@ class SmcQuantApp(ctk.CTk):
             self.log(f"❌ Node.js está em {node} mas não executou: {e}\n"
                      + plataforma.como_instalar_node())
 
+    # ==================================================================
+    # O REGISTRO DE ATIVIDADE — ler o log tem que ser possível
+    # ==================================================================
+    def _prender_a_roda(self, widget):
+        """Faz a roda do mouse rolar ESTE campo, e só ele.
+
+        O `return "break"` é o ponto inteiro. O CTkScrollableFrame registra a
+        roda com bind_all — a etiqueta "all", que é a ÚLTIMA da fila do Tk
+        (widget, classe, janela, all). Tratando o evento aqui, no nível do
+        widget, e devolvendo "break", a fila termina antes de chegar nele: a
+        página para de andar junto.
+
+        Vale também para janela separada: bind_all é do interpretador inteiro,
+        não da janela — sem isto, rolar o log numa janela à parte moveria a aba
+        lá atrás."""
+        def _rodou(evento, alvo=widget):
+            numero = getattr(evento, "num", None)
+            if numero == 4:            # Linux/X11: roda para cima
+                passos = -3
+            elif numero == 5:          # Linux/X11: roda para baixo
+                passos = 3
+            else:
+                delta = int(getattr(evento, "delta", 0) or 0)
+                if delta == 0:
+                    return "break"
+                if abs(delta) >= 120:  # Windows manda múltiplos de 120
+                    passos = -(delta // 120) * 3
+                else:                  # macOS manda a contagem já pronta
+                    passos = -delta
+            try:
+                alvo.yview_scroll(int(passos), "units")
+            except Exception:
+                pass
+            return "break"
+
+        for evento in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            try:
+                widget.bind(evento, _rodou)
+            except Exception:
+                pass
+
+    def _console_no_fim(self):
+        """O campo está mostrando a última linha? Só então ele pode se mexer
+        sozinho. Enquanto ele estiver lendo mais acima, linha nova NÃO arranca
+        a tela dele."""
+        console = getattr(self, "console", None)
+        if console is None:
+            return True
+        try:
+            return float(console.yview()[1]) >= 0.999
+        except Exception:
+            return True
+
+    def _pintar_botao_do_fim(self, no_fim):
+        botao = getattr(self, "btn_fim_do_log", None)
+        if botao is None:
+            return
+        try:
+            if no_fim:
+                botao.configure(text="⤓ está no fim", fg_color="#2a3f5f")
+            else:
+                botao.configure(text="⤓ IR PARA O FIM (chegou linha nova)",
+                                fg_color="#8b5a00")
+        except Exception:
+            pass
+
+    def _console_rolou(self, inicio, fim):
+        """Chamado pelo Tk a cada mudança de visão — rolagem OU linha nova.
+
+        Serve a duas coisas de uma vez: move a barra e avisa, no próprio
+        botão, que chegou coisa nova enquanto ele lia mais acima."""
+        barra = getattr(self, "barra_do_console", None)
+        if barra is not None:
+            try:
+                barra.set(inicio, fim)
+            except Exception:
+                pass
+        try:
+            self._pintar_botao_do_fim(float(fim) >= 0.999)
+        except (TypeError, ValueError):
+            pass
+
+    def _ir_para_o_fim_do_log(self):
+        console = getattr(self, "console", None)
+        if console is None:
+            return
+        try:
+            console.see(tk.END)
+        except Exception:
+            pass
+        self._pintar_botao_do_fim(True)
+
+    def _altura_do_log(self):
+        try:
+            valor = int(carregar_config().get("altura_do_log", ALTURA_LOG_PADRAO))
+        except (TypeError, ValueError):
+            valor = ALTURA_LOG_PADRAO
+        return max(ALTURA_LOG_MIN, min(ALTURA_LOG_MAX, valor))
+
+    def _mudar_altura_do_log(self, passo):
+        """O campo deixa de ter tamanho cravado — e o tamanho fica guardado."""
+        nova = max(ALTURA_LOG_MIN,
+                   min(ALTURA_LOG_MAX, self._altura_do_log() + int(passo)))
+        salvar_config({"altura_do_log": nova})
+        console = getattr(self, "console", None)
+        if console is not None:
+            try:
+                console.configure(height=nova)
+            except Exception:
+                pass
+        rotulo = getattr(self, "lbl_altura_log", None)
+        if rotulo is not None:
+            try:
+                rotulo.configure(text=f"{nova} linhas")
+            except Exception:
+                pass
+
+    def _texto_do_log(self):
+        console = getattr(self, "console", None)
+        if console is None:
+            return ""
+        try:
+            return console.get("1.0", tk.END)
+        except Exception:
+            return ""
+
+    def _copiar_log(self):
+        texto = self._texto_do_log()
+        if not texto.strip():
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(texto)
+            self.update_idletasks()
+        except Exception as e:
+            self.log(f"Não consegui copiar o registro: {e}")
+            return
+        self.log(f"📋 Registro copiado ({len(texto.splitlines())} linhas). "
+                 "Pode colar onde quiser.")
+
+    def _aparar_console(self):
+        """Não deixa o registro crescer sem fim.
+
+        Corta em BLOCO, e só depois de passar da folga, porque apagar do início
+        de um Text é caro: fazer isso a cada linha custaria mais que o próprio
+        problema que resolve."""
+        console = getattr(self, "console", None)
+        if console is None:
+            return
+        try:
+            total = int(str(console.index("end-1c")).split(".")[0])
+        except Exception:
+            return
+        if total <= LOG_MAX_LINHAS + LOG_FOLGA_LINHAS:
+            return
+        try:
+            # +1 porque apagar de "1.0" até "N.0" remove as linhas 1..N-1: sem
+            # ele o campo fica com uma linha a mais a cada corte, e o teto
+            # deixa de ser teto.
+            console.delete("1.0", f"{total - LOG_MAX_LINHAS + 1}.0")
+        except Exception:
+            pass
+
+    def _abrir_log_em_janela(self):
+        """O registro numa janela inteira, que dá para maximizar e procurar.
+
+        Dentro da aba o campo divide espaço com todo o resto. Quando o assunto
+        é LER o que o motor fez — rastrear um erro, conferir uma sequência de
+        ciclos — o lugar certo é uma janela só dele."""
+        janela = getattr(self, "_janela_do_log", None)
+        if janela is not None:
+            try:
+                if janela.winfo_exists():
+                    janela.deiconify()
+                    janela.lift()
+                    return
+            except Exception:
+                pass
+        try:
+            janela = tk.Toplevel(self)
+        except Exception as e:
+            self.log(f"Não consegui abrir a janela do registro: {e}")
+            return
+        self._janela_do_log = janela
+        janela.title("Registro de atividade — SMC Quant Pro")
+        janela.configure(bg="#0d0d0d")
+        janela.geometry("1040x660")
+        janela.minsize(520, 300)
+
+        tamanho = max(9, int(round(_FONTE_BASE_CONSOLE *
+                                   getattr(self, "_escala_letra", 1.0))))
+
+        topo = tk.Frame(janela, bg="#111820")
+        topo.pack(fill="x")
+        tk.Label(topo, text="procurar:", bg="#111820", fg="#8aa0b6",
+                 font=("Consolas", 10)).pack(side="left", padx=(12, 5), pady=8)
+        procura = tk.Entry(topo, bg="#0d0d0d", fg="#00ff00", width=34,
+                           insertbackground="#00ff00", relief="flat",
+                           font=("Consolas", 11))
+        procura.pack(side="left", pady=8)
+        tk.Label(topo, text="Enter procura o próximo",
+                 bg="#111820", fg="#4a5163",
+                 font=("Consolas", 9)).pack(side="left", padx=8)
+
+        corpo = tk.Frame(janela, bg="#0d0d0d")
+        corpo.pack(fill="both", expand=True)
+        texto = tk.Text(corpo, bg="#0d0d0d", fg="#00ff00", wrap="word",
+                        relief="flat", borderwidth=0,
+                        insertbackground="#00ff00", font=("Consolas", tamanho))
+        rolagem = tk.Scrollbar(corpo, command=texto.yview,
+                               bg="#111820", troughcolor="#0d0d0d",
+                               relief="flat", borderwidth=0)
+        rolagem.pack(side="right", fill="y")
+        texto.configure(yscrollcommand=rolagem.set)
+        texto.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=6)
+        texto.tag_configure("achado", background="#8b5a00", foreground="#ffffff")
+        texto.insert(tk.END, self._texto_do_log())
+        texto.see(tk.END)
+        # A roda tem que ficar presa aqui também: o sequestro do
+        # CTkScrollableFrame é registrado no interpretador inteiro, não só na
+        # janela principal — sem isto, rolar aqui mexeria a aba lá atrás.
+        self._prender_a_roda(texto)
+        self._texto_do_log_grande = texto
+
+        def procurar(_e=None):
+            alvo = procura.get().strip()
+            texto.tag_remove("achado", "1.0", tk.END)
+            if not alvo:
+                return "break"
+            desde = getattr(janela, "_ultimo_achado", "1.0")
+            onde = texto.search(alvo, desde, nocase=True, stopindex=tk.END)
+            if not onde:  # chegou ao fim: recomeça do topo
+                onde = texto.search(alvo, "1.0", nocase=True, stopindex=tk.END)
+            if not onde:
+                janela._ultimo_achado = "1.0"
+                return "break"
+            fim = f"{onde}+{len(alvo)}c"
+            texto.tag_add("achado", onde, fim)
+            texto.see(onde)
+            janela._ultimo_achado = fim
+            return "break"
+
+        procura.bind("<Return>", procurar)
+        tk.Button(topo, text="procurar", command=procurar,
+                  bg="#2a3f5f", fg="#ffffff", relief="flat",
+                  font=("Consolas", 10)).pack(side="left", padx=4)
+        tk.Button(topo, text="copiar tudo", command=self._copiar_log,
+                  bg="#2a3f5f", fg="#ffffff", relief="flat",
+                  font=("Consolas", 10)).pack(side="right", padx=12)
+
+        def fechar():
+            self._texto_do_log_grande = None
+            self._janela_do_log = None
+            try:
+                janela.destroy()
+            except Exception:
+                pass
+
+        janela.protocol("WM_DELETE_WINDOW", fechar)
+
+    def _ecoar_no_log_grande(self, msg):
+        """A janela grande acompanha ao vivo, sem recopiar o registro inteiro.
+
+        Recopiar seria simples e errado: perderia a posição da leitura a cada
+        linha nova, que é o defeito que acabamos de matar aqui dentro."""
+        texto = getattr(self, "_texto_do_log_grande", None)
+        if texto is None:
+            return
+        try:
+            if not texto.winfo_exists():
+                self._texto_do_log_grande = None
+                return
+            no_fim = float(texto.yview()[1]) >= 0.999
+            texto.insert(tk.END, f"{msg}\n")
+            if no_fim:
+                texto.see(tk.END)
+        except Exception:
+            self._texto_do_log_grande = None
+
     def log(self, msg):
         def _escrever():
-            self.console.insert(tk.END, f"{msg}\n")
-            self.console.see(tk.END)
+            console = getattr(self, "console", None)
+            if console is None:
+                return
+            # DECIDE ANTES DE ESCREVER. Depois da inserção a visão já mudou e
+            # a conta de "estava no fim?" responderia sobre o texto novo.
+            colado_no_fim = self._console_no_fim()
+            try:
+                console.insert(tk.END, f"{msg}\n")
+            except Exception:
+                return
+            self._aparar_console()
+            if colado_no_fim:
+                try:
+                    console.see(tk.END)
+                except Exception:
+                    pass
+            self._ecoar_no_log_grande(msg)
         self.after(0, _escrever)
 
     # ------------------------------------------------------------------
@@ -24532,15 +24994,30 @@ class SmcQuantApp(ctk.CTk):
                                                       "Análise suspensa neste ciclo.")
                                             screenshot = None
                             if screenshot is None or imagem_esta_em_branco(screenshot):
-                                self.log(f"⚠️ ERRO DE VISUALIZAÇÃO: não consegui uma imagem atual de '{nome_janela}'. "
-                                          "Deixe a janela visível (pode estar atrás de outras, mas não 100% coberta). "
-                                          "Ciclo pulado.")
+                                # O MOTIVO REAL, PERGUNTADO AO SISTEMA.
+                                # "Deixe a janela visível" mandou ele mexer na
+                                # permissão o dia inteiro em 28/08 enquanto o
+                                # Profit estava em TELA CHEIA — noutra área de
+                                # trabalho, onde o macOS não guarda pixel para
+                                # ninguém ler. Permissão nenhuma conserta isso.
+                                try:
+                                    _motivo = plataforma.porque_a_captura_falhou(
+                                        hwnd, nome_janela)
+                                except Exception:
+                                    _motivo = ""
+                                self.log(
+                                    f"⚠️ ERRO DE VISUALIZAÇÃO em '{nome_janela}'. "
+                                    + (_motivo or "O sistema não disse o motivo.")
+                                    + (f" Sigo com as outras {len(_janelas_ciclo) - 1} "
+                                       "janelas deste ciclo."
+                                       if len(_janelas_ciclo) > 1 else ""))
                                 capturas_congeladas += 1
                                 if capturas_congeladas == 2:
                                     enviar_relatorio_whatsapp(
                                         f"⚠️ *Análises suspensas — {time.strftime('%d/%m/%Y %H:%M:%S')}*\n"
-                                        f"Não estou conseguindo ler o gráfico de '{nome_janela}' com conteúdo atual. "
-                                        "Deixe a janela visível na tela. Nenhum relatório será enviado com dado defasado.",
+                                        f"Não estou conseguindo ler o gráfico de '{nome_janela}'.\n"
+                                        + (_motivo or "")
+                                        + "\nNenhum relatório será enviado com dado defasado.",
                                         None, self.log
                                     )
                                     falar("Atenção. Não consigo ler o gráfico atualizado. Análises suspensas.")
@@ -24973,12 +25450,17 @@ class SmcQuantApp(ctk.CTk):
                         # recuperam a maioria desses casos. Uma passada extra
                         # só, e só para erro transitório: com cota estourada
                         # ou chave inválida, insistir é desperdício.
+                        # PREPARA A IMAGEM UMA VEZ, FORA DOS DOIS LAÇOS.
+                        # Estava dentro, sem ninguém ter escrito que estava:
+                        # passar o PIL cru faz o SDK recodificar e resubir a
+                        # foto inteira A CADA modelo tentado.
+                        imagem_para_ia = imagem_para_o_modelo(screenshot)
                         for tentativa in (1, 2):
                             for modelo_atual in candidatos:
                                 try:
                                     resposta = client.models.generate_content(
                                         model=modelo_atual,
-                                        contents=[PROMPT_FINAL, screenshot],
+                                        contents=[PROMPT_FINAL, imagem_para_ia],
                                         config=types.GenerateContentConfig(
                                             system_instruction=INSTRUCAO_SISTEMA,
                                             response_mime_type="application/json",
