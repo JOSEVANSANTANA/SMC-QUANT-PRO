@@ -20721,19 +20721,29 @@ class SmcQuantApp(ctk.CTk):
             app, caminho = plataforma.quem_precisa_da_permissao()
         except Exception:
             app, caminho = "SMC Quant Pro", ""
+        # O PASSO A PASSO VEM DA PLATAFORMA, e começa pelo caso de a linha JÁ
+        # estar marcada. 28/08: ele mandou a foto dos Ajustes com "SMC Quant
+        # Pro" ligado e a ferramenta continuava mandando ele marcar — ou seja,
+        # mandando repetir o que não funcionou. O programa não é assinado,
+        # então cada versão nova é outro programa para o macOS, e a linha
+        # antiga fica na lista, marcada, valendo nada.
+        try:
+            passos = plataforma.como_liberar_gravacao_de_tela()
+        except Exception:
+            passos = (f"Ajustes do Sistema → Privacidade e Segurança → "
+                      f"Gravação de Tela, e marque {app}"
+                      + (f" ({caminho})" if caminho else ""))
         aviso = (
             "⚠️ ATENÇÃO — VOU OPERAR SOZINHA COM A VISÃO EM RISCO: a permissão "
-            "de GRAVAÇÃO DE TELA do macOS não está concedida, e "
-            f"{quais}. Sem ela os títulos das janelas vêm vazios e a captura "
-            "pode sair PRETA — e uma leitura de tela preta pode virar ordem. "
-            "Enquanto isso, eu suspendo a análise se a imagem vier em branco. "
-            "Para resolver: Ajustes do Sistema → Privacidade e Segurança → "
-            f"Gravação de Tela, e marque **{app}**"
-            + (f" ({caminho})" if caminho else "")
-            + ". É ESTE processo que o macOS vê rodando — marcar outro nome da "
-            "lista não vale. Assim que você marcar, eu confiro sozinha no "
-            "próximo ciclo e te aviso que passou a valer — não precisa "
-            "reiniciar para eu perceber.")
+            "de GRAVAÇÃO DE TELA do macOS não está concedida para o processo "
+            f"que está rodando, e {quais}. Sem ela a captura dessa(s) "
+            "janela(s) sai PRETA — e uma leitura de tela preta pode virar "
+            "ordem. Enquanto isso, eu suspendo a análise se a imagem vier em "
+            "branco, e as abas do Chrome seguem sendo lidas normalmente.\n\n"
+            + passos
+            + "\n\nAssim que resolver, eu confiro sozinha no próximo ciclo e "
+            "te aviso que passou a valer — não precisa reiniciar para eu "
+            "perceber, nem ficar olhando.")
         # Marca que a queixa SAIU. Sem isto não há como anunciar a virada
         # depois — e foi ficar calado depois de reclamar alto que fez ele
         # refazer, em 28/08, uma configuração que já estava certa.

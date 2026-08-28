@@ -535,3 +535,130 @@ class TestAViradaDaPermissaoEANUNCIADA(unittest.TestCase):
     def test_a_mensagem_NAO_manda_mais_reiniciar_a_toa(self):
         """Antes ela mandava fechar e reabrir. Agora ela mesma percebe."""
         self.assertIn("não precisa", self.corpo.lower())
+
+
+class TestAPermissaoEPERGUNTADAAoMacOS(unittest.TestCase):
+    """PARAR DE DEDUZIR. 28/08: o banner dizia "NÃO concedida" e o diagnóstico
+    dizia "concedida" no mesmo log, porque a resposta saía de uma DEDUÇÃO
+    (existe janela de outro app com título?) em vez da pergunta direta.
+
+    O macOS tem `CGPreflightScreenCaptureAccess` desde o Catalina: responde
+    exatamente isso, para ESTE processo, sem abrir caixa nenhuma. A dedução
+    erra em dois sentidos — o Acessibilidade também devolve título (é outra
+    permissão) e a própria janela do programa é sempre legível."""
+
+    def test_ela_pergunta_ao_sistema_antes_de_deduzir(self):
+        fonte = _fonte("plataforma.py")
+        i = fonte.index("def permissao_de_tela_ok")
+        # Janela larga: o comentário que explica o defeito de 28/08 mora
+        # dentro da função, e janela curta mediria a prosa em vez do código.
+        corpo = fonte[i:i + 3600]
+        self.assertIn("CGPreflightScreenCaptureAccess", corpo)
+        # A dedução continua como RESERVA, para macOS antigo ou pyobjc sem a
+        # função — tirar a reserva trocaria um defeito por outro.
+        self.assertIn("meu_pid", corpo)
+
+    def test_a_reserva_vem_DEPOIS_da_pergunta_direta(self):
+        fonte = _fonte("plataforma.py")
+        i = fonte.index("def permissao_de_tela_ok")
+        corpo = fonte[i:i + 3600]
+        self.assertLess(corpo.index("CGPreflightScreenCaptureAccess"),
+                        corpo.index("meu_pid"))
+
+    def test_existe_um_jeito_de_PEDIR_a_permissao(self):
+        """A caixa do macOS só aparece quando alguém pede. Sem isto, o
+        programa reclamava e não tinha como provocar a pergunta."""
+        self.assertTrue(callable(P.pedir_permissao_de_tela))
+        fonte = _fonte("plataforma.py")
+        i = fonte.index("def pedir_permissao_de_tela")
+        self.assertIn("CGRequestScreenCaptureAccess", fonte[i:i + 900])
+
+    def test_fora_do_mac_as_duas_devolvem_None(self):
+        """None é 'não se aplica', não é 'não'.
+
+        O sistema é FIXADO aqui em vez de confiar no estado global do módulo:
+        outros arquivos da suíte ligam `E_MACOS` para exercitar o caminho do
+        Mac, e um teste que depende de quem rodou antes acusa defeito onde
+        não há."""
+        salvo = P.E_MACOS
+        try:
+            P.E_MACOS = False
+            self.assertIsNone(P.permissao_de_tela_ok())
+            self.assertIsNone(P.pedir_permissao_de_tela())
+        finally:
+            P.E_MACOS = salvo
+
+
+class TestOPassoAPassoCOBREOCasoDaLinhaJaMarcada(unittest.TestCase):
+    """A foto dos Ajustes mostrava "SMC Quant Pro" LIGADO e o macOS reexibindo
+    a caixa de permissão. As duas coisas eram verdade.
+
+    O aplicativo não é assinado, então o macOS o identifica pelo CONTEÚDO do
+    binário — que muda a cada versão. Para o sistema, a versão nova é outro
+    programa, sem autorização; e a linha antiga continua na lista, marcada.
+    A tela mostra concedida, o núcleo nega.
+
+    Mandar "marque a caixinha" para quem já marcou é mandar repetir o que não
+    funcionou. Era o laço em que ele estava preso."""
+
+    def setUp(self):
+        self.txt = P.como_liberar_gravacao_de_tela()
+
+    def test_o_caso_da_linha_JA_MARCADA_vem_PRIMEIRO(self):
+        i_ja = self.txt.index("JÁ APARECE MARCADO")
+        i_nao = self.txt.index("NÃO APARECE NA LISTA")
+        self.assertLess(i_ja, i_nao)
+
+    def test_ele_manda_REMOVER_a_linha_e_nao_remarcar(self):
+        self.assertIn("−", self.txt)
+        self.assertIn("REMOVÊ-LA", self.txt)
+        self.assertIn("Marcar de novo não adianta", self.txt)
+
+    def test_ele_EXPLICA_por_que_isso_acontece_a_cada_versao(self):
+        """Sem o porquê, a instrução vira superstição — e ele repete o passo
+        errado na próxima atualização."""
+        self.assertIn("não é\nassinado", self.txt)
+        self.assertIn("versão nova", self.txt)
+
+    def test_ele_diz_QUAL_processo_o_macOS_ve(self):
+        self.assertIn("O PROCESSO QUE O macOS VÊ RODANDO", self.txt)
+
+    def test_ele_diz_o_que_CONTINUA_funcionando(self):
+        """Sem esta linha, o aviso soa como 'a ferramenta parou' — e ela não
+        parou: as abas do Chrome não dependem desta permissão."""
+        self.assertIn("abas do Chrome", self.txt)
+
+    def test_o_aviso_do_motor_USA_este_passo_a_passo(self):
+        codigo = _fonte("main_app.py")
+        i = codigo.index("VOU OPERAR SOZINHA COM A VISÃO EM RISCO")
+        trecho = codigo[max(0, i - 1200):i + 1200]
+        self.assertIn("como_liberar_gravacao_de_tela", trecho)
+
+
+class TestOAppPassaASerAssinado(unittest.TestCase):
+    """A causa raiz da permissão que morre a cada versão. A assinatura ad-hoc
+    dá ao pacote uma identidade estável — não substitui uma Developer ID da
+    Apple, mas encerra a revogação silenciosa a cada atualização."""
+
+    def setUp(self):
+        with open(os.path.join(RAIZ, "CRIAR_APP.command"), encoding="utf-8") as f:
+            self.sh = f.read()
+
+    def test_o_criador_do_app_assina_o_pacote(self):
+        self.assertIn("codesign --force --deep --sign -", self.sh)
+
+    def test_a_assinatura_NAO_derruba_a_instalacao_se_falhar(self):
+        """App sem assinatura funciona — só perde a permissão nas
+        atualizações. Abortar a instalação por isso seria pior."""
+        i = self.sh.index("codesign --force")
+        trecho = self.sh[max(0, i - 200):i + 700]
+        self.assertNotIn("falhou ", trecho)
+        self.assertIn("funciona igual", trecho)
+
+    def test_ela_so_roda_se_o_codesign_existir(self):
+        i = self.sh.index("codesign --force")
+        self.assertIn("command -v codesign", self.sh[max(0, i - 300):i])
+
+    def test_o_texto_final_cobre_a_linha_ja_marcada(self):
+        self.assertIn("JÁ APARECE MARCADO", self.sh)
+        self.assertIn("REMOVÊ-LA", self.sh)

@@ -2438,11 +2438,95 @@ def permissao_de_tela_ok():
         return None
     if not QUARTZ_DISPONIVEL:
         return False
+    # PERGUNTAR AO macOS, EM VEZ DE DEDUZIR PELOS TÍTULOS.
+    #
+    # `CGPreflightScreenCaptureAccess` existe desde o Catalina e responde
+    # exatamente esta pergunta, para ESTE processo, sem abrir caixa nenhuma.
+    # A dedução pelos títulos ficou como reserva — ela erra em dois sentidos:
+    # o Acessibilidade também devolve título (e é outra permissão), e a
+    # própria janela do programa é sempre legível. Foi assim que, em 28/08,
+    # o banner e o diagnóstico se contradisseram no mesmo log.
+    preflight = getattr(Quartz, "CGPreflightScreenCaptureAccess", None)
+    if callable(preflight):
+        try:
+            return bool(preflight())
+        except Exception:
+            pass
     meu_pid = os.getpid()
     for j in _janelas_macos():
         if j["nome"] and j.get("pid") != meu_pid:
             return True
     return False
+
+
+def pedir_permissao_de_tela():
+    """Faz o macOS ABRIR a caixa de Gravação de Tela para ESTE processo.
+
+    Devolve True se já estava concedida, False se não. A caixa só aparece uma
+    vez por processo; depois disso o macOS ignora o pedido em silêncio, e é
+    por isso que existe o texto de socorro em `como_liberar_gravacao_de_tela`.
+    """
+    if not E_MACOS or not QUARTZ_DISPONIVEL:
+        return None
+    pedir = getattr(Quartz, "CGRequestScreenCaptureAccess", None)
+    if not callable(pedir):
+        return permissao_de_tela_ok()
+    try:
+        return bool(pedir())
+    except Exception:
+        return permissao_de_tela_ok()
+
+
+def como_liberar_gravacao_de_tela():
+    """O passo a passo — INCLUINDO o caso em que a linha JÁ está marcada.
+
+    28/08. Ele mandou a foto dos Ajustes com "SMC Quant Pro" LIGADO e o
+    programa continuava dizendo que faltava permissão. As duas coisas eram
+    verdade, e a explicação é do macOS, não dele:
+
+    O aplicativo NÃO É ASSINADO (`codesign_identity=None` no empacotamento).
+    Sem assinatura, o macOS identifica o programa pelo conteúdo do binário —
+    e a cada versão nova o binário muda. Para o sistema, a versão nova é
+    OUTRO programa, que nunca foi autorizado. Só que a linha antiga CONTINUA
+    NA LISTA, com o mesmo nome e ainda marcada. A tela mostra concedida; o
+    núcleo nega. Não há como o programa "consertar" isso de dentro: quem
+    guarda a autorização é o sistema.
+
+    O que resolve é REMOVER a linha velha e deixar o macOS perguntar de novo.
+    É por isso que o passo do sinal de menos vem primeiro aqui: mandar
+    "marque a caixinha" para quem já marcou é mandar repetir o que não
+    funcionou, e foi exatamente o laço em que ele ficou preso.
+    """
+    app, caminho = quem_precisa_da_permissao()
+    return (
+        "COMO LIBERAR A GRAVAÇÃO DE TELA (macOS)\n"
+        "\n"
+        "SE 'SMC Quant Pro' JÁ APARECE MARCADO NA LISTA, comece por aqui — a\n"
+        "autorização está velha, presa à versão ANTERIOR do programa:\n"
+        "  1. Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela\n"
+        "  2. Clique na linha 'SMC Quant Pro' e depois no botão  −  (menos)\n"
+        "     para REMOVÊ-LA. Marcar de novo não adianta: a linha é a velha.\n"
+        "  3. Feche o programa e abra de novo.\n"
+        "  4. Quando a caixa 'deseja gravar a tela' aparecer, clique em\n"
+        "     'Abrir Ajustes do Sistema' e LIGUE a linha nova que surgir.\n"
+        "\n"
+        "SE ELA NÃO APARECE NA LISTA:\n"
+        "  1. Use o botão 'Ver o que o motor vê' — ele faz o macOS perguntar.\n"
+        "  2. Ligue a linha que aparecer.\n"
+        "\n"
+        f"O PROCESSO QUE O macOS VÊ RODANDO É: {app}\n"
+        + (f"  ({caminho})\n" if caminho else "")
+        + "\n"
+        "POR QUE ISSO ACONTECE A CADA ATUALIZAÇÃO: o aplicativo não é\n"
+        "assinado por uma identidade de desenvolvedor da Apple. Sem ela, o\n"
+        "macOS reconhece o programa pelo conteúdo do arquivo — que muda a\n"
+        "cada versão — e trata a versão nova como um programa diferente,\n"
+        "sem autorização. A linha antiga fica na lista mesmo assim.\n"
+        "\n"
+        "ENQUANTO ISSO NÃO ESTIVER RESOLVIDO: as abas do Chrome continuam\n"
+        "sendo lidas normalmente — elas são capturadas pelo próprio navegador\n"
+        "e não dependem desta permissão. O que fica de fora é janela de\n"
+        "aplicativo: Profit, MetaTrader, TradingView de mesa.")
 
 
 def diagnostico():

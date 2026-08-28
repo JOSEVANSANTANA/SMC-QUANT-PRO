@@ -180,9 +180,42 @@ else
     echo "         (não atrapalha em nada)"
 fi
 
-# ---- 5. tirar a quarentena e registrar ----
+# ---- 5. tirar a quarentena, ASSINAR e registrar ----
 echo "4/4 — Registrando no macOS…"
 xattr -dr com.apple.quarantine "$APP" 2>/dev/null
+
+# ASSINATURA AD-HOC — É O QUE FAZ A PERMISSÃO SOBREVIVER À PRÓXIMA VERSÃO.
+#
+# 28/08. Ele mandou a foto dos Ajustes com "SMC Quant Pro" LIGADO em Gravação
+# de Tela, e o macOS reexibiu a caixa pedindo a permissão. As duas coisas
+# eram verdade ao mesmo tempo, e a explicação é do sistema:
+#
+# Um aplicativo SEM ASSINATURA é identificado pelo CONTEÚDO do binário. A
+# cada versão nova o conteúdo muda, então para o macOS a versão nova é OUTRO
+# programa — que nunca foi autorizado. Só que a linha antiga CONTINUA NA
+# LISTA, com o mesmo nome e ainda marcada. A tela mostra concedida; o núcleo
+# nega. Ele ficou num laço: marcar de novo não resolve, porque a linha
+# marcada é a do programa velho.
+#
+# A assinatura ad-hoc (--sign -) dá ao pacote uma identidade estável baseada
+# no bundle identifier, e não no conteúdo. Não substitui uma Developer ID da
+# Apple (que custa e exige conta paga), mas encerra o pior sintoma: a
+# permissão deixa de ser revogada em silêncio a cada atualização.
+#
+# Se o codesign falhar, o app continua funcionando — só volta a perder a
+# permissão nas atualizações. Por isso é aviso, não erro fatal.
+if command -v codesign >/dev/null 2>&1; then
+    if codesign --force --deep --sign - "$APP" >/dev/null 2>&1; then
+        echo "      ✅ assinado (ad-hoc) — a permissão de Gravação de Tela"
+        echo "         passa a sobreviver às próximas atualizações."
+    else
+        echo "      ⚠️  não consegui assinar o aplicativo. Ele funciona igual,"
+        echo "         mas a cada atualização o macOS vai pedir a permissão de"
+        echo "         Gravação de Tela de novo — e aí é preciso REMOVER a"
+        echo "         linha antiga na lista (botão −) antes de reautorizar."
+    fi
+fi
+
 touch "$APP"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
     -f "$APP" >/dev/null 2>&1
@@ -211,8 +244,15 @@ echo "     Ajustes do Sistema → Privacidade e Segurança →"
 echo "     Gravação de Tela → botão '+' → Aplicativos →"
 echo "     '${NOME}' → e ABRA o app de novo"
 echo ""
+echo "  SE '${NOME}' JÁ APARECE MARCADO E MESMO ASSIM O"
+echo "  PROGRAMA RECLAMA: a autorização é da versão ANTERIOR."
+echo "  Clique na linha, no botão '−' para REMOVÊ-LA, e abra o"
+echo "  app de novo para o macOS perguntar outra vez. Marcar de"
+echo "  novo não adianta — a linha marcada é a do app velho."
+echo ""
 echo "  Sem isso a lista de janelas vem sem os títulos e a"
 echo "  captura do gráfico sai preta — sem nenhuma mensagem de erro."
+echo "  (As abas do Chrome NÃO dependem desta permissão.)"
 echo ""
 echo "  ⚠️ NÃO MOVA a pasta ${PASTA}"
 echo "     O aplicativo aponta para ela. Se precisar mover, rode"
