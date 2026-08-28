@@ -36,6 +36,12 @@ try:
 except Exception:
     extrato_pdf = None
 
+# COMO CONFIGURAR O PLANO PARA CHEGAR NA META (ver plano_recomendado.py).
+# É aritmética sobre plano, diário e fita — nunca opinião de modelo. Entra
+# direto, sem guarda: é biblioteca padrão pura e, se faltar, a pergunta que
+# ele fez em 28/08 volta a cair no modelo, que é o defeito que ela conserta.
+import plano_recomendado
+
 SISTEMA = plataforma.SISTEMA
 E_MACOS = plataforma.E_MACOS
 E_WINDOWS = plataforma.E_WINDOWS
@@ -1999,7 +2005,101 @@ def limpar_raciocinio_ia(texto):
                 "resposta, e eu não vou adivinhar qual pedaço era a resposta. "
                 "Pergunte de novo — se repetir, troque de modelo em "
                 "Motor & WhatsApp.")
+
+    # 5. E SE A GERAÇÃO SIMPLESMENTE QUEBROU?
+    #
+    # 28/08, 09:13. Ele pediu ajuda para configurar o plano e recebeu:
+    #
+    #   Boa, Josevan! Vamos recalcular com o novo teto de drawdown. Me diz:
+    #   **Qual é o novo limite máximo de drawdown...**
+    #   Com essa informação, consigo重新重新重新重新重新重新重新重新重新...
+    #
+    # A mesma sílaba, em chinês, algumas centenas de vezes. Não é raciocínio
+    # vazado — é a geração TRAVADA num laço, coisa que nenhum dos quatro
+    # filtros acima procura, porque todos procuram deliberação e isto não é
+    # deliberação: é ruído.
+    #
+    # Ele reclamou, e às 09:13 recebeu deliberação em inglês ("Okay, the user
+    # is asking me to respond in Portuguese... Let me check the history").
+    # Reclamou de novo, e às 09:16 recebeu a pior das três respostas:
+    #
+    #   "Todas as minhas mensagens estão em português, Josevan. Confira o
+    #    histórico. (...) pode ser erro de digitação seu"
+    #
+    # A ferramenta negou uma coisa que ele estava vendo na tela e devolveu a
+    # culpa para ele. Não há defeito pior neste programa do que esse, porque
+    # é ele que ensina a não acreditar em mais nada que ela escreve.
+    #
+    # A raiz é aqui: se o lixo nunca chegasse à tela, não haveria o que negar.
+    quebrada, motivo = resposta_degenerada(t)
+    if quebrada:
+        return ("⚠️ A resposta do modelo veio quebrada e eu não vou te "
+                f"entregar isso: {motivo}. Nada aqui é problema seu nem do "
+                "que você digitou — foi a geração que falhou. Pergunte de "
+                "novo; se repetir, troque de modelo em Motor & WhatsApp.")
     return t.strip()
+
+
+# Escritas que a TIGER não usa. Emoji e símbolos ficam de fora de propósito —
+# o programa inteiro é cheio deles e eles não são sinal de nada.
+_RE_ESCRITA_ESTRANHA = re.compile(
+    r"[　-鿿가-힯Ѐ-ӿ֐-׿؀-ۿ"
+    r"฀-๿豈-﫿＀-ﾟ]")
+
+# Palavras de LIGAÇÃO, que é o que distingue idioma. Termo técnico de SMC
+# ("Order Block", "Fair Value Gap", "Liquidity Sweep") aparece em resposta
+# legítima o tempo todo e não tem nenhuma destas.
+_LIGACAO_PT = (
+    "que", "de", "do", "da", "dos", "das", "para", "com", "não", "nao", "uma",
+    "você", "voce", "está", "esta", "isso", "aqui", "quando", "porque", "pelo",
+    "pela", "mas", "já", "jah", "ele", "ela", "seu", "sua", "eu", "no", "na")
+_LIGACAO_EN = (
+    "the", "of", "and", "to", "is", "that", "for", "with", "this", "what",
+    "when", "they", "would", "should", "your", "there", "which", "about",
+    "because", "into", "were", "was", "are", "been", "their", "then")
+
+
+def resposta_degenerada(texto):
+    """A geração quebrou? Devolve (True, motivo) ou (False, "").
+
+    Função PURA e deliberadamente conservadora: engolir uma resposta boa custa
+    um "pergunte de novo"; deixar passar o lixo custou, em 28/08, três turnos
+    e a confiança dele na ferramenta.
+
+    Três quebras, e só estas três:
+      · escrita que a TIGER não usa (chinês, cirílico, árabe...);
+      · o mesmo pedaço repetido em laço;
+      · resposta em INGLÊS — ela responde em português, sempre.
+    """
+    t = str(texto or "")
+    if len(t) < 60:
+        return False, ""
+
+    # (1) ESCRITA ESTRANHA. Um caractere solto pode ser citação; uma dúzia é
+    # a geração escorregando de idioma no meio da frase.
+    estranhos = len(_RE_ESCRITA_ESTRANHA.findall(t))
+    if estranhos >= 10:
+        return True, (f"vieram {estranhos} caracteres de outro alfabeto no "
+                      "meio do texto")
+
+    # (2) LAÇO. O mesmo pedaço curto colado em si mesmo, muitas vezes.
+    m = re.search(r"(.{1,12}?)\1{7,}", t, re.DOTALL)
+    if m:
+        pedaco = m.group(1).strip() or m.group(1)
+        vezes = len(m.group(0)) // max(1, len(m.group(1)))
+        return True, (f"o trecho {pedaco!r} saiu repetido {vezes} vezes "
+                      "seguidas — a geração travou num laço")
+
+    # (3) IDIOMA. Conta palavras de LIGAÇÃO, não termo técnico: 'Order Block'
+    # e 'Liquidity Sweep' são português de mesa e não têm nenhuma delas.
+    palavras = re.findall(r"[a-zà-ÿ']+", t.lower())
+    if len(palavras) >= 40:
+        pt = sum(1 for p in palavras if p in _LIGACAO_PT)
+        en = sum(1 for p in palavras if p in _LIGACAO_EN)
+        if en >= 8 and en > pt * 3:
+            return True, ("a resposta saiu em inglês, e eu falo com você em "
+                          "português")
+    return False, ""
 
 
 # Marcas de deliberação interna. Cada uma sozinha pode aparecer numa resposta
@@ -7260,11 +7360,41 @@ _RE_ESQUECER = re.compile(
     r"aprendizado|regra|mem[óo]ria|[uú]ltim\w+|\d{1,2}|que fala|que diz|sobre)\b",
     re.IGNORECASE)
 
+# O QUE SE CANCELA NA MESA, E QUE NUNCA É UMA LIÇÃO.
+#
+# 28/08, 20:29. Ele digitou "cancela a ultima sugestao" e recebeu:
+#
+#     Apaguei da memória: "assim como STATUS recebido no whatsapp voce envia
+#     o resumo, Aprenda que DESLIGAR voce desliga o motor"
+#
+# Ele mandou cancelar uma ORDEM e a ferramenta destruiu, para sempre, uma
+# coisa que ele tinha ensinado. `cancel\w+` casou com `[uú]ltim\w+` trinta
+# caracteres depois, e a palavra que decidia tudo — "sugestão" — não era
+# olhada por ninguém.
+#
+# O cancelamento na plataforma rodou logo em seguida e funcionou. Ou seja: o
+# comando dele estava certo, foi entendido, foi executado — e ainda assim
+# levou junto um pedaço da memória, calado. Apagar o que o trader ensinou é
+# irreversível, e nada irreversível pode acontecer por semelhança de regex.
+_ALVOS_DA_MESA = re.compile(
+    r"\b(sugest\w+|ordem|ordens|cenario|cenarios|posicao|posicoes|entrada|"
+    r"entradas|opera[çc]\w+|trade|trades|bracket|pendente|pendentes|stop|"
+    r"alvo|compra|venda|boleta|ticket)\b", re.IGNORECASE)
+
+
 def pedido_de_esquecer(texto):
     """Devolve (True, alvo) quando ele está mandando APAGAR uma lição.
     `alvo` é o número ou o trecho citado — string vazia significa 'a última'."""
     t = _norm_busca(texto or "")
     if not t or not _RE_ESQUECER.search(t):
+        return False, ""
+    # "CANCELA A ÚLTIMA SUGESTÃO" NÃO É "APAGA A ÚLTIMA LIÇÃO". Quando a frase
+    # nomeia uma coisa da mesa, o pedido é de mesa — a menos que ele diga
+    # também, com todas as letras, que é da memória ("apaga a lição sobre a
+    # última ordem"). Na dúvida, a memória fica: o cancelamento dele acontece
+    # pelo caminho de mesa de qualquer jeito, e uma lição apagada não volta.
+    if _ALVOS_DA_MESA.search(t) and not re.search(
+            r"\b(li[çc][ãa]o|li[çc][õo]es|aprendizado|mem[óo]ria|regra)\b", t):
         return False, ""
     # "apaga a LIÇÃO 2" e também "apaga a 2"
     m = re.search(r"\b(li[çc][ãa]o|regra)\s*(n[úu]mero\s*)?(\d{1,2})\b", t)
@@ -11472,6 +11602,40 @@ def pergunta_postmortem(texto):
     t = _norm_busca(texto or "")
     return bool(t and _RE_POSTMORTEM.search(t))
 
+
+# COMO CONFIGURAR O PLANO É CONTA, NÃO É CONVERSA — pelo mesmo motivo que a
+# meta virou conta em 13/08.
+#
+# 28/08, 09:12: "ACABEI DE CONSEGUIR LIBERACAO MAIOR DE DROWDROW, ME AJUDA A
+# CONFIGURAR O PLANO DE TRADING PARA CONSEGUIR CHEGAR NA META POR FAVOR".
+# Foi para o modelo. O modelo pediu mais informação — e a informação toda já
+# estava no disco: meta e drawdown no plano, resultado no diário, ganho e
+# perda médios nas operações fechadas, ATR na fita, CVD no motor de fluxo.
+#
+# Duas horas antes, "O QUE RECOMENDA COLOCAR COMO RISCO PARA BATER A META
+# HOJE?" caiu na resposta da META — que responde SE dá, não COMO configurar.
+# São perguntas diferentes e agora têm respostas diferentes.
+_RE_CONFIGURAR_PLANO = re.compile(
+    r"(?:configur\w*|recomend\w+|recomand\w+|ajust\w+|calibr\w+|sugest\w+|"
+    r"sugir\w+|melhor\w* forma|como devo|o que (?:eu )?(?:devo|ponho|coloco)|"
+    r"colocar como|deixar? em quanto|quanto (?:de )?risco)"
+    r"[\s\S]{0,80}?"
+    r"(?:plano|risco|drawdown|draw down|\bdd\b|meta|contratos?|tamanho|"
+    r"alavanc\w+|stop|r:?r\b)",
+    re.IGNORECASE)
+
+
+def pergunta_como_configurar(texto):
+    """A pergunta é 'como devo CONFIGURAR', e não 'eu vou conseguir?'.
+
+    Função pura para o teste poder prender a regra sem subir a interface. Ela
+    é deliberadamente estreita: quem só pergunta da meta continua recebendo a
+    conta da meta, que é outra resposta e igualmente boa."""
+    t = _sem_acento(str(texto or "").lower())
+    if not t:
+        return False
+    return bool(_RE_CONFIGURAR_PLANO.search(t))
+
 def montar_postmortem(pos=None):
     """A autópsia da última operação FECHADA, feita só com o que está gravado.
 
@@ -11902,6 +12066,17 @@ def interpretar_intencao(texto):
     # Agora é intenção própria, respondida por aritmética, antes de qualquer
     # modelo — e por isso instantânea.
     _sem_ac = _sem_acento(t)
+    # COMO CONFIGURAR vem ANTES de SE DÁ. "o que recomenda colocar como risco
+    # para bater a meta" tem a palavra 'meta' e cairia na conta da meta — que
+    # responde outra pergunta.
+    #
+    # A REGRA MORA NA CONSTANTE, e não numa função, de propósito: o harness de
+    # teste traz constantes de módulo sozinho e funções não (ver o comentário
+    # dele sobre os dezoito testes que quebraram em 22/08). Chamar
+    # `pergunta_como_configurar` daqui obrigaria a editar a lista de cinco
+    # arquivos de teste que isolam esta função — sem defeito nenhum.
+    if _RE_CONFIGURAR_PLANO.search(_sem_ac):
+        return "CONFIGURAR_PLANO"
     if re.search(r"\bmeta\b|\bobjetivo do dia\b", _sem_ac) and \
             re.search(r"\bbater\b|\bbatermos\b|\balcancar\b|\batingir\b|"
                       r"\bchance\b|\bprobabilidade\b|\bconsigo\b|\bda tempo\b|"
@@ -11991,7 +12166,7 @@ def processar_turno_chat(texto, confirmacao_pendente=None):
     if isinstance(intencao, tuple) and intencao[0] in ("ABRIR_URL", "ABRIR_APP", "TROCAR_VOZ", "CONFIGURAR_TRAILING_MODO"):
         return intencao
     if intencao in ("DISPENSAR", "CANCELAR", "SAIR_EM_MERCADO", "STATUS", "META", "AJUDA",
-                    "MOSTRAR_PRINT", "POSTMORTEM",
+                    "MOSTRAR_PRINT", "POSTMORTEM", "CONFIGURAR_PLANO",
                     "LIGAR_MOTOR", "DESLIGAR_MOTOR", "ENVIAR_WHATSAPP",
                     "CONECTAR_WHATSAPP", "LISTAR_LICOES", "LISTAR_CONHECIMENTO",
                     "NOTICIAS", "COTACAO", "PESQUISAR", "VER_CONFIG",
@@ -15420,6 +15595,10 @@ class SmcQuantApp(ctk.CTk):
                                   falar_tb=False,
                                   texto_voz=self._meta_falada())
             return
+        if acao == "CONFIGURAR_PLANO":
+            self._chat_responder(self._texto_de_como_configurar_o_plano(),
+                                 falar_tb=False)
+            return
         if acao == "STATUS":
             # Na tela vai o card completo; na VOZ vai a frase falada (ler
             # bullet por bullet em voz alta é insuportável).
@@ -15543,6 +15722,10 @@ class SmcQuantApp(ctk.CTk):
                 "'conecta o whatsapp'; 'tira um print' (captura a tela na hora) "
                 "e 'olha o gráfico' (analiso a última captura); 'acatar' (com "
                 "confirmação), 'dispensar', 'cancelar ordem'; 'status'; "
+                "'dá para bater a meta hoje?' (a conta da chance) e 'como "
+                "configuro o plano?' (o que mudar no risco, no R:R e no freio "
+                "para o drawdown, a meta e o seu desempenho medido fecharem — "
+                "as duas são aritmética, não opinião, e saem na hora); "
                 "CONFIGURAR a ferramenta em português ('o dia da conta 1 "
                 "começa às 19h', 'analisa a cada 5 minutos', 'risco de 1% por "
                 "operação', 'meta de 6 mil em 10 dias') e conferir com 'como "
@@ -15826,6 +16009,107 @@ class SmcQuantApp(ctk.CTk):
             d["minutos_restantes"] or 0, d["fechadas_hoje"],
             minutos_decorridos or 0, teto)
         return d
+
+    def _numeros_para_recomendar_o_plano(self):
+        """Junta, do disco e da fita, os números que a recomendação exige.
+
+        NADA AQUI É ESTIMADO. Cada campo sai de uma medida — plano, diário,
+        fita — ou volta None. É o contrário exato do que aconteceu em 28/08,
+        quando a pergunta "me ajuda a configurar o plano" foi para um modelo
+        que não tem acesso a nenhuma dessas três coisas e respondeu pedindo a
+        informação que já estava gravada.
+
+        A TAXA DE ACERTO SAI DO CICLO, NÃO DO DIA. A conta da meta usa o dia
+        de propósito (é sobre hoje); aqui a pergunta é sobre o PLANO, e um dia
+        com quatro operações não sustenta nenhuma conclusão sobre ele.
+        """
+        plano = dict(getattr(self, "plano", None) or plano_da_conta_ativa())
+        dados = {
+            "margem": plano.get("margem"),
+            "drawdown": plano.get("drawdown_maximo"),
+            "meta": plano.get("meta_alvo"),
+            "risco_pct": plano.get("risco_pct"),
+            "rr_minimo": plano.get("rr_minimo"),
+            "probabilidade_minima": plano.get("probabilidade_minima"),
+            "max_stops_seguidos": plano.get("max_stops_seguidos"),
+        }
+        try:
+            dados["drawdown_restante"] = drawdown_restante_hoje(plano)
+        except Exception:
+            dados["drawdown_restante"] = None
+        try:
+            dados["oportunidades"] = oportunidades_restantes_do_ciclo(plano)
+        except Exception:
+            dados["oportunidades"] = None
+
+        # O DESEMPENHO MEDIDO — acerto, ganho médio, perda média, no ciclo.
+        try:
+            fechadas = [p for p in posicoes_do_ciclo()
+                        if p.get("status") == "FECHADA"
+                        and p.get("pnl_final") is not None]
+        except Exception:
+            fechadas = []
+        ganhos = [p["pnl_final"] for p in fechadas if p["pnl_final"] > 0]
+        perdas = [-p["pnl_final"] for p in fechadas if p["pnl_final"] < 0]
+        dados["amostra"] = len(fechadas)
+        if fechadas:
+            dados["acerto"] = len(ganhos) / float(len(fechadas))
+            dados["ganho_medio"] = (sum(ganhos) / len(ganhos)) if ganhos else 0.0
+            dados["perda_media"] = (sum(perdas) / len(perdas)) if perdas else 0.0
+        try:
+            lucro = sum(p["pnl_final"] for p in fechadas)
+            meta = float(plano.get("meta_alvo") or 0)
+            dados["falta"] = (meta - lucro) if meta > 0 else None
+        except Exception:
+            dados["falta"] = None
+
+        # O MOMENTO: ATR da fita e CVD do motor de fluxo. Ausência é ausência —
+        # `leitura_do_momento` sabe dizer "sem leitura", que é o que ele ouviu
+        # às 08:51 quando perguntou "qual o delta?" e era a resposta certa.
+        ativo = getattr(self, "_ultimo_ativo_lido", None)
+        tick = tick_do_ativo(ativo or "")
+        atr = getattr(self, "_ultimo_atr", None)
+        if atr and tick:
+            dados["atr_ticks"] = float(atr) / float(tick)
+        if tick:
+            try:
+                dados["valor_do_tick"] = valor_por_ponto_do_ativo(ativo or "") * tick
+            except Exception:
+                pass
+        try:
+            dados["ticks_de_stop"] = int(float(
+                plano.get("min_ticks_stop") or MIN_TICKS_STOP_PADRAO))
+        except (TypeError, ValueError):
+            dados["ticks_de_stop"] = MIN_TICKS_STOP_PADRAO
+        motor = getattr(self, "order_flow", None)
+        if motor is not None:
+            try:
+                n = len(getattr(motor, "ticks", []) or [])
+                if n:
+                    dados["cvd"] = float(motor.obter_cvd())
+                    dados["negocios_na_fita"] = n
+            except Exception:
+                pass
+        return dados
+
+    def _texto_de_como_configurar_o_plano(self):
+        """A resposta que faltou em 28/08 às 09:12.
+
+        Vai inteira pela aritmética, antes de qualquer modelo — e por isso é
+        instantânea, não gasta cota e dá o mesmo número duas vezes seguidas."""
+        try:
+            dados = self._numeros_para_recomendar_o_plano()
+            rec = plano_recomendado.recomendar_plano(**dados)
+        except Exception as e:
+            return ("Não consegui montar a recomendação agora "
+                    f"({type(e).__name__}). Confira se o Plano de Trading tem "
+                    "margem, drawdown e meta preenchidos — sem esses três não "
+                    "há conta a fazer, e eu não vou opinar por cima.")
+        texto = plano_recomendado.texto_da_recomendacao(rec)
+        # A recomendação diz COMO configurar; a conta da meta diz SE dá. São
+        # perguntas diferentes e ele costuma querer as duas.
+        return (texto + "\n\nPara saber se a meta ainda sai no prazo com esta "
+                        "configuração, me pergunte 'dá para bater a meta hoje?'.")
 
     def _texto_da_meta_de_hoje(self):
         """A resposta que faltava em 13/08 às 16:01.

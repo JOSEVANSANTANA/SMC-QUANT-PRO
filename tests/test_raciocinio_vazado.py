@@ -26,7 +26,13 @@ from harness import carregar
 
 
 def _ns():
+    # `resposta_degenerada` entrou no mesmo funil em 28/08 (ver
+    # test_resposta_quebrada.py): o filtro de raciocínio pega deliberação
+    # vazada, e ela pega a geração que quebrou — laço de repetição e resposta
+    # em inglês. São dois defeitos diferentes na mesma saída.
     return carregar(["_MARCAS_DE_RACIOCINIO", "_parece_raciocinio_interno",
+                     "_RE_ESCRITA_ESTRANHA", "_LIGACAO_PT", "_LIGACAO_EN",
+                     "resposta_degenerada",
                      "limpar_raciocinio_ia"])
 
 

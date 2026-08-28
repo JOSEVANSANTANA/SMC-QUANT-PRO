@@ -46,6 +46,7 @@ a = Analysis(
         # A camada de plataforma é importada por nome; garantimos que entra.
         'plataforma',
         'tradovate_auto',
+        'plano_recomendado',
         # O PyInstaller nem sempre segue o Quartz sozinho.
         'Quartz',
         'objc',
