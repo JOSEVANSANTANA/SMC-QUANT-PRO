@@ -56,9 +56,9 @@ class TestNotificacaoNaoRoubaAFocoNoMac(unittest.TestCase):
 
     def test_a_camada_de_plataforma_so_notifica_no_mac(self):
         import plataforma
-        # Neste ambiente E_MACOS é False: tem de devolver False sem executar
-        # osascript nenhum e sem levantar exceção.
-        self.assertFalse(plataforma.notificacao_do_sistema("t", "x"))
+        import unittest.mock
+        with unittest.mock.patch.object(plataforma, 'E_MACOS', False):
+            self.assertFalse(plataforma.notificacao_do_sistema("t", "x"))
 
     def test_o_texto_da_notificacao_e_higienizado(self):
         """Aspas e barras quebram o AppleScript — e o texto vem de análise de
