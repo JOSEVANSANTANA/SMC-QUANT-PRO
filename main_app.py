@@ -4216,6 +4216,153 @@ def marcar_substituidas_pelo_extrato(ids):
     return n
 
 
+STATUS_EXCLUIDA = "EXCLUIDA"
+
+
+def excluir_lancamento(posicoes, pos_id, motivo="", agora=None):
+    """(nova_lista, excluida) — tira um lançamento da conta SEM APAGAR.
+
+    POR QUE ISTO PRECISA EXISTIR
+    ----------------------------
+    Pedido dele: "inclua também a opção de excluir ordens lançadas / entradas
+    lançadas indevidamente no relatório... notei que tem algumas que estão
+    registrando erroneamente ou em duplicidade com o extrato da corretora
+    quando importo".
+
+    A substituição automática pelo extrato (ver `posicoes_substituidas_pelo_
+    extrato`) cobre o caso limpo: mesmo ativo, fechamento dentro da janela que
+    o PDF comprovadamente cobre. Ela deixa passar de propósito tudo que não dá
+    para PROVAR — carimbo de hora ilegível, ativo grafado diferente, operação
+    fechada depois da hora em que o PDF foi gerado. Nesses casos sobra uma
+    linha duplicada, e não havia mão nenhuma para tirá-la.
+
+    Automatismo que não tem correção manual embaixo obriga a escolher entre
+    apagar demais e viver com o erro. Aqui a decisão volta a ser dele.
+
+    NUNCA APAGA, pelo mesmo motivo da substituição: linha apagada não se
+    audita. O status muda para EXCLUIDA, e todo somatório do programa filtra
+    por FECHADA — então ela sai do dashboard, da taxa de acerto, do drawdown e
+    do relatório sem que seja preciso mexer em dez lugares que contam
+    dinheiro. E dá para voltar atrás (`restaurar_lancamento`)."""
+    lista = list(posicoes or [])
+    for p in lista:
+        if p.get("id") != pos_id:
+            continue
+        if p.get("status") == STATUS_EXCLUIDA:
+            return lista, None
+        p["status_antes_da_exclusao"] = p.get("status")
+        p["status"] = STATUS_EXCLUIDA
+        p["excluida_em"] = agora or time.strftime("%d/%m/%Y %H:%M")
+        p["motivo_exclusao"] = str(motivo or "excluída por você")
+        return lista, p
+    return lista, None
+
+
+def restaurar_lancamento(posicoes, pos_id):
+    """(nova_lista, restaurada) — desfaz uma exclusão.
+
+    Existe porque a exclusão mexe em dinheiro registrado. Um botão que só faz
+    o caminho de ida transforma um clique errado em perda de histórico — e o
+    trader passa a ter medo de usar a ferramenta que a gente acabou de dar."""
+    lista = list(posicoes or [])
+    for p in lista:
+        if p.get("id") != pos_id or p.get("status") != STATUS_EXCLUIDA:
+            continue
+        p["status"] = p.pop("status_antes_da_exclusao", None) or "FECHADA"
+        p.pop("excluida_em", None)
+        p.pop("motivo_exclusao", None)
+        return lista, p
+    return lista, None
+
+
+def _instante_da_posicao(p):
+    """O fechamento, ou a abertura quando ela ainda não fechou."""
+    for campo in ("data_fechamento", "data_abertura", "data_hora"):
+        dt = _parse_dt(p.get(campo))
+        if dt is not None:
+            return dt
+    return None
+
+
+def possiveis_duplicatas(posicoes, minutos=90, conta_id=None):
+    """Pares que, muito provavelmente, são a MESMA operação contada duas vezes.
+
+    O QUE ELE VIU: importou o extrato e o diário passou a ter, do mesmo dia, a
+    linha que o robô gravou quando mandou a ordem E a linha que a corretora
+    imprimiu quando ela executou. As duas são verdadeiras; o dinheiro é um só.
+
+    O CASAMENTO É POR PROPRIEDADES QUE NÃO MENTEM: mesma conta, mesmo
+    instrumento (pela RAIZ — 'MES' casa com 'MESU6'), mesma direção, número de
+    contratos igual, e fechamento a menos de `minutos` um do outro. Preço fica
+    DE FORA de propósito: o robô grava o preço que PEDIU e a corretora grava o
+    que EXECUTOU, e num mercado rápido eles legitimamente diferem.
+
+    E o par sempre sai com o registro do EXTRATO primeiro. Palavra dele: "o
+    que sempre tem mais validade são os importados". Quem vai apagar precisa
+    ver, na ordem, qual é o bom e qual é o que sobra.
+
+    ISTO NÃO APAGA NADA. Devolve os pares para a tela mostrar — a decisão de
+    excluir continua sendo um clique dele, porque um casamento por
+    aproximação, por melhor que seja, ainda é aproximação."""
+    def _raiz(nome):
+        s = str(nome or "").strip().upper()
+        if not s:
+            return ""
+        if not re.search(r"\d", s):
+            return s
+        m = re.match(r"^([A-Z]{1,5}?)[FGHJKMNQUVXZ]\d{1,2}$", s)
+        return m.group(1) if m else s
+
+    def _qtd(p):
+        try:
+            return int(float(p.get("contratos") or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    candidatas = []
+    for p in posicoes or []:
+        if p.get("status") not in ("FECHADA",):
+            continue
+        # `_conta_do_registro`, e não `p["conta_id"]`: registro antigo não tem
+        # o campo e pertence à Conta 1. Comparar o campo cru faria a duplicata
+        # do histórico dele passar despercebida justamente na conta legada.
+        if conta_id is not None and _conta_do_registro(p) != conta_id:
+            continue
+        dt = _instante_da_posicao(p)
+        if dt is None:
+            # Sem carimbo legível não dá para afirmar proximidade no tempo, e
+            # sem isso o casamento vira chute sobre dinheiro registrado.
+            continue
+        candidatas.append((p, dt))
+
+    pares, ja_pareadas = [], set()
+    for i, (a, dt_a) in enumerate(candidatas):
+        for b, dt_b in candidatas[i + 1:]:
+            if a.get("id") in ja_pareadas or b.get("id") in ja_pareadas:
+                continue
+            if _raiz(a.get("ativo")) != _raiz(b.get("ativo")) or not _raiz(a.get("ativo")):
+                continue
+            if str(a.get("direcao") or "") != str(b.get("direcao") or ""):
+                continue
+            if _qtd(a) != _qtd(b) or _qtd(a) == 0:
+                continue
+            if abs((dt_a - dt_b).total_seconds()) > minutos * 60:
+                continue
+            # UMA das duas tem de vir do extrato. Duas linhas do robô no mesmo
+            # ativo, mesma direção e mesma quantidade dentro de uma hora e meia
+            # são perfeitamente normais numa mesa que opera repetido — chamar
+            # aquilo de duplicata apagaria operação de verdade.
+            origens = {a.get("origem"), b.get("origem")}
+            if ORIGEM_EXTRATO not in origens or len(origens) < 2:
+                continue
+            primeiro, segundo = ((a, b) if a.get("origem") == ORIGEM_EXTRATO
+                                 else (b, a))
+            pares.append((primeiro, segundo))
+            ja_pareadas.add(a.get("id"))
+            ja_pareadas.add(b.get("id"))
+    return pares
+
+
 def importar_operacoes_do_extrato(fechadas, formato_data="MDY"):
     """Grava no diário as operações fechadas lidas do extrato. Devolve as
     posições criadas.
@@ -6019,6 +6166,98 @@ def salvar_janelas_monitoradas(lista):
     salvar_config({"janelas_monitoradas": limpa,
                    "nome_janela_corretora": limpa[0] if limpa else ""})
     return limpa
+
+# ======================================================================
+#  A MESA TEM MAIS DE UM ATIVO — E ELA SÓ SABIA FALAR DE UM
+# ======================================================================
+# 31/08, 10:34. Ele: "esta analisando mesu6 e mgcv6?" — e a resposta foi
+# "Foco principal: MGCV6. MESU6: não está no foco do gráfico no momento".
+# Às 11:41 ele perguntou o tempo gráfico DO MESU6 e recebeu a leitura do
+# MGCV6. As duas respostas estavam erradas, e nenhuma das duas era culpa do
+# modelo: o programa guardava UMA leitura só — `_ultima_analise` — e cada
+# janela do ciclo sobrescrevia a da janela anterior. Quem falava era sempre
+# a última janela analisada, e ela se apresentava como "o foco".
+#
+# O MOTOR NUNCA ESTEVE PRESO A UM ATIVO. Ele já percorre todas as janelas
+# monitoradas, guarda estado separado para cada uma (`estados_janela`),
+# checa posição e ordem viva POR ATIVO (`posicao_aberta_no_ativo`,
+# `ordem_enviada_e_viva_no_ativo`) e o envio troca o instrumento no ticket
+# antes de mandar (`garantir_ativo_no_ticket`). O que estava preso a um
+# ativo era o RELATO. E relato errado sobre qual contrato está sendo lido,
+# numa ferramenta que manda ordem, é do tipo que faz o trader operar em
+# cima da resposta sobre o gráfico do vizinho.
+MINUTOS_LEITURA_RECENTE = 15
+
+
+def registrar_leitura_do_ativo(registro, ativo, dados, agora=None):
+    """Guarda a última leitura DE CADA ativo, em vez de só a da última janela.
+
+    Devolve o registro novo (dicionário ativo -> leitura). Ativo vazio ou
+    'DESCONHECIDO' não entra: um instrumento que não foi lido não pode virar
+    uma linha afirmando que foi."""
+    novo = dict(registro or {})
+    chave = str(ativo or "").strip().upper()
+    if not chave or chave == "DESCONHECIDO":
+        return novo
+    entrada = dict(dados or {})
+    entrada["ativo"] = chave
+    entrada["ts"] = float(agora if agora is not None else time.time())
+    novo[chave] = entrada
+    return novo
+
+
+def ativos_em_analise(registro, minutos=MINUTOS_LEITURA_RECENTE, agora=None):
+    """Os ativos com leitura RECENTE, do mais novo para o mais velho.
+
+    O recorte por tempo é o que separa "está sendo analisado" de "já foi
+    analisado um dia". Uma janela que ele tirou da lista de manhã não pode
+    continuar aparecendo à tarde como se o motor ainda estivesse olhando para
+    ela — foi assim que a resposta das 10:35 virou ficção."""
+    limite = float(agora if agora is not None else time.time()) - minutos * 60
+    recentes = [v for v in (registro or {}).values()
+                if float(v.get("ts") or 0) >= limite]
+    return sorted(recentes, key=lambda v: -float(v.get("ts") or 0))
+
+
+def texto_da_mesa_multiativo(registro, posicoes=None,
+                             minutos=MINUTOS_LEITURA_RECENTE, agora=None):
+    """O que a mesa está lendo AGORA, ativo por ativo, para o contexto do chat.
+
+    Sai daqui pronto, em texto, calculado em código. A alternativa seria
+    entregar o dicionário ao modelo e torcer para ele não escolher um ativo e
+    chamá-lo de principal — que é exatamente o que aconteceu."""
+    lidos = ativos_em_analise(registro, minutos=minutos, agora=agora)
+    if not lidos:
+        return "• Nenhum gráfico lido nos últimos minutos."
+    abertas = {}
+    for p in posicoes or []:
+        if p.get("status") in ("ABERTA", "PENDENTE"):
+            abertas.setdefault(str(p.get("ativo") or "").upper(), []).append(p)
+
+    linhas = [f"• ATIVOS EM ANÁLISE AGORA ({len(lidos)}) — todos ao mesmo "
+              "tempo, nenhum é 'o principal':"]
+    for v in lidos:
+        prob = v.get("probabilidade")
+        try:
+            prob_txt = f" · probabilidade {float(prob):.0f}%"
+        except (TypeError, ValueError):
+            prob_txt = ""
+        linhas.append(
+            f"   – {v['ativo']}: {v.get('acao') or '—'} @ {v.get('preco', '—')}"
+            + prob_txt
+            + (f" · leitura de {v['hora']}" if v.get("hora") else "")
+            + (f" · janela '{v['janela']}'" if v.get("janela") else ""))
+        for p in abertas.get(v["ativo"], []):
+            linhas.append(
+                f"      · {p.get('status')}: {p.get('direcao')} "
+                f"{p.get('contratos', '?')} ctr @ {p.get('entry')}")
+    orfas = [a for a in abertas if not any(v["ativo"] == a for v in lidos)]
+    if orfas:
+        linhas.append("   – com posição/ordem viva mas SEM gráfico monitorado: "
+                      + ", ".join(sorted(orfas))
+                      + " (inclua a janela na aba Motor para eu voltar a ler)")
+    return "\n".join(linhas)
+
 
 def posicao_aberta_no_ativo(ativo):
     """A posição que você tem AGORA nesse ativo, na conta ativa — venha ela de
@@ -16165,12 +16404,57 @@ class SmcQuantApp(ctk.CTk):
             partes.append("• " + texto_do_relatorio_de_acerto().replace("\n", " "))
         except Exception:
             pass
-        ua = getattr(self, "_ultima_analise", None) or {}
-        if ua.get("ativo"):
-            partes.append(
-                f"• Última leitura ({ua.get('hora', '—')}): {ua.get('acao')} "
-                f"{ua.get('ativo')} @ {ua.get('preco')} · probabilidade "
-                f"{ua.get('probabilidade', 0):.0f}%")
+        # AS ORDENS QUE EU MESMA MANDEI HOJE.
+        #
+        # 31/08, 11:40: o modo autônomo enviou SELL MESU6, 17 contratos, a
+        # 7685.0. 11:42, ele: "E PORQUE ENVIOU ORDEM NO MESU6?". A resposta
+        # foi "Eu NÃO enviei ordem nenhuma... a posição já estava na sua mesa
+        # quando esta conversa começou".
+        #
+        # Era mentira, e sobre a conta dele. A guarda de ação inventada até
+        # disparou — mas ela existe para o caso OPOSTO (a IA dizendo que
+        # mandou quando não mandou), então o aviso que ela grudou embaixo
+        # REFORÇOU a negação. Duas camadas concordando na direção errada.
+        #
+        # A causa é banal: o contexto do chat listava as posições abertas sem
+        # dizer QUEM as abriu. Sem esse dado, "eu enviei?" vira opinião do
+        # modelo. Agora as ordens de origem ROBO do dia entram nomeadas, e
+        # negar uma delas passa a contrariar o próprio contexto.
+        try:
+            _hoje = time.strftime("%d/%m/%Y")
+            _minhas = [p for p in posicoes_do_ciclo()
+                       if p.get("origem") == "ROBO"
+                       and str(p.get("data_criacao") or "").startswith(_hoje)]
+            if _minhas:
+                partes.append(
+                    f"• ORDENS QUE EU MESMA ENVIEI HOJE ({len(_minhas)}) — se "
+                    "ele perguntar se você mandou alguma ordem, a resposta é "
+                    "SIM e são estas; nunca negue uma delas:")
+                for p in _minhas:
+                    partes.append(
+                        f"   – {p.get('direcao')} {p.get('ativo')} "
+                        f"{p.get('contratos', '?')} ctr @ {p.get('entry')} "
+                        f"· {p.get('status')} · registrada em "
+                        f"{p.get('data_criacao', '—')}")
+        except Exception:
+            pass
+        # A MESA INTEIRA, ATIVO POR ATIVO — não a última janela do laço.
+        #
+        # Aqui havia uma linha só, "Última leitura: ...", alimentada por
+        # `_ultima_analise`, que cada janela do ciclo sobrescrevia. Com dois
+        # gráficos monitorados, o chat via apenas o último e passava a
+        # apresentá-lo como "o foco principal": foi o que respondeu MGCV6 para
+        # uma pergunta sobre MESU6, com posição aberta no MESU6.
+        try:
+            partes.append(texto_da_mesa_multiativo(
+                getattr(self, "_analises_por_ativo", {}), posicoes_do_ciclo()))
+        except Exception:
+            ua = getattr(self, "_ultima_analise", None) or {}
+            if ua.get("ativo"):
+                partes.append(
+                    f"• Última leitura ({ua.get('hora', '—')}): {ua.get('acao')} "
+                    f"{ua.get('ativo')} @ {ua.get('preco')} · probabilidade "
+                    f"{ua.get('probabilidade', 0):.0f}%")
         pend = self._ultimo_sinal_pendente()
         if pend:
             partes.append(f"• Sugestão AGUARDANDO decisão: {pend.get('direcao')} "
@@ -19450,7 +19734,26 @@ class SmcQuantApp(ctk.CTk):
                 sem_ativo = [ln for ln in linhas if not ln.get("ativo")]
                 if sem_ativo:
                     atual = getattr(self, "_ultimo_ativo_lido", None)
-                    if len(sem_ativo) == 1 and atual and atual != "DESCONHECIDO":
+                    # COM MAIS DE UM ATIVO NA MESA, NÃO DÁ PARA ADIVINHAR.
+                    #
+                    # `_ultimo_ativo_lido` é o da janela PRINCIPAL. Quando ele
+                    # monitorava um gráfico só, associar a linha sem ticker a
+                    # ele era a única hipótese possível. Com MESU6 e MGCV6
+                    # abertos ao mesmo tempo, essa mesma linha passa a ter duas
+                    # explicações — e chutar carimbaria a posição do ouro com o
+                    # ticker do índice, no registro que alimenta P&L, drawdown
+                    # e o freio de stops.
+                    _lidos = ativos_em_analise(
+                        getattr(self, "_analises_por_ativo", {}))
+                    if len(_lidos) > 1:
+                        linhas = [ln for ln in linhas if ln.get("ativo")]
+                        self.log(
+                            "⚠️ O painel não mostrou o ticker ao lado de "
+                            f"POSIÇÃO, e há {len(_lidos)} ativos em análise "
+                            f"({', '.join(v['ativo'] for v in _lidos)}) — não "
+                            "dá para saber de qual é. Descartei a leitura em "
+                            "vez de atribuir ao ativo errado.")
+                    elif len(sem_ativo) == 1 and atual and atual != "DESCONHECIDO":
                         sem_ativo[0]["ativo"] = atual
                         self.log(f"ℹ️ O painel não mostrou o ticker ao lado de POSIÇÃO; "
                                   f"associei ao ativo em análise ({atual}).")
@@ -20620,6 +20923,34 @@ class SmcQuantApp(ctk.CTk):
             scroll, "🔥  ORDENS PENDENTES E OPERAÇÕES EM ANDAMENTO",
             "posicoes", aberta_padrao=True, cor_borda="#5a4a1a")
 
+        # ============ OPERAÇÕES REGISTRADAS: CONFERIR E EXCLUIR ============
+        # Pedido dele: "inclua também a opção de excluir ordens lançadas /
+        # entradas lançadas indevidamente... notei que tem algumas que estão
+        # registrando erroneamente ou em duplicidade com o extrato da corretora
+        # quando importo".
+        #
+        # As operações FECHADAS não apareciam em lugar nenhum onde ele pudesse
+        # mexer: o painel acima só lista PENDENTE e ABERTA. Elas entravam na
+        # conta do dia, no drawdown e na taxa de acerto, e a única forma de
+        # tirar uma linha errada de lá era editar o JSON na mão.
+        self.frame_lancamentos = self._secao(
+            scroll, "🧾  OPERAÇÕES REGISTRADAS NO CICLO (conferir e excluir)",
+            "lancamentos", aberta_padrao=False, cor_borda="#4a3a5a")
+        ctk.CTkLabel(
+            self.frame_lancamentos, justify="left", anchor="w",
+            text_color=COR["dim"], font=ctk.CTkFont(size=10), wraplength=620,
+            text="Tudo que conta dinheiro neste ciclo. Excluir NÃO apaga: a "
+                 "linha sai do resultado, do drawdown e da taxa de acerto, "
+                 "fica marcada como excluída e dá para trazer de volta. "
+                 "Quando eu achar a mesma operação contada duas vezes — a que "
+                 "eu gravei e a que veio do extrato — eu marco o par aqui em "
+                 "cima; o registro do EXTRATO é o que vale."
+        ).pack(anchor="w", padx=10, pady=(4, 2))
+        self.frame_lista_lancamentos = ctk.CTkFrame(
+            self.frame_lancamentos, fg_color="transparent")
+        self.frame_lista_lancamentos.pack(fill="both", expand=True,
+                                          padx=4, pady=(0, 8))
+
         # ================= INCLUSÃO MANUAL NO DIÁRIO =================
         # Recolhida por padrão: só é usada de vez em quando, e ocupava muito
         # espaço fixo no meio do painel.
@@ -21266,6 +21597,145 @@ class SmcQuantApp(ctk.CTk):
                          font=ctk.CTkFont(weight="bold", size=14)).pack(side="left", padx=10)
             ctk.CTkButton(linha, text="Fechar agora", width=100, fg_color="#8b4513",
                           command=lambda i=pos["id"]: self._fechar_posicao_click(i)).pack(side="right", padx=8)
+
+    # ------------------------------------------------------------------
+    # OPERAÇÕES REGISTRADAS: CONFERIR, EXCLUIR E TRAZER DE VOLTA
+    # ------------------------------------------------------------------
+    def _renderizar_lancamentos(self):
+        alvo = getattr(self, "frame_lista_lancamentos", None)
+        if alvo is None:
+            return
+        todas = [p for p in posicoes_do_ciclo()
+                 if p.get("status") in ("FECHADA", STATUS_EXCLUIDA,
+                                        STATUS_SUBSTITUIDA)]
+        todas = sorted(todas, key=lambda p: str(p.get("data_fechamento") or ""),
+                       reverse=True)[:40]
+        try:
+            pares = possiveis_duplicatas(carregar_posicoes(),
+                                         conta_id=conta_ativa_id())
+        except Exception:
+            pares = []
+        marcadas = {}
+        for bom, sobra in pares:
+            marcadas[sobra.get("id")] = bom
+        # DESEMPENHO: este painel é redesenhado junto do dashboard, a cada
+        # poucos segundos. Sem a assinatura, ele destruiria e recriaria
+        # dezenas de widgets o tempo todo — foi assim que a lista de posições
+        # deixou a interface pesada antes.
+        assinatura = (tuple((p["id"], p.get("status")) for p in todas),
+                      tuple(sorted(marcadas)))
+        if getattr(self, "_assin_lancamentos", None) == assinatura:
+            return
+        self._assin_lancamentos = assinatura
+
+        for w in alvo.winfo_children():
+            w.destroy()
+        if not todas:
+            ctk.CTkLabel(alvo, text="Nenhuma operação fechada neste ciclo.",
+                         text_color=COR["dim"]).pack(pady=6)
+            return
+        if marcadas:
+            ctk.CTkLabel(
+                alvo, justify="left", anchor="w", wraplength=610,
+                text_color="#e0a458", font=ctk.CTkFont(size=11, weight="bold"),
+                text=(f"⚠️ {len(marcadas)} operação(ões) parecem estar contadas "
+                      "DUAS VEZES — a que eu gravei e a mesma vinda do extrato. "
+                      "Estão marcadas abaixo. Confira e exclua a repetida (o "
+                      "registro do EXTRATO é o que vale).")
+            ).pack(fill="x", padx=8, pady=(2, 6))
+
+        for p in todas:
+            excluida = p.get("status") == STATUS_EXCLUIDA
+            substituida = p.get("status") == STATUS_SUBSTITUIDA
+            duplicata = p.get("id") in marcadas
+            linha = ctk.CTkFrame(
+                alvo,
+                fg_color=("#1a1a24" if (excluida or substituida)
+                          else ("#3a2a14" if duplicata else "#20283a")),
+                border_width=1,
+                border_color=("#8b5a00" if duplicata else "#2a2a3a"))
+            linha.pack(fill="x", pady=2, padx=2)
+            try:
+                pnl = float(p.get("pnl_final") or 0.0)
+            except (TypeError, ValueError):
+                pnl = 0.0
+            selo = ("🚫 EXCLUÍDA · " if excluida else
+                    "♻️ SUBSTITUÍDA PELO EXTRATO · " if substituida else "")
+            texto = (f"{selo}{p.get('data_fechamento', '—')} · "
+                     f"[{p.get('origem', '?')}] {p.get('direcao')} "
+                     f"{p.get('ativo')} {p.get('contratos', '?')} ctr @ "
+                     f"{p.get('entry')} → {p.get('preco_saida', '—')}")
+            ctk.CTkLabel(
+                linha, text=texto, anchor="w",
+                text_color=COR["dim"] if (excluida or substituida) else COR["texto"]
+            ).pack(side="left", padx=8, pady=5)
+            ctk.CTkLabel(
+                linha, text=f"US${pnl:+.2f}",
+                text_color=("#4a5163" if (excluida or substituida)
+                            else (COR["verde"] if pnl >= 0 else COR["vermelho"])),
+                font=ctk.CTkFont(weight="bold", size=13)).pack(side="left", padx=8)
+            if duplicata:
+                bom = marcadas[p["id"]]
+                ctk.CTkLabel(
+                    linha, text=f"↔ repete a do extrato de {bom.get('data_fechamento', '—')}",
+                    text_color="#e0a458", font=ctk.CTkFont(size=10)
+                ).pack(side="left", padx=6)
+            if excluida:
+                ctk.CTkButton(
+                    linha, text="↩️ Restaurar", width=100, fg_color="#2a3f5f",
+                    hover_color="#3a5580",
+                    command=lambda i=p["id"]: self._restaurar_lancamento_click(i)
+                ).pack(side="right", padx=8)
+            elif not substituida:
+                ctk.CTkButton(
+                    linha, text="❌ Excluir", width=90, fg_color="#5a3a3a",
+                    hover_color="#8b4513",
+                    command=lambda i=p["id"]: self._excluir_lancamento_click(i)
+                ).pack(side="right", padx=8)
+
+    def _excluir_lancamento_click(self, pos_id):
+        """Pergunta ANTES, com o registro na frente. Excluir mexe no resultado
+        do dia inteiro — dashboard, drawdown, taxa de acerto —, e um clique
+        errado num painel que se redesenha sozinho é fácil demais."""
+        from tkinter import messagebox
+        atual = next((p for p in carregar_posicoes() if p.get("id") == pos_id), None)
+        if not atual:
+            return
+        try:
+            pnl = float(atual.get("pnl_final") or 0.0)
+        except (TypeError, ValueError):
+            pnl = 0.0
+        if not messagebox.askyesno(
+                "Excluir operação do relatório",
+                f"{atual.get('direcao')} {atual.get('ativo')} "
+                f"{atual.get('contratos', '?')} ctr @ {atual.get('entry')} → "
+                f"{atual.get('preco_saida', '—')}\n"
+                f"Resultado: US$ {pnl:+.2f}\n"
+                f"Origem: {atual.get('origem', '?')}\n\n"
+                "Ela sai do resultado do ciclo, do drawdown e da taxa de "
+                "acerto.\n\nNÃO é apagada: fica marcada como excluída e você "
+                "pode restaurá-la aqui mesmo.\n\nExcluir?"):
+            return
+        lista, excluida = excluir_lancamento(carregar_posicoes(), pos_id,
+                                             "excluída por você no painel")
+        if not excluida:
+            return
+        salvar_posicoes(lista)
+        self.log(f"🧾 Operação EXCLUÍDA do relatório: {excluida.get('direcao')} "
+                 f"{excluida.get('ativo')} @ {excluida.get('entry')} "
+                 f"(US$ {pnl:+.2f}). Não foi apagada — dá para restaurar.")
+        self._assin_lancamentos = None
+        self._atualizar_dashboard(forcar=True)
+
+    def _restaurar_lancamento_click(self, pos_id):
+        lista, volta = restaurar_lancamento(carregar_posicoes(), pos_id)
+        if not volta:
+            return
+        salvar_posicoes(lista)
+        self.log(f"↩️ Operação restaurada no relatório: {volta.get('direcao')} "
+                 f"{volta.get('ativo')} @ {volta.get('entry')}.")
+        self._assin_lancamentos = None
+        self._atualizar_dashboard(forcar=True)
 
     def _cancelar_posicao_click(self, pos_id):
         lista = carregar_posicoes()
@@ -22883,6 +23353,7 @@ class SmcQuantApp(ctk.CTk):
             self._renderizar_comparativo(stats)
             self._renderizar_patrimonio(stats)
             self._renderizar_posicoes()
+            self._renderizar_lancamentos()
             self._renderizar_lista_sinais()
         except Exception as e:
             import traceback
@@ -25721,13 +26192,15 @@ class SmcQuantApp(ctk.CTk):
                             "entry": sinal.get("entry_price"), "stop": sinal.get("stop_loss"),
                             "tp1": sinal.get("take_profit_1"), "tp2": sinal.get("take_profit_2"),
                         }
-                        # Guarda também POR ATIVO: assim ele pode perguntar "e o
-                        # NQ?" sem perder a leitura do MES feita segundos antes.
-                        if not hasattr(self, "_analises_por_ativo"):
-                            self._analises_por_ativo = {}
-                        if ativo and ativo != "DESCONHECIDO":
-                            self._analises_por_ativo[str(ativo).upper()] = \
-                                dict(self._ultima_analise)
+                        # POR ATIVO, E COM CARIMBO DE HORA. O carimbo é o que
+                        # faltava: sem ele não dá para separar "está sendo
+                        # analisado agora" de "foi analisado hoje de manhã", e
+                        # foi por isso que a mesa respondia sobre um ativo que
+                        # ele já tinha tirado da lista. Vale para TODA janela —
+                        # não existe mais janela principal aqui.
+                        self._analises_por_ativo = registrar_leitura_do_ativo(
+                            getattr(self, "_analises_por_ativo", {}),
+                            ativo, self._ultima_analise)
                         self.after(0, self._atualizar_telemetria_hud_embutido)
 
                         _marca_janela = (f" | Janela: {nome_janela[:28]}"
