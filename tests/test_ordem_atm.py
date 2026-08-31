@@ -516,14 +516,37 @@ class TestOAutoTrailDoTicket(unittest.TestCase):
         self.assertEqual(str(bot.campos.get("STOP LOSS#1")), "0")
         self.assertEqual(str(bot.campos.get("ACIONAR LUCROS")), "0")
 
-    def test_campo_do_trail_que_falha_NAO_deixa_a_ordem_sair(self):
-        """Metade do trailing configurado é pior que trailing nenhum."""
+    def test_campo_do_trail_AUSENTE_manda_a_ordem_SEM_o_trail(self):
+        """31/08, 13:16 e 13:55: dois cenários aprovados, dimensionados e
+        anunciados morreram aqui, com 'OCORRENCIA_INEXISTENTE' no campo do
+        auto trail. O bloco AUTO TRAIL só existe no DOM quando 'TIPO DE STOP
+        LOSS' está em AT; fora disso a segunda ocorrência de 'STOP LOSS' não
+        existe.
+
+        Estava invertido: preço, quantidade, alvo e stop já foram escritos E
+        CONFERIDOS — o risco está definido e protegido. O trail só melhora a
+        saída de uma operação que já está certa. Trocar a operação inteira por
+        ele é perder dinheiro para não perder um enfeite."""
         bot = _BotFalso({"_campos_que_falham": ("ACIONAR LUCROS",)})
         r = bot.enviar_ordem_com_atm(
             "SELL", 7719.0, 7723.0, 7711.0, 0.25, qtd=30, enviar=True,
             trailing=tv.plano_trailing(16, ligado=True))
+        self.assertTrue(r["ok"], r.get("erro"))
+
+    def test_meia_configuracao_de_trail_que_NAO_da_para_zerar_recusa(self):
+        """A outra metade da regra, e a que não pode afrouxar: um stop que
+        anda com o gatilho errado tira a operação na hora errada, sozinho.
+
+        Aqui o campo EXISTE e MENTE — escrevo e ele fica com outro valor. Não
+        dá para zerar, então não dá para afirmar em que estado o trail ficou,
+        e ordem com proteção indefinida é o que este caminho existe para
+        impedir."""
+        bot = _BotFalso({"_campos_que_mentem": ("ACIONAR LUCROS",)})
+        r = bot.enviar_ordem_com_atm(
+            "SELL", 7719.0, 7723.0, 7711.0, 0.25, qtd=30, enviar=True,
+            trailing=tv.plano_trailing(16, ligado=True))
         self.assertFalse(r["ok"])
-        self.assertIn("ACIONAR LUCROS", r["erro"])
+        self.assertIn("pior que trail nenhum", r["erro"])
 
     def test_o_app_LIGA_isso_por_um_interruptor_proprio(self):
         fonte = fonte_do_arquivo()

@@ -28,7 +28,7 @@ SÃO DOIS DEFEITOS EMPILHADOS, e os dois estão testados aqui:
 
 import unittest
 
-from harness import fonte_do_arquivo
+from harness import fonte_do_arquivo, funcao_inteira
 
 
 class TestAumentoNaoSaiSozinho(unittest.TestCase):
@@ -161,12 +161,16 @@ class TestOAutoTrailFantasma(unittest.TestCase):
     O ticket da Tradovate GUARDA o que foi digitado antes. Bastava UMA ordem
     com trail ligado para todas as seguintes herdarem aquele trail."""
 
-    def _corpo(self):
+    def _fonte_tv(self):
         import os
-        fonte = fonte_do_arquivo(os.path.join(
+        return fonte_do_arquivo(os.path.join(
             __import__("harness").RAIZ, "tradovate_auto.py"))
-        i = fonte.index("def configurar_atm(")
-        return fonte[i:i + 9000]
+
+    def _corpo(self):
+        # A FUNÇÃO INTEIRA, não 9000 bytes a partir do `def`. A correção de
+        # 31/08 acrescentou umas quarenta linhas no meio dela e empurrou o
+        # trecho procurado para fora da janela — régua, não regra.
+        return funcao_inteira(self._fonte_tv(), "configurar_atm")
 
     def test_desligado_ZERA_os_campos_em_vez_de_ignorar(self):
         corpo = self._corpo()
@@ -175,19 +179,45 @@ class TestOAutoTrailFantasma(unittest.TestCase):
         self.assertIn("ROTULO_TRAIL_ACIONAR, 0, 0", trecho)
         self.assertIn("ROTULO_TRAIL_FREQ, 0, 0", trecho)
 
-    def test_a_limpeza_NAO_pode_recusar_a_ordem(self):
+    def test_campo_de_trail_NAO_pode_recusar_a_ordem(self):
         """Se os campos do trail não existirem neste layout, exigir que eles
-        confiram bloquearia a operação por causa de uma limpeza — trocar um
-        problema pequeno por um grande."""
-        corpo = self._corpo()
-        self.assertIn("opcional = limpando_trail", corpo)
-        i = corpo.index("opcional = limpando_trail")
-        trecho = corpo[i:i + 1200]
+        confiram bloqueia a operação por causa de um extra — trocar um
+        problema pequeno por um grande.
+
+        A REGRA VALE NOS DOIS SENTIDOS AGORA. Antes ela só valia quando o
+        trail estava sendo ZERADO (`opcional = limpando_trail and ...`), e por
+        isso, em 31/08, com o trail LIGADO, dois cenários aprovados morreram
+        com 'OCORRENCIA_INEXISTENTE' sem nunca virar ordem. Este teste
+        travava a metade errada da regra."""
+        corpo = funcao_inteira(self._fonte_tv(), "configurar_atm")
+        self.assertIn("opcional = i >= n_obrigatorios", corpo)
+        self.assertNotIn("opcional = limpando_trail and", corpo)
+        i = corpo.index("opcional = i >= n_obrigatorios")
+        trecho = corpo[i:i + 1600]
         self.assertIn("if opcional:", trecho)
         self.assertIn("continue", trecho)
 
+    def test_os_TRES_obrigatorios_continuam_derrubando_a_ordem(self):
+        """Unidade, alvo e stop do bracket são o risco da operação. Afrouxar o
+        trail não pode ter afrouxado estes."""
+        corpo = funcao_inteira(self._fonte_tv(), "configurar_atm")
+        self.assertIn("n_obrigatorios = 3", corpo)
+        self.assertIn("return False", corpo)
+
+    def test_meia_configuracao_de_trail_e_ZERADA_antes_de_enviar(self):
+        """Um stop que anda com gatilho errado tira a operação na hora errada,
+        sozinho. Se um campo do trail falhou, os que entraram são apagados —
+        e se nem isso der certo, aí sim a ordem não vai."""
+        corpo = funcao_inteira(self._fonte_tv(), "configurar_atm")
+        self.assertIn("pior que trail nenhum", corpo)
+        i = corpo.index("trail_falhou and trailing")
+        trecho = corpo[i:i + 1600]
+        self.assertIn("ROTULO_TRAIL_ACIONAR, 0, 0", trecho)
+        self.assertIn("return False", trecho)
+
     def test_o_log_diz_que_o_trail_foi_zerado(self):
-        self.assertIn("AUTO TRAIL zerado", self._corpo())
+        self.assertIn("AUTO TRAIL zerado",
+                      funcao_inteira(self._fonte_tv(), "configurar_atm"))
 
 
 if __name__ == "__main__":

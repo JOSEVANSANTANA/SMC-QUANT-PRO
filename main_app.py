@@ -6244,7 +6244,21 @@ def texto_da_mesa_multiativo(registro, posicoes=None,
     chamá-lo de principal — que é exatamente o que aconteceu."""
     lidos = ativos_em_analise(registro, minutos=minutos, agora=agora)
     if not lidos:
-        return "• Nenhum gráfico lido nos últimos minutos."
+        # A FRASE PRECISA SER UMA ORDEM, NÃO UMA CONSTATAÇÃO.
+        #
+        # "Nenhum gráfico lido nos últimos minutos" é verdade e não basta: em
+        # 31/08, 15:17, diante desse vazio, o modelo escreveu um bloco inteiro
+        # de telemetria — ticker, order block, FVG, VWAP, volume profile,
+        # delta — para um ativo que nem estava na mesa. Vazio no contexto é
+        # convite para preencher. Aqui o vazio vem com a proibição junto.
+        return ("• NENHUM GRÁFICO FOI LIDO nos últimos minutos — o motor não "
+                "me entregou leitura nenhuma.\n"
+                "  REGRA: não invente. Não diga que está vendo, olhando ou "
+                "analisando gráfico; não cite preço, estrutura, order block, "
+                "FVG, VWAP, delta, POC ou volume de ativo nenhum. A resposta "
+                "certa aqui é dizer que não há leitura e mandar ele LIGAR O "
+                "MOTOR (aba Motor & WhatsApp, com a janela do gráfico "
+                "incluída) ou anexar um print no chat.")
     abertas = {}
     for p in posicoes or []:
         if p.get("status") in ("ABERTA", "PENDENTE"):
@@ -11615,6 +11629,20 @@ _RE_PROMESSA_IMPOSSIVEL = re.compile(
     r"(vou|irei|posso)\s+te\s+(alertar|avisar|notificar)\s+"
     r"(automaticamente|quando|assim que)|"
     r"atualiza[çc][ãa]o\s+em\s+breve|"
+    # 31/08, 15:41 — ele pediu para olhar todas as janelas e a resposta foi
+    # "Vou pedir ao motor para coletar a telemetria de todas as janelas
+    # ativas. Aguardando dados do sistema..." Cinco minutos depois: "Ainda
+    # não recebi". Não existe esse pedido: o motor entrega a leitura no
+    # contexto de cada turno, não sob encomenda do chat. Ela inventou um
+    # canal e deixou ele esperando por ele.
+    r"(vou|irei)\s+(pedir|solicitar|consultar)\s+(ao|para\s+o|no)\s+"
+    r"(motor|sistema|programa)|"
+    r"aguardando\s+(os\s+)?dados\s+(do\s+)?(sistema|motor)|"
+    # "assim que o motor achar um cenário eu te aviso" é VERDADE e tem de
+    # passar — é literalmente o que o ciclo faz. O que não existe é ela ficar
+    # esperando uma ENTREGA de dados que ela mesma pediu.
+    r"assim\s+que\s+(chegar|receber|me\s+enviar)(em)?\s*(os\s+)?"
+    r"(dados|a\s+telemetria)?[,.]|"
     r"assim\s+que\s+houver\s+novidades?)",
     re.IGNORECASE)
 
@@ -11646,6 +11674,100 @@ def censurar_promessa_impossivel(resposta):
         "aviso nenhum para depois. NÃO FIQUE ESPERANDO. Se é um recurso que "
         "falta, quem constrói é o desenvolvedor do programa — fale com ele "
         "direto."), True
+
+
+# ======================================================================
+#  A LEITURA DE MERCADO INVENTADA — a pior de todas, porque parece dado
+# ======================================================================
+# 31/08, 15:17. Ele: "preciso que olhe para todos que estao selecionados".
+# O motor estava LIGADO mas ainda não tinha lido gráfico nenhum naquela
+# sessão. A resposta veio assim:
+#
+#     Estou vendo o gráfico do ES (E-mini S&P 500, contrato cheio,
+#     US$ 50/ponto, tick 0.25) no timeframe de 5 minutos...
+#     { "ticker": "ES", "structure": "DOWN", "last_bos": "BOS baixista –
+#       14:20", "premium_discount": { "equilibrium": "5.812,00" ... },
+#       "ob_ativo": { "faixa": "5.818,25 – 5.820,50" ... },
+#       "order_flow": { "delta_atual": "vendedor · -480 contratos" ... } }
+#
+# NADA disso existiu. O ativo não era nenhum dos quatro que ele monitorava,
+# o preço (5.812) não é o de contrato nenhum da mesa dele naquele dia — o
+# MES estava em 7.690 — e o delta, o POC, a VWAP e o volume profile foram
+# escritos do nada, em formato de telemetria de máquina.
+#
+# ISTO É PIOR QUE A ORDEM INVENTADA. A ordem inventada se desmente olhando a
+# Tradovate. Uma leitura inventada com aparência de telemetria — JSON, casas
+# decimais, contagem de contratos — é indistinguível de dado real para quem
+# está do outro lado, e é exatamente em cima dela que se decide entrada.
+#
+# A causa é o vazio: sem leitura no contexto, o modelo preenche. A resposta
+# não é pedir para ele não preencher — é DIZER que não há dado e conferir a
+# saída contra o que foi lido de verdade.
+_RE_AFIRMA_QUE_ESTA_LENDO = re.compile(
+    r"(estou\s+(vendo|olhando|analisando|lendo)\s+(o\s+)?(gr[áa]fico|a\s+tela|"
+    r"o\s+chart)|"
+    r"(analisando|olhando)\s+(a\s+)?captura|"
+    r"na\s+captura\s+(atual|das?)|"
+    r"\"ticker\"\s*:|'ticker'\s*:|"
+    r"\"order_flow\"\s*:|\"premium_discount\"\s*:|\"volume_profile\"\s*:)",
+    re.IGNORECASE)
+
+# Um ticker de futuro no texto: raiz + mês + ano, ou a raiz sozinha em caixa
+# alta cercada de espaço. Serve para dizer QUAL instrumento ela alegou ler.
+_RE_TICKER_NO_TEXTO = re.compile(
+    r"\b([A-Z]{2,4}[FGHJKMNQUVXZ]\d{1,2}|"
+    r"MES|MNQ|MGC|MBT|MYM|M2K|MCL|WIN|WDO|ES|NQ|GC|YM|RTY|CL|BTC)\b")
+
+
+def censurar_leitura_inventada(resposta, ativos_lidos, tem_imagem=False):
+    """A TIGER apresentou leitura de gráfico que ela não tem? (texto, inventou)
+
+    `ativos_lidos`: os tickers com leitura recente do motor. Vazio significa
+    que NENHUM gráfico foi lido — e aí qualquer afirmação de estar vendo um
+    gráfico é falsa por construção.
+
+    `tem_imagem=True` desliga a guarda: quando ele anexa um print, ela está
+    mesmo olhando para alguma coisa, e censurar ali seria calar a única
+    resposta útil.
+
+    O aviso vai ANEXADO, como nas outras guardas: ele precisa ler o que o
+    modelo disse E saber que aquilo não foi lido de lugar nenhum. Apagar
+    esconderia o defeito em vez de denunciá-lo.
+
+    Função PURA."""
+    texto = str(resposta or "")
+    if tem_imagem or not texto.strip():
+        return texto, False
+    if not _RE_AFIRMA_QUE_ESTA_LENDO.search(texto):
+        return texto, False
+    lidos = {str(a).upper() for a in (ativos_lidos or [])}
+    if not lidos:
+        return texto + (
+            "\n\n🛑 ATENÇÃO — EU NÃO LI GRÁFICO NENHUM. O texto acima fala como "
+            "se eu estivesse olhando para um gráfico agora, e NÃO ESTOU: o "
+            "motor não me entregou nenhuma leitura recente. Preço, estrutura, "
+            "order block, delta, VWAP, volume — se apareceu algum número "
+            "desses aí em cima, ele foi INVENTADO, e não serve para decidir "
+            "nada.\n"
+            "➡️ LIGUE O MOTOR na aba Motor & WhatsApp e inclua a janela do "
+            "gráfico. Ou me mande um print aqui no chat — aí eu leio de "
+            "verdade."), True
+    # Leitura existe, mas ela pode ter falado de OUTRO instrumento.
+    citados = {m for m in _RE_TICKER_NO_TEXTO.findall(texto)}
+    def _raiz(s):
+        m = re.match(r"^([A-Z]{2,4})[FGHJKMNQUVXZ]\d{1,2}$", s)
+        return m.group(1) if m else s
+    raizes_lidas = {_raiz(a) for a in lidos}
+    estranhos = sorted({c for c in citados if _raiz(c) not in raizes_lidas})
+    if not estranhos:
+        return texto, False
+    return texto + (
+        f"\n\n🛑 ATENÇÃO — EU NÃO ESTOU LENDO {', '.join(estranhos)}. O que o "
+        f"motor me entregou agora é: {', '.join(sorted(lidos))}. Qualquer "
+        f"preço ou estrutura que o texto acima atribuiu a {', '.join(estranhos)} "
+        "não veio de leitura nenhuma.\n"
+        "➡️ Se você quer esse instrumento na mesa, inclua a janela dele na aba "
+        "Motor & WhatsApp."), True
 
 
 def censurar_acao_inventada(resposta):
@@ -12009,19 +12131,44 @@ def pergunta_como_configurar(texto):
         return False
     return bool(_RE_CONFIGURAR_PLANO.search(t))
 
-def montar_postmortem(pos=None):
+def montar_postmortem(pos=None, preferir_prejuizo=False):
     """A autópsia da última operação FECHADA, feita só com o que está gravado.
 
     Sem API, sem internet, sem modelo. Devolve None quando não há operação
     fechada — e "não há" é dito com essas palavras, nunca convertido em
-    "não sei responder"."""
+    "não sei responder".
+
+    `preferir_prejuizo` EXISTE POR CAUSA DE 31/08, 12:20. Quatro minutos antes,
+    o programa tinha anunciado:
+
+        🔴 Operação encerrada no STOP: SELL MESU6, resultado US$-382.50.
+           Quer revisar o que deu errado nesse cenário?
+
+    Ele respondeu "o que deu errado nesse cenario ?" — e recebeu a autópsia de
+    um BUY MESU6 que fechou com US$+850.00. Uma operação GANHADORA, em resposta
+    a "o que deu errado". A pergunta pedia o prejuízo e a função entregou o
+    último registro da lista.
+
+    Duas coisas estavam erradas. A ordem era a de INSERÇÃO no arquivo, não a
+    de fechamento — `fechadas[-1]` não é a mais recente. E "o que deu errado"
+    nunca se refere a um lucro: quando ele pergunta assim, o alvo é o
+    prejuízo mais recente, e é isso que `preferir_prejuizo` escolhe."""
     try:
         fechadas = [p for p in posicoes_do_ciclo()
                     if p.get("status") == "FECHADA"
                     and p.get("pnl_final") is not None]
     except Exception:
         return None
-    alvo = pos or (fechadas[-1] if fechadas else None)
+    # PELO FECHAMENTO, não pela ordem do arquivo. Registro importado do extrato
+    # ou corrigido depois entra no fim da lista com data antiga.
+    fechadas = sorted(fechadas, key=lambda p: _parse_dt(p.get("data_fechamento"))
+                      or datetime.datetime.min)
+    alvo = pos
+    if alvo is None and preferir_prejuizo:
+        alvo = next((p for p in reversed(fechadas)
+                     if (_num(p.get("pnl_final")) or 0.0) < 0), None)
+    if alvo is None:
+        alvo = fechadas[-1] if fechadas else None
     if not alvo:
         return ("Não há operação encerrada nesta conta para eu revisar. Assim "
                 "que uma fechar — no stop, no alvo ou na mão — eu monto a "
@@ -16316,7 +16463,17 @@ class SmcQuantApp(ctk.CTk):
                 "'Olá Tiger'.")
             return
         if acao == "POSTMORTEM":
-            self._chat_responder(montar_postmortem())
+            # "o que deu errado" pede o PREJUÍZO, não a última linha do
+            # arquivo. Ver `montar_postmortem`.
+            _quer_erro = bool(re.search(
+                r"deu\s+errado|errei|erro|perd|preju[íi]zo|stop",
+                # `_ultimo_pedido` é a fala DESTE turno. `texto` não existe
+                # aqui — este método recebe só a ação, e usar o nome errado
+                # viraria NameError no meio do chat (foi o que o
+                # test_nomes_indefinidos pegou antes de chegar na mão dele).
+                _sem_acento(str(getattr(self, "_ultimo_pedido", "")).lower())))
+            self._chat_responder(montar_postmortem(
+                preferir_prejuizo=_quer_erro))
             return
         if acao == "MOSTRAR_PRINT":
             info = getattr(self, "_ultimo_print", None)
@@ -16452,6 +16609,63 @@ class SmcQuantApp(ctk.CTk):
         # papo levaria o modelo a ESTIMAR o próprio desempenho — e ele estima.
         try:
             partes.append("• " + texto_do_relatorio_de_acerto().replace("\n", " "))
+        except Exception:
+            pass
+        # O ESTADO DO MOTOR, DAS JANELAS E DOS PISOS — no contexto, sempre.
+        #
+        # Isto faltava inteiro, e cada buraco produziu uma resposta errada no
+        # log de 31/08:
+        #  · 11:34, "qual é a janela principal?" — ele perguntava da LISTA DE
+        #    GRÁFICOS e recebeu um horário de pregão ("09:30-10:30"), porque a
+        #    palavra 'janela' não tinha significado nenhum no contexto dela.
+        #  · 15:16, "está olhando para quais ativos?" — "não tenho nenhum
+        #    gráfico aberto", com quatro janelas monitoradas configuradas.
+        #  · 13:04 e 13:05, "por que não está sugerindo" — a resposta recitava
+        #    os pisos de memória, e entre um minuto e outro saiu 75% e depois
+        #    65% sem nada ter mudado na tela.
+        #
+        # Motor, Plano e Configurações são três abas do MESMO programa. Se a
+        # TIGER não enxerga as três, ela responde por adivinhação sobre a mesa
+        # que ela mesma opera.
+        try:
+            _js = janelas_monitoradas()
+            partes.append(
+                # `robo_ativo` é o LAÇO DE ANÁLISE. `motor_rodando` é só a
+                # ponte Node ter subido — dizer "motor ligado" olhando para
+                # ela foi o que fez a mesa parecer viva com zero captura em
+                # duas horas.
+                "• ANÁLISE: " + ("RODANDO" if getattr(self, "robo_ativo", False)
+                                 else "PARADA — o ciclo não está analisando "
+                                      "nada. Mande ele conferir a aba Motor & "
+                                      "WhatsApp")
+                + " · ponte do motor: " + ("de pé" if getattr(
+                    self, "motor_confirmado", False) else "fora")
+                + f" · intervalo {carregar_config().get('intervalo_minutos', '?')} min"
+                + f" · autônomo {'LIGADO' if self._modo_autonomo() else 'desligado'}")
+            if _js:
+                partes.append(
+                    f"• JANELAS DE GRÁFICO monitoradas ({len(_js)}) — é isto "
+                    "que 'janela' significa aqui, não horário de pregão. Todas "
+                    "são analisadas e todas podem virar ordem:")
+                for i, nome in enumerate(_js):
+                    partes.append(f"   {i + 1}. {nome}"
+                                  + ("   ← aba de execução (a ordem é digitada "
+                                     "nela e a posição é lida dela)" if i == 0 else ""))
+            else:
+                partes.append("• NENHUMA JANELA DE GRÁFICO configurada — sem "
+                              "isso o motor captura a tela inteira. Ele inclui "
+                              "na aba Motor & WhatsApp.")
+            _p = plano_da_conta_ativa()
+            partes.append(
+                f"• PISOS DO PLANO (é o que barra cenário): R:R mínimo "
+                f"1:{_p.get('rr_minimo', '?')} · probabilidade mínima "
+                f"{_p.get('probabilidade_minima', '?')}% · risco "
+                f"{_p.get('risco_pct', '?')}% · drawdown máximo US$ "
+                f"{float(_p.get('drawdown_maximo') or 0):,.2f} · teto "
+                f"{_p.get('max_operacoes_dia', '?')} "
+                f"operações/dia · pausa após {_p.get('max_stops_seguidos', '?')} "
+                "stops seguidos. Estes números são os do disco — não recite de "
+                "memória, use estes.")
         except Exception:
             pass
         # AS ORDENS QUE EU MESMA MANDEI HOJE.
@@ -17901,6 +18115,23 @@ class SmcQuantApp(ctk.CTk):
                      "chamado ou avisar automaticamente depois. NÃO EXISTE ESSE "
                      "CAMINHO — aviso anexado. Nada foi agendado nem enviado a "
                      "ninguém.")
+        # ELA APRESENTOU LEITURA DE GRÁFICO QUE NÃO TEM? Esta é a mais cara das
+        # três, porque não parece invenção: parece dado. 31/08, 15:17, sem uma
+        # única leitura no contexto, saiu um bloco de telemetria com ticker,
+        # order block, FVG, VWAP, volume profile e delta — tudo escrito do
+        # nada, e num ativo que nem estava na mesa. É em cima de um texto
+        # desses que se decide entrada.
+        try:
+            _lidos = [v["ativo"] for v in ativos_em_analise(
+                getattr(self, "_analises_por_ativo", {}))]
+        except Exception:
+            _lidos = []
+        resposta, inventou_leitura = censurar_leitura_inventada(
+            resposta, _lidos, tem_imagem=bool(getattr(self, "_chat_anexo", None)))
+        if inventou_leitura:
+            self.log("🛑 TIGER: a resposta falava como se estivesse lendo um "
+                     "gráfico que o motor não entregou. Aviso anexado — nenhum "
+                     "número daquele trecho veio de leitura.")
         registrar_msg_chat("ia", resposta)
         self._tiger_dialogo_ate = time.time() + 20.0
         self._ia_falar(resposta, forcar=bool(getattr(self, "_chat_por_voz", False)))
@@ -25047,6 +25278,30 @@ class SmcQuantApp(ctk.CTk):
                     # processo morrer com a porta ocupada.
                     self.motor_confirmado = True
                     self.log("✅ Comunicação com o motor estabelecida (porta 3939 respondendo).")
+                    # A ANÁLISE COMEÇA AQUI, E NÃO NO WHATSAPP.
+                    #
+                    # 31/08: "ta parado, nao esta analisando a cada ciclo" —
+                    # e, na mesma mensagem, "tambem nao conectei o whatsapp de
+                    # proposito". As duas coisas eram a MESMA coisa: o laço de
+                    # análise só era disparado dentro do ramo
+                    # `if status == "CONECTADO"` do WhatsApp. Sem parear o
+                    # celular, o robô nunca analisava — e nada na tela dizia
+                    # isso. O log dele mostra o motor de pé, o ensaio da ordem
+                    # OK, o diagnóstico rodando, e nenhuma linha
+                    # '📸 Capturando' em duas horas.
+                    #
+                    # WhatsApp é CANAL DE RELATÓRIO. Análise é o produto.
+                    # Amarrar um no outro fez um aviso de celular virar
+                    # pré-requisito para operar — e o pior tipo de
+                    # dependência é a que ninguém declarou.
+                    if not self.robo_ativo:
+                        self.robo_ativo = True
+                        self.log("🚀 Iniciando o ciclo de análise. O WhatsApp é "
+                                 "só o canal de relatório: se ele não estiver "
+                                 "pareado, a análise roda igual e os avisos "
+                                 "aparecem aqui na tela.")
+                        threading.Thread(target=self._loop_robo_quant,
+                                         daemon=True).start()
 
                 # Ações de LIMPEZA só disparam na mudança de status — não a
                 # cada ciclo de 2s (era isso que gerava erro em loop no Tk).

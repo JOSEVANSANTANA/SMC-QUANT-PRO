@@ -195,7 +195,10 @@ class OTextoQueVaiParaOChat(unittest.TestCase):
         self.assertIn("MESU6", t.split("SEM gráfico monitorado")[1])
 
     def test_sem_leitura_nenhuma_ele_DIZ_isso_em_vez_de_inventar(self):
-        self.assertIn("Nenhum gráfico lido", texto({}, [], agora=AGORA))
+        # O texto virou uma PROIBIÇÃO, não uma constatação: em 31/08, 15:17,
+        # diante do "nenhum gráfico lido", o modelo escreveu um bloco inteiro
+        # de telemetria inventada. Ver test_gargalos_do_log.
+        self.assertIn("NENHUM GRÁFICO FOI LIDO", texto({}, [], agora=AGORA))
 
     def test_probabilidade_ilegivel_nao_derruba_o_texto(self):
         r = registrar({}, "MESU6", {"acao": "SELL", "preco": 7709.5,

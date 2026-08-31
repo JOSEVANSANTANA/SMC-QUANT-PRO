@@ -372,6 +372,10 @@ class TestAPromessaQueElaNaoPodeCumprir(unittest.TestCase):
         f = self._f()
         for frase in (
                 "Assim que o motor achar um cenário válido eu te aviso aqui.",
+        # 31/08: a guarda passou a pegar "vou pedir ao motor" e
+        # "aguardando dados do sistema". Estas duas continuam
+        # legítimas — é literalmente o que o ciclo faz.
+        "Assim que o motor ler o gráfico eu trago a análise.",
                 "Vou analisar o gráfico agora e te digo o que vejo.",
                 "Não tenho acesso a agendas de eventos externos.",
                 "O cenário é de compra no MESU6, alvo em 7745.50."):

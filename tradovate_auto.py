@@ -3302,27 +3302,99 @@ class TradovateAuto:
         # confiram RECUSARIA A ORDEM INTEIRA por causa de uma limpeza — e
         # bloquear a operação para zerar um campo opcional seria trocar um
         # problema pequeno por um grande.
+        # O AUTO TRAIL É UM EXTRA. O BRACKET É A OPERAÇÃO.
+        #
+        # 31/08, 13:16 e 13:55 — DOIS cenários aprovados, dimensionados e
+        # anunciados, e nenhum dos dois virou ordem:
+        #
+        #     ❌ NÃO ENVIEI SELL MESU6 7 ctr @ 7695.0: campo STOP LOSS
+        #        (auto trail): OCORRENCIA_INEXISTENTE. NENHUMA ordem foi para a
+        #        plataforma.
+        #
+        # O campo do trail não foi achado (o bloco AUTO TRAIL só existe no DOM
+        # quando 'TIPO DE STOP LOSS' está em AT; fora disso há UM rótulo
+        # 'STOP LOSS' na tela e a segunda ocorrência não existe). E o programa
+        # recusou a ordem inteira por causa disso.
+        #
+        # Isso estava invertido. Preço, quantidade, alvo e stop já foram
+        # escritos E CONFERIDOS na tela — o risco da operação está definido e
+        # protegido. O trail só melhora a saída de uma operação que já está
+        # certa. Trocar a operação inteira por ele é perder dinheiro para não
+        # perder um enfeite.
+        #
+        # A regra passa a ser a mesma dos dois lados: campo de trail que não dá
+        # para escrever NÃO derruba a ordem. O que muda é o aviso — e ele é
+        # gritado, porque a única coisa que o trader precisa saber é que a
+        # ordem foi SEM o trail e que pode ter sobrado trail da ordem anterior.
         n_obrigatorios = 3      # unidade + alvo + stop (índices 0,1,2)
         limpando_trail = not trailing
+        trail_falhou = []
         for i, ((rotulo, ocorrencia, valor), r) in enumerate(
                 zip(pedidos[1:], res[1:]), start=1):
             onde = f"{rotulo}" + (" (auto trail)" if ocorrencia else "")
-            opcional = limpando_trail and i >= n_obrigatorios
+            opcional = i >= n_obrigatorios
             if r.get("estado") != "OK":
                 if opcional:
-                    self.log(f"   ℹ️ não achei o campo {onde} para zerar o AUTO "
-                             "TRAIL. Se a plataforma tiver um trail guardado de "
-                             "uma ordem anterior, ele pode continuar valendo — "
-                             "confira no ticket.")
+                    trail_falhou.append(onde)
+                    if limpando_trail:
+                        self.log(f"   ℹ️ não achei o campo {onde} para zerar o "
+                                 "AUTO TRAIL. Se a plataforma tiver um trail "
+                                 "guardado de uma ordem anterior, ele pode "
+                                 "continuar valendo — confira no ticket.")
+                    else:
+                        self.log(f"   ⚠️ não achei o campo {onde} — a ordem vai "
+                                 "SEM o auto trail. O stop e o alvo já estão "
+                                 "escritos e conferidos, então a operação está "
+                                 "protegida do mesmo jeito; o que não vai é o "
+                                 "acompanhamento automático do stop.")
                     continue
                 return False, f"campo {onde}: {r.get('estado', 'SEM_RESPOSTA')}", False
             if not valores_batem(valor, r.get("valor", "")):
                 if opcional:
-                    self.log(f"   ℹ️ campo {onde}: tentei zerar e ficou "
-                             f"{r.get('valor')!r}. Confira o AUTO TRAIL no ticket.")
+                    trail_falhou.append(onde)
+                    self.log(f"   ⚠️ campo {onde}: escrevi {valor!r} e ficou "
+                             f"{r.get('valor')!r}. A ordem vai assim mesmo — "
+                             "stop e alvo estão conferidos. Confira o AUTO "
+                             "TRAIL no ticket.")
                     continue
                 return False, (f"campo {onde}: escrevi {valor!r} e o campo "
                                f"ficou {r.get('valor')!r}"), False
+        if trail_falhou and trailing:
+            # MEIA CONFIGURAÇÃO DE TRAIL É PIOR QUE TRAIL NENHUM — e esta é a
+            # parte que eu quase quebrei ao consertar a de cima.
+            #
+            # Se o STOP do trail entrou e o ACIONAR LUCROS não, sobra um stop
+            # que anda com gatilho errado: ele tira a operação na hora errada,
+            # sozinho, sem ninguém ver. Por isso não basta "mandar sem trail":
+            # é preciso ZERAR o que já foi escrito. Só depois disso a ordem
+            # pode ir, e aí ela vai sem trail nenhum — que é um estado
+            # conhecido e seguro.
+            #
+            # Se nem zerar der certo, aí sim a ordem NÃO vai: eu não consigo
+            # afirmar em que estado o trail ficou, e ordem com proteção
+            # indefinida é o que este caminho inteiro existe para impedir.
+            limpeza = self.campos_por_rotulo([
+                (self.ROTULO_STOP_ATM, 1, 0),
+                (self.ROTULO_TRAIL_ACIONAR, 0, 0),
+                (self.ROTULO_TRAIL_FREQ, 0, 0),
+            ])
+            sobrou = [
+                r for r in limpeza
+                if r.get("estado") == "OK" and str(r.get("valor", "0")).strip()
+                not in ("0", "0.0", "", "-")
+            ]
+            if sobrou:
+                return False, ("o AUTO TRAIL ficou pela metade e eu não "
+                               "consegui zerá-lo. Meia configuração de trail é "
+                               "pior que trail nenhum: o stop andaria com o "
+                               "gatilho errado e tiraria a operação na hora "
+                               "errada"), False
+            self.log(f"   🛡️ ATM conferida na tela: alvo {int(ticks_alvo)} ticks "
+                     f"· stop {int(ticks_stop)} ticks · SEM AUTO TRAIL "
+                     f"({', '.join(trail_falhou)} não respondeu; zerei o resto "
+                     "do trail para não ficar meia configuração). A operação "
+                     "está protegida por stop e alvo; o trail é que não foi.")
+            return True, "enviada SEM o auto trail (o resto conferido)", False
         self.log(f"   🛡️ ATM conferida na tela: alvo {int(ticks_alvo)} ticks · "
                  f"stop {int(ticks_stop)} ticks"
                  + (f" · auto trail {trailing['stop']} ticks a partir de "
