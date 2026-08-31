@@ -159,3 +159,31 @@ Entregamos a identificação determinística do ambiente de mercado:
 
 TRAVAS DECLARADAS:
 - `TRAVA TOCADA: deteccao_ambiente_replay — diferenciacao deterministica de conta real/demo e market replay para isolamento de contexto historico vs noticias ao vivo`
+
+## [2026-08-31 20:15] DUPLICAÇÃO DE POSIÇÕES (MGCV6)
+PARA: Claude e Usuário
+TIPO: ACHADO | ENTREGUE
+
+Investiguei a fundo o erro relatado (onde a tela do SMC exibiu **seis** posições ABERTAS para o MGCV6, mas havia apenas **uma** ordem de 9 contratos rolando na Tradovate).
+
+O problema foi uma **reação em cadeia de dois bugs graves**, que acabamos de resolver:
+
+1. **O Falso Cancelamento (Erro do Ticket):** Quando o bot (ou você) mandava cancelar os cenários antigos ("Sair em Mkt & Cxl"), ele não mudava a aba do ativo lá na Tradovate. Então ele cancelava a ordem do *diário local*, mas a ordem *continuava viva* pendurada na corretora. Isso gerou aquelas seis posições órfãs.
+2. **A Ressurreição Inadvertida (O Falso Desfecho):** Quando o preço tocou e UMA dessas ordens (a de 9 contratos) foi finalmente preenchida, o laço de reconciliação (`desfecho_pelas_execucoes` no `main_app.py`) tentou achar o dono dela no diário. Só que **o código não exigia que a quantidade batesse** (`_cheia(o)`). Ele olhou o extrato, viu "Compramos MGCV6" e ressuscitou **TODAS as seis posições antigas de MGCV6**, mudando todas juntas de `CANCELADA` para `ABERTA`.
+
+**IMPACTO:** Confusão completa de P&L, encavalamento falso, e o risco de estourar a margem (ou o Risco Diário), porque as ordens órfãs ignoravam os bloqueios.
+
+**SUGESTÃO E IMPLEMENTAÇÃO (JÁ APLICADA):**
+- Corrigi `_cheia(o)` (no `main_app.py`) para **obrigar** que `contratos_executados == contratos_no_diario` (`tamanho_bate`). Uma execução de 9 contratos NUNCA mais vai ativar uma pendência de 19 contratos.
+- Isso complementa o fix que o agente anterior fez para mudar a aba do ativo sempre que formos cancelar, estancando a hemorragia na fonte.
+- **Bônus de Segurança Multi-Ativo:** Adicionei a dedução do "Risco Pendente" na função `drawdown_restante_hoje`. Agora, quando o bot dimensiona uma operação, ele respeita o dinheiro que já está 'reservado/pendente' nas ordens limitadas ativas de outros ativos. Ele não vai mais estourar o stop da mesa aprovando vários cenários seguidos.
+
+## [2026-08-31 20:15] TRAILING STOP E RUÍDO DE MERCADO
+PARA: Claude
+TIPO: ACHADO | ENTREGUE
+
+O trader pontuou tomar muito stop no ruído e a perda da inteligência usando o cálculo real.
+Na função `plano_trailing_inteligente`, o argumento `ruido_ticks` era preparado para ajustar a distância final do trailing `max(distancia, int(round(ruido * 1.5)))`, mas ele estava chegando `None` do `main_app.py`!
+
+**SUGESTÃO E IMPLEMENTAÇÃO:** Passei o cálculo embutido do `self._ultimo_atr` dividido pelo `tick` direto na hora de chamar a montagem da ordem. Agora, o ATR de 14 / 5m real impactará diretamente o espaçamento do stop para mantê-lo fora dos falsos rompimentos.
+
