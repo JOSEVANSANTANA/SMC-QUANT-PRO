@@ -499,20 +499,53 @@ class TradovateAuto:
         except Exception:
             return False
 
-    def descobrir_aba_tradovate(self):
-        """Acha a aba cujo URL contém 'tradovate' e devolve o webSocketDebuggerUrl."""
-        for aba in self._http_json("/json"):
-            if aba.get("type") == "page" and "tradovate" in (aba.get("url") or "").lower():
-                return aba.get("webSocketDebuggerUrl")
-        return None
+    def descobrir_aba_tradovate(self, id_preferida=None):
+        """A aba da Tradovate onde a ordem vai ser digitada.
 
-    def conectar(self):
+        `id_preferida` MANDA. Sem ela, cai na primeira aba da Tradovate que o
+        Chrome listar — e é isso que precisa de explicação.
+
+        31/08: ele passou a trabalhar com QUATRO abas da Tradovate abertas ao
+        mesmo tempo (MESU6, MGCV6, microouro, MBTU6). Todas em
+        trader.tradovate.com, todas casando com este filtro. Qual delas o
+        Chrome devolve primeiro é ordem de criação — muda quando ele fecha e
+        reabre uma aba, e não tem relação nenhuma com a lista de gráficos
+        monitorados do programa.
+
+        O efeito aparecia na tela dele: o ticket da aba 'bitcoins' com MESU6
+        escrito dentro. Não era defeito de envio (o ticket da Tradovate opera
+        qualquer instrumento, e `garantir_ativo_no_ticket` troca o símbolo
+        antes de mandar) — era o programa escrevendo numa aba sorteada.
+
+        Ordem sorteada é ordem que ninguém consegue prever nem conferir. Com a
+        preferência, quem escolhe é a lista de gráficos: a primeira janela
+        monitorada passa a ser, de fato, a aba de execução — que é o que a
+        tela sempre prometeu."""
+        abas = [a for a in self._http_json("/json")
+                if a.get("type") == "page"
+                and "tradovate" in (a.get("url") or "").lower()]
+        if id_preferida:
+            for aba in abas:
+                if str(aba.get("id")) == str(id_preferida):
+                    self.log(f"   🎯 aba de execução: '{(aba.get('title') or '')[:40]}' "
+                             "(a primeira da lista de gráficos).")
+                    return aba.get("webSocketDebuggerUrl")
+            self.log("   ⚠️ a aba da primeira janela monitorada não está mais "
+                     "aberta — usando outra aba da Tradovate para digitar a "
+                     "ordem. O instrumento é conferido no ticket de qualquer "
+                     "jeito, antes de enviar.")
+        if len(abas) > 1 and not id_preferida:
+            self.log(f"   ℹ️ {len(abas)} abas da Tradovate abertas e nenhuma "
+                     "indicada — vou digitar na primeira que o Chrome listar.")
+        return abas[0].get("webSocketDebuggerUrl") if abas else None
+
+    def conectar(self, id_aba=None):
         """Abre o WebSocket CDP na aba da Tradovate. Retorna True/False."""
         if not self.chrome_ligado():
             self.log("❌ Chrome de depuração não encontrado na porta "
                      f"{self.porta}. Abra com abrir_chrome_debug() e logue na Tradovate.")
             return False
-        ws_url = self.descobrir_aba_tradovate()
+        ws_url = self.descobrir_aba_tradovate(id_aba)
         if not ws_url:
             self.log("❌ Nenhuma aba da Tradovate encontrada. Abra trader.tradovate.com "
                      "na janela de depuração e tente de novo.")

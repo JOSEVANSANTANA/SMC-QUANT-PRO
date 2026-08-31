@@ -2476,6 +2476,15 @@ VALOR_POR_PONTO = {
     "CL": 1000.0,  # Petróleo WTI
     "M6E": 12500.0,  # Micro Euro FX
     "6E": 125000.0,  # Euro FX
+    # --- CRIPTO NA CME ---
+    # 31/08: ele abriu uma janela 'Tradovate - bitcoins' com o MBTU6 e o motor
+    # RECUSOU o gráfico inteiro — 'MBT' não estava aqui, e sem saber quanto vale
+    # um ponto o dimensionamento seria chute. A recusa estava certa; a tabela é
+    # que estava incompleta.
+    # O Micro Bitcoin é 0,1 BTC: cada US$ 1 no preço do bitcoin move US$ 0,10 no
+    # contrato. O contrato cheio é 5 BTC — US$ 5,00 por ponto.
+    "MBT": 0.10,   # Micro Bitcoin (0,1 BTC)
+    "BTC": 5.00,   # Bitcoin (5 BTC)
     # --- B3 (para quem analisa no Profit/Nelogica ou NinjaTrader) ---
     # Valores em REAIS por ponto; o dashboard mostra na moeda do seu plano.
     "WIN": 0.20,   # Mini Índice Bovespa (R$ 0,20 por ponto)
@@ -2502,6 +2511,8 @@ TICK_MINIMO = {
     "M2K": 0.1,  "RTY": 0.1,
     "MGC": 0.1,  "GC": 0.1,
     "MCL": 0.01, "CL": 0.01,
+    # Cripto anda em degrau de US$ 5 no preço do bitcoin, nos dois contratos.
+    "MBT": 5.0,  "BTC": 5.0,
     "WIN": 5.0,  "IND": 5.0,
     "WDO": 0.5,  "DOL": 0.5,
 }
@@ -2827,6 +2838,11 @@ FAIXA_TICKS_STOP = {
     "M2K": (12, 60),   "RTY": (12, 60),
     "MGC": (10, 50),   "GC":  (10, 50),
     "MCL": (10, 60),   "CL":  (10, 60),
+    # O bitcoin percorre milhares de pontos num dia. Em ticks de US$ 5, um stop
+    # intradiário razoável vai de umas duas centenas a alguns milhares de
+    # pontos — daí a faixa larga. Faixa estreita demais aqui recusaria todo
+    # cenário do contrato.
+    "MBT": (40, 400),  "BTC": (40, 400),
     "WIN": (50, 400),  "IND": (50, 400),
     "WDO": (20, 150),  "DOL": (20, 150),
 }
@@ -13285,9 +13301,24 @@ class SmcQuantApp(ctk.CTk):
         ctk.CTkLabel(
             frame_multi, justify="left", text_color=COR["dim"],
             font=ctk.CTkFont(size=10),
+            # ESTE TEXTO DIZIA UMA COISA QUE NÃO ERA VERDADE.
+            #
+            # Ele dizia que "é na primeira que o envio de ordem trabalha", e
+            # isso levava a entender que só o primeiro ativo é operado. TODOS
+            # são: o ciclo analisa cada janela, decide posição e ordem viva por
+            # ativo, e o envio troca o instrumento no ticket antes de mandar.
+            #
+            # O que a primeira faz é OUTRA coisa: é a aba onde a ordem é
+            # digitada e de onde a posição é lida. Isso, aliás, também não era
+            # verdade até agora — o programa pegava a primeira aba da Tradovate
+            # que o Chrome listasse, que é ordem de criação e não tem relação
+            # com esta lista. Ver `_aba_de_execucao`.
             text="Cada janela é um ativo, com cenário e histórico próprios — o motor "
-                 "não mistura um com o outro.\nA PRIMEIRA da lista é a principal: é nela "
-                 "que o envio de ordem e a leitura de posições trabalham.\n"
+                 "não mistura um com o outro.\nTODOS são analisados e TODOS podem "
+                 "virar ordem: cada ativo tem posição, freio e dimensionamento "
+                 "próprios.\nA PRIMEIRA da lista é a ABA DE EXECUÇÃO: é o ticket dela "
+                 "que eu preencho (trocando o instrumento antes de enviar) e é dela "
+                 "que leio as posições.\n"
                  "Atenção: mais gráficos = mais consumo da cota da API por ciclo."
         ).pack(anchor="w", padx=10, pady=(2, 4))
         self.frame_lista_janelas = ctk.CTkFrame(frame_multi, fg_color="transparent")
@@ -13965,6 +13996,25 @@ class SmcQuantApp(ctk.CTk):
         except Exception as e:
             self.log(f"⚠️ Falha ao abrir o Chrome: {e}")
 
+    def _aba_de_execucao(self):
+        """O id da aba do Chrome onde a ordem deve ser digitada — a da PRIMEIRA
+        janela monitorada. `None` quando não dá para saber.
+
+        Com quatro abas da Tradovate abertas, "a primeira que o Chrome listar"
+        é ordem de criação: muda quando ele fecha e reabre uma aba, e não tem
+        relação nenhuma com a lista de gráficos. Aqui a escolha volta a ser
+        dele — a mesma lista que a tela mostra."""
+        try:
+            primeira = (janelas_monitoradas() or [None])[0]
+            if not primeira:
+                return None
+            handle = self._resolver_hwnd_corretora(primeira)
+            if isinstance(handle, str) and handle.startswith(plataforma._PREFIXO_CDP):
+                return handle[len(plataforma._PREFIXO_CDP):]
+        except Exception:
+            pass
+        return None
+
     def _tv_conectar(self):
         """Devolve uma instância de TradovateAuto REALMENTE conectada.
 
@@ -13984,7 +14034,7 @@ class SmcQuantApp(ctk.CTk):
 
         if bot.ws is not None:
             self.log("🔌 A conexão com o Chrome tinha caído — reconectando...")
-        if not bot.conectar():
+        if not bot.conectar(self._aba_de_execucao()):
             return None
         # Nova conexão de pé: zera o intervalo de aviso para você ver o próximo
         # resultado na hora.
