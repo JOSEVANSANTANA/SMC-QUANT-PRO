@@ -78,6 +78,7 @@ def _fonte(nome="main_app.py"):
 
 
 NS = carregar([
+    "escolher_ativo_do_rodizio",
     "censurar_leitura_inventada",
     "censurar_promessa_impossivel",
     "texto_da_mesa_multiativo",
@@ -87,6 +88,7 @@ NS = carregar([
 censurar = NS["censurar_leitura_inventada"]
 promessa = NS["censurar_promessa_impossivel"]
 texto_mesa = NS["texto_da_mesa_multiativo"]
+rodizio = NS["escolher_ativo_do_rodizio"]
 
 # O bloco que saiu de verdade no chat dele, encurtado.
 TELEMETRIA_INVENTADA = '''Estou vendo o gráfico do ES (E-mini S&P 500) no 5m.
@@ -297,6 +299,48 @@ class TigerEnxergaMotorPlanoEConfiguracoes(unittest.TestCase):
         self.assertIn("_modo_autonomo()", self._corpo())
 
 
+class OMotivoDoDescarteNaoPodeSerTROCADO(unittest.TestCase):
+    """31/08, 16:20, com quatro ativos na mesa:
+
+        📐 BUY MNQU6 descartado: stop de 96 tick(s) é largo demais...
+        🔁 BUY MNQU6 @ 19412.0 é o MESMO setup já sugerido há pouco.
+
+    Duas linhas, uma causa só. O MNQU6 tinha ACABADO de entrar na mesa e não
+    havia sugestão anterior dele — o que barrou foi o stop largo, três blocos
+    acima. Mas leitura congelada, stop fora de escala e entrada distante
+    escrevem todos na mesma variável `repetido`, e no fim o programa imprimia
+    a frase da anti-repetição para qualquer um deles.
+
+    Ele leu aquilo como 'o robô achou que MNQU6 e MESU6 são o mesmo cenário' —
+    e teria razão em desconfiar da ferramenta inteira. Motivo errado no log é
+    defeito com a mesma gravidade de decisão errada: é por ele que se decide
+    onde procurar."""
+
+    def _laco(self):
+        fonte = _fonte()
+        i = fonte.index("repetido_por_semelhanca = False")
+        return fonte[i - 2500:i + 2000]
+
+    def test_a_anti_repeticao_tem_bandeira_PROPRIA(self):
+        self.assertIn("repetido_por_semelhanca", self._laco())
+
+    def test_so_ela_imprime_a_frase_dela(self):
+        laco = self._laco()
+        self.assertIn("if repetido_por_semelhanca:", laco)
+        self.assertNotIn("if repetido:\n                            self.log(f\"🔁", laco)
+
+    def test_a_comparacao_SEMPRE_foi_por_ativo(self):
+        """A regra nunca cruzou ativos — quem cruzou foi a mensagem. Este
+        teste existe para que ninguém 'conserte' a regra certa."""
+        laco = self._laco()
+        self.assertIn('str(s_ant.get("ativo", "")).upper() == str(ativo).upper()',
+                      laco)
+
+    def test_a_frase_diz_que_os_OUTROS_ativos_seguem(self):
+        self.assertIn("Os outros ativos da mesa seguem normalmente",
+                      self._laco())
+
+
 class AAnaliseNaoDependeDoWHATSAPP(unittest.TestCase):
     """31/08: "ta parado, nao esta analisando a cada ciclo" — e, na mesma
     mensagem, "tambem nao conectei o whatsapp de proposito".
@@ -329,6 +373,111 @@ class AAnaliseNaoDependeDoWHATSAPP(unittest.TestCase):
         i = fonte.index('if status == "CONECTADO":')
         trecho = fonte[i:i + 500]
         self.assertIn("if not self.robo_ativo", trecho)
+
+
+class NaoExisteMAIS_O_GRAFICO(unittest.TestCase):
+    """31/08, 16:21: o motor leu os QUATRO ativos (MESU6, MNQU6, MGCV6,
+    MBTU6). Às 16:23:
+
+        ❯ quais ativos voce esta acompanhando :
+        ✳ Só o MESU6. Não há outros ativos sendo monitorados no momento.
+
+    E na resposta anterior, no mesmo minuto, a tabela dela trazia
+    "Preço atual (MBTU6) 79385.0" — o ÚLTIMO ativo do laço.
+
+    A lista multiativo já estava no contexto. O que a atropelava era o bloco
+    logo abaixo: um texto longo, em prosa, chamado "ÚLTIMA ANÁLISE COMPLETA DO
+    GRÁFICO", sem dizer de QUAL gráfico e sempre o da última janela. Entre uma
+    lista compacta e um ensaio detalhado sobre 'o gráfico', o modelo responde
+    sobre o ensaio. O nome do bloco criava um ativo principal que o motor não
+    tem."""
+
+    def _contexto(self):
+        return funcao_inteira(_fonte(), "_montar_contexto_chat") \
+            if "_montar_contexto_chat" in _fonte() else _fonte()
+
+    def test_a_analise_completa_DIZ_de_qual_ativo_e(self):
+        fonte = _fonte()
+        self.assertIn("ANÁLISE COMPLETA DO {_qual}", fonte)
+        self.assertNotIn("ÚLTIMA ANÁLISE COMPLETA DO GRÁFICO", fonte)
+
+    def test_e_avisa_que_e_UM_dos_ativos_nao_O_grafico(self):
+        fonte = _fonte()
+        i = fonte.index("ANÁLISE COMPLETA DO {_qual}")
+        trecho = fonte[i:i + 500]
+        self.assertIn("UM dos ativos da mesa", trecho)
+        self.assertIn("não 'o gráfico'", trecho)
+
+    def test_os_indicadores_tambem_dizem_de_qual_janela_sao(self):
+        fonte = _fonte()
+        i = fonte.index("INDICADORES VISÍVEIS NO GRÁFICO DO")
+        self.assertIn("DESSA janela", fonte[i:i + 300])
+
+    def test_a_lista_dos_outros_ativos_tem_recorte_por_TEMPO(self):
+        """Sem isso, um gráfico que ele tirou da lista de manhã continuaria
+        sendo anunciado como monitorado à tarde."""
+        fonte = _fonte()
+        i = fonte.index("linhas_outras = [")
+        trecho = fonte[max(0, i - 500):i]
+        self.assertIn("ativos_em_analise(", trecho)
+
+
+class OPainelPASSA_DE_UM_EM_UM(unittest.TestCase):
+    """Pedido dele: "a IA TIGER precisa acompanhar a telemetria de todos,
+    considere colocar um loop passando de um em um onde fica a telemetria".
+
+    O painel tem espaço para UM ativo — é um cockpit, não uma planilha.
+    Espremer quatro leituras ali deixaria as quatro ilegíveis. Então o espaço
+    é dividido no TEMPO."""
+
+    def _fila(self, *nomes):
+        return [{"ativo": n, "preco": 1.0} for n in nomes]
+
+    def test_passa_por_TODOS_e_volta_ao_primeiro(self):
+        fila = self._fila("MESU6", "MGCV6", "MNQU6")
+        vistos = [rodizio(fila, i)[0]["ativo"] for i in range(6)]
+        self.assertEqual(vistos, ["MESU6", "MGCV6", "MNQU6"] * 2)
+
+    def test_a_ordem_e_ALFABETICA_e_estavel(self):
+        """`ativos_em_analise` devolve do mais recente para o mais velho, e
+        essa ordem muda a cada ciclo — o rodízio ficaria pulando e repetindo
+        em vez de passar por todos."""
+        a = [rodizio(self._fila("MNQU6", "MESU6", "MGCV6"), i)[0]["ativo"]
+             for i in range(3)]
+        b = [rodizio(self._fila("MGCV6", "MNQU6", "MESU6"), i)[0]["ativo"]
+             for i in range(3)]
+        self.assertEqual(a, b)
+        self.assertEqual(a, ["MESU6", "MGCV6", "MNQU6"])
+
+    def test_devolve_a_POSICAO_e_o_TOTAL(self):
+        """O contador é o que impede o painel de parecer que a mesa tem um
+        ativo só — foi essa impressão que o fez perguntar três vezes se o robô
+        olhava todos."""
+        _l, pos, tot = rodizio(self._fila("MESU6", "MGCV6"), 1)
+        self.assertEqual((pos, tot), (2, 2))
+
+    def test_um_ativo_so_nao_gira(self):
+        for i in range(3):
+            leitura, pos, tot = rodizio(self._fila("MESU6"), i)
+            self.assertEqual((leitura["ativo"], pos, tot), ("MESU6", 1, 1))
+
+    def test_sem_leitura_nenhuma_devolve_vazio_sem_estourar(self):
+        self.assertEqual(rodizio([], 0), (None, 0, 0))
+        self.assertEqual(rodizio(None, 5), (None, 0, 0))
+
+    def test_leitura_sem_ticker_nao_entra_no_rodizio(self):
+        fila = self._fila("MESU6") + [{"preco": 9.0}]
+        _l, _pos, tot = rodizio(fila, 0)
+        self.assertEqual(tot, 1)
+
+    def test_o_painel_avanca_o_rodizio_a_cada_atualizacao(self):
+        corpo = funcao_inteira(_fonte(), "_atualizar_telemetria_hud_embutido")
+        self.assertIn("escolher_ativo_do_rodizio(", corpo)
+        self.assertIn("_passo_rodizio_hud", corpo)
+
+    def test_o_painel_MOSTRA_o_contador(self):
+        corpo = funcao_inteira(_fonte(), "_atualizar_telemetria_hud_embutido")
+        self.assertIn("{_pos}/{_tot}", corpo)
 
 
 class AGuardaEstaLIGADANoFluxoDoChat(unittest.TestCase):

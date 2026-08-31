@@ -715,10 +715,17 @@ class TestOsIndicadoresDaTela(unittest.TestCase):
     def test_os_indicadores_entram_na_CONVERSA(self):
         """Sem isso ela não teria como responder 'se atenta nesse indicador
         novo' — responderia sobre indicador nenhum, ou inventaria um."""
+        # O RÓTULO PASSOU A DIZER DE QUAL ATIVO SÃO. Com quatro gráficos na
+        # mesa, "no gráfico DELE" nomeia um gráfico que não existe — e foi
+        # esse tipo de frase que fez o chat responder sobre um ativo só
+        # (31/08, 16:23). A regra que importa continua a mesma: os
+        # indicadores chegam ao modelo, e ele é proibido de inventar.
         fonte = self._fonte()
-        self.assertIn("INDICADORES VISÍVEIS NO GRÁFICO DELE", fonte)
-        i = fonte.index("INDICADORES VISÍVEIS NO GRÁFICO DELE")
-        self.assertIn("em vez de inventar", fonte[i:i + 700])
+        self.assertIn("INDICADORES VISÍVEIS NO GRÁFICO DO", fonte)
+        i = fonte.index("INDICADORES VISÍVEIS NO GRÁFICO DO")
+        trecho = fonte[i:i + 800]
+        self.assertIn("em vez de inventar", trecho)
+        self.assertIn("DESSA janela", trecho)
 
     def test_o_campo_novo_NAO_pode_invalidar_a_leitura(self):
         """Se `indicadores_na_tela` entrasse nas chaves obrigatórias, o modelo

@@ -6289,6 +6289,33 @@ def texto_da_mesa_multiativo(registro, posicoes=None,
     return "\n".join(linhas)
 
 
+def escolher_ativo_do_rodizio(lidos, passo):
+    """Qual ativo o painel de telemetria mostra AGORA. (leitura, posição, total)
+
+    PEDIDO DELE: "a IA TIGER precisa acompanhar a telemetria de todos,
+    considere colocar um loop passando de um em um onde fica a telemetria".
+
+    O painel tem espaço para UM ativo — ele é um cockpit, não uma planilha, e
+    espremer quatro leituras ali deixaria as quatro ilegíveis. Então o espaço
+    passa a ser dividido no TEMPO: a cada atualização entra o próximo da fila,
+    e o rótulo diz a posição (2/4) para ele saber que está vendo um de quatro
+    e que os outros três continuam sendo lidos.
+
+    A ORDEM É ALFABÉTICA, DE PROPÓSITO. `ativos_em_analise` devolve do mais
+    recente para o mais velho, e essa ordem muda a cada ciclo — o rodízio
+    ficaria pulando e repetindo em vez de passar por todos. Ordem alfabética é
+    estável: em quatro atualizações ele viu os quatro, sempre na mesma
+    sequência.
+
+    Função PURA: (None, 0, 0) quando não há leitura nenhuma."""
+    fila = sorted((l for l in (lidos or []) if l.get("ativo")),
+                  key=lambda l: str(l["ativo"]))
+    if not fila:
+        return None, 0, 0
+    i = int(passo or 0) % len(fila)
+    return fila[i], i + 1, len(fila)
+
+
 def posicao_aberta_no_ativo(ativo):
     """A posição que você tem AGORA nesse ativo, na conta ativa — venha ela de
     uma sugestão acatada ou de uma entrada que você fez na mão na plataforma.
@@ -17217,12 +17244,29 @@ class SmcQuantApp(ctk.CTk):
         except Exception:
             pass
         partes.append(self._chat_status_texto())
+        # "O GRÁFICO" NÃO EXISTE MAIS — E ERA ESTE BLOCO QUE O RESSUSCITAVA.
+        #
+        # 31/08, 16:21, o motor leu os QUATRO ativos: MESU6, MNQU6, MGCV6 e
+        # MBTU6. Às 16:23 ele perguntou quais ativos ela acompanhava e ouviu
+        # "Só o MESU6. Não há outros ativos sendo monitorados". Na mesma
+        # resposta, a tabela dela trazia "Preço atual (MBTU6) 79385.0".
+        #
+        # A lista multiativo já estava no contexto, mas logo abaixo vinha ESTE
+        # bloco: um texto longo, em prosa, chamado "ÚLTIMA ANÁLISE COMPLETA DO
+        # GRÁFICO" — sem dizer de QUAL gráfico, e sempre o da última janela do
+        # laço. Entre uma lista compacta e um ensaio detalhado sobre "o
+        # gráfico", o modelo responde sobre o ensaio. O nome do bloco é que
+        # estava criando um ativo principal que o motor não tem.
         ua = getattr(self, "_ultima_analise", None) or {}
         if ua.get("analise"):
-            partes.append(f"\nÚLTIMA ANÁLISE COMPLETA DO GRÁFICO "
-                          f"({ua.get('hora')}):\n{ua.get('analise')}")
+            _qual = str(ua.get("ativo") or "?").upper()
+            partes.append(f"\nANÁLISE COMPLETA DO {_qual} ({ua.get('hora')}) — "
+                          f"este é UM dos ativos da mesa, não 'o gráfico'. Os "
+                          f"outros foram lidos do mesmo jeito e estão listados "
+                          f"acima:\n{ua.get('analise')}")
             if ua.get("confluencias"):
-                partes.append("Confluências vistas: " + "; ".join(ua["confluencias"]))
+                partes.append(f"Confluências vistas no {_qual}: "
+                              + "; ".join(ua["confluencias"]))
         # OS INDICADORES DA TELA ENTRAM NA CONVERSA.
         # 18/08, 14:53: "tira um print, se atenta nesse indicador novo que
         # coloquei na plataforma tradovate". Sem esta linha ela não tinha como
@@ -17231,8 +17275,9 @@ class SmcQuantApp(ctk.CTk):
         indic = getattr(self, "_ultimos_indicadores", None) or []
         if indic:
             partes.append(
-                "INDICADORES VISÍVEIS NO GRÁFICO DELE (lidos na última "
-                "captura): " + " · ".join(indic) +
+                f"INDICADORES VISÍVEIS NO GRÁFICO DO "
+                f"{str(ua.get('ativo') or '?').upper()} (lidos na última "
+                "captura DESSA janela): " + " · ".join(indic) +
                 ". Ele escolheu cada um deles e mexe neles: quando perguntar "
                 "de 'indicador novo', é entre estes que está a resposta. Se o "
                 "que ele descrever não estiver nesta lista, diga que não o "
@@ -17243,7 +17288,13 @@ class SmcQuantApp(ctk.CTk):
         # errado, ou um "não tenho isso". A leitura de cada ativo já estava
         # guardada em memória; faltava entregá-la. Contexto que existe e não
         # chega ao modelo é a forma mais barata de burrice.
-        outras = getattr(self, "_analises_por_ativo", None) or {}
+        # COM O RECORTE POR TEMPO. Sem ele, um gráfico que ele tirou da lista
+        # de manhã continuaria sendo anunciado como monitorado à tarde.
+        try:
+            outras = {v["ativo"]: v for v in ativos_em_analise(
+                getattr(self, "_analises_por_ativo", {}))}
+        except Exception:
+            outras = getattr(self, "_analises_por_ativo", None) or {}
         linhas_outras = [
             f"• {sym}: {a.get('acao')} @ {a.get('preco')} · probabilidade "
             f"{a.get('probabilidade', 0):.0f}% · lido às {a.get('hora', '—')} "
@@ -23206,13 +23257,29 @@ class SmcQuantApp(ctk.CTk):
             self._porque_sem_fundo(f"a camada de fundo levantou um erro ({e})")
         try:
             r = self.hud_embutido.renderer
-            ua = getattr(self, "_ultima_analise", None) or {}
+            # RODÍZIO: o painel passa de um ativo para o outro a cada
+            # atualização, em vez de mostrar sempre a última janela do laço.
+            # Ver `escolher_ativo_do_rodizio`.
+            try:
+                _fila = ativos_em_analise(
+                    getattr(self, "_analises_por_ativo", {}))
+                _rod, _pos, _tot = escolher_ativo_do_rodizio(
+                    _fila, getattr(self, "_passo_rodizio_hud", 0))
+                self._passo_rodizio_hud = getattr(
+                    self, "_passo_rodizio_hud", 0) + 1
+            except Exception:
+                _rod, _pos, _tot = None, 0, 0
+            ua = _rod or (getattr(self, "_ultima_analise", None) or {})
             # O "or 'MESU6'" inventava o instrumento antes da primeira
             # leitura. Num programa que manda ordem, afirmar qual é o contrato
             # sem ter lido é a família de erro mais cara que existe aqui.
             ativo = ua.get("ativo") or getattr(self, "_ultimo_ativo_lido", "")
             preco = ua.get("preco") or getattr(self, "_ultimo_preco_lido", None)
             ativo_txt = (f"{ativo}" + (f" @ {preco}" if preco else "")
+                         # O contador é o que impede o painel de parecer que a
+                         # mesa tem um ativo só — foi essa impressão que fez
+                         # ele perguntar três vezes se o robô olhava todos.
+                         + (f"   [{_pos}/{_tot}]" if _tot > 1 else "")
                          if ativo else "— (nenhum gráfico lido ainda)")
 
             acao = str(ua.get("acao") or "AGUARDANDO").upper()
@@ -26948,6 +27015,35 @@ class SmcQuantApp(ctk.CTk):
                                     "longe raramente é tocada — ela expiraria sem "
                                     "nunca ter tido chance.")
 
+                        # `repetido` VIROU UMA PORTA COMPARTILHADA, E A MENSAGEM
+                        # NÃO ACOMPANHOU.
+                        #
+                        # 31/08, 16:20, com quatro ativos na mesa:
+                        #     📐 BUY MNQU6 descartado: stop de 96 tick(s) é
+                        #        largo demais para o MNQU6...
+                        #     🔁 BUY MNQU6 @ 19412.0 é o MESMO setup já sugerido
+                        #        há pouco — não vou repetir a sugestão.
+                        #
+                        # Duas linhas, uma causa só. O MNQU6 tinha acabado de
+                        # entrar na mesa e não havia sugestão anterior nenhuma
+                        # dele — o que barrou foi o STOP LARGO, três blocos
+                        # acima. Mas leitura congelada, stop fora de escala e
+                        # entrada distante escrevem todos na mesma variável
+                        # `repetido`, e no fim o programa imprimia a frase da
+                        # anti-repetição para qualquer um deles.
+                        #
+                        # Ele leu aquilo como "o robô achou que MNQU6 e MESU6
+                        # são o mesmo cenário" — e teria razão em desconfiar da
+                        # ferramenta inteira por isso. A anti-repetição SEMPRE
+                        # comparou por ativo (a linha do `ativo ==` abaixo está
+                        # lá desde o começo); quem misturou os ativos foi a
+                        # MENSAGEM, não a regra.
+                        #
+                        # Agora a anti-repetição tem bandeira própria e só ela
+                        # imprime a frase dela. Motivo errado no log é defeito
+                        # com a mesma gravidade de decisão errada: é por ele que
+                        # se decide onde procurar.
+                        repetido_por_semelhanca = False
                         if not repetido and acao in ("BUY", "SELL") and _ep > 0 and _risco:
                             limite_rep = (time.time() - JANELA_ANTI_REPETICAO_SEG) * 1000
                             for s_ant in sinais_da_conta_ativa():
@@ -26958,10 +27054,13 @@ class SmcQuantApp(ctk.CTk):
                                         and s_ant.get("entry")
                                         and abs(s_ant["entry"] - _ep) <= _risco * 0.25):
                                     repetido = True
+                                    repetido_por_semelhanca = True
                                     break
-                        if repetido:
+                        if repetido_por_semelhanca:
                             self.log(f"🔁 {acao} {ativo} @ {_ep} é o MESMO setup já sugerido há pouco "
-                                      "— não vou repetir a sugestão. Aguardando cenário novo.")
+                                      f"— não vou repetir a sugestão de {ativo}. "
+                                      "Os outros ativos da mesa seguem normalmente. "
+                                      "Aguardando cenário novo.")
 
                         # ANTI-CHICOTE: o motor virou de BUY para SELL (ou o contrário)
                         # no mesmo ativo em poucos minutos. Num mercado lateral isso
