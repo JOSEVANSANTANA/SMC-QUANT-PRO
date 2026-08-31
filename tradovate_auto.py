@@ -2649,12 +2649,25 @@ class TradovateAuto:
                                    and not d["inverte_posicao"])
         return d
 
-    def sair_em_mercado_e_cancelar(self, enviar=False, exigir_zerado=True):
+    def sair_em_mercado_e_cancelar(self, enviar=False, exigir_zerado=True, ativo=None):
         """Clica em 'Sair em Mkt & Cancelar': zera a posição e limpa as ordens.
 
         Devolve {ok, clicou, motivo, vivas_antes, vivas_depois, recusa}."""
         r = {"ok": False, "clicou": False, "motivo": None, "recusa": False,
              "vivas_antes": None, "vivas_depois": None, "rotulo": None}
+
+        # 0) O TICKET ESTÁ NO ATIVO CERTO?
+        if ativo:
+            try:
+                ok_ativo, motivo_ativo = self.garantir_ativo_no_ticket(ativo)
+                if not ok_ativo:
+                    r["motivo"] = motivo_ativo
+                    r["recusa"] = True
+                    return r
+            except ConexaoPerdida as e:
+                r["motivo"] = f"a ligação com o Chrome caiu ao trocar o ativo para {ativo}: {e}"
+                r["recusa"] = True
+                return r
 
         # 1) A POSIÇÃO ESTÁ ZERADA? Leitura na tela.
         quais_abertas = ""

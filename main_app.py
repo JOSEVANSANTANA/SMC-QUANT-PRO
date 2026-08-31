@@ -4885,11 +4885,15 @@ def desfecho_pelas_execucoes(pos, ordens, vpp=None):
     if not executadas:
         return None, None, None, None
 
-    # PREENCHIMENTO PARCIAL NÃO É ENTRADA CHEIA. "3/8" com o diário achando
-    # que são 8 contratos calcularia P&L quase três vezes maior que o real.
+    # PREENCHIMENTO PARCIAL NÃO É ENTRADA CHEIA. E mais: a ordem do extrato TEM
+    # DE SER DO MESMO TAMANHO da posição do diário. Se o diário tem uma ordem de 19
+    # e uma de 11, e a de 11 executa, a de 19 não pode ser dada como ABERTA só
+    # por causa da direção e ativo.
     def _cheia(o):
         e, t = o.get("executados"), o.get("total")
-        return (e is None or t is None) or (e >= t > 0)
+        cheia = (e is None or t is None) or (e >= t > 0)
+        tamanho_bate = (t is None) or (t == int(pos.get("contratos") or 0))
+        return cheia and tamanho_bate
 
     entradas = [o for o in executadas
                 if o.get("lado") == direcao and _cheia(o)]
@@ -5626,9 +5630,24 @@ def drawdown_restante_hoje(plano=None):
         aberto = sum(p.get("pnl_atual", 0) or 0
                      for p in carregar_posicoes()
                      if _e_da_conta_ativa(p) and p.get("status") == "ABERTA")
+        
+        # O RISCO PENDENTE também consome margem. Se o robô sugerir 5 operações
+        # simultâneas e não abatermos o risco pendente, ele vai usar o mesmo
+        # drawdown restante para dimensionar todas, estourando a conta.
+        risco_pendente = 0.0
+        for p in carregar_posicoes():
+            if _e_da_conta_ativa(p) and p.get("status") == "PENDENTE":
+                try:
+                    c = int(p.get("contratos") or 0)
+                    e = float(p.get("entry") or 0)
+                    s = float(p.get("stop") or 0)
+                    vpp = valor_por_ponto_do_ativo(p.get("ativo", ""))
+                    risco_pendente += c * abs(e - s) * vpp
+                except Exception:
+                    pass
     except Exception:
         return drawdown
-    usado = min(0.0, realizado + aberto)      # lucro NÃO aumenta o limite
+    usado = min(0.0, realizado + aberto - risco_pendente)      # lucro NÃO aumenta o limite, risco pendente é sempre "perda"
     return max(0.0, drawdown - abs(usado))
 
 
@@ -20277,9 +20296,9 @@ class SmcQuantApp(ctk.CTk):
         self.log(f"🧹 CANCELANDO NA PLATAFORMA: {quais}"
                  + (f" ({contexto})" if contexto else "")
                  + f" — {motivo}. Confirmo em seguida.")
-        self._tv_cancelar_na_plataforma(quais, contexto, exigir_zerado=(not permitir_liquidar_posicao))
+        self._tv_cancelar_na_plataforma(quais, contexto, exigir_zerado=(not permitir_liquidar_posicao), ativo=orfas[0].get("ativo"))
 
-    def _tv_cancelar_na_plataforma(self, quais, contexto="", exigir_zerado=True):
+    def _tv_cancelar_na_plataforma(self, quais, contexto="", exigir_zerado=True, ativo=None):
         """Aperta o 'Sair em Mkt & Cancelar' em thread separada e CONFERE.
 
         A conferência é o ponto todo: `sair_em_mercado_e_cancelar` só devolve
@@ -20298,7 +20317,7 @@ class SmcQuantApp(ctk.CTk):
                              "Cancele na mão.")
                 else:
                     res = bot.sair_em_mercado_e_cancelar(
-                        enviar=True, exigir_zerado=exigir_zerado)
+                        enviar=True, exigir_zerado=exigir_zerado, ativo=ativo)
                     if res.get("ok"):
                         # "✅ ORDENS CANCELADAS" quando não havia nada para
                         # cancelar é a mesma família de mentira que este
@@ -20470,12 +20489,14 @@ class SmcQuantApp(ctk.CTk):
                          + (" [TESTE]" if dry else ""))
                 res = None
                 if tick:
+                    _atr_ticks = (float(getattr(self, "_ultimo_atr", 0)) / tick) if getattr(self, "_ultimo_atr", None) and tick else None
                     trailing = tradovate_auto.plano_trailing_inteligente(
                         tradovate_auto.ticks_entre(entry, stop, tick),
                         rr=_rr, probabilidade=probabilidade,
                         contratos=qtd, valor_do_tick=_vt,
                         drawdown_restante=_dd_resta, ligado=usar_trail,
                         modo_r=getattr(self, "tv_trail_modo_var", None).get() if getattr(self, "tv_trail_modo_var", None) else "auto",
+                        ruido_ticks=_atr_ticks,
                         ativo=ativo or getattr(self, "_ultimo_ativo_lido", None))
                     if trailing:
                         # UM STOP QUE SE MOVE SOZINHO SEM EXPLICAÇÃO É A
@@ -22088,7 +22109,7 @@ class SmcQuantApp(ctk.CTk):
         # Cancela na corretora (Tradovate) imediatamente via CDP / Bot
         if TRADOVATE_DISPONIVEL:
             txt_alvo = f"{pos_cancelada['direcao']} {pos_cancelada['ativo']} @ {pos_cancelada['entry']}" if pos_cancelada else "ORDEM PENDENTE"
-            self._tv_cancelar_na_plataforma(txt_alvo, "cancelamento solicitado pelo usuário", exigir_zerado=False)
+            self._tv_cancelar_na_plataforma(txt_alvo, "cancelamento solicitado pelo usuário", exigir_zerado=False, ativo=pos_cancelada.get("ativo") if pos_cancelada else None)
 
         # RELATÓRIO FIEL: cancelar a ordem TEM de encerrar o acompanhamento do
         # cenário também. Antes, o robô continuava rastreando por dentro e
@@ -22109,7 +22130,7 @@ class SmcQuantApp(ctk.CTk):
             self.log(f"📕 Posição FECHADA no diário: {pos['direcao']} {pos['ativo']} → "
                       f"US${pos['pnl_final']:+.2f}")
             if TRADOVATE_DISPONIVEL:
-                self._tv_cancelar_na_plataforma(f"{pos['direcao']} {pos['ativo']}", "fechamento manual a mercado", exigir_zerado=False)
+                self._tv_cancelar_na_plataforma(f"{pos['direcao']} {pos['ativo']}", "fechamento manual a mercado", exigir_zerado=False, ativo=pos.get('ativo'))
         self._atualizar_dashboard()
 
     # ------------------------------------------------------------------
