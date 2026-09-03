@@ -709,8 +709,16 @@ class TestOsIndicadoresDaTela(unittest.TestCase):
         fonte = self._fonte()
         self.assertIn("Indicadores que ela ENXERGOU no gráfico", fonte)
         i = fonte.index("Indicadores que ela ENXERGOU no gráfico")
-        # e quando NÃO vê nada, diz isso em vez de ficar calado
-        self.assertIn("não listou nenhum indicador", fonte[i - 900:i + 900])
+        # e quando NÃO vê nada, diz isso em vez de ficar calado. A janela de
+        # bytes que media isto quebrou em 03/09, quando o alarme de
+        # indicadores congelados entrou entre os dois ramos: o que importa é
+        # que os DOIS existam e que o `else` venha depois, não quantos bytes
+        # há entre eles.
+        # A frase aparece mais de uma vez no programa (a conversa também
+        # explica isso); a que interessa aqui é a do MESMO if/else, logo
+        # depois da linha do log.
+        j = fonte.index("não listou nenhum indicador", i)
+        self.assertLess(j - i, 4000, "os dois ramos continuam no mesmo if/else")
 
     def test_os_indicadores_entram_na_CONVERSA(self):
         """Sem isso ela não teria como responder 'se atenta nesse indicador

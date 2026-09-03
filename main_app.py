@@ -7125,9 +7125,45 @@ def resumo_do_aprendizado(minimo=3, quantos=4):
 #  histórico não derruba sozinho um cenário excelente, e nem um padrão bom
 #  aprova um cenário ruim.
 AJUSTE_APRENDIZADO_MAX = 12.0     # teto do bônus/penalidade, em pontos de %
-AMOSTRA_MINIMA_APRENDIZADO = 4    # abaixo disso, não é histórico: é acaso
+AMOSTRA_MINIMA_APRENDIZADO = 4    # abaixo disso o padrão nem é olhado
 
-def ajuste_por_aprendizado(confluencias, hora=None, minimo=AMOSTRA_MINIMA_APRENDIZADO):
+#  O PESO DA DÚVIDA — o número que faltava, e que custou o pregão de 03/09.
+#
+#  Uma amostra de 4 operações com 1 acerto NÃO é "25% de acerto". É uma moeda
+#  que caiu cara uma vez em quatro: o intervalo de confiança vai de ~1% a ~81%.
+#  Tratar isso como 25% e descontar 10 pontos de probabilidade é decidir
+#  dinheiro em cima de ruído — e é exatamente o que o relatório de acerto deste
+#  mesmo programa se recusa a fazer, com estas palavras: "AMOSTRA PEQUENA: 5 de
+#  20 ... o número está aqui para ser acompanhado, NÃO PARA SER USADO AINDA".
+#
+#  Este número é o tamanho da amostra IMAGINÁRIA de moeda honesta (50%) que
+#  entra na conta junto com a amostra real. Com 10, um 1/4 vira 43% em vez de
+#  25%, e o desconto cai de 10 pontos para 3. Conforme as operações de verdade
+#  chegam, o peso da dúvida vai perdendo importância sozinho: em 40 operações
+#  ele responde por 20% da conta, em 100 por 9%. É assim que uma medida vira
+#  regra — devagar, e nunca de uma vez.
+PESO_DA_DUVIDA_APRENDIZADO = 10.0
+
+
+def taxa_encolhida(vitorias, amostras, peso_da_duvida=PESO_DA_DUVIDA_APRENDIZADO):
+    """A taxa de acerto puxada para 50% na proporção da ignorância. FUNÇÃO PURA.
+
+    (vitorias + peso/2) / (amostras + peso). Com amostra grande devolve
+    praticamente a taxa crua; com amostra pequena devolve quase 50%, que é o
+    que uma amostra pequena de fato informa: nada.
+    """
+    try:
+        v, n = float(vitorias), float(amostras)
+    except (TypeError, ValueError):
+        return 50.0
+    if n <= 0:
+        return 50.0
+    v = max(0.0, min(v, n))
+    return ((v + peso_da_duvida / 2.0) / (n + peso_da_duvida)) * 100.0
+
+
+def ajuste_por_aprendizado(confluencias, hora=None, minimo=AMOSTRA_MINIMA_APRENDIZADO,
+                           peso_da_duvida=PESO_DA_DUVIDA_APRENDIZADO):
     """AUTOAPRENDIZAGEM COM EFEITO REAL NA DECISÃO.
 
     `aprendizado_por_padrao()` já descobria quais padrões acertam e quais falham
@@ -7140,44 +7176,180 @@ def ajuste_por_aprendizado(confluencias, hora=None, minimo=AMOSTRA_MINIMA_APREND
     qualidade decidir. Determinístico, auditável e limitado — o histórico ajusta
     a leitura, nunca a substitui.
 
+    O QUE ESTA FUNÇÃO FEZ COM O PREGÃO DE 03/09, E POR QUE MUDOU
+    -------------------------------------------------------------
+    Ele: "o dia inteiro, várias oportunidades nítidas, porém, nenhuma sugestão".
+    Vinte e nove ciclos, vinte e sete leituras de BUY, zero sugestões. A conta
+    do dia, linha por linha do log:
+
+        IA lê 62% a 75%  →  aprendizado desconta 10 a 12  →  piso exige 70%
+
+    Não havia número que a IA pudesse emitir e passar. O motor estava morto por
+    aritmética, e nenhuma das travas de mercado chegou a opinar.
+
+    DUAS CONTAS ERRADAS SOMADAS, e as duas moram aqui:
+
+    1. A TAXA CRUA DE UMA AMOSTRA MINÚSCULA VIRAVA VEREDITO. 'order block'
+       aparecia como "25% em 4 cenários" e descontava 10 pontos. Quatro
+       operações. Um acerto. A diferença entre 1/4 e 2/4 é UMA operação, e
+       valia 10 pontos de probabilidade — mais do que qualquer confluência que
+       a IA pudesse enxergar no gráfico. Agora a taxa passa por
+       `taxa_encolhida`: 1/4 informa "não sei", e "não sei" desconta quase nada.
+
+    2. AS MESMAS QUATRO OPERAÇÕES ERAM CONTADAS TRÊS VEZES. 'order block',
+       'premium/discount + OTE' e 'varredura de liquidez' apareciam os três com
+       "1/4" — porque são rótulos das MESMAS quatro operações fechadas, cada
+       uma marcada com várias confluências. Os descontos eram SOMADOS: -10 -10
+       -10 = -30, e só o teto de 12 segurava. Somar exige evidências
+       independentes; estas não são. Agora os padrões entram pela MÉDIA: cada
+       um é uma estimativa ruidosa da mesma coisa, e a média é a estimativa.
+
+    A HORA continua somando à parte, e isso é de propósito: "que padrão é este"
+    e "que hora do dia é esta" são eixos diferentes, medidos em operações
+    diferentes. Ela também passa pelo encolhimento.
+
     Devolve (delta, explicacoes) — delta em pontos percentuais.
     """
     bons, ruins, por_hora = aprendizado_por_padrao(minimo=minimo)
     if not (bons or ruins or por_hora):
         return 0.0, []
 
-    peso = {rot: pct for rot, _v, _n, pct in bons}
-    peso.update({rot: pct for rot, _v, _n, pct in ruins})
+    vitorias = {rot: v for rot, v, _n, _pct in bons}
+    vitorias.update({rot: v for rot, v, _n, _pct in ruins})
     amostras = {rot: n for rot, _v, n, _pct in bons}
     amostras.update({rot: n for rot, _v, n, _pct in ruins})
 
-    delta, explicacoes, vistos = 0.0, [], set()
+    deltas, explicacoes, vistos = [], [], set()
     for c in (confluencias or []):
         rot = _normalizar_padrao(c)
-        if not rot or rot in vistos or rot not in peso:
+        if not rot or rot in vistos or rot not in amostras:
             continue
         vistos.add(rot)
+        n = amostras[rot]
+        crua = (vitorias[rot] / n * 100.0) if n else 50.0
+        encolhida = taxa_encolhida(vitorias[rot], n, peso_da_duvida)
         # Distância de 50% (moeda ao ar) convertida em pontos de probabilidade.
-        # 80% de acerto -> +6 · 30% de acerto -> -8.
-        d = (peso[rot] - 50.0) * 0.4
-        delta += d
+        d = (encolhida - 50.0) * 0.4
+        deltas.append(d)
         explicacoes.append(
-            f"'{rot}' acertou {peso[rot]:.0f}% em {amostras[rot]} cenários seus "
-            f"({d:+.1f} pts)")
+            f"'{rot}' acertou {crua:.0f}% em {n} cenários seus — com amostra "
+            f"desse tamanho isso vale {encolhida:.0f}% ({d:+.1f} pts)")
+
+    # MÉDIA, não soma: ver o item 2 lá em cima.
+    delta = (sum(deltas) / len(deltas)) if deltas else 0.0
 
     # A HORA também é padrão: quase todo trader tem um horário em que perde.
     if hora and por_hora:
-        for h, _v, n, pct in por_hora:
+        for h, v, n, _pct in por_hora:
             if str(h) == str(hora) and n >= minimo:
-                d = (pct - 50.0) * 0.3
+                encolhida = taxa_encolhida(v, n, peso_da_duvida)
+                d = (encolhida - 50.0) * 0.3
                 delta += d
                 explicacoes.append(
-                    f"no horário {h} você acertou {pct:.0f}% em {n} cenários "
-                    f"({d:+.1f} pts)")
+                    f"no horário {h} você acertou {v}/{n} — com amostra desse "
+                    f"tamanho isso vale {encolhida:.0f}% ({d:+.1f} pts)")
                 break
 
     delta = max(-AJUSTE_APRENDIZADO_MAX, min(AJUSTE_APRENDIZADO_MAX, delta))
     return round(delta, 1), explicacoes
+
+
+# Quantas leituras seguidas com os MESMOS números antes de eu chamar de
+# congelado. Três: duas podem ser um mercado parado num minuto tranquilo;
+# três leituras de 5 min com o preço andando não são mercado, são tela presa.
+LEITURAS_PARA_CONGELADO = 3
+_RE_NUMERO_DO_INDICADOR = re.compile(r"-?\d+(?:[.,]\d+)?")
+
+
+def numeros_dos_indicadores(indicadores):
+    """Só os NÚMEROS que a leitura trouxe, em ordem. FUNÇÃO PURA.
+
+    O texto muda de ciclo para ciclo ("Bandas de Bollinger (Upper, Lower)" vira
+    "Upper Band · Lower Band") porque quem escreve é um modelo de linguagem. Os
+    NÚMEROS, não: se o painel está congelado, eles vêm idênticos.
+    """
+    juntos = " ".join(str(i) for i in (indicadores or []))
+    return tuple(n.replace(",", ".") for n in _RE_NUMERO_DO_INDICADOR.findall(juntos))
+
+
+def indicadores_congelados(historico, minimo=LEITURAS_PARA_CONGELADO):
+    """A leitura dos indicadores está presa numa vela antiga? FUNÇÃO PURA.
+
+    `historico` é uma lista de (indicadores, preço), do mais antigo ao mais
+    novo. Devolve (True, quantos, numeros) quando as últimas `minimo` leituras
+    trouxeram EXATAMENTE os mesmos números E o preço andou nesse meio-tempo.
+
+    POR QUE ISTO EXISTE (03/09)
+    ---------------------------
+    Ele perguntou: "como ele pode estar analisando Bandas de Bollinger se não
+    tem esse indicador no gráfico?". A pergunta é melhor do que parece.
+
+    No print dele há uma caixa de dados presa numa vela, carimbada
+    "03/09/2026 08:05", com UPPER · LOWER · SMA · RSI · MIDDLE · OVERBOU ·
+    OVERSOL · OPEN/HIGH/LOW/CLOSE · VOLUME. É o tooltip do cursor, fixado — não
+    é indicador desenhado, e não é o estado de AGORA. O modelo lia aquela caixa
+    e reportava como "indicadores que enxerguei no gráfico".
+
+    E estavam congelados. No log daquela manhã, entre 10:45 e 11:10:
+
+        SMA 7672.80 · RSI 67 · OPEN 7675.75 · HIGH 7679.00 · CLOSE 7679.00
+        SMA 7672.80 · RSI 67 · OPEN 7675.75 · HIGH 7679.00 · CLOSE 7679.00
+        SMA 7672.80 ...
+
+    Vinte e cinco minutos, quatro leituras, os mesmos números — com o preço
+    indo de 7723 para 7703. São os valores da vela das 08:05, três horas
+    antes, entrando na análise como se fossem o mercado de agora.
+
+    É a mesma família do CVD inventado que saiu daqui em 23/08: um número que
+    PARECE medida e não é. A diferença é que este chega pela tela, então quem
+    tem de desconfiar dele é o programa.
+    """
+    hist = [h for h in (historico or []) if h]
+    if len(hist) < minimo:
+        return False, 0, ()
+    recentes = hist[-minimo:]
+    numeros = numeros_dos_indicadores(recentes[-1][0])
+    if not numeros:
+        return False, 0, ()
+    for ind, _preco in recentes:
+        if numeros_dos_indicadores(ind) != numeros:
+            return False, 0, ()
+    # O preço TEM de ter andado. Sem isso, números iguais podem ser só um
+    # mercado parado — e acusar tela presa num mercado parado seria inventar
+    # defeito, que é o oposto do que esta função existe para fazer.
+    precos = [p for _i, p in recentes if p]
+    if len(precos) < 2 or len(set(precos)) < 2:
+        return False, 0, ()
+    return True, len(recentes), numeros
+
+
+def aprendizado_pode_vetar(total_fechados, minimo=AMOSTRA_MINIMA_ACERTO):
+    """A correção por histórico já pode ser a ÚNICA razão de recusar? FUNÇÃO PURA.
+
+    ESTA REGRA EXISTE PARA UMA CONTRADIÇÃO QUE O PROGRAMA CARREGAVA INTEIRA, e
+    que custou o pregão de 03/09. Na MESMA tela de arranque, no MESMO minuto,
+    saíam estas duas frases:
+
+        🎯 ACERTO DO MOTOR — 5 cenário(s) resolvido(s) ... ⚠️ AMOSTRA PEQUENA:
+           5 de 20. ... O número está aqui para ser acompanhado, NÃO PARA SER
+           USADO AINDA.
+
+        🧠 APRENDIZADO: probabilidade 70% → 58% (-12,0 pts pelo seu histórico)
+
+    O relatório se recusava a usar a amostra de 5; o ajuste usava a mesma
+    amostra para descontar 12 pontos de toda leitura do dia, com o piso em 70%.
+    Uma das duas estava errada, e não era a que se recusava.
+
+    Agora as duas dizem a mesma coisa. Enquanto a amostra não chega ao mínimo
+    que este programa já exige para CRAVAR uma taxa, a correção continua sendo
+    calculada, continua aparecendo no log e continua puxando a probabilidade —
+    o que ela não pode é ser a única responsável por matar um cenário que a
+    leitura crua aprovaria. Informar, sim; vetar sozinha, ainda não.
+    """
+    try:
+        return int(total_fechados or 0) >= int(minimo)
+    except (TypeError, ValueError):
+        return False
 
 def compilar_memoria_prompt():
     contexto = "\n--- FEEDBACK LOOP DE APRENDIZADO ---\n"
@@ -25432,8 +25604,25 @@ class SmcQuantApp(ctk.CTk):
     # Quantos minutos entre um balanço de descartes e o próximo.
     RESUMO_DESCARTE_MIN = 20
 
+    def _contar_motivo_do_descarte(self, acao, ativo, motivo_curto):
+        """Guarda POR QUE cada cenário morreu, para o balanço poder somar.
+
+        03/09: o balanço dizia "é o mercado não pagando o que o seu plano
+        exige" e mostrava R:R e probabilidade — enquanto seis cenários daquela
+        manhã tinham morrido por stop fora da faixa e quatro por entrada longe
+        demais, dois motivos que o balanço não conhecia e não mencionava. Ele
+        leu que o problema era o piso de qualidade e foi olhar o piso de
+        qualidade. O log apontou para o lugar errado."""
+        chave = f"{acao} {ativo}"
+        tabela = getattr(self, "_motivos_do_descarte", None)
+        if tabela is None:
+            tabela = self._motivos_do_descarte = {}
+        por_motivo = tabela.setdefault(chave, {})
+        por_motivo[motivo_curto] = por_motivo.get(motivo_curto, 0) + 1
+
     def _registrar_descarte_qualidade(self, acao, ativo, motivo, rr, prob,
-                                       rr_min, prob_min):
+                                       rr_min, prob_min,
+                                       so_o_aprendizado=False, prob_crua=None):
         """O piso de qualidade rejeitando cenário é o robô TRABALHANDO — mas do
         jeito antigo ele escrevia a mesma linha a cada ciclo e o log virava um
         muro de '🚧 descartado'. Sete linhas seguidas de MESU6 no pregão de
@@ -25451,27 +25640,78 @@ class SmcQuantApp(ctk.CTk):
             registro = self._descartes_qualidade = {}
         atual = registro.get(chave)
         if atual is None:
-            registro[chave] = {"n": 1, "melhor_rr": rr, "melhor_prob": prob,
-                               "desde": agora, "ultimo_aviso": agora}
-            self.log(f"🚧 {acao} {ativo} descartado pelo piso de qualidade: "
-                     f"{motivo}. Aguardando um setup melhor.")
-            return
+            atual = registro[chave] = {
+                "n": 0, "melhor_rr": rr, "melhor_prob": prob,
+                "melhor_crua": prob_crua or prob, "so_aprendizado": 0,
+                "desde": agora, "ultimo_aviso": agora, "primeira": True}
         atual["n"] += 1
         atual["melhor_rr"] = max(atual["melhor_rr"], rr)
         atual["melhor_prob"] = max(atual["melhor_prob"], prob)
+        if prob_crua is not None:
+            atual["melhor_crua"] = max(atual["melhor_crua"], prob_crua)
+        if so_o_aprendizado:
+            atual["so_aprendizado"] += 1
+
+        # A PRIMEIRA rejeição de cada par ativo+lado aparece na hora.
+        if atual.pop("primeira", False):
+            linha = (f"🚧 {acao} {ativo} descartado pelo piso de qualidade: "
+                     f"{motivo}. Aguardando um setup melhor.")
+            if so_o_aprendizado:
+                linha += (f" ATENÇÃO: a leitura CRUA do gráfico foi "
+                          f"{prob_crua:.0f}%, que passaria no seu piso de "
+                          f"{prob_min:g}% — quem derrubou este cenário foi a "
+                          "minha correção por histórico, não o mercado.")
+            self.log(linha)
+            return
+
         if agora - atual["ultimo_aviso"] < self.RESUMO_DESCARTE_MIN * 60:
             return
         atual["ultimo_aviso"] = agora
         minutos = max(1, int((agora - atual["desde"]) / 60))
-        self.log(
+        texto = (
             f"🚧 BALANÇO: {atual['n']} cenários de {acao} {ativo} descartados "
-            f"nos últimos {minutos} min. O melhor deles chegou a "
-            f"R:R 1:{atual['melhor_rr']:.2f} (seu piso é 1:{rr_min:g}) e a "
-            f"{atual['melhor_prob']:.0f}% de probabilidade (seu piso é "
-            f"{prob_min:g}%). Não é a ferramenta parada: é o mercado não "
-            "pagando o que o seu plano exige. Se quiser operar este mercado, "
-            "o que muda isso é o piso — 'configura o R:R mínimo para 1.5', "
-            "por exemplo. Se não quiser, o certo é exatamente isto: ficar de fora.")
+            f"nos últimos {minutos} min pelo piso de qualidade. O melhor deles "
+            f"chegou a R:R 1:{atual['melhor_rr']:.2f} (seu piso é 1:{rr_min:g}) "
+            f"e a {atual['melhor_prob']:.0f}% de probabilidade (seu piso é "
+            f"{prob_min:g}%).")
+
+        # E OS QUE MORRERAM POR OUTRO MOTIVO. Sem esta linha, o balanço fala
+        # de piso de qualidade enquanto metade do dia caiu por stop fora da
+        # faixa do contrato — e manda ele mexer no piso, que não era o problema.
+        _outros = (getattr(self, "_motivos_do_descarte", {})
+                   .get(f"{acao} {ativo}") or {})
+        if _outros:
+            texto += (" Fora estes, e por motivos que o piso não alcança: "
+                      + " · ".join(f"{n} por {m}" for m, n in
+                                   sorted(_outros.items(), key=lambda kv: -kv[1]))
+                      + ".")
+
+        # QUANTOS FORAM MORTOS PELA MINHA PRÓPRIA RÉGUA.
+        #
+        # 03/09: vinte e sete leituras de BUY, zero sugestões, e este balanço
+        # dizendo "é o mercado não pagando o que o seu plano exige". Não era.
+        # A IA lia 70% e o desconto por histórico levava para 58%, com o piso
+        # em 70 — nenhum número que ela emitisse passaria. O balanço apontou
+        # para o mercado enquanto a causa estava dentro de casa, e ele passou
+        # o pregão procurando defeito no lugar errado. Motivo errado no log é
+        # defeito com a mesma gravidade de decisão errada.
+        if atual["so_aprendizado"]:
+            texto += (
+                f" ATENÇÃO — {atual['so_aprendizado']} deles passariam no seu "
+                f"piso pela leitura CRUA do gráfico (a melhor foi "
+                f"{atual['melhor_crua']:.0f}%) e caíram pela MINHA correção "
+                "por histórico. Isso não é o mercado: é a régua que eu aplico "
+                "em cima dele. Se a sua amostra de operações fechadas ainda é "
+                "pequena, essa correção está opinando mais do que sabe — me "
+                "peça 'desliga o ajuste por aprendizado' e eu passo a usar a "
+                "leitura crua até a amostra crescer.")
+        else:
+            texto += (
+                " Não é a ferramenta parada: é o mercado não "
+                "pagando o que o seu plano exige. Se quiser operar este mercado, "
+                "o que muda isso é o piso — 'configura o R:R mínimo para 1.5', "
+                "por exemplo. Se não quiser, o certo é exatamente isto: ficar de fora.")
+        self.log(texto)
 
     def _motivo_sem_pendente(self):
         """Por que não há cenário para acatar. Ele disse 'ACATAR' 9 minutos
@@ -27383,6 +27623,40 @@ class SmcQuantApp(ctk.CTk):
                             self._ultimos_indicadores = indicadores
                             self.log("📐 Indicadores que ela ENXERGOU no gráfico: "
                                      + " · ".join(indicadores))
+                            # A CAIXA DE DADOS PODE ESTAR PRESA NUMA VELA
+                            # ANTIGA. Ver `indicadores_congelados`: no pregão
+                            # de 03/09 o tooltip fixado nas 08:05 alimentou a
+                            # análise por horas, com o preço andando 20 pontos.
+                            try:
+                                _hist = getattr(self, "_hist_indicadores", None)
+                                if _hist is None:
+                                    _hist = self._hist_indicadores = {}
+                                _chave_ind = str(ativo or "?").upper()
+                                _fila = _hist.setdefault(_chave_ind, [])
+                                _fila.append((list(indicadores), preco))
+                                del _fila[:-6]
+                                _preso, _quantas, _nums = indicadores_congelados(_fila)
+                                if _preso and not getattr(self, "_avisou_congelado", {}).get(_chave_ind):
+                                    if not hasattr(self, "_avisou_congelado"):
+                                        self._avisou_congelado = {}
+                                    self._avisou_congelado[_chave_ind] = True
+                                    self.log(
+                                        f"🧊 ATENÇÃO — os indicadores de {_chave_ind} "
+                                        f"vieram com os MESMOS números em {_quantas} "
+                                        "leituras seguidas, e o preço andou nesse "
+                                        "meio-tempo. Isso não é indicador ao vivo: é "
+                                        "quase certamente a caixa de dados do cursor "
+                                        "PRESA numa vela antiga (ela tem um × para "
+                                        "fechar, no canto). Enquanto ela estiver "
+                                        "fixada, esses números entram na análise como "
+                                        "se fossem de agora e não são. Feche a caixa "
+                                        "no gráfico — ou ignore a linha de indicadores "
+                                        "até fechar.")
+                                elif not _preso:
+                                    if hasattr(self, "_avisou_congelado"):
+                                        self._avisou_congelado.pop(_chave_ind, None)
+                            except Exception:
+                                pass
                         else:
                             self.log("📐 Ela não listou nenhum indicador na tela. "
                                      "Se você tem indicador no gráfico e ele não "
@@ -27614,6 +27888,36 @@ class SmcQuantApp(ctk.CTk):
                                     f"{probabilidade:.0f}% ({_delta:+.1f} pts pelo seu "
                                     f"histórico). " + " · ".join(_porques))
 
+                        # ENQUANTO A AMOSTRA NÃO SUSTENTA, O DESCONTO NÃO VETA.
+                        # Ver `aprendizado_pode_vetar`: com 5 operações
+                        # fechadas o relatório de acerto se recusa a cravar um
+                        # número, e o ajuste usava essas mesmas 5 para derrubar
+                        # todo cenário do dia. Aqui as duas passam a dizer a
+                        # mesma coisa. O desconto continua no log e continua
+                        # visível; ele só não é mais a causa solitária de uma
+                        # recusa que a leitura crua aprovaria.
+                        try:
+                            _fechados = len([
+                                op for op in (carregar_performance() or [])
+                                if op.get("resultado") in ("WIN", "LOSS")])
+                        except Exception:
+                            _fechados = 0
+                        if (_delta < 0 and not aprendizado_pode_vetar(_fechados)
+                                and probabilidade < PROBABILIDADE_MINIMA
+                                and probabilidade_ia >= PROBABILIDADE_MINIMA):
+                            probabilidade = probabilidade_ia
+                            if acao in ("BUY", "SELL"):
+                                self.log(
+                                    f"⚖️ O desconto por histórico NÃO vetou este "
+                                    f"cenário: ele vem de {_fechados} operação(ões) "
+                                    f"fechada(s), e eu só deixo esse número mandar "
+                                    f"sozinho a partir de {AMOSTRA_MINIMA_ACERTO}. "
+                                    f"Volto para a leitura crua do gráfico "
+                                    f"({probabilidade_ia:.0f}%) e deixo o piso e as "
+                                    "travas de mercado decidirem. Conforme as suas "
+                                    "operações fecharem, este desconto passa a "
+                                    "valer de verdade.")
+
                         # MACRO QUENTE ENTRA NA CONTA, E NÃO SÓ NO PROMPT.
                         # Escrever "cuidado, saiu CPI" no prompt e torcer para
                         # o modelo obedecer não é trava, é esperança — e neste
@@ -27723,6 +28027,8 @@ class SmcQuantApp(ctk.CTk):
                                 _ep, _sl, ativo)
                             if not _ok_stop:
                                 repetido = True
+                                self._contar_motivo_do_descarte(
+                                    acao, ativo, "stop fora da faixa do contrato")
                                 self.log(f"📐 {acao} {ativo} descartado: {_motivo_stop}")
 
                         if not repetido and acao in ("BUY", "SELL"):
@@ -27730,6 +28036,8 @@ class SmcQuantApp(ctk.CTk):
                                 _ep, _sl, preco)
                             if not _ok_dist:
                                 repetido = True
+                                self._contar_motivo_do_descarte(
+                                    acao, ativo, "entrada longe demais do preço")
                                 self.log(
                                     f"📏 {acao} {ativo} @ {_ep} descartado: a entrada "
                                     f"está a {_dist_r:.1f}× o risco de distância do "
@@ -27889,9 +28197,24 @@ class SmcQuantApp(ctk.CTk):
                                       else f"probabilidade {probabilidade:.0f}% (mínimo {PROBABILIDADE_MINIMA:.0f}%)")
                             if rr_sinal < RR_MINIMO and rr_tp2 and rr_tp2 > rr_tp1:
                                 motivo += f" · o 2º alvo pagaria 1:{rr_tp2:.2f}"
+                            # QUEM MATOU ESTE CENÁRIO: o mercado ou o meu
+                            # próprio desconto? A pergunta é dele, de 03/09
+                            # ("várias oportunidades nítidas, porém, nenhuma
+                            # sugestão"), e a resposta estava a duas variáveis
+                            # de distância — o log tinha as duas e não as
+                            # comparava. Quando a leitura CRUA passaria no piso
+                            # e só a correção do aprendizado a derrubou, isso
+                            # tem de estar escrito: é a diferença entre "o
+                            # mercado não pagou" e "a minha régua está torta".
+                            _so_o_aprendizado = bool(
+                                rr_sinal >= RR_MINIMO
+                                and probabilidade_ia >= PROBABILIDADE_MINIMA
+                                and probabilidade < PROBABILIDADE_MINIMA)
                             self._registrar_descarte_qualidade(
                                 acao, ativo, motivo, rr_sinal, probabilidade,
-                                RR_MINIMO, PROBABILIDADE_MINIMA)
+                                RR_MINIMO, PROBABILIDADE_MINIMA,
+                                so_o_aprendizado=_so_o_aprendizado,
+                                prob_crua=probabilidade_ia)
 
                         # Só cria sinal com preços VÁLIDOS (>0), preço de tela lido E que
                         # passe no piso de qualidade.
