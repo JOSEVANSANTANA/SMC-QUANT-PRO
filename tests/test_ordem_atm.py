@@ -37,7 +37,7 @@ pode produzir. Com a ATM é uma submissão só, e o OCO é da corretora.
 
 import unittest
 
-from harness import RAIZ, carregar, fonte_do_arquivo  # noqa: F401
+from harness import RAIZ, carregar, fonte_do_arquivo, funcao_inteira  # noqa: F401
 import os
 import sys
 
@@ -302,29 +302,25 @@ class TestOAppUSAOCaminhoNovo(unittest.TestCase):
 
     def test_o_envio_do_app_usa_a_ATM(self):
         fonte = fonte_do_arquivo()
-        i = fonte.index("def _tv_enviar_bracket(")
-        bloco = fonte[i:i + 7000]
+        bloco = funcao_inteira(fonte, "_tv_enviar_bracket")
         self.assertIn("enviar_ordem_com_atm(", bloco)
 
     def test_falha_de_atm_nao_envia_ordens_avulsas(self):
         """21/08: o envio de três ordens soltas criava risco de abertura
         a descoberto se o mercado tocasse o alvo antes da entrada. Agora é proibido."""
         fonte = fonte_do_arquivo()
-        i = fonte.index("def _tv_enviar_bracket(")
-        bloco = fonte[i:i + 7000]
+        bloco = funcao_inteira(fonte, "_tv_enviar_bracket")
         self.assertIn("ORDEM RECUSADA POR SEGURANÇA", bloco)
 
     def test_o_ativo_e_repassado_para_achar_o_tick(self):
         fonte = fonte_do_arquivo()
-        i = fonte.index("def _tv_enviar_bracket(")
-        self.assertIn("tick_do_ativo(", fonte[i:i + 1200])
+        self.assertIn("tick_do_ativo(", funcao_inteira(fonte, "_tv_enviar_bracket"))
         j = fonte.index("self._tv_enviar_bracket(")
         self.assertIn("ativo=", fonte[j:j + 400])
 
     def test_o_ativo_e_repassado_para_a_atm_e_o_bracket(self):
         fonte = fonte_do_arquivo()
-        i = fonte.index("def _tv_enviar_bracket(")
-        bloco = fonte[i:i + 6000]
+        bloco = funcao_inteira(fonte, "_tv_enviar_bracket")
         self.assertIn("bot.enviar_ordem_com_atm(", bloco)
         self.assertIn("ativo=ativo", bloco)
 

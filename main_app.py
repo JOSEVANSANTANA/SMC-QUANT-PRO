@@ -476,6 +476,143 @@ LICOES_FILE = os.path.join(pasta_dados_usuario(), "licoes_trader.json")
 ULTIMO_PRINT_FILE = os.path.join(pasta_dados_usuario(), "ultimo_print.png")
 
 # ====================================================================
+# DIÁRIO TÉCNICO — O QUE O MOTOR FEZ, EM FORMA DE DADO
+# ====================================================================
+#
+# PEDIDO DELE (31/08): "quero te propor criar uma branch local para manter
+# tudo localmente e você acompanhar os logs automaticamente... assim você terá
+# acesso em tempo real a tudo que o motor fizer e ainda conseguirá gerar
+# insights que vou precisar posteriormente".
+#
+# A PARTE QUE NÃO DÁ, E É MELHOR DIZER DE UMA VEZ: eu rodo num contêiner na
+# nuvem e não enxergo o disco do Mac dele. "Tempo real" não existe daqui, e
+# uma branch local no computador dele continua sendo local até alguém empurrar
+# para o GitHub. Prometer o contrário seria a mesma família de mentira que
+# este projeto passou meses arrancando.
+#
+# A PARTE QUE DÁ, E É QUASE TUDO O QUE ELE QUER: o log de hoje é PROSA numa
+# caixa de texto. Prosa serve para ele ler no pregão e não serve para eu
+# analisar depois — "descartei o BUY" e "descartei o BUY" são a mesma frase
+# vindas de três travas diferentes. Aqui cada acontecimento vira UMA LINHA
+# JSON, com hora, tipo, ativo e os números que decidiram. Um arquivo por dia,
+# que ele exporta num clique e me manda. Aí eu leio quatro pregões de uma vez
+# e digo onde o dinheiro está indo — que é o "insight que vou precisar
+# posteriormente" que ele pediu.
+DIARIO_TECNICO_DIR = os.path.join(pasta_dados_usuario(), "diario_tecnico")
+DIARIO_TECNICO_DIAS = 30          # depois disso o arquivo do dia é apagado
+DIARIO_TECNICO_MAX_MB = 20        # teto por arquivo, para o disco não encher
+
+# NADA QUE PAREÇA CREDENCIAL ENTRA NUM ARQUIVO QUE ELE VAI ME MANDAR.
+# Este arquivo nasceu para viajar — por e-mail, por WhatsApp, por chat. Chave
+# de API vazada num anexo é vazamento igual, e vazamento que ninguém percebe
+# porque o anexo "é só um log".
+_CHAVES_DE_SEGREDO = ("chave", "api_key", "apikey", "token", "senha",
+                      "secret", "password", "authorization", "cookie",
+                      "credential", "bearer")
+
+
+def censurar_segredos(valor, _nivel=0):
+    """Devolve o mesmo dado com qualquer campo de credencial trocado por '***'.
+
+    Olha o NOME do campo, não o conteúdo: uma chave de API é uma string
+    qualquer e não dá para reconhecê-la pelo formato, mas o campo que a
+    carrega sempre se chama alguma coisa parecida com chave, token ou senha.
+    """
+    if _nivel > 12:
+        return "..."
+    if isinstance(valor, dict):
+        limpo = {}
+        for k, v in valor.items():
+            nome = str(k).lower()
+            if any(seg in nome for seg in _CHAVES_DE_SEGREDO):
+                limpo[k] = "***"
+            else:
+                limpo[k] = censurar_segredos(v, _nivel + 1)
+        return limpo
+    if isinstance(valor, (list, tuple)):
+        return [censurar_segredos(v, _nivel + 1) for v in valor]
+    return valor
+
+
+def caminho_do_diario_tecnico(dia=None, pasta=None):
+    """O arquivo do dia. Um por pregão, com a data no nome."""
+    pasta = pasta or DIARIO_TECNICO_DIR
+    dia = dia or datetime.date.today()
+    if isinstance(dia, datetime.datetime):
+        dia = dia.date()
+    return os.path.join(pasta, f"motor-{dia.isoformat()}.jsonl")
+
+
+def linha_de_evento(tipo, agora=None, **campos):
+    """O evento em texto JSON de uma linha — FUNÇÃO PURA, sem disco.
+
+    Uma linha por acontecimento, e nunca uma linha quebrada: se um campo não
+    couber em JSON (um objeto qualquer que veio de uma exceção, por exemplo),
+    ele vira texto. Um arquivo JSONL com uma linha inválida no meio é um
+    arquivo que ninguém consegue ler até o fim, e o valor dele todo está em
+    ser lido até o fim.
+    """
+    agora = agora or datetime.datetime.now()
+    evento = {"ts": agora.isoformat(timespec="seconds"), "tipo": str(tipo)}
+    evento.update(censurar_segredos(campos))
+    try:
+        return json.dumps(evento, ensure_ascii=False, default=str)
+    except Exception:
+        return json.dumps({"ts": evento["ts"], "tipo": evento["tipo"],
+                           "erro_ao_serializar": True}, ensure_ascii=False)
+
+
+def registrar_evento(tipo, pasta=None, agora=None, **campos):
+    """Grava um acontecimento no diário técnico. NUNCA levanta.
+
+    Esta função é chamada de dentro do caminho que manda ordem. Ela pode
+    falhar (disco cheio, permissão negada, pasta que sumiu) e nada disso pode
+    derrubar um envio ou um cancelamento — registrar é importante, operar é
+    mais.
+    """
+    try:
+        pasta = pasta or DIARIO_TECNICO_DIR
+        os.makedirs(pasta, exist_ok=True)
+        caminho = caminho_do_diario_tecnico(agora, pasta)
+        try:
+            if os.path.getsize(caminho) > DIARIO_TECNICO_MAX_MB * 1024 * 1024:
+                return False
+        except OSError:
+            pass
+        with open(caminho, "a", encoding="utf-8") as fh:
+            fh.write(linha_de_evento(tipo, agora=agora, **campos) + "\n")
+        return True
+    except Exception:
+        return False
+
+
+def limpar_diario_tecnico(pasta=None, dias=DIARIO_TECNICO_DIAS, hoje=None):
+    """Apaga os arquivos mais velhos que `dias`. Devolve quantos saíram."""
+    pasta = pasta or DIARIO_TECNICO_DIR
+    hoje = hoje or datetime.date.today()
+    limite = hoje - datetime.timedelta(days=dias)
+    saiu = 0
+    try:
+        nomes = os.listdir(pasta)
+    except OSError:
+        return 0
+    for nome in nomes:
+        if not (nome.startswith("motor-") and nome.endswith(".jsonl")):
+            continue
+        try:
+            dia = datetime.date.fromisoformat(nome[6:-6])
+        except ValueError:
+            continue
+        if dia < limite:
+            try:
+                os.remove(os.path.join(pasta, nome))
+                saiu += 1
+            except OSError:
+                pass
+    return saiu
+
+
+# ====================================================================
 # SISTEMA DE LICENÇA
 # ====================================================================
 # >>> COLE AQUI A URL DO SEU SERVIDOR DE LICENÇAS (Render) <<<
@@ -6546,6 +6683,114 @@ def ordem_enviada_e_viva_no_ativo(ativo):
         if nome and (nome.startswith(alvo[:3]) or alvo.startswith(nome[:3])):
             return p
     return None
+
+
+def _mesmo_contrato(a, b):
+    """'MESU6' e 'MES' são o mesmo instrumento; 'MESU6' e 'MNQU6' não são."""
+    a, b = str(a or "").upper(), str(b or "").upper()
+    if not a or not b:
+        return False
+    return a.startswith(b[:3]) or b.startswith(a[:3])
+
+
+def exposicao_do_diario_no_ativo(posicoes, ativo, ignorar_sinal_id=None):
+    """O que o DIÁRIO acha que existe neste contrato: (contratos, ordens).
+
+    `ignorar_sinal_id` existe por um motivo exato: o carimbo
+    `_marcar_ordem_na_corretora` acontece ANTES do envio, na thread da
+    interface. Quando a conferência contra a plataforma roda, a ordem que
+    estamos mandando agora JÁ está no diário — e sem excluí-la a conferência
+    concluiria que "o diário sabia" a respeito de qualquer coisa que
+    encontrasse na tela. A trava nunca dispararia, e o teste dela passaria.
+    """
+    contratos = ordens = 0
+    for p in posicoes or []:
+        if not _mesmo_contrato(p.get("ativo"), ativo):
+            continue
+        if ignorar_sinal_id and p.get("sinal_id") == ignorar_sinal_id:
+            continue
+        status = str(p.get("status") or "").upper()
+        try:
+            n = int(p.get("contratos") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if status == "ABERTA":
+            contratos += n
+        elif status == "PENDENTE" and p.get("enviada_plataforma"):
+            ordens += 1
+    return contratos, ordens
+
+
+def decidir_envio_contra_a_plataforma(ativo, leitura_ok, posicao_na_tela,
+                                      ordens_na_tela, exposicao_do_diario):
+    """A CORRETORA TEM A ÚLTIMA PALAVRA ANTES DE UMA ORDEM NOVA SAIR.
+
+    O CASO (31/08, MBTU6). Na tela dele havia, ao mesmo tempo, uma compra de 6
+    lá embaixo em 78.800 e uma posição de 14 em 79.150. Ele escreveu: "as
+    ordens estão encavalando, precisa estar muito atento a isso... isso é
+    delicado". E estava — 14 contratos em cima de 6 não é o risco que o Plano
+    dimensionou; é o risco de duas operações somadas que nunca se viram.
+
+    A trava contra empilhar já existia (`politica_com_posicao_aberta` +
+    `ordem_enviada_e_viva_no_ativo`) e estava funcionando: o log da tarde tem
+    "⛔ Segurei o BUY MBTU6" várias vezes. O buraco é que ela pergunta ao
+    DIÁRIO. Ordem mandada na mão, ordem de antes de o app abrir, reconciliação
+    que não fechou, importação de extrato que não casou — em qualquer um
+    desses casos existe risco vivo na corretora que o diário não conhece, e
+    aquilo que o diário não conhece, para a trava, não existe.
+
+    A REGRA, e ela é estreita de propósito: recuso quando a plataforma mostra
+    exposição neste contrato QUE O DIÁRIO NÃO TEM. Se o diário tem, quem já
+    decidiu foi a política de posição aberta — ou barrou (ORDEM_VIVA), ou
+    marcou como AUMENTO, que ele acata na mão. Não é papel desta função
+    revisar aquela decisão; é papel dela enxergar o que ninguém enxergou.
+
+    E "NÃO CONSEGUI LER" NÃO É PERMISSÃO. É a mesma regra que
+    `contar_ordens_vivas` já escreve na própria docstring: "zero ordens
+    libera; não sei só permite avisar". Aqui, avisar é recusar — porque do
+    outro lado desta função sai uma ordem de verdade.
+
+    Devolve (pode_enviar, motivo). FUNÇÃO PURA.
+    """
+    if not leitura_ok:
+        return False, (
+            "não consegui LER a posição e as ordens de "
+            f"{str(ativo or '?').upper()} na tela da Tradovate. Mandar uma "
+            "ordem agora seria mandar no escuro: se já houver posição ou "
+            "ordem viva nesse contrato, esta entrada empilharia risco que o "
+            "seu Plano não dimensionou. Deixe o painel de ordens e a posição "
+            "visíveis na janela desse ativo e eu mando no próximo ciclo.")
+
+    try:
+        posicao_na_tela = abs(int(posicao_na_tela or 0))
+    except (TypeError, ValueError):
+        posicao_na_tela = 0
+    try:
+        ordens_na_tela = int(ordens_na_tela or 0)
+    except (TypeError, ValueError):
+        ordens_na_tela = 0
+    if not posicao_na_tela and not ordens_na_tela:
+        return True, ""
+
+    ctr_diario, ordens_diario = exposicao_do_diario or (0, 0)
+    if ctr_diario or ordens_diario:
+        # O diário sabe. Quem decide o que fazer com isso é a política de
+        # posição aberta, que roda antes e já rodou.
+        return True, ""
+
+    partes = []
+    if posicao_na_tela:
+        partes.append(f"uma posição de {posicao_na_tela} contrato(s)")
+    if ordens_na_tela:
+        partes.append(f"{ordens_na_tela} ordem(ns) viva(s)")
+    return False, (
+        f"a Tradovate mostra {' e '.join(partes)} em "
+        f"{str(ativo or '?').upper()} que NÃO estão no meu diário. Não mando "
+        "esta entrada por cima: seria empilhar risco que o seu Plano não "
+        "dimensionou — foi o que aconteceu em 31/08, com 14 contratos entrando "
+        "em cima de 6 que já estavam lá. Confira esse contrato na plataforma; "
+        "quando ele estiver limpo, ou quando o meu diário estiver batendo com "
+        "ele, eu volto a mandar.")
 
 
 def politica_com_posicao_aberta(acao, ativo, plano=None):
@@ -14105,6 +14350,14 @@ class SmcQuantApp(ctk.CTk):
                       fg_color="#2a3f5f", hover_color="#3a5580",
                       font=ctk.CTkFont(size=11),
                       command=self._copiar_log).pack(side="left", padx=(0, 6))
+        # O QUE O MOTOR FEZ, EM FORMA DE DADO — para análise depois do pregão.
+        # Ver o bloco DIÁRIO TÉCNICO lá em cima: copiar o log é prosa, e prosa
+        # não se agrupa por motivo nem se soma por ativo.
+        ctk.CTkButton(barra_log, text="📤 Exportar diário técnico", width=205,
+                      fg_color="#2a3f5f", hover_color="#3a5580",
+                      font=ctk.CTkFont(size=11),
+                      command=self._exportar_diario_tecnico).pack(
+                          side="left", padx=(0, 6))
         self.btn_fim_do_log = ctk.CTkButton(
             barra_log, text="⤓ está no fim", width=215, fg_color="#2a3f5f",
             hover_color="#3a5580", font=ctk.CTkFont(size=11),
@@ -20513,6 +20766,7 @@ class SmcQuantApp(ctk.CTk):
             return
 
         def tarefa():
+            res = None      # o diário técnico lê isto no fim, em TODOS os ramos
             try:
                 bot = self._tv_conectar()
                 if not bot:
@@ -20550,6 +20804,15 @@ class SmcQuantApp(ctk.CTk):
             except Exception as e:
                 aviso = (f"❌ NÃO CANCELEI {quais}: deu erro no caminho ({e}). "
                          "As ordens CONTINUAM VIVAS — cancele na mão.")
+            registrar_evento(
+                "cancelamento", ativo=ativo, quais=quais, contexto=contexto,
+                ok=bool(res.get("ok")) if isinstance(res, dict) else None,
+                vivas_antes=(res or {}).get("vivas_antes") if isinstance(res, dict) else None,
+                vivas_depois=(res or {}).get("vivas_depois") if isinstance(res, dict) else None,
+                alvo_antes=(res or {}).get("alvo_antes") if isinstance(res, dict) else None,
+                alvo_depois=(res or {}).get("alvo_depois") if isinstance(res, dict) else None,
+                colateral=(res or {}).get("colateral") if isinstance(res, dict) else None,
+                aviso=aviso)
             self.log(aviso)
             self._chat_feed(aviso)
             try:
@@ -20558,6 +20821,60 @@ class SmcQuantApp(ctk.CTk):
                 pass
 
         threading.Thread(target=tarefa, daemon=True).start()
+
+    def _conferir_plataforma_antes_de_enviar(self, bot, ativo, sinal_id=None):
+        """Lê posição e ordens vivas DESTE contrato na tela, e decide.
+
+        Roda dentro da thread do envio, com o `bot` já conectado, e é a última
+        coisa antes do clique. Duas leituras de DOM, sem screenshot: é o preço
+        de não empilhar 14 contratos em cima de 6.
+
+        A decisão em si é de `decidir_envio_contra_a_plataforma`, que é pura e
+        testável. Aqui só se COLHEM os fatos — e colher fato é onde as coisas
+        dão errado em silêncio, então cada falha vira `leitura_ok=False`, que
+        recusa, em vez de virar zero, que liberaria."""
+        leitura_ok = True
+        posicao, ordens = 0, 0
+        try:
+            estado = bot.ler_estado() or {}
+            if not estado.get("ok"):
+                leitura_ok = False
+            for linha in (estado.get("linhas") or []):
+                if _mesmo_contrato(linha.get("ativo"), ativo):
+                    try:
+                        posicao += abs(int(linha.get("qtd_liquida") or 0))
+                    except (TypeError, ValueError):
+                        pass
+        except Exception:
+            leitura_ok = False
+        try:
+            contagem = bot.contar_ordens_vivas() or {}
+            do_ativo = bot._vivas_do_ativo(contagem, ativo)
+            if do_ativo is None:
+                # `contar_ordens_vivas` não soube ler, ou leu sem ticker
+                # nenhum. Nos dois casos eu não sei responder "há ordem viva
+                # de MBTU6?", e não saber não pode virar zero.
+                leitura_ok = False
+            else:
+                ordens = do_ativo
+        except Exception:
+            leitura_ok = False
+
+        try:
+            exposicao = exposicao_do_diario_no_ativo(
+                [p for p in carregar_posicoes() if _e_da_conta_ativa(p)],
+                ativo, ignorar_sinal_id=sinal_id)
+        except Exception:
+            exposicao = (0, 0)
+
+        pode, motivo = decidir_envio_contra_a_plataforma(
+            ativo, leitura_ok, posicao, ordens, exposicao)
+        if pode and (posicao or ordens):
+            self.log(f"🔎 Conferi {str(ativo or '?').upper()} na plataforma antes "
+                     f"de mandar: {posicao} contrato(s) em posição e {ordens} "
+                     f"ordem(ns) viva(s), e o meu diário já conhecia "
+                     f"({exposicao[0]} ctr / {exposicao[1]} ordem). Segue.")
+        return pode, motivo
 
     def _marcar_ordem_na_corretora(self, sinal_id):
         """Carimba a posição como ENVIADA À PLATAFORMA.
@@ -20688,8 +21005,37 @@ class SmcQuantApp(ctk.CTk):
                 if not bot:
                     self.log("❌ Tradovate: sem conexão. Abra o Chrome pelo botão e faça login.")
                     return
+                # A CORRETORA TEM A ÚLTIMA PALAVRA. Ver
+                # `decidir_envio_contra_a_plataforma`: a trava contra empilhar
+                # pergunta ao diário, e o que o diário não sabe, para ela, não
+                # existe. Aqui a pergunta é feita à TELA, e é a última coisa
+                # antes do clique. Em modo teste nada sai, então nada se
+                # confere — e conferir ali gastaria dois CDP à toa.
+                if not dry:
+                    _pode, _porque = self._conferir_plataforma_antes_de_enviar(
+                        bot, ativo or getattr(self, "_ultimo_ativo_lido", None),
+                        sinal_id)
+                    if not _pode:
+                        aviso = f"⛔ NÃO MANDEI A ORDEM: {_porque}"
+                        registrar_evento(
+                            "ordem_recusada_pela_plataforma", ativo=ativo,
+                            direcao=direcao, contratos=qtd, entry=entry,
+                            stop=stop, alvo=alvo, motivo=_porque,
+                            sinal_id=sinal_id)
+                        self.log(aviso)
+                        self._chat_feed(aviso)
+                        try:
+                            self._desmarcar_ordem_na_corretora(sinal_id)
+                        except Exception:
+                            pass
+                        return
                 # ws pode ter caído entre um uso e outro — força reconferir
                 rotulo_ativo = f" {ativo}" if ativo else ""
+                registrar_evento(
+                    "ordem_enviada", ativo=ativo, direcao=direcao, entry=entry,
+                    stop=stop, alvo=alvo, contratos=qtd, teste=bool(dry),
+                    probabilidade=probabilidade, sinal_id=sinal_id,
+                    drawdown_restante=_dd_resta, rr=_rr)
                 self.log(f"🎯 Tradovate: enviando bracket {direcao}{rotulo_ativo} "
                          f"(entrada {entry} · stop {stop} · alvo {alvo} · {qtd} ctr)"
                          + (" [TESTE]" if dry else ""))
@@ -22743,6 +23089,68 @@ class SmcQuantApp(ctk.CTk):
             return console.get("1.0", tk.END)
         except Exception:
             return ""
+
+    def _exportar_diario_tecnico(self):
+        """Junta os arquivos do diário técnico num .zip para você me mandar.
+
+        O QUE VAI DENTRO: os JSONL dos últimos pregões, a versão instalada, e
+        o Plano de Trading SEM nenhuma chave (`censurar_segredos` passa por
+        cima de tudo antes de escrever). O que NÃO vai: chave de API, senha,
+        token, licença. Este arquivo nasceu para viajar por chat, e um anexo
+        que ninguém desconfia é o lugar preferido de um vazamento.
+
+        E a parte honesta: eu não leio o disco do seu Mac. É por isso que
+        existe um botão, e não uma sincronização automática — o passo em que
+        você me manda o arquivo é o passo em que o dado sai da sua máquina, e
+        ele é seu para dar."""
+        import zipfile
+        from tkinter import messagebox
+        try:
+            limpar_diario_tecnico()
+        except Exception:
+            pass
+        try:
+            arquivos = sorted(
+                nome for nome in os.listdir(DIARIO_TECNICO_DIR)
+                if nome.startswith("motor-") and nome.endswith(".jsonl"))
+        except OSError:
+            arquivos = []
+        if not arquivos:
+            messagebox.showinfo(
+                "Diário técnico",
+                "Ainda não há nada gravado. O diário técnico começa a encher "
+                "assim que o motor mandar, recusar ou cancelar a primeira "
+                "ordem deste pregão.")
+            return
+        carimbo = datetime.datetime.now().strftime("%Y%m%d-%H%M")
+        destino = os.path.join(pasta_dados_usuario(),
+                               f"diario-tecnico-{carimbo}.zip")
+        try:
+            with zipfile.ZipFile(destino, "w", zipfile.ZIP_DEFLATED) as z:
+                for nome in arquivos:
+                    z.write(os.path.join(DIARIO_TECNICO_DIR, nome), nome)
+                try:
+                    plano = censurar_segredos(plano_da_conta_ativa() or {})
+                except Exception:
+                    plano = {}
+                z.writestr("contexto.json", json.dumps(
+                    {"versao": VERSAO_ATUAL, "gerado_em": carimbo,
+                     "plano_de_trading": plano},
+                    ensure_ascii=False, indent=2, default=str))
+        except Exception as e:
+            self.log(f"❌ Não consegui montar o diário técnico: {e}")
+            return
+        self.log(f"📤 Diário técnico exportado: {destino} "
+                 f"({len(arquivos)} pregão(ões)). Sem chaves nem senhas dentro.")
+        try:
+            plataforma.abrir_pasta(pasta_dados_usuario())
+        except Exception:
+            pass
+        messagebox.showinfo(
+            "Diário técnico",
+            f"Pronto — {len(arquivos)} pregão(ões) em:\n\n{destino}\n\n"
+            "Pode me mandar esse arquivo. Ele tem o que o motor FEZ, evento "
+            "por evento, e nenhuma chave de API dentro.")
 
     def _copiar_log(self):
         texto = self._texto_do_log()
@@ -24951,6 +25359,11 @@ class SmcQuantApp(ctk.CTk):
                             _quem = ""
                         if _quem:
                             motivo = f"{motivo} — {_quem}"
+                        registrar_evento(
+                            "cenario_sem_tamanho", ativo=sinal.get("ativo"),
+                            direcao=direcao, entry=sinal.get("entry"),
+                            stop=sinal.get("stop"), motivo=motivo,
+                            risco_comprometido=_quem or None)
                         self.log(f"🚫 NÃO ABRI a posição: {motivo}")
                         self._chat_feed(
                             f"🚫 Não abri {direcao} {sinal.get('ativo', '')}: "

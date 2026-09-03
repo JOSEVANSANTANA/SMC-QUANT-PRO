@@ -42,7 +42,7 @@ Ninguém conferiu, e todo o dimensionamento seguinte saiu desse número falso.
 
 import unittest
 
-from harness import carregar, fonte_do_arquivo
+from harness import carregar, fonte_do_arquivo, funcao_inteira
 
 
 def _ns():
@@ -123,8 +123,15 @@ class TestOCarimboVemANTESDoClique(unittest.TestCase):
         dois o carimbo fica: supor que existe custa uma oportunidade; supor
         que não existe custa a conta."""
         fonte = fonte_do_arquivo()
-        i = fonte.index("_desmarcar_ordem_na_corretora(sinal_id)")
-        trecho = _sem_comentarios(fonte[max(0, i - 700):i])
+        # O PRIMEIRO ponto que desfaz o carimbo passou a ser a recusa da
+        # conferência contra a plataforma, que volta ANTES de qualquer clique
+        # — prova mais forte do que qualquer campo de resultado. Este teste
+        # continua sendo sobre o ponto de DEPOIS do envio, que é onde
+        # `incerto` e `exposto` existem para pesar.
+        corpo = funcao_inteira(fonte, "_tv_enviar_bracket")
+        i = corpo.index("_desmarcar_ordem_na_corretora(sinal_id)",
+                        corpo.index("bot.enviar_ordem_com_atm("))
+        trecho = _sem_comentarios(corpo[max(0, i - 700):i])
         self.assertIn('not res.get("ok")', trecho)
         self.assertIn('not res.get("incerto")', trecho)
         self.assertIn('not res.get("exposto")', trecho)

@@ -10,3 +10,4 @@ dist/
 
 # Ambiente virtual do teste de fumaca da interface (gerado, nunca versionado).
 .venv-gui/
+entrega/

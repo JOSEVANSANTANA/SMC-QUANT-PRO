@@ -355,5 +355,165 @@ class TestOrfasDeAtivosDiferentesVaoUMAAUMA(unittest.TestCase):
         self.assertEqual(fonte.count("varrer_todos_os_ativos=True)"), 3)
 
 
+# ======================================================================
+#  14 CONTRATOS ENTRANDO EM CIMA DE 6
+# ======================================================================
+class TestACorretoraTemAUltimaPalavraAntesDeEnviar(unittest.TestCase):
+    """31/08, MBTU6. Na tela dele havia ao mesmo tempo uma compra de 6 em
+    78.800 e uma posição de 14 em 79.150. Ele: "as ordens estão encavalando,
+    precisa estar muito atento a isso... isso é delicado".
+
+    A trava contra empilhar existia e ESTAVA FUNCIONANDO — o log daquela tarde
+    tem "⛔ Segurei o BUY MBTU6" várias vezes. O buraco é que ela pergunta ao
+    DIÁRIO, e o que o diário não sabe, para ela, não existe: ordem mandada na
+    mão, ordem de antes de o app abrir, reconciliação que não fechou.
+    """
+
+    def _ns(self):
+        return carregar(["decidir_envio_contra_a_plataforma",
+                         "exposicao_do_diario_no_ativo", "_mesmo_contrato"])
+
+    def test_tela_limpa_libera(self):
+        ns = self._ns()
+        pode, _ = ns["decidir_envio_contra_a_plataforma"](
+            "MBTU6", True, 0, 0, (0, 0))
+        self.assertTrue(pode)
+
+    def test_posicao_que_o_diario_NAO_conhece_barra(self):
+        ns = self._ns()
+        pode, motivo = ns["decidir_envio_contra_a_plataforma"](
+            "MBTU6", True, 6, 0, (0, 0))
+        self.assertFalse(pode)
+        self.assertIn("MBTU6", motivo)
+        self.assertIn("6 contrato", motivo)
+        self.assertIn("NÃO estão no meu diário", motivo)
+
+    def test_ordem_viva_que_o_diario_NAO_conhece_barra(self):
+        ns = self._ns()
+        pode, motivo = ns["decidir_envio_contra_a_plataforma"](
+            "MBTU6", True, 0, 2, (0, 0))
+        self.assertFalse(pode)
+        self.assertIn("2 ordem", motivo)
+
+    def test_posicao_vendida_conta_pelo_MODULO(self):
+        """-14 é tanta exposição quanto +14."""
+        ns = self._ns()
+        pode, motivo = ns["decidir_envio_contra_a_plataforma"](
+            "MBTU6", True, -14, 0, (0, 0))
+        self.assertFalse(pode)
+        self.assertIn("14 contrato", motivo)
+
+    def test_o_que_o_DIARIO_JA_SABE_nao_e_revisto_aqui(self):
+        """Quem decide o que fazer com exposição conhecida é a política de
+        posição aberta, que roda antes: ou barra (ORDEM_VIVA), ou marca como
+        AUMENTO, que ele acata na mão. Rever aquela decisão aqui tornaria o
+        aumento manual impossível, e ele não pediu isso."""
+        ns = self._ns()
+        for exposicao in ((6, 0), (0, 1), (6, 1)):
+            pode, _ = ns["decidir_envio_contra_a_plataforma"](
+                "MBTU6", True, 6, 1, exposicao)
+            self.assertTrue(pode, f"diário com {exposicao} tem de liberar")
+
+    def test_NAO_CONSEGUI_LER_nao_e_permissao(self):
+        """A mesma regra que `contar_ordens_vivas` escreve na própria
+        docstring: 'zero ordens libera; não sei só permite avisar'. Do outro
+        lado desta função sai uma ordem de verdade — então aqui avisar é
+        recusar."""
+        ns = self._ns()
+        pode, motivo = ns["decidir_envio_contra_a_plataforma"](
+            "MBTU6", False, 0, 0, (0, 0))
+        self.assertFalse(pode)
+        self.assertIn("não consegui LER", motivo)
+        self.assertIn("painel de ordens", motivo,
+                      "recusar sem dizer o que fazer vira ferramenta parada")
+
+    def test_numero_torto_na_leitura_nao_derruba(self):
+        ns = self._ns()
+        for p, o in ((None, None), ("x", "y"), ("", ""), (0.0, 0.0)):
+            pode, _ = ns["decidir_envio_contra_a_plataforma"](
+                "MBTU6", True, p, o, (0, 0))
+            self.assertTrue(pode)
+
+
+class TestOQueODiarioTemNesseContrato(unittest.TestCase):
+
+    def test_soma_aberta_e_conta_ordem_enviada(self):
+        ns = carregar(["exposicao_do_diario_no_ativo", "_mesmo_contrato"])
+        lista = [
+            _pos(ativo="MBTU6", status="ABERTA", contratos=6),
+            _pos(ativo="MBTU6", status="PENDENTE", enviada_plataforma=True),
+            _pos(ativo="MESU6", status="ABERTA", contratos=99),   # outro ativo
+        ]
+        self.assertEqual(
+            ns["exposicao_do_diario_no_ativo"](lista, "MBTU6"), (6, 1))
+
+    def test_pendente_NAO_enviada_nao_ocupa_lugar_na_corretora(self):
+        ns = carregar(["exposicao_do_diario_no_ativo", "_mesmo_contrato"])
+        lista = [_pos(ativo="MBTU6", status="PENDENTE")]
+        self.assertEqual(
+            ns["exposicao_do_diario_no_ativo"](lista, "MBTU6"), (0, 0))
+
+    def test_a_PROPRIA_ordem_que_esta_saindo_e_ignorada(self):
+        """A armadilha que faria a trava inteira virar enfeite.
+
+        `_marcar_ordem_na_corretora` carimba ANTES do envio, na thread da
+        interface — e por um bom motivo (ver a docstring dela). Quando a
+        conferência roda, a ordem que estamos mandando JÁ está no diário. Sem
+        excluí-la, o diário "conhece" qualquer coisa que apareça na tela, a
+        recusa nunca acontece, e um teste desatento passaria."""
+        ns = carregar(["exposicao_do_diario_no_ativo", "_mesmo_contrato"])
+        lista = [_pos(ativo="MBTU6", status="PENDENTE",
+                      enviada_plataforma=True, sinal_id="s-agora")]
+        self.assertEqual(
+            ns["exposicao_do_diario_no_ativo"](lista, "MBTU6"), (0, 1))
+        self.assertEqual(
+            ns["exposicao_do_diario_no_ativo"](lista, "MBTU6",
+                                               ignorar_sinal_id="s-agora"),
+            (0, 0))
+
+    def test_contrato_diferente_nao_se_mistura(self):
+        ns = carregar(["exposicao_do_diario_no_ativo", "_mesmo_contrato"])
+        lista = [_pos(ativo="MNQU6", status="ABERTA", contratos=5)]
+        self.assertEqual(
+            ns["exposicao_do_diario_no_ativo"](lista, "MESU6"), (0, 0))
+        # MES e MESU6 são o mesmo instrumento.
+        lista = [_pos(ativo="MES", status="ABERTA", contratos=5)]
+        self.assertEqual(
+            ns["exposicao_do_diario_no_ativo"](lista, "MESU6"), (5, 0))
+
+
+class TestAConferenciaESTAlLIGADANoCaminhoDoEnvio(unittest.TestCase):
+    """Função que existe e não é chamada não trava nada."""
+
+    def test_ela_roda_ANTES_do_envio_do_bracket(self):
+        corpo = funcao_inteira(fonte_do_arquivo(), "_tv_enviar_bracket")
+        i_conf = corpo.index("_conferir_plataforma_antes_de_enviar(")
+        i_envio = corpo.index("bot.enviar_ordem_com_atm(")
+        self.assertLess(i_conf, i_envio)
+
+    def test_recusar_DESFAZ_o_carimbo_da_ordem(self):
+        """O carimbo é posto antes do envio. Se a ordem não sai, ele tem de
+        cair — senão o diário passa a acreditar numa ordem que nunca existiu e
+        a próxima sugestão do ativo é barrada por um fantasma."""
+        corpo = funcao_inteira(fonte_do_arquivo(), "_tv_enviar_bracket")
+        i = corpo.index("_conferir_plataforma_antes_de_enviar(")
+        trecho = corpo[i:i + 900]
+        self.assertIn("NÃO MANDEI A ORDEM", trecho)
+        self.assertIn("_desmarcar_ordem_na_corretora", trecho)
+
+    def test_em_modo_TESTE_nao_gasta_leitura(self):
+        """Em dry-run nada sai, então não há o que conferir — e conferir
+        gastaria dois CDP a cada ciclo à toa."""
+        corpo = funcao_inteira(fonte_do_arquivo(), "_tv_enviar_bracket")
+        i = corpo.index("_conferir_plataforma_antes_de_enviar(")
+        self.assertIn("if not dry:", corpo[i - 500:i])
+
+    def test_falha_de_leitura_vira_RECUSA_e_nunca_zero(self):
+        corpo = funcao_inteira(fonte_do_arquivo(),
+                               "_conferir_plataforma_antes_de_enviar")
+        self.assertEqual(corpo.count("leitura_ok = False"), 4)
+        self.assertIn("if do_ativo is None:", corpo)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

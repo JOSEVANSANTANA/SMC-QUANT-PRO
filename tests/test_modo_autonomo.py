@@ -22,7 +22,7 @@ DIMENSIONAMENTO: zero contrato não é "envia um", é "hoje não".
 
 import unittest
 
-from harness import carregar, fonte_do_arquivo
+from harness import carregar, fonte_do_arquivo, funcao_inteira
 
 
 class TestADecisaoDeExecutarSozinha(unittest.TestCase):
@@ -317,8 +317,7 @@ class TestNaoEmpilharOrdemNaCorretora(unittest.TestCase):
         i = fonte.index("def _marcar_ordem_na_corretora(")
         self.assertIn('p["enviada_plataforma"] = True', fonte[i:i + 3000])
 
-        i_fn = fonte.index("def _tv_enviar_bracket")
-        trecho = fonte[i_fn:i_fn + 20000]
+        trecho = funcao_inteira(fonte, "_tv_enviar_bracket")
         j = trecho.index("self._marcar_ordem_na_corretora(sinal_id)")
         self.assertIn("if not dry:", trecho[max(0, j - 300):j],
                       "modo teste não pode carimbar")
@@ -326,10 +325,37 @@ class TestNaoEmpilharOrdemNaCorretora(unittest.TestCase):
                         "o carimbo tem de vir ANTES do clique em Enviar")
 
     def test_o_carimbo_so_e_desfeito_quando_a_falha_e_PROVADA(self):
-        """`incerto` e `exposto` são casos em que a ordem PODE estar lá."""
+        """`incerto` e `exposto` são casos em que a ordem PODE estar lá.
+
+        DOIS LUGARES DESFAZEM O CARIMBO, e cada um tem a sua prova:
+
+          · ANTES DO CLIQUE, quando a conferência contra a plataforma recusa
+            o envio. A prova aqui é a mais forte que existe: a função volta
+            sem nunca ter chegado ao `enviar_ordem_com_atm`.
+          · DEPOIS DO ENVIO, e só com o resultado dizendo `ok=False`, sem
+            `incerto` e sem `exposto`.
+
+        O teste enumera TODOS os pontos que desfazem — se aparecer um
+        terceiro, sem prova, ele reprova."""
         fonte = fonte_do_arquivo()
-        j = fonte.index("self._desmarcar_ordem_na_corretora(sinal_id)")
-        bloco = fonte[j - 700:j]
+        corpo = funcao_inteira(fonte, "_tv_enviar_bracket")
+        alvo = "self._desmarcar_ordem_na_corretora(sinal_id)"
+        posicoes = []
+        i = corpo.find(alvo)
+        while i != -1:
+            posicoes.append(i)
+            i = corpo.find(alvo, i + 1)
+        self.assertEqual(len(posicoes), 2,
+                         "só dois lugares podem desfazer o carimbo")
+
+        # (1) o de antes do clique — recusa da conferência de plataforma
+        antes = corpo[:posicoes[0]]
+        self.assertIn("NÃO MANDEI A ORDEM", antes[-900:])
+        self.assertLess(posicoes[0], corpo.index("bot.enviar_ordem_com_atm("),
+                        "esta é a que volta SEM ter clicado")
+
+        # (2) o de depois do envio — a prova tem de ser tripla
+        bloco = corpo[posicoes[1] - 700:posicoes[1]]
         self.assertIn('not res.get("ok")', bloco)
         self.assertIn('not res.get("incerto")', bloco,
                       "se eu NÃO SEI se saiu, tenho de tratar como se tivesse "
