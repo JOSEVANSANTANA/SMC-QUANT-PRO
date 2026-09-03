@@ -2341,7 +2341,11 @@ class TradovateAuto:
       // for cancelada, mas enquanto está lá, está lá.
       var reVivo=/(funcionando|working|suspenso|suspended|aceito|accepted|pendente|pending|em execucao|na execucao)/;
       var reMorto=/(cancelad|cancell?ed|preenchid|filled|executad|rejeitad|rejected|expirad|expired|recusad)/;
-      var vivas={}, mortas={}, amostras=[], viuPainel=false;
+      // O TICKER DA LINHA. Sem ele, "3 ordens vivas" é um número da CONTA
+      // INTEIRA sendo usado para responder sobre UM ativo — foi assim que o
+      // app disse "cancelei o MGCV6" depois de varrer o desk todo.
+      var reTicker=/\b([A-Z]{2,4}[FGHJKMNQUVXZ]\d{1,2})\b/;
+      var vivas={}, mortas={}, amostras=[], viuPainel=false, porAtivo={};
       var els=document.querySelectorAll('div,span,li,td,tr,p');
       for(var i=0;i<els.length;i++){
         var el=els[i];
@@ -2355,7 +2359,10 @@ class TradovateAuto:
         if(reMorto.test(n)){ mortas[ids[0]]=1; continue; }
         if(!reVivo.test(n)) continue;
         if(!vivas[ids[0]]){
-          vivas[ids[0]]=1;
+          var mt=t.toUpperCase().match(reTicker);
+          var tk=mt?mt[1]:'?';
+          vivas[ids[0]]=tk;
+          porAtivo[tk]=(porAtivo[tk]||0)+1;
           if(amostras.length<8) amostras.push(t.slice(0,140));
         }
       }
@@ -2375,6 +2382,7 @@ class TradovateAuto:
       }
       return JSON.stringify({ok:true, vivas:Object.keys(vivas).length,
                              ids:Object.keys(vivas), amostras:amostras,
+                             por_ativo:porAtivo,
                              mortas:Object.keys(mortas).length});
     })()
     """
@@ -2592,38 +2600,84 @@ class TradovateAuto:
         r"cancel|\bcxl\b|\bcxl\.|&\s*cxl|&\s*\.{1,3}|&\s*…",
         re.IGNORECASE)
 
+    # ==================================================================
+    #  A VARREDURA — E POR QUE ELA PRECISA SABER DE QUEM É A ORDEM
+    # ==================================================================
+    #  31/08, 17:15, o log dele:
+    #
+    #     ✅ ORDENS CANCELADAS NA PLATAFORMA: BUY MGCV6 19 ctr @ 4453.75
+    #        ... ordens canceladas na plataforma (3 → 0), com a posição zerada.
+    #     17:20  ℹ️ NADA A CANCELAR NA PLATAFORMA: BUY MESU6 13 ctr @ 7683.75
+    #
+    #  Ele escreveu: "tive uma impressão de que era para cancelar uma e
+    #  cancelou outra". Estava certo, e era pior do que ele imaginou: não
+    #  cancelou outra — cancelou TODAS. Esta varredura fazia
+    #  `querySelectorAll('a, button, span, div')` na PÁGINA INTEIRA e clicava
+    #  em tudo que dissesse "cancelar". O painel de ordens da Tradovate lista
+    #  os quatro contratos juntos. Mandar cancelar a ordem do ouro derrubava,
+    #  no mesmo clique, o índice, a Nasdaq e o bitcoin — e cinco minutos
+    #  depois o MESU6 aparecia como "nada a cancelar" porque já tinha morrido
+    #  ali atrás, sem uma linha de log dizendo isso.
+    #
+    #  Num desk de um ativo só, varrer tudo e cancelar a ordem certa eram a
+    #  mesma coisa. Deixaram de ser no dia em que ele abriu a segunda janela.
+    #
+    #  Agora a varredura anda pelos ANCESTRAIS de cada botão procurando o
+    #  ticker do ativo alvo. Não achou o ticker, não clica. E sem ativo
+    #  informado ela não clica em nada: varrer o desk inteiro é uma decisão
+    #  grande demais para ser o comportamento padrão de um valor ausente.
     _JS_VARREDURA_CANCELAR = r"""
     (function(){
+      var ALVO = __ALVO__;                 // 'MGCV6', ou null
+      var clicados = 0, ignorados = 0;
+      function daOrdemAlvo(el){
+        if(!ALVO) return false;          // sem alvo, não se clica em nada
+        if(ALVO === '*') return true;    // limpeza da conta inteira, pedida
+        var no = el;
+        for(var k=0; k<6 && no; k++){
+          var t = (no.innerText || no.textContent || '').toUpperCase();
+          if(t.length > 400) break;        // subiu demais: já é o painel todo
+          if(t.indexOf(ALVO) !== -1) return true;
+          no = no.parentElement;
+        }
+        return false;
+      }
+      function clicar(el){
+        el.dispatchEvent(new MouseEvent("mousedown", {bubbles: true, cancelable: true, view: window, buttons: 1}));
+        el.dispatchEvent(new MouseEvent("mouseup", {bubbles: true, cancelable: true, view: window, buttons: 1}));
+        el.dispatchEvent(new MouseEvent("click", {bubbles: true, cancelable: true, view: window, buttons: 1}));
+        try { el.click(); } catch(e){}
+      }
       try {
-        // 1. Clica em links de cancelamento ou botões X de ordens vivas
+        // 1. Links de cancelamento e botões X — SÓ os da ordem do ativo alvo.
         var els = document.querySelectorAll('a, button, span, div');
         for(var i=0; i<els.length; i++){
           var el = els[i];
           var t = (el.innerText || el.textContent || '').trim().toLowerCase();
           if(t === 'cancelar' || t === '[cancelar]' || t === 'cancel' || t === '[cancel]' || t === 'cxl'){
-            el.dispatchEvent(new MouseEvent("mousedown", {bubbles: true, cancelable: true, view: window, buttons: 1}));
-            el.dispatchEvent(new MouseEvent("mouseup", {bubbles: true, cancelable: true, view: window, buttons: 1}));
-            el.dispatchEvent(new MouseEvent("click", {bubbles: true, cancelable: true, view: window, buttons: 1}));
-            try { el.click(); } catch(e){}
+            if(daOrdemAlvo(el)){ clicar(el); clicados++; } else { ignorados++; }
           }
         }
         var xBtns = document.querySelectorAll('[title*="cancel" i], [title*="cancelar" i], .cancel-order, .order-cancel');
         for(var j=0; j<xBtns.length; j++){
-          var xb = xBtns[j];
-          xb.dispatchEvent(new MouseEvent("click", {bubbles: true, cancelable: true, view: window, buttons: 1}));
-          try { xb.click(); } catch(e){}
+          if(daOrdemAlvo(xBtns[j])){ clicar(xBtns[j]); clicados++; } else { ignorados++; }
         }
-        // 2. Garante que o painel de ATMs/OCO no chamado do pedido permaneça aberto e ativo
+        // 2. Garante que o painel de ATMs/OCO no chamado do pedido permaneça
+        //    aberto e ativo. Isto não cancela nada, então não tem alvo.
         var btnA = document.querySelector('[data-testid="switch-falsy-btn"], .context-toolbar .falsy-value');
-        if(btnA){
-          btnA.dispatchEvent(new MouseEvent("mousedown", {bubbles: true, cancelable: true, view: window, buttons: 1}));
-          btnA.dispatchEvent(new MouseEvent("mouseup", {bubbles: true, cancelable: true, view: window, buttons: 1}));
-          btnA.dispatchEvent(new MouseEvent("click", {bubbles: true, cancelable: true, view: window, buttons: 1}));
-          try { btnA.click(); } catch(e){}
-        }
+        if(btnA){ clicar(btnA); }
       } catch(e){}
+      return JSON.stringify({clicados: clicados, ignorados: ignorados,
+                             alvo: ALVO});
     })()
     """
+
+    def _js_varredura_cancelar(self, ativo=None):
+        """Monta a varredura mirada no ticker — ou desarmada, sem ativo."""
+        alvo = "null"
+        if ativo:
+            alvo = json.dumps(str(ativo).strip().upper())
+        return self._JS_VARREDURA_CANCELAR.replace("__ALVO__", alvo)
 
     # E ESTE EU NÃO CLICO NUNCA, mesmo falando em cancelar.
     # 'Reverso e Cxl' cancela as ordens E INVERTE A POSIÇÃO — sai do BUY e
@@ -2649,12 +2703,42 @@ class TradovateAuto:
                                    and not d["inverte_posicao"])
         return d
 
-    def sair_em_mercado_e_cancelar(self, enviar=False, exigir_zerado=True, ativo=None):
+    @staticmethod
+    def _vivas_do_ativo(contagem, ativo):
+        """Quantas das ordens vivas são DESTE contrato. None = não sei.
+
+        `contar_ordens_vivas` devolve o total da CONTA. Numa mesa de quatro
+        ativos, esse total não responde "a minha ordem de MGCV6 saiu?" — ele
+        responde outra pergunta, e foi respondendo a outra pergunta que o app
+        anunciou cancelamento de uma ordem que ele não tinha conferido."""
+        if not contagem or not contagem.get("ok"):
+            return None
+        por_ativo = contagem.get("por_ativo")
+        if not isinstance(por_ativo, dict):
+            return None
+        if not ativo:
+            return contagem.get("vivas")
+        alvo = str(ativo).strip().upper()
+        return sum(n for tk, n in por_ativo.items()
+                   if str(tk).upper() == alvo)
+
+    def sair_em_mercado_e_cancelar(self, enviar=False, exigir_zerado=True,
+                                   ativo=None, varrer_todos_os_ativos=False):
         """Clica em 'Sair em Mkt & Cancelar': zera a posição e limpa as ordens.
 
-        Devolve {ok, clicou, motivo, vivas_antes, vivas_depois, recusa}."""
+        `ativo` não é enfeite: ele coloca o ticket no contrato certo ANTES do
+        clique, mira a varredura do DOM só nas linhas daquele contrato e faz a
+        conferência olhar o número DAQUELE contrato. Sem ele, esta função
+        continua sabendo cancelar — mas cancela a conta inteira, e é isso que
+        `varrer_todos_os_ativos=True` passa a dizer em voz alta, em vez de
+        acontecer de graça.
+
+        Devolve {ok, clicou, motivo, vivas_antes, vivas_depois, recusa,
+        alvo_antes, alvo_depois, colateral}."""
         r = {"ok": False, "clicou": False, "motivo": None, "recusa": False,
-             "vivas_antes": None, "vivas_depois": None, "rotulo": None}
+             "vivas_antes": None, "vivas_depois": None, "rotulo": None,
+             "ativo": ativo, "alvo_antes": None, "alvo_depois": None,
+             "colateral": 0}
 
         # 0) O TICKET ESTÁ NO ATIVO CERTO?
         if ativo:
@@ -2668,9 +2752,19 @@ class TradovateAuto:
                 r["motivo"] = f"a ligação com o Chrome caiu ao trocar o ativo para {ativo}: {e}"
                 r["recusa"] = True
                 return r
+        elif not varrer_todos_os_ativos:
+            r["motivo"] = ("não me disseram de qual contrato é esta ordem. Este "
+                           "botão e a varredura do painel alcançam TODOS os "
+                           "ativos do desk, e cancelar o que ninguém pediu é "
+                           "pior do que não cancelar nada. Diga o ativo, ou "
+                           "peça explicitamente para limpar a conta inteira.")
+            r["recusa"] = True
+            self.log(f"   ⛔ não clico em 'Sair em Mkt': {r['motivo']}")
+            return r
 
         # 1) A POSIÇÃO ESTÁ ZERADA? Leitura na tela.
         quais_abertas = ""
+        estado = {}
         try:
             estado = self.ler_estado() or {}
             abertas = [l for l in (estado.get("linhas") or [])
@@ -2685,6 +2779,10 @@ class TradovateAuto:
                 r["recusa"] = True
                 return r
         except Exception:
+            # `estado` fica {} e a trava logo abaixo recusa por "não consegui
+            # LER". Antes esta linha deixava a variável sem valor nenhum e o
+            # `estado.get` seguinte estourava NameError — uma exceção crua no
+            # caminho que decide se aperta o botão que liquida a mercado.
             pass
 
         if exigir_zerado:
@@ -2706,8 +2804,12 @@ class TradovateAuto:
                 return r
 
         # 2) QUANTAS ORDENS HÁ AGORA — é o "antes" que dá sentido ao "depois".
+        #    Duas contagens, e elas respondem perguntas diferentes: `vivas` é a
+        #    conta inteira e serve para medir o ESTRAGO; `alvo_antes` é só o
+        #    contrato desta ordem e é a única que autoriza dizer "cancelei".
         antes = self.contar_ordens_vivas()
         r["vivas_antes"] = antes.get("vivas")
+        r["alvo_antes"] = self._vivas_do_ativo(antes, ativo)
 
         # 3) O BOTÃO, E O QUE A LEGENDA DELE DIZ QUE ELE FAZ.
         try:
@@ -2763,9 +2865,11 @@ class TradovateAuto:
             return r
         r["clicou"] = True
 
-        # Varredura complementar no DOM: clica em links [CANCELAR] da lista de ordens, botões X e Redefinir
+        # Varredura complementar no DOM — MIRADA no contrato desta ordem.
+        # Ver o comentário sobre 31/08 em `_JS_VARREDURA_CANCELAR`.
         try:
-            self.avaliar_js(self._JS_VARREDURA_CANCELAR)
+            self.avaliar_js(self._js_varredura_cancelar(
+                "*" if varrer_todos_os_ativos else ativo))
         except Exception:
             pass
 
@@ -2776,9 +2880,16 @@ class TradovateAuto:
             pass
         time.sleep(0.9)
 
-        # 5) A CONFERÊNCIA.
+        # 5) A CONFERÊNCIA — E ELA É SOBRE O CONTRATO DESTA ORDEM.
+        #
+        # Até 31/08 a pergunta feita aqui era "quantas ordens sobraram na
+        # CONTA?". Com um ativo só, as duas perguntas têm a mesma resposta.
+        # Com quatro, "sobrou zero na conta" pode significar tanto "a sua
+        # ordem saiu" quanto "as outras três também saíram" — e o app dizia a
+        # primeira coisa sem ter conferido nada.
         depois = self.contar_ordens_vivas()
         r["vivas_depois"] = depois.get("vivas")
+        r["alvo_depois"] = self._vivas_do_ativo(depois, ativo)
         if not depois.get("ok"):
             r["motivo"] = ("cliquei, mas não consegui reler as ordens ("
                            + str(depois.get("motivo") or "motivo não informado")
@@ -2787,9 +2898,43 @@ class TradovateAuto:
             r["incerto"] = True
             self.log(f"   ⚠️ {r['motivo']}")
             return r
-        if depois.get("vivas"):
-            # Segunda rota: tenta 'Cancelar todas' antes de desistir
-            self.log(f"   ↩️ ainda há {depois['vivas']} ordem(ns) viva(s) — "
+
+        # QUEM DIZ SE ACABOU: o contrato alvo quando eu sei separá-lo; a conta
+        # inteira só quando a leitura não trouxe ticker nenhum (aí volto ao
+        # comportamento antigo, e é honesto porque é tudo o que eu tenho).
+        restam = r["alvo_depois"] if r["alvo_depois"] is not None else depois.get("vivas")
+        rotulo_alvo = f"de {str(ativo).upper()} " if ativo and r["alvo_depois"] is not None else ""
+
+        # O ESTRAGO NOS OUTROS ATIVOS, MEDIDO E DITO. Ele não pode descobrir
+        # pelo extrato da corretora que o robô derrubou uma ordem que ele não
+        # mandou derrubar.
+        try:
+            outras_antes = (r["vivas_antes"] or 0) - (r["alvo_antes"] or 0)
+            outras_depois = (r["vivas_depois"] or 0) - (r["alvo_depois"] or 0)
+            r["colateral"] = max(0, outras_antes - outras_depois)
+        except Exception:
+            r["colateral"] = 0
+        texto_colateral = ""
+        if r["colateral"] and not varrer_todos_os_ativos:
+            texto_colateral = (f" ATENÇÃO: {r['colateral']} ordem(ns) de OUTROS "
+                               "contratos também sumiram do painel neste "
+                               "intervalo — eu não cliquei nelas, mas CONFIRA.")
+
+        if restam:
+            # Segunda rota: 'Cancelar todas'. E ela é o que o nome diz — limpa
+            # a conta INTEIRA. Com um alvo declarado, oferecer isso como
+            # "tentativa complementar" é trocar uma ordem que sobrou por três
+            # que ninguém mandou cancelar.
+            if ativo and not varrer_todos_os_ativos:
+                r["motivo"] = (f"cliquei em '{btn.get('rotulo')}' e AINDA HÁ "
+                               f"{restam} ordem(ns) {rotulo_alvo}viva(s) na "
+                               "plataforma. NÃO tentei o 'Cancelar todas' de "
+                               "propósito: ele limpa a conta inteira e você "
+                               "tem outros contratos abertos. Cancele esta na "
+                               "mão." + texto_colateral)
+                self.log(f"   ❌ {r['motivo']}")
+                return r
+            self.log(f"   ↩️ ainda há {restam} ordem(ns) viva(s) — "
                      "tentando o botão 'Cancelar todas' antes de desistir.")
             try:
                 ok2, det2 = self.cancelar_todas_as_ordens()
@@ -2798,6 +2943,7 @@ class TradovateAuto:
             if ok2:
                 terceira = self.contar_ordens_vivas()
                 r["vivas_depois"] = terceira.get("vivas")
+                r["alvo_depois"] = self._vivas_do_ativo(terceira, ativo)
                 if terceira.get("ok") and not terceira.get("vivas"):
                     r["ok"] = True
                     r["motivo"] = (f"ordens canceladas na plataforma "
@@ -2825,16 +2971,23 @@ class TradovateAuto:
         # Parece implicância e não é: é a mesma família do lucro que não
         # existiu. No dia em que a leitura falhar e devolver zero por engano,
         # essa frase vai dizer "cancelei" com três ordens vivas na tela.
-        if not r.get("vivas_antes"):
-            r["motivo"] = ("não havia ordem viva na plataforma para cancelar"
+        havia = r["alvo_antes"] if r["alvo_antes"] is not None else r.get("vivas_antes")
+        if not havia:
+            # BANDEIRA, NÃO FRASE. Quem escolhe o título da mensagem lá no app
+            # procurava o texto "não havia ordem viva" dentro do motivo — e o
+            # motivo agora traz o ticker no meio ("não havia ordem de MGCV6
+            # viva"). Título é decisão; decisão não se toma por substring.
+            r["nada_a_cancelar"] = True
+            r["motivo"] = (f"não havia ordem {rotulo_alvo}viva na plataforma "
+                           "para cancelar"
                            + (f"; posições fechadas ({quais_abertas})"
                               if quais_abertas else "; a posição já estava zerada")
-                           + ".")
+                           + "." + texto_colateral)
         else:
-            r["motivo"] = (f"ordens canceladas na plataforma "
-                           f"({r['vivas_antes']} → 0)"
+            r["motivo"] = (f"ordens {rotulo_alvo}canceladas na plataforma "
+                           f"({havia} → 0)"
                            + (f", posições fechadas ({quais_abertas})" if quais_abertas else ", com a posição zerada")
-                           + ".")
+                           + "." + texto_colateral)
         self.log(f"   ✅ {r['motivo']}")
         return r
 

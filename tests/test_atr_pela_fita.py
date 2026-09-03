@@ -35,7 +35,7 @@ está aquecendo seria a mesma pressa que este projeto passou a semana desfazendo
 
 import unittest
 
-from harness import RAIZ, fonte_do_arquivo   # noqa: F401
+from harness import RAIZ, fonte_do_arquivo, funcao_inteira, carregar  # noqa: F401
 import sys
 
 if RAIZ not in sys.path:
@@ -171,9 +171,10 @@ class TestOATREOBSERVACAOENaoDecisao(unittest.TestCase):
     """O ponto mais importante deste arquivo."""
 
     def _corpo(self):
-        fonte = fonte_do_arquivo()
-        i = fonte.index("def _medir_atr_em_observacao")
-        return fonte[i:i + 3200]
+        # FUNÇÃO INTEIRA, não uma janela de bytes. A janela de 3.200 bytes
+        # quebrou sozinha no dia em que a função ganhou comentário — e um
+        # teste que reprova documentação ensina a não documentar.
+        return funcao_inteira(fonte_do_arquivo(), "_medir_atr_em_observacao")
 
     def test_ele_NAO_recusa_cenario(self):
         """Quem recusa continua sendo `avaliar_tamanho_do_stop` com a faixa
@@ -189,7 +190,39 @@ class TestOATREOBSERVACAOENaoDecisao(unittest.TestCase):
         corpo = self._corpo()
         self.assertIn("faixa_de_stop_do_ativo(ativo)", corpo)
         self.assertIn("faixa fixa em uso", corpo)
-        self.assertIn("OBSERVAÇÃO", corpo)
+        # A frase mudou em 31/08 (o ATR passou a calibrar o trailing), mas a
+        # afirmação que ela precisa carregar é a mesma: quem RECUSA cenário
+        # continua sendo a faixa fixa.
+        self.assertIn("faixa fixa", corpo)
+        self.assertIn("recusa cenário", corpo)
+
+    def test_o_ATR_e_guardado_COM_DONO_E_COM_HORA(self):
+        """31/08. Existia um `self._ultimo_atr` só, sem ativo e sem hora, e
+        alguém o dividiu pelo tick do ativo DA ORDEM para calibrar trailing.
+        Numa mesa de quatro janelas isso é o ATR do bitcoin virando distância
+        de stop do MES. Guardar por ativo e com carimbo de hora é o que torna
+        a pergunta 'esse número é DESTE contrato?' possível de responder."""
+        corpo = self._corpo()
+        self.assertIn("_atr_por_ativo", corpo)
+        self.assertIn('"ts"', corpo)
+        self.assertIn("raiz_do_contrato(ativo)", corpo)
+
+    def test_balde_de_UM_contrato_so(self):
+        """Um contrato não varia 25% em meia hora. Se o balde variou, ali
+        dentro tem mais de um instrumento — e o ATR disso não é um número
+        grande, é lixo com cara de número."""
+        corpo = self._corpo()
+        self.assertIn("1.25", corpo)
+        self.assertIn("_avisou_fita_misturada", corpo)
+
+    def test_a_fita_e_guardada_COM_O_ATIVO_DELA(self):
+        """O 'Chamado do pedido' e a fita são o mesmo painel, e o robô troca
+        o instrumento dele a cada envio. Um balde só, sem dono, mistura MES a
+        7.600 com MBT a 79.000 no mesmo candle."""
+        corpo = funcao_inteira(fonte_do_arquivo(),
+                               "_guardar_negocios_para_candles")
+        self.assertIn("_negocios_por_ativo", corpo)
+        self.assertIn("ativo", corpo.split("\n")[0])   # o ativo é PARÂMETRO
 
     def test_ele_diz_quanto_falta_para_aquecer(self):
         """Silêncio deixaria ele sem saber se está aquecendo ou quebrado."""
@@ -213,16 +246,28 @@ class TestOATREOBSERVACAOENaoDecisao(unittest.TestCase):
         precisa de lado — precisa de preço, tamanho e hora. Descartar aqui
         faria o candle nascer com buraco e o ATR sair menor que o mercado."""
         fonte = fonte_do_arquivo()
-        i = fonte.index("_guardar_negocios_para_candles(novos)")
+        i = fonte.index("self._guardar_negocios_para_candles(novos")
         j = fonte.index("lado = fita.classificar_agressao(", i - 3000)
         self.assertLess(i, j, "os candles têm de ser guardados ANTES do "
                               "filtro de lado da agressão")
 
     def test_o_balde_de_negocios_tem_teto(self):
         """Sem teto, um pregão inteiro de fita líquida vira memória parada."""
+        corpo = funcao_inteira(fonte_do_arquivo(),
+                               "_guardar_negocios_para_candles")
+        self.assertIn("maxlen=", corpo)
+
+    def test_o_ruido_do_trailing_NAO_vem_de_um_ATR_global(self):
+        """A linha que quase entrou em produção era:
+
+            _atr_ticks = float(self._ultimo_atr) / tick
+
+        Um ATR sem dono dividido pelo tick do ativo DA ORDEM. Se este teste
+        um dia falhar porque alguém voltou a essa forma, o defeito não é o
+        teste."""
         fonte = fonte_do_arquivo()
-        i = fonte.index("def _guardar_negocios_para_candles")
-        self.assertIn("maxlen=", fonte[i:i + 1200])
+        self.assertNotIn('getattr(self, "_ultimo_atr", 0)) / tick', fonte)
+        self.assertIn("_ruido_ticks_do_ativo(", fonte)
 
     def test_sem_o_modulo_de_fluxo_o_app_nao_quebra(self):
         """As três funções vêm de `order_flow.py`, que é opcional na
@@ -233,6 +278,89 @@ class TestOATREOBSERVACAOENaoDecisao(unittest.TestCase):
         self.assertIn("def agregar_candles(*_a, **_k)", trecho)
         self.assertIn("def atr_de_candles(*_a, **_k)", trecho)
         self.assertIn("def faixa_de_stop_por_atr(*_a, **_k)", trecho)
+
+
+class TestORuidoQuePodeEncostarNoTrailing(unittest.TestCase):
+    """`ruido_ticks_do_atr` — a peneira entre uma medição e um stop real.
+
+    O CASO (31/08). A ideia de afastar o trailing do ruído medido é do
+    trader e é boa: "tomo muito stop no ruído". O que quase entrou foi um
+    ATR global dividido pelo tick do ativo da ordem. Com a fita do MBTU6 no
+    balde e uma ordem de MESU6 na mão, a conta dá milhares de ticks — e
+    `plano_trailing_inteligente` faz `max(distancia, ruido * 1,5)`. O
+    trailing viraria um stop a centenas de pontos: trailing nenhum, calado.
+
+    Cinco perguntas, e uma resposta só quando as cinco passam.
+    """
+
+    def _ns(self):
+        return carregar(["ruido_ticks_do_atr", "raiz_do_contrato",
+                         "faixa_de_stop_do_ativo", "FAIXA_TICKS_STOP",
+                         "VALOR_POR_PONTO", "_MESES_FUTUROS",
+                         "VALIDADE_DO_ATR_S"])
+
+    def test_o_ATR_do_vizinho_NAO_serve(self):
+        ns = self._ns()
+        agora = 1_000_000.0
+        tabela = {"MBT": {"atr": 300.0, "ts": agora}}
+        # Ordem de MESU6, medição só do MBT: sem medição DESTE contrato, é
+        # None — e None aqui significa "usa a regra que já existia".
+        self.assertIsNone(ns["ruido_ticks_do_atr"](
+            tabela, "MESU6", 0.25, agora=agora))
+
+    def test_medicao_velha_NAO_serve(self):
+        ns = self._ns()
+        agora = 1_000_000.0
+        tabela = {"MES": {"atr": 3.0, "ts": agora - 3600}}
+        self.assertIsNone(ns["ruido_ticks_do_atr"](
+            tabela, "MESU6", 0.25, agora=agora))
+        # A mesma medição, feita agora, passa: 3 pts ÷ 0,25 = 12 ticks.
+        tabela = {"MES": {"atr": 3.0, "ts": agora}}
+        self.assertEqual(ns["ruido_ticks_do_atr"](
+            tabela, "MESU6", 0.25, agora=agora), 12.0)
+
+    def test_ruido_maior_que_o_MAIOR_stop_do_contrato_e_recusado(self):
+        """Esta é a trava que salva o pregão mesmo se todas as outras
+        falharem. A faixa fixa do MES vai até 60 ticks; um "ruído" de 1.200
+        ticks não é mercado agitado, é medida errada — e medida errada não
+        vira distância de stop."""
+        ns = self._ns()
+        agora = 1_000_000.0
+        # ATR do bitcoin (300 pts) com o tick do MES (0,25) = 1.200 ticks.
+        tabela = {"MES": {"atr": 300.0, "ts": agora}}
+        avisos = []
+        self.assertIsNone(ns["ruido_ticks_do_atr"](
+            tabela, "MESU6", 0.25, agora=agora, aviso=avisos.append))
+        self.assertTrue(avisos, "recusar em silêncio é a metade errada")
+        self.assertIn("1200", avisos[0].replace(".", ""))
+
+    def test_ruido_dentro_da_faixa_passa(self):
+        ns = self._ns()
+        agora = 1_000_000.0
+        # 5 pts no MES = 20 ticks, dentro da faixa 12–60.
+        tabela = {"MES": {"atr": 5.0, "ts": agora}}
+        self.assertEqual(ns["ruido_ticks_do_atr"](
+            tabela, "MESU6", 0.25, agora=agora), 20.0)
+
+    def test_entradas_ausentes_devolvem_None_e_nao_explodem(self):
+        ns = self._ns()
+        agora = 1_000_000.0
+        bom = {"MES": {"atr": 3.0, "ts": agora}}
+        for args in ((None, "MESU6", 0.25), ({}, "MESU6", 0.25),
+                     (bom, "", 0.25), (bom, "MESU6", 0), (bom, "MESU6", None),
+                     ({"MES": {"atr": 0, "ts": agora}}, "MESU6", 0.25),
+                     ({"MES": {"atr": 3.0, "ts": 0}}, "MESU6", 0.25),
+                     ({"MES": {"atr": "x", "ts": agora}}, "MESU6", 0.25)):
+            self.assertIsNone(ns["ruido_ticks_do_atr"](*args, agora=agora))
+
+    def test_contrato_fora_da_tabela_nao_ganha_teto_inventado(self):
+        """Sem faixa fixa conhecida não há teto para comparar. O número
+        passa — mas só porque as outras quatro perguntas passaram."""
+        ns = self._ns()
+        agora = 1_000_000.0
+        tabela = {"XYZW9": {"atr": 10.0, "ts": agora}}
+        self.assertEqual(ns["ruido_ticks_do_atr"](
+            tabela, "XYZW9", 1.0, agora=agora), 10.0)
 
 
 if __name__ == "__main__":

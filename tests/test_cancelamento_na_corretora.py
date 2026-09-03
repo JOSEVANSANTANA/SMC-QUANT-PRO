@@ -27,7 +27,7 @@ mas, tenha certeza que nao tenha execultado mesmo antes de cancelar".
 import os
 import unittest
 
-from harness import RAIZ, carregar, fonte_do_arquivo
+from harness import RAIZ, carregar, fonte_do_arquivo, funcao_inteira
 
 
 class TestQuandoEuPossoCancelarNaPlataforma(unittest.TestCase):
@@ -157,8 +157,7 @@ class TestOBotaoSairEmMercado(unittest.TestCase):
     def test_a_leitura_da_posicao_vem_ANTES_do_clique(self):
         """Ordem importa: conferir depois de liquidar não conserta nada."""
         fonte = self._fonte()
-        i = fonte.index("def sair_em_mercado_e_cancelar(")
-        corpo = fonte[i:i + 9000]
+        corpo = funcao_inteira(fonte, "sair_em_mercado_e_cancelar")
         i_le = corpo.index("self.ler_estado()")
         i_clica = corpo.index("self.clicar_pagina(")
         self.assertLess(i_le, i_clica)
@@ -168,17 +167,18 @@ class TestOBotaoSairEmMercado(unittest.TestCase):
         estaria trocando uma frase que não posso provar por outra pior, porque
         a segunda desliga a atenção dele."""
         fonte = self._fonte()
-        i = fonte.index("def sair_em_mercado_e_cancelar(")
-        corpo = fonte[i:i + 9000]
+        corpo = funcao_inteira(fonte, "sair_em_mercado_e_cancelar")
         self.assertGreaterEqual(corpo.count("contar_ordens_vivas()"), 2)
         self.assertIn("vivas_antes", corpo)
         self.assertIn("vivas_depois", corpo)
 
     def test_ordens_ainda_vivas_depois_do_clique_NAO_e_sucesso(self):
         fonte = self._fonte()
-        i = fonte.index("def sair_em_mercado_e_cancelar(")
-        corpo = fonte[i:i + 9000]
-        i_falha = corpo.index('if depois.get("vivas"):')
+        corpo = funcao_inteira(fonte, "sair_em_mercado_e_cancelar")
+        # `restam` é a contagem DO CONTRATO alvo desde 31/08 (antes era a
+        # contagem da conta inteira, e era por isso que "cancelei o MGCV6"
+        # saía sem ninguém ter conferido o MGCV6).
+        i_falha = corpo.index("if restam:")
         i_ok = corpo.index('r["ok"] = True', i_falha)
         self.assertLess(i_falha, i_ok,
                         "o ramo de sucesso só pode vir depois de descartar o "
@@ -186,8 +186,7 @@ class TestOBotaoSairEmMercado(unittest.TestCase):
 
     def test_nao_saber_reler_vira_INCERTO_e_nao_sucesso(self):
         fonte = self._fonte()
-        i = fonte.index("def sair_em_mercado_e_cancelar(")
-        corpo = fonte[i:i + 9000]
+        corpo = funcao_inteira(fonte, "sair_em_mercado_e_cancelar")
         self.assertIn('r["incerto"] = True', corpo)
         self.assertIn("CONFIRA A PLATAFORMA", corpo)
 
@@ -196,8 +195,7 @@ class TestOBotaoSairEmMercado(unittest.TestCase):
         '& Cancelar' zeraria a posição e deixaria as ordens — o contrário do
         que se pediu. Sem confirmar a legenda, não clico."""
         fonte = self._fonte()
-        i = fonte.index("def sair_em_mercado_e_cancelar(")
-        corpo = fonte[i:i + 9000]
+        corpo = funcao_inteira(fonte, "sair_em_mercado_e_cancelar")
         self.assertIn('if not btn.get("cancela_ordens"):', corpo)
 
     def test_contar_ordens_distingue_ZERO_de_NAO_SEI(self):
@@ -225,8 +223,7 @@ class TestNenhumaOrdemSOMEEMSILENCIO(unittest.TestCase):
 
     def test_o_resolvedor_ou_cancela_ou_avisa_mas_nunca_cala(self):
         fonte = fonte_do_arquivo()
-        i = fonte.index("def _resolver_ordens_orfas_na_corretora")
-        corpo = fonte[i:i + 3000]
+        corpo = funcao_inteira(fonte, "_resolver_ordens_orfas_na_corretora")
         self.assertIn('if decisao == "AVISA":', corpo)
         self.assertIn("CANCELE ESSA ORDEM NA PLATAFORMA", corpo)
         self.assertIn("_tv_cancelar_na_plataforma", corpo)
@@ -236,8 +233,7 @@ class TestNenhumaOrdemSOMEEMSILENCIO(unittest.TestCase):
         frase antes do clique fala no gerúndio e promete a confirmação; a
         segunda diz o que aconteceu de verdade."""
         fonte = fonte_do_arquivo()
-        i = fonte.index("def _tv_cancelar_na_plataforma")
-        corpo = fonte[i:i + 3000]
+        corpo = funcao_inteira(fonte, "_tv_cancelar_na_plataforma")
         self.assertIn("❌ NÃO CANCELEI", corpo)
         self.assertIn("✅ ORDENS CANCELADAS NA PLATAFORMA", corpo)
         self.assertIn("CONTINUAM VIVAS", corpo)
@@ -366,20 +362,30 @@ class TestASegundaRotaDeCancelamento(unittest.TestCase):
 
     def test_ela_e_tentada_ANTES_de_desistir(self):
         fonte = self._fonte()
-        i = fonte.index("def sair_em_mercado_e_cancelar(")
-        corpo = fonte[i:i + 8000]
-        i_falha = corpo.index('if depois.get("vivas"):')
-        trecho = corpo[i_falha:i_falha + 1800]
+        corpo = funcao_inteira(fonte, "sair_em_mercado_e_cancelar")
+        i_falha = corpo.index("if restam:")
+        trecho = corpo[i_falha:]
         self.assertIn("cancelar_todas_as_ordens()", trecho)
         self.assertIn("Cancele na mão", trecho,
                       "e continua havendo desistência honesta no fim")
+
+    def test_com_ATIVO_declarado_a_rota_de_LIMPAR_TUDO_nao_e_tentada(self):
+        """31/08, e é o contrapeso da rota acima. 'Cancelar todas' faz o que
+        o nome diz: limpa a CONTA. Numa mesa de quatro contratos, oferecer
+        isso como 'tentativa complementar' porque sobrou UMA ordem do ouro é
+        trocar uma ordem que ficou por três que ninguém mandou cancelar. Com
+        alvo declarado, o robô desiste e manda cancelar na mão."""
+        corpo = funcao_inteira(self._fonte(), "sair_em_mercado_e_cancelar")
+        i_falha = corpo.index("if restam:")
+        trecho = corpo[i_falha:corpo.index("cancelar_todas_as_ordens()", i_falha)]
+        self.assertIn("if ativo and not varrer_todos_os_ativos:", trecho)
+        self.assertIn("limpa a conta inteira", trecho)
 
     def test_a_terceira_contagem_e_quem_declara_sucesso(self):
         """Clicar não é cancelar. Só a releitura com zero ordens autoriza o
         'ok' — a mesma regra do primeiro botão."""
         fonte = self._fonte()
-        i = fonte.index("def sair_em_mercado_e_cancelar(")
-        corpo = fonte[i:i + 8000]
+        corpo = funcao_inteira(fonte, "sair_em_mercado_e_cancelar")
         self.assertIn("terceira = self.contar_ordens_vivas()", corpo)
         i_t = corpo.index("terceira = self.contar_ordens_vivas()")
         self.assertIn('if terceira.get("ok") and not terceira.get("vivas")',

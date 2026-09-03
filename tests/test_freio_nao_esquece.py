@@ -100,6 +100,8 @@ def _ns(posicoes, agora, ciclo=None):
 
     return carregar(
         ["operacoes_fechadas_hoje", "drawdown_restante_hoje",
+         "risco_comprometido_nas_posicoes", "valor_por_ponto_do_ativo",
+         "VALOR_POR_PONTO", "VALOR_POR_PONTO_PADRAO",
          "freio_de_sugestoes", "data_do_pregao"],
         stubs={
             "carregar_posicoes": lambda: list(posicoes),

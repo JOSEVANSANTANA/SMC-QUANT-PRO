@@ -2864,6 +2864,74 @@ def faixa_de_stop_do_ativo(asset_symbol):
     return None
 
 
+# Quanto tempo uma medição de ATR ainda serve para calibrar um trailing.
+# Dez minutos: dois ciclos de análise com folga. Passou disso, o mercado é
+# outro e o número virou lembrança.
+VALIDADE_DO_ATR_S = 600
+
+
+def ruido_ticks_do_atr(atr_por_ativo, ativo, tick, agora=None,
+                       validade_s=VALIDADE_DO_ATR_S, aviso=None):
+    """O ruído, em ticks, que pode calibrar o trailing DESTE ativo — ou None.
+
+    POR QUE ESTA FUNÇÃO EXISTE, E POR QUE ELA É TÃO DESCONFIADA (31/08)
+    -------------------------------------------------------------------
+    A ideia de afastar o trailing do ruído medido é boa e é dele: "tomo muito
+    stop no ruído". O que não pode é o número chegar de qualquer jeito. A
+    primeira versão fazia `self._ultimo_atr / tick` — um ATR global, sem dono
+    e sem hora, dividido pelo tick do ativo DA ORDEM. Numa mesa de quatro
+    janelas isso significa, sem exagero: ATR medido na fita do MBTU6
+    (centenas de pontos) dividido pelo tick do MESU6 (0,25) dá milhares de
+    ticks, e `plano_trailing_inteligente` faz `max(distancia, ruido * 1,5)`.
+    O trailing que existe para proteger lucro viraria um stop a quatrocentos
+    pontos de distância — quer dizer, trailing nenhum, em silêncio.
+
+    Quatro perguntas, e basta uma falhar para a resposta ser None (que aqui
+    significa "usa a regra que já existia", nunca "usa zero"):
+
+    1. Existe medição DESTE ativo? Não vale a do vizinho.
+    2. Ela é de agora? ATR de uma hora atrás não descreve este mercado.
+    3. O tick é conhecido? Sem tick não há conversão para ticks.
+    4. O resultado cabe no que este contrato considera um stop? A faixa fixa
+       do contrato (`FAIXA_TICKS_STOP`) é o teto. Um ruído maior que o MAIOR
+       stop que o plano aceitaria neste ativo não é um mercado agitado — é
+       uma medida errada, e o jeito de tratar medida errada é não usá-la.
+    """
+    if not ativo or not tick:
+        return None
+    try:
+        tick = float(tick)
+    except (TypeError, ValueError):
+        return None
+    if tick <= 0:
+        return None
+    chave = raiz_do_contrato(ativo) or str(ativo).upper()
+    registro = (atr_por_ativo or {}).get(chave)
+    if not registro:
+        return None
+    try:
+        atr = float(registro.get("atr") or 0)
+        medido_em = float(registro.get("ts") or 0)
+    except (TypeError, ValueError):
+        return None
+    if atr <= 0:
+        return None
+    agora = time.time() if agora is None else agora
+    if medido_em <= 0 or (agora - medido_em) > validade_s:
+        return None
+    ticks = atr / tick
+    faixa = faixa_de_stop_do_ativo(ativo)
+    if faixa and ticks > faixa[1]:
+        if aviso:
+            aviso(f"📏 IGNOREI o ruído medido para calibrar o trailing de "
+                  f"{chave}: deu {ticks:.0f} ticks, e o maior stop que o plano "
+                  f"aceita neste contrato é {faixa[1]}. Medida desse tamanho "
+                  "não é mercado agitado, é fita de outro contrato no balde. "
+                  "O trailing sai pela regra de sempre.")
+        return None
+    return round(ticks, 1)
+
+
 def avaliar_tamanho_do_stop(entry, stop, asset_symbol, faixa=None):
     """O stop tem tamanho compatível com o ativo? Função PURA.
 
@@ -5605,15 +5673,126 @@ def operacoes_fechadas_hoje(ignorar_ciclo=False):
                   or datetime.datetime.min)
     return fechadas
 
+def risco_comprometido_nas_posicoes(posicoes):
+    """Quanto ainda pode ser perdido no que JÁ ESTÁ NA MESA — somando os ativos.
+
+    POR QUE ISTO EXISTE (31/08)
+    ---------------------------
+    A mesa passou a ter quatro ativos. `drawdown_restante_hoje` só descontava
+    o que já tinha DOÍDO — prejuízo realizado e P&L aberto — e o que ainda vai
+    doer não entrava em lugar nenhum. Com quatro cenários no mesmo minuto, o
+    dimensionamento usava o MESMO restante do dia para os quatro: com a fatia
+    padrão de 1/3 por operação, quatro entradas simultâneas comprometem 132%
+    do que restava, e nenhuma delas viu a outra.
+
+    Duas contas diferentes, de propósito:
+
+    - PENDENTE: nada foi executado ainda. O que está em jogo é a distância
+      INTEIRA da entrada até o stop.
+    - ABERTA: reserva O MENOR entre dois números, e cada um deles sozinho
+      erra num caso:
+
+        · do PREÇO DE AGORA até o stop — o que ainda pode ser devolvido. Num
+          perdedor, este é o número exato, porque o caminho já andado está em
+          `pnl_atual` e quem chama soma isso à parte. Sozinho, porém, ele
+          infla o vencedor que correu longe: uma posição 20 pontos no lucro
+          reservaria os 20 mais o stop.
+        · da ENTRADA até o stop — o risco planejado, o mesmo número que o
+          plano autorizou quando dimensionou. Sozinho, ele conta duas vezes o
+          prejuízo do perdedor: uma em `pnl_atual` e outra aqui.
+
+      O menor dos dois acerta os três casos: perdedor (dá o que falta),
+      vencedor com stop abaixo da entrada (dá o risco planejado) e vencedor
+      com stop já no lucro (dá ZERO, porque essa posição não tem mais o que
+      perder).
+
+    Repare que a conta é COM SINAL, nunca em módulo: em módulo, um stop já no
+    lucro reservaria justamente o lucro protegido, que é o contrário do que se
+    quer.
+
+    FUNÇÃO PURA: recebe a lista já filtrada pela conta. Risco é aritmética e
+    tem de ser conferível sem disco, sem corretora e sem tela.
+    """
+    total = 0.0
+    for p in posicoes or []:
+        status = str(p.get("status") or "").upper()
+        if status not in ("PENDENTE", "ABERTA"):
+            continue
+        direcao = str(p.get("direcao") or "").upper()
+        if direcao not in ("BUY", "SELL"):
+            continue
+        try:
+            contratos = int(p.get("contratos") or 0)
+            stop = float(p.get("stop"))
+            entrada = float(p.get("entry"))
+        except (TypeError, ValueError):
+            continue
+        if contratos <= 0:
+            continue
+
+        def _ate_o_stop(referencia):
+            return ((referencia - stop) if direcao == "BUY"
+                    else (stop - referencia))
+
+        pontos = _ate_o_stop(entrada)
+        if status == "ABERTA":
+            atual = p.get("preco_atual")
+            try:
+                if atual not in (None, ""):
+                    pontos = min(pontos, _ate_o_stop(float(atual)))
+            except (TypeError, ValueError):
+                pass
+        if pontos <= 0:
+            continue                      # stop já no lucro: não reserva nada
+        vpp = valor_por_ponto_do_ativo(p.get("ativo") or "")
+        total += pontos * vpp * contratos
+    return round(total, 2)
+
+
+def texto_do_risco_comprometido(posicoes):
+    """Uma frase dizendo QUEM já está segurando o orçamento do dia.
+
+    Sem isto, o trader vê "0 contratos" ou uma posição menor do que esperava e
+    não tem como saber que o motivo está em OUTRO ativo. Número sem dono é o
+    tipo de silêncio que faz ele desconfiar da ferramenta inteira — e com
+    razão. Devolve "" quando não há nada comprometido.
+    """
+    partes = []
+    for p in posicoes or []:
+        if str(p.get("status") or "").upper() not in ("PENDENTE", "ABERTA"):
+            continue
+        risco = risco_comprometido_nas_posicoes([p])
+        if risco <= 0:
+            continue
+        partes.append((risco, f"{p.get('direcao')} {p.get('ativo')} "
+                              f"{p.get('contratos')} ctr (US${risco:,.2f})"))
+    if not partes:
+        return ""
+    partes.sort(reverse=True)
+    total = sum(r for r, _ in partes)
+    return (f"US${total:,.2f} do drawdown de hoje já está comprometido em "
+            + ", ".join(t for _, t in partes)
+            + ". Esse dinheiro sai do orçamento antes de dimensionar a próxima.")
+
+
 def drawdown_restante_hoje(plano=None):
-    """Quanto do drawdown do dia AINDA SOBRA — realizado + aberto já descontados.
+    """Quanto do drawdown do dia AINDA SOBRA — realizado, aberto e COMPROMETIDO.
 
     Existe porque o dimensionamento usava o drawdown CHEIO como teto o dia
     inteiro: com drawdown de US$1.400 e risco de 20%, uma operação continuava
     autorizada a arriscar US$280 mesmo depois de o dia já ter perdido US$1.177.
     A trava que o trader configurou virava decorativa exatamente no momento em
     que ela deveria apertar. Devolve None quando não há drawdown configurado
-    (nesse caso não existe teto para calcular — e None não é zero)."""
+    (nesse caso não existe teto para calcular — e None não é zero).
+
+    O TERCEIRO TERMO É DE 31/08 E É O QUE FAZ A MESA MULTIATIVO FECHAR.
+    `risco_comprometido_nas_posicoes` desce do restante o que já está em jogo
+    em TODOS os ativos. Repare em ONDE ele entra: FORA do `min(0.0, ...)`.
+    Aquele grampo existe para que LUCRO não aumente o limite — e se o risco
+    comprometido entrasse junto, num dia positivo ele seria engolido pelo
+    grampo e a trava viraria enfeite justamente no dia em que ele empilha mais
+    ordem. Lucro não sobe o teto; risco em aberto desce o que sobrou. São
+    coisas diferentes e agora estão em linhas diferentes."""
     plano = plano if plano is not None else plano_da_conta_ativa()
     try:
         drawdown = abs(float(plano.get("drawdown_maximo", 0) or 0))
@@ -5627,28 +5806,15 @@ def drawdown_restante_hoje(plano=None):
         # do teto que dimensiona a próxima posição.
         realizado = sum(p["pnl_final"]
                         for p in operacoes_fechadas_hoje(ignorar_ciclo=True))
+        # UMA leitura de disco só: esta função roda em todo dimensionamento.
+        vivas = [p for p in carregar_posicoes() if _e_da_conta_ativa(p)]
         aberto = sum(p.get("pnl_atual", 0) or 0
-                     for p in carregar_posicoes()
-                     if _e_da_conta_ativa(p) and p.get("status") == "ABERTA")
-        
-        # O RISCO PENDENTE também consome margem. Se o robô sugerir 5 operações
-        # simultâneas e não abatermos o risco pendente, ele vai usar o mesmo
-        # drawdown restante para dimensionar todas, estourando a conta.
-        risco_pendente = 0.0
-        for p in carregar_posicoes():
-            if _e_da_conta_ativa(p) and p.get("status") == "PENDENTE":
-                try:
-                    c = int(p.get("contratos") or 0)
-                    e = float(p.get("entry") or 0)
-                    s = float(p.get("stop") or 0)
-                    vpp = valor_por_ponto_do_ativo(p.get("ativo", ""))
-                    risco_pendente += c * abs(e - s) * vpp
-                except Exception:
-                    pass
+                     for p in vivas if p.get("status") == "ABERTA")
+        comprometido = risco_comprometido_nas_posicoes(vivas)
     except Exception:
         return drawdown
-    usado = min(0.0, realizado + aberto - risco_pendente)      # lucro NÃO aumenta o limite, risco pendente é sempre "perda"
-    return max(0.0, drawdown - abs(usado))
+    usado = min(0.0, realizado + aberto)      # lucro NÃO aumenta o limite
+    return max(0.0, drawdown - abs(usado) - comprometido)
 
 
 def oportunidades_restantes_do_ciclo(plano=None):
@@ -16573,12 +16739,16 @@ class SmcQuantApp(ctk.CTk):
                     f"Cancelada a ordem pendente {alvo.get('direcao')} "
                     f"{alvo.get('ativo')} @ {alvo.get('entry')} — cancelamento enviado para a Tradovate.")
             else:
-                self._tv_cancelar_na_plataforma("TODAS AS ORDENS PENDENTES", "solicitado no chat da Tiger", exigir_zerado=False)
+                self._tv_cancelar_na_plataforma(
+                    "TODAS AS ORDENS PENDENTES", "solicitado no chat da Tiger",
+                    exigir_zerado=False, varrer_todos_os_ativos=True)
                 self._chat_responder("Não havia ordem registrada no diário, mas enviei comando para a Tradovate cancelar qualquer ordem pendente na plataforma.")
             return
         if acao == "SAIR_EM_MERCADO":
             self._chat_responder("🧹 Executando comando de emergência: saindo a mercado e cancelando todas as ordens na Tradovate agora...")
-            self._tv_cancelar_na_plataforma("TODAS AS ORDENS E POSIÇÕES", "solicitado no chat da Tiger", exigir_zerado=False)
+            self._tv_cancelar_na_plataforma(
+                "TODAS AS ORDENS E POSIÇÕES", "solicitado no chat da Tiger",
+                exigir_zerado=False, varrer_todos_os_ativos=True)
             return
 
     def _fatos_da_mesa(self):
@@ -16951,9 +17121,13 @@ class SmcQuantApp(ctk.CTk):
         # às 08:51 quando perguntou "qual o delta?" e era a resposta certa.
         ativo = getattr(self, "_ultimo_ativo_lido", None)
         tick = tick_do_ativo(ativo or "")
-        atr = getattr(self, "_ultimo_atr", None)
-        if atr and tick:
-            dados["atr_ticks"] = float(atr) / float(tick)
+        # ATR DESTE ativo, não "o último ATR medido". Dizer no chat que o MNQU6
+        # tem 40 ticks de ATR porque foi o MBTU6 que estava na fita é inventar
+        # telemetria — a mesma coisa que o CVD já deixou de fazer.
+        _atr_ticks = ruido_ticks_do_atr(
+            getattr(self, "_atr_por_ativo", None), ativo, tick)
+        if _atr_ticks:
+            dados["atr_ticks"] = _atr_ticks
         if tick:
             try:
                 dados["valor_do_tick"] = valor_por_ponto_do_ativo(ativo or "") * tick
@@ -20263,11 +20437,19 @@ class SmcQuantApp(ctk.CTk):
             return
         permitido = bool(getattr(self, "tv_cancelar_var", None)
                          and self.tv_cancelar_var.get())
+        # As órfãs deste ciclo, separadas por contrato. Elas podem ser de
+        # ativos diferentes, e daqui para baixo tudo respeita essa separação.
+        por_ativo = {}
+        for p in orfas:
+            por_ativo.setdefault(str(p.get("ativo") or "").upper(), []).append(p)
         # A posição na plataforma: `None` = não sei (e não saber vira AVISA).
+        # PERGUNTA FEITA PARA TODOS OS CONTRATOS ENVOLVIDOS: perguntar só pelo
+        # primeiro da lista fazia a decisão de apertar um botão que LIQUIDA A
+        # MERCADO sair de uma leitura que não olhou os outros três.
         leitura_ok, tem_posicao = True, False
         try:
-            pos_ab = posicao_aberta_no_ativo(orfas[0].get("ativo"))
-            tem_posicao = bool(pos_ab)
+            tem_posicao = any(bool(posicao_aberta_no_ativo(a))
+                              for a in por_ativo if a)
         except Exception:
             leitura_ok = False
         decisao, motivo = decidir_cancelamento_na_corretora(
@@ -20293,18 +20475,40 @@ class SmcQuantApp(ctk.CTk):
             return
         # CANCELA — e o anúncio vem DEPOIS do resultado, nunca antes.
         # É a mesma lição do envio: "não pode falar que fez e não ter feito".
-        self.log(f"🧹 CANCELANDO NA PLATAFORMA: {quais}"
-                 + (f" ({contexto})" if contexto else "")
-                 + f" — {motivo}. Confirmo em seguida.")
-        self._tv_cancelar_na_plataforma(quais, contexto, exigir_zerado=(not permitir_liquidar_posicao), ativo=orfas[0].get("ativo"))
+        #
+        # UMA PASSADA POR CONTRATO. As órfãs de um mesmo ciclo podem ser de
+        # ativos diferentes — foi o que aconteceu no dia em que ele tinha
+        # MESU6, MNQU6, MGCV6 e MBTU6 abertos. Mandar tudo num clique só
+        # significa colocar o ticket no PRIMEIRO ativo da lista e cancelar em
+        # nome dos quatro; o log sairia com os quatro nomes e a conferência
+        # teria sido feita para um. Cada contrato tem a sua vez, o seu clique
+        # e a sua confirmação.
+        for ativo_alvo, lista in por_ativo.items():
+            quais_deste = "; ".join(
+                f"{p.get('direcao')} {p.get('ativo')} {p.get('contratos')} ctr @ "
+                f"{p.get('entry')}" for p in lista)
+            self.log(f"🧹 CANCELANDO NA PLATAFORMA: {quais_deste}"
+                     + (f" ({contexto})" if contexto else "")
+                     + f" — {motivo}. Confirmo em seguida.")
+            self._tv_cancelar_na_plataforma(
+                quais_deste, contexto,
+                exigir_zerado=(not permitir_liquidar_posicao),
+                ativo=ativo_alvo or None)
 
-    def _tv_cancelar_na_plataforma(self, quais, contexto="", exigir_zerado=True, ativo=None):
+    def _tv_cancelar_na_plataforma(self, quais, contexto="", exigir_zerado=True,
+                                   ativo=None, varrer_todos_os_ativos=False):
         """Aperta o 'Sair em Mkt & Cancelar' em thread separada e CONFERE.
 
         A conferência é o ponto todo: `sair_em_mercado_e_cancelar` só devolve
         ok=True depois de reler o painel e ver as ordens fora. Sem isso eu
         estaria trocando uma frase que não posso provar ('cancele na mão') por
-        outra ('cancelei') — e a segunda é pior, porque desliga a sua atenção."""
+        outra ('cancelei') — e a segunda é pior, porque desliga a sua atenção.
+
+        `ativo` diz DE QUAL CONTRATO é esta ordem, e desde 31/08 ele decide
+        três coisas: em que instrumento o ticket é posto antes do clique, quais
+        linhas do painel a varredura pode tocar, e qual número a conferência
+        olha. `varrer_todos_os_ativos=True` é o botão de pânico — 'sair a
+        mercado e cancelar TUDO' — e é a única forma de limpar o desk inteiro."""
         if not TRADOVATE_DISPONIVEL:
             return
 
@@ -20317,7 +20521,8 @@ class SmcQuantApp(ctk.CTk):
                              "Cancele na mão.")
                 else:
                     res = bot.sair_em_mercado_e_cancelar(
-                        enviar=True, exigir_zerado=exigir_zerado, ativo=ativo)
+                        enviar=True, exigir_zerado=exigir_zerado, ativo=ativo,
+                        varrer_todos_os_ativos=varrer_todos_os_ativos)
                     if res.get("ok"):
                         # "✅ ORDENS CANCELADAS" quando não havia nada para
                         # cancelar é a mesma família de mentira que este
@@ -20326,8 +20531,9 @@ class SmcQuantApp(ctk.CTk):
                         # o TÍTULO é que afirmava o contrário, e é o título
                         # que ele lê no WhatsApp.
                         _motivo = str(res.get("motivo") or "")
-                        _nada = ("não havia ordem viva" in _motivo
-                                 or "nao havia ordem viva" in _motivo)
+                        _nada = bool(res.get("nada_a_cancelar")) or (
+                            "não havia ordem viva" in _motivo
+                            or "nao havia ordem viva" in _motivo)
                         _cabeca = ("ℹ️ NADA A CANCELAR NA PLATAFORMA"
                                    if _nada else
                                    "✅ ORDENS CANCELADAS NA PLATAFORMA")
@@ -20489,7 +20695,12 @@ class SmcQuantApp(ctk.CTk):
                          + (" [TESTE]" if dry else ""))
                 res = None
                 if tick:
-                    _atr_ticks = (float(getattr(self, "_ultimo_atr", 0)) / tick) if getattr(self, "_ultimo_atr", None) and tick else None
+                    # RUÍDO DO ATIVO DESTA ORDEM — não "o último ATR que passou
+                    # por aqui". Ver `ruido_ticks_do_atr`: sem medição fresca
+                    # DESTE contrato, volta None e o trailing sai pela regra de
+                    # sempre, que é o comportamento que já funcionava.
+                    _atr_ticks = self._ruido_ticks_do_ativo(
+                        ativo or getattr(self, "_ultimo_ativo_lido", None), tick)
                     trailing = tradovate_auto.plano_trailing_inteligente(
                         tradovate_auto.ticks_entre(entry, stop, tick),
                         rr=_rr, probabilidade=probabilidade,
@@ -21424,17 +21635,56 @@ class SmcQuantApp(ctk.CTk):
 
         self._atualizar_dashboard()
 
-    def _guardar_negocios_para_candles(self, novos):
+    def _ativo_da_fita(self, bot=None, validade_s=20.0):
+        """De QUAL contrato é a fita que eu acabei de ler.
+
+        A fita e o 'Chamado do pedido' são o mesmo painel de instrumento na
+        Tradovate, e o robô TROCA esse instrumento a cada envio de ordem
+        (`garantir_ativo_no_ticket`). Numa mesa de quatro ativos, portanto, o
+        balde de negócios muda de contrato ao longo do dia — e quem não
+        perguntar de quem é a fita acaba somando MES a 7.600 com MBT a 79.000
+        no mesmo candle.
+
+        Uma leitura de DOM a cada 20 segundos, com cache. Devolve None quando
+        não dá para saber — e None aqui vira balde anônimo, que nunca
+        dimensiona ordem nenhuma."""
+        agora = time.time()
+        cache = getattr(self, "_cache_ativo_da_fita", None)
+        if cache and (agora - cache[1]) < validade_s:
+            return cache[0]
+        bot = bot or getattr(self, "_tv_bot", None)
+        ativo = None
+        if bot is not None:
+            try:
+                lido = bot.ler_ativo_do_ticket()
+                ativo = (str(lido).strip().upper() or None) if lido else None
+            except Exception:
+                ativo = None
+        self._cache_ativo_da_fita = (ativo, agora)
+        return ativo
+
+    def _guardar_negocios_para_candles(self, novos, ativo=None):
         """Junta os negócios da fita para montar OHLC (ver `agregar_candles`).
+
+        UM BALDE POR ATIVO, e este é o ponto todo desta função depois de 31/08.
+        Antes havia um balde só: numa mesa de um ativo isso era correto e
+        invisível; com quatro janelas abertas, negócios de contratos com
+        ordens de grandeza diferentes caíam no mesmo OHLC. Um candle feito de
+        MESU6 (7.600) com MBTU6 (79.000) tem "true range" de setenta e um mil
+        pontos — e esse número virava distância de trailing stop.
 
         Guarda no máximo o necessário para um ATR de 14 períodos em 15m com
         folga — o resto é memória parada. Negócio sem carimbo de hora usável
         recebe a hora de AGORA: ele acabou de ser drenado, então o erro é de
         segundos e não desloca o candle."""
-        balde = getattr(self, "_negocios_para_candles", None)
+        from collections import deque
+        baldes = getattr(self, "_negocios_por_ativo", None)
+        if baldes is None:
+            baldes = self._negocios_por_ativo = {}
+        chave = (raiz_do_contrato(ativo) or str(ativo).upper()) if ativo else "?"
+        balde = baldes.get(chave)
         if balde is None:
-            from collections import deque
-            balde = self._negocios_para_candles = deque(maxlen=20000)
+            balde = baldes[chave] = deque(maxlen=20000)
         agora = time.time()
         for n in novos or []:
             try:
@@ -21450,27 +21700,41 @@ class SmcQuantApp(ctk.CTk):
             balde.append({"preco": preco, "tamanho": tam, "ts": agora})
 
     def _medir_atr_em_observacao(self, ativo):
-        """Mede o ATR da fita e diz que faixa de stop ele sugeriria.
+        """Mede o ATR da fita DAQUELE ativo e diz que faixa de stop ele sugeriria.
 
-        MODO OBSERVAÇÃO, E ISTO É DELIBERADO. Ele não decide nada: quem
-        recusa cenário continua sendo a faixa fixa por contrato
-        (`FAIXA_TICKS_STOP`). Aqui só se MEDE e se REGISTRA.
+        MODO OBSERVAÇÃO PARA RECUSAR CENÁRIO, E ISTO CONTINUA DELIBERADO. Quem
+        diz "este stop não cabe" segue sendo a faixa fixa por contrato
+        (`FAIXA_TICKS_STOP`). O que este número passou a fazer, e só isto, é
+        AFASTAR o trailing stop do ruído — nunca aproximá-lo, nunca recusar
+        nada. Ver `ruido_ticks_do_atr`.
 
-        Por que não ligar de uma vez, já que o número é melhor: porque estes
-        candles nascem quando o robô começa a olhar, não têm histórico, e um
-        ATR de meia hora de fita é um número que parece medida e ainda não é.
-        Trocar uma régua que funciona por uma que ainda está aquecendo, sem
-        um dia sequer de comparação, é exatamente o tipo de decisão que este
-        projeto passou a semana desfazendo.
+        Por que não deixar ele mandar em mais que isso: estes candles nascem
+        quando o robô começa a olhar, não têm histórico, e um ATR de meia hora
+        de fita é um número que parece medida e ainda não é.
 
-        Depois de alguns pregões os dois números ficam lado a lado no log e a
-        troca deixa de ser aposta.
+        O ATR É GUARDADO POR ATIVO, com a hora da medição. Um número guardado
+        sem dono e sem hora foi exatamente o que quase virou distância de
+        trailing de MESU6 medida na fita do MBTU6.
         """
-        balde = getattr(self, "_negocios_para_candles", None)
+        chave = raiz_do_contrato(ativo) or str(ativo or "").upper()
+        baldes = getattr(self, "_negocios_por_ativo", None) or {}
+        balde = baldes.get(chave)
         if not balde:
             return
         tick = tick_do_ativo(ativo or "")
         if not tick:
+            return
+        # SANIDADE ANTES DA MEDIDA: um balde de UM contrato não varia 25% em
+        # meia hora. Se variou, ali dentro tem mais de um instrumento — e um
+        # ATR tirado disso não é um ATR grande, é lixo com cara de número.
+        precos = [n.get("preco") for n in balde if n.get("preco")]
+        if precos and min(precos) > 0 and (max(precos) / min(precos)) > 1.25:
+            if not getattr(self, "_avisou_fita_misturada", False):
+                self._avisou_fita_misturada = True
+                self.log(f"📏 ATR de {chave}: não meço — a fita guardada varia de "
+                         f"{min(precos):g} a {max(precos):g}, que não é a mesma "
+                         "coisa que um contrato só. Descartei o balde.")
+            baldes.pop(chave, None)
             return
         try:
             candles = agregar_candles(list(balde), minutos=5)
@@ -21492,14 +21756,23 @@ class SmcQuantApp(ctk.CTk):
         fixa = faixa_de_stop_do_ativo(ativo)
         if not faixa_atr:
             return
+        if not hasattr(self, "_atr_por_ativo"):
+            self._atr_por_ativo = {}
+        self._atr_por_ativo[chave] = {"atr": float(atr), "ts": time.time()}
         self._ultimo_atr = atr
-        txt = (f"📏 ATR(14) de 5m pela fita: {atr:.2f} pts "
+        txt = (f"📏 ATR(14) de 5m pela fita do {chave}: {atr:.2f} pts "
                f"({atr / tick:.0f} ticks) · faixa de stop que ele sugeriria: "
                f"{faixa_atr[0]}–{faixa_atr[1]} ticks")
         if fixa:
             txt += f" · faixa fixa em uso: {fixa[0]}–{fixa[1]} ticks"
-        self.log(txt + ". OBSERVAÇÃO — quem recusa cenário continua sendo a "
-                       "faixa fixa.")
+        self.log(txt + ". Quem recusa cenário continua sendo a faixa fixa; "
+                       "este número só afasta o trailing do ruído.")
+
+    def _ruido_ticks_do_ativo(self, ativo, tick):
+        """Ruído em ticks para calibrar o trailing DESTE ativo — ou None."""
+        return ruido_ticks_do_atr(
+            getattr(self, "_atr_por_ativo", None), ativo, tick,
+            aviso=self.log)
 
     def _avisar_olho_cego_no_autonomo(self):
         """Sem Gravação de Tela, o aviso tem de sair ONDE ELE OLHA.
@@ -23112,7 +23385,7 @@ class SmcQuantApp(ctk.CTk):
         # importa — importa preço, tamanho e hora. Descartar aqui faria os
         # candles nascerem com buraco, e o ATR sairia menor que o mercado.
         try:
-            self._guardar_negocios_para_candles(novos)
+            self._guardar_negocios_para_candles(novos, self._ativo_da_fita(bot))
         except Exception:
             pass
 
@@ -24667,6 +24940,17 @@ class SmcQuantApp(ctk.CTk):
                     if sizing["contratos"] <= 0:
                         motivo = (sizing.get("motivo_limite")
                                   or "o plano não autorizou tamanho para esta entrada")
+                        # MESA COM QUATRO ATIVOS: o "não" pode ter vindo de
+                        # OUTRO ativo que já reservou o orçamento do dia. Sem
+                        # dizer isso, o trader lê "não abri MNQU6" e procura o
+                        # defeito no MNQU6.
+                        try:
+                            _quem = texto_do_risco_comprometido(
+                                [p for p in carregar_posicoes() if _e_da_conta_ativa(p)])
+                        except Exception:
+                            _quem = ""
+                        if _quem:
+                            motivo = f"{motivo} — {_quem}"
                         self.log(f"🚫 NÃO ABRI a posição: {motivo}")
                         self._chat_feed(
                             f"🚫 Não abri {direcao} {sinal.get('ativo', '')}: "
@@ -25013,7 +25297,8 @@ class SmcQuantApp(ctk.CTk):
                             continue
                         self.log("🧹 Comando SAIR_MKT / ENCERRAR recebido via WhatsApp — executando na Tradovate.")
                         self.after(0, lambda: self._tv_cancelar_na_plataforma(
-                            "TODAS AS ORDENS E POSIÇÕES", "solicitado via WhatsApp", exigir_zerado=False))
+                            "TODAS AS ORDENS E POSIÇÕES", "solicitado via WhatsApp",
+                            exigir_zerado=False, varrer_todos_os_ativos=True))
                         continue
                     if tipo not in ("ACATAR", "DISPENSAR"):
                         continue
@@ -26004,11 +26289,15 @@ class SmcQuantApp(ctk.CTk):
                         except Exception:
                             pass
 
-                        # ATR EM OBSERVAÇÃO — mede e registra, não decide.
+                        # ATR — mede o ativo DE QUEM É A FITA, não o ativo que
+                        # o laço de análise acabou de olhar. Os dois são o
+                        # mesmo numa mesa de um ativo só, e são coisas
+                        # diferentes desde que ele abriu quatro janelas.
                         # Ver `_medir_atr_em_observacao`.
                         try:
                             self._medir_atr_em_observacao(
-                                getattr(self, "_ultimo_ativo_lido", None))
+                                self._ativo_da_fita()
+                                or getattr(self, "_ultimo_ativo_lido", None))
                         except Exception:
                             pass
 
@@ -27128,7 +27417,9 @@ class SmcQuantApp(ctk.CTk):
                                     f"🔄 VIRADA DE MÃO: o cenário virou para {acao} com qualidade. "
                                     f"Liquidando posição oposta e cancelando ordens antigas ({quais_pos}) na Tradovate.")
                                 self._tv_cancelar_na_plataforma(
-                                    quais_pos, contexto=f"virada de mão para {acao}", exigir_zerado=False)
+                                    quais_pos, contexto=f"virada de mão para {acao}",
+                                    exigir_zerado=False,
+                                    ativo=_pos_ab.get("ativo") or ativo)
                                 try:
                                     salvar_resultado_performance(
                                         _pos_ab.get("direcao"), _pos_ab.get("entry"), preco,

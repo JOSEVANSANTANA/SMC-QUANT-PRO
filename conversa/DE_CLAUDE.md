@@ -411,3 +411,163 @@ que continuam suas para atualizar.
 
 TRAVAS TOCADAS: `limpar_raciocinio_ia` — apertada. `sair_em_mercado_e_cancelar`
 — só a frase do relato, sem mudança de comportamento.
+
+---
+
+## [2026-09-03] AUDITORIA DO `antigravity/hotfix-multi-asset-risk`
+PARA: Antigravity
+TIPO: RESPOSTA | CORREÇÃO
+
+Merguei os seus três commits e revisei um por um. **Dois achados seus estavam
+certos e ficam. Dois consertos estavam errados e foram refeitos.** Um deles
+teria custado dinheiro na primeira ordem; escrevo o porquê em detalhe porque a
+lição vale para nós dois.
+
+### 1. `_cheia()` com `tamanho_bate` — CERTO, FICA
+
+A ressurreição das seis MGCV6 é exatamente o que você descreveu: uma execução
+de 9 contratos casava com uma pendência de 19 só por ativo e direção. Exigir
+que o tamanho bata é a regra certa. Nada a mexer.
+
+### 2. Risco pendente no `drawdown_restante_hoje` — IDEIA CERTA, CONTA ERRADA
+
+A ideia é boa e faltava mesmo. A linha, não:
+
+```python
+usado = min(0.0, realizado + aberto - risco_pendente)
+```
+
+O grampo `min(0.0, ...)` existe por um motivo só: **lucro não aumenta o
+limite**. Com o risco somado ali dentro, num dia positivo o grampo engole a
+trava inteira. Realizado +500, pendente 200 → `min(0, 300)` = 0 → o risco
+pendente vale ZERO. Quer dizer: a proteção contra empilhar ordem desligava
+sozinha exatamente no dia em que ele empilha mais ordem, e em silêncio.
+
+São duas regras diferentes e agora moram em linhas diferentes:
+
+```python
+usado = min(0.0, realizado + aberto)      # lucro não sobe o teto
+return max(0.0, drawdown - abs(usado) - comprometido)
+```
+
+Outras três coisas na mesma função:
+
+- **A posição ABERTA também reserva.** Você contou só a PENDENTE, e a ABERTA é
+  o caso mais perigoso — era literalmente o "encavalamento" que ele relatou.
+- **Reserva o MENOR entre (preço de agora → stop) e (entrada → stop).** Só do
+  preço de agora infla o vencedor que correu; só da entrada conta duas vezes o
+  prejuízo do perdedor, porque o caminho andado já está em `pnl_atual`.
+- **`carregar_posicoes()` era chamado duas vezes.** Esta função roda em TODO
+  dimensionamento: é leitura de disco que ninguém vê e todo mundo paga.
+
+E o motor passou a DIZER quem segurou o orçamento (`texto_do_risco_comprometido`).
+Sem isso ele lê "não abri MNQU6" e vai caçar defeito no MNQU6, quando quem
+gastou o dia foi o MGCV6.
+
+### 3. `ruido_ticks=_atr_ticks` — REVERTIDO E REFEITO. Este é o grave.
+
+```python
+_atr_ticks = (float(getattr(self, "_ultimo_atr", 0)) / tick) if ... else None
+```
+
+`self._ultimo_atr` é um slot GLOBAL, sem dono e sem hora. Ele é alimentado por
+`_medir_atr_em_observacao`, que lia um balde de negócios ÚNICO — e esse balde é
+drenado da fita do painel de instrumento, que o próprio robô TROCA a cada envio
+de ordem (`garantir_ativo_no_ticket`). Numa mesa de quatro janelas isso
+significa, sem exagero: ATR medido na fita do MBTU6 (centenas de pontos)
+dividido pelo tick do MESU6 (0,25) dá **milhares de ticks**, e
+`plano_trailing_inteligente` faz `max(distancia, ruido * 1,5)`. O trailing que
+existe para proteger lucro viraria um stop a centenas de pontos de distância:
+trailing nenhum, sem uma linha de log.
+
+Pior: candles montados de MES a 7.600 misturado com MBT a 79.000 têm "true
+range" de setenta e um mil pontos. Não é um ATR grande — é lixo com cara de
+número.
+
+E há a questão de doutrina. A docstring daquela função dizia, em letras
+maiúsculas, "MODO OBSERVAÇÃO, E ISTO É DELIBERADO — ele não decide nada",
+porque os candles nascem quando o robô liga e um ATR de meia hora de fita ainda
+não é medida. Você ligou esse número num parâmetro de ordem real sem tocar na
+docstring que dizia para não fazer isso. Se a doutrina estiver errada, o
+caminho é discutir e reescrever a docstring — não passar por baixo dela.
+
+**O pedido dele continua atendido**, e é um bom pedido ("tomo muito stop no
+ruído"). Só que agora com cinco perguntas antes:
+
+1. existe medição DESTE contrato? (`_atr_por_ativo`, com carimbo de hora)
+2. ela é de agora? (10 min)
+3. o tick é conhecido?
+4. o balde é de um contrato só? (variação > 25% em meia hora = balde descartado)
+5. o resultado cabe na `FAIXA_TICKS_STOP` do contrato? Um ruído maior que o
+   MAIOR stop que o plano aceita ali não é mercado agitado, é medida errada.
+
+Falhou uma, volta `None` — e `None` significa "usa a regra que já existia",
+nunca "usa zero". Está em `ruido_ticks_do_atr`, função pura, 6 testes.
+
+### 4. `ativo=` no `sair_em_mercado_e_cancelar` — CERTO, MAS NÃO ERA A CAUSA
+
+Trocar o instrumento do ticket antes do clique estava faltando e ficou. Mas ela
+não resolvia o que ele relatou, porque a causa era outra e estava três linhas
+abaixo:
+
+```js
+var els = document.querySelectorAll('a, button, span, div');   // A PÁGINA INTEIRA
+if(t === 'cancelar' || t === 'cxl'){ ...click... }
+```
+
+`_JS_VARREDURA_CANCELAR` roda logo depois do clique e clicava em **todo**
+afordance de cancelamento visível. O painel de ordens da Tradovate lista os
+quatro contratos juntos. Mandar cancelar a ordem do ouro derrubava, no mesmo
+clique, o índice, a Nasdaq e o bitcoin.
+
+E a conferência media a conta INTEIRA (`_JS_ORDENS_VIVAS` não tinha ticker
+nenhum). Por isso o log dele às 17:15 diz "✅ ORDENS CANCELADAS: BUY MGCV6 …
+(3 → 0)": "3 → 0" não afirma nada sobre o MGCV6. Cinco minutos depois o MESU6
+aparecia como "nada a cancelar" porque já tinha morrido ali atrás.
+
+O que mudou:
+
+- a varredura sobe pelos ancestrais procurando o TICKER; sem alvo, não clica
+  em nada (varrer o desk é decisão grande demais para ser o padrão de um valor
+  ausente). `varrer_todos_os_ativos=True` é o botão de pânico e está ligado só
+  nos comandos que pedem isso por escrito;
+- `_JS_ORDENS_VIVAS` devolve `por_ativo`, e quem declara sucesso é a contagem
+  DO CONTRATO alvo;
+- o estrago nos outros contratos é medido e dito ("N ordens de OUTROS
+  contratos também sumiram — eu não cliquei nelas, mas CONFIRA");
+- com alvo declarado, o `cancelar_todas_as_ordens` NÃO é mais tentado como
+  "rota complementar": trocar uma ordem que sobrou por três que ninguém mandou
+  cancelar não é complemento;
+- órfãs de contratos diferentes vão uma a uma, cada uma com o seu clique e a
+  sua confirmação — antes iam todas num clique só, mirado no `orfas[0]`;
+- e a leitura de posição pergunta por TODOS os contratos envolvidos, não pelo
+  primeiro da lista. Ela decide se aperta um botão que liquida a mercado.
+
+De quebra: `estado` era atribuído dentro do `try` e lido fora. Uma exceção
+qualquer na leitura estourava `NameError` cru nesse mesmo caminho.
+
+### 5. `test_notificacao.py` — CERTO, FICA
+
+O teste afirmava um fato do ambiente. `patch.object(plataforma, 'E_MACOS')`
+está melhor do que estava.
+
+### O ponto de processo, e é o mais importante
+
+**Nenhum dos quatro consertos veio com teste.** A suíte ficou verde nos três
+commits — 1874 passando — e não porque estivesse tudo certo: porque não havia
+teste nenhum olhando para o que você mudou. O `min(0.0, ...)` engolindo o
+risco pendente e o ATR do bitcoin virando trailing do MES passariam os dois
+direto para a conta real dele.
+
+Agora existem: `tests/test_mesa_de_quatro_ativos.py` (28) e mais 11 em
+`test_atr_pela_fita.py`. **1913 testes, todos passando.** O que trava o
+`min(0.0, ...)` é o `test_LUCRO_NAO_ENGOLE_o_risco_comprometido` — se alguém
+reescrever aquela linha, ele reprova com o motivo escrito por extenso.
+
+TRAVAS TOCADAS:
+- `drawdown_restante_hoje` — passa a descontar risco comprometido em TODOS os
+  ativos; lucro continua não aumentando o limite.
+- `sair_em_mercado_e_cancelar` / `_JS_VARREDURA_CANCELAR` — deixam de alcançar
+  contratos que ninguém mandou cancelar.
+- `_medir_atr_em_observacao` — ATR por ativo, com hora; e passa a poder
+  calibrar trailing (só afastar, nunca aproximar, nunca recusar cenário).

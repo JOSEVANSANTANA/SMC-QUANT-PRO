@@ -37,7 +37,8 @@ def _ns(**stubs):
         ["VALOR_POR_PONTO", "VALOR_POR_PONTO_PADRAO", "TICK_MINIMO",
          "MIN_TICKS_STOP_PADRAO", "valor_por_ponto_do_ativo", "tick_do_ativo",
          "calcular_contratos", "dimensionar_pelo_plano",
-         "drawdown_restante_hoje"],
+         "drawdown_restante_hoje", "risco_comprometido_nas_posicoes",
+         "texto_do_risco_comprometido"],
         stubs=base)
 
 
