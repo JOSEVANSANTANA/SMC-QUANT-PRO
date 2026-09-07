@@ -831,6 +831,28 @@ PLANO_PADRAO = {
     # dimensionava 30 contratos numa conta de US$1.400.
     "max_contratos": 0,
     "min_ticks_stop": MIN_TICKS_STOP_PADRAO,
+    # ---- O TEMPO GRÁFICO DAS VELAS QUE ESTÃO NA TELA ----
+    #
+    # 04/09, ele: "estou considerando mudar o meu timeframe de análise para 10
+    # minutos, a ferramenta também já possui capacidade para análises e
+    # sugestões além do timeframe de 5 minutos?".
+    #
+    # A resposta honesta era: LÊ qualquer tempo gráfico — o modelo olha a
+    # imagem, e a imagem é o que estiver na tela — mas o programa vinha
+    # AFIRMANDO ao modelo, em toda análise e sem nunca perguntar, que as velas
+    # eram de 5 minutos. Estava escrito no pedido: "O gráfico opera em
+    # timeframe de 5 minutos (5m)... se a hora atual for 11:40, a última vela
+    # consolidada é a das 11:35".
+    #
+    # Isso não é detalhe de texto. Em cima do tempo da vela o modelo decide o
+    # tamanho da estrutura, onde cabe o stop e qual vela já fechou. Num
+    # gráfico de 10m com o pedido dizendo 5m, ele lê uma estrutura pela
+    # metade do tempo que ela levou para se formar — e é bem possível que
+    # parte dos stops de 64, 80 e 100 ticks que a faixa fixa vem recusando
+    # tenha nascido exatamente daí.
+    #
+    # Agora quem diz o tempo gráfico é ele, aqui. O padrão continua 5.
+    "timeframe_min": 5,
     # ---- PERSEGUIR A META (desligado por padrão) ----
     #
     # 22/08, ele: "ele está configurado para bater a meta em um dia, tem
@@ -7933,19 +7955,183 @@ def comprimir_grafico(imagem_pil, teto=TETO_IMAGEM_WHATSAPP):
     return saida.getvalue()
 
 
+# O WhatsApp aceita mensagens bem maiores que isto; o corte aqui é para a
+# mensagem CABER NA TELA DO CELULAR sem virar um paredão. Acima disso, ela é
+# PARTIDA em pedaços numerados — nunca truncada.
+LIMITE_MENSAGEM_WHATSAPP = 3000
+
+
+# MICRO E CHEIO SÃO A MESMA LETRA COM UM 'M' NA FRENTE, E DEZ VEZES O DINHEIRO
+#
+# 04/09, das 08:10 às 09:50, o log traz ciclo após ciclo:
+#
+#     📊 Ativo: ESU6 | Leitura IA: BUY ...
+#     🤖 Não executei: o plano dimensionou ZERO contrato: o risco de 1
+#        contrato (US$400,00) já passa do que o plano permite (US$100,00)
+#
+# O gráfico dele era MESU6. Nenhum ESU6 em janela nenhuma. O modelo leu o
+# ticker da tela e comeu o M — e num contrato de US$50/ponto, um stop de 8
+# pontos vira US$400 de risco por contrato. O plano dele autoriza US$100. Zero
+# contratos, cenário atrás de cenário, a manhã inteira.
+#
+# E foi além de não operar. Às 09:35 o robô fez isto:
+#
+#     🔁 o ticket está em MESU6 e esta ordem é de ESU6 — preenchendo o
+#        instrumento antes de tudo.
+#     ✅ instrumento trocado e conferido: ESU6.
+#
+# Ele TROCOU o instrumento do ticket na Tradovate para o contrato cheio por
+# causa de uma letra lida errado. Se aquela ordem tivesse saído, seria dez
+# vezes o tamanho que o plano dimensionou.
+_PARES_MICRO_CHEIO = {"MES": "ES", "MNQ": "NQ", "MGC": "GC", "MBT": "BTC",
+                      "MYM": "YM", "M2K": "RTY", "MCL": "CL"}
+
+
+def confundiu_micro_com_cheio(lido, referencia):
+    """A leitura trocou o micro pelo contrato cheio (ou vice-versa)?
+
+    Devolve (corrigido, motivo) — e `corrigido` é None quando não há nada a
+    corrigir. FUNÇÃO PURA: a decisão de trocar um ticker antes de dimensionar
+    posição precisa ser conferível sem tela e sem corretora.
+
+    A regra é ESTREITA de propósito. Ela só age quando os dois tickers formam
+    um par micro/cheio conhecido — MES↔ES, MNQ↔NQ, MGC↔GC, MBT↔BTC. Dois
+    ativos que só são diferentes não têm nada a ver um com o outro e não são
+    assunto desta função: quem cuida disso é a lista de janelas monitoradas.
+    """
+    r_lido = raiz_do_contrato(lido)
+    r_ref = raiz_do_contrato(referencia)
+    if not r_lido or not r_ref or r_lido == r_ref:
+        return None, ""
+    par = (_PARES_MICRO_CHEIO.get(r_ref) == r_lido
+           or _PARES_MICRO_CHEIO.get(r_lido) == r_ref)
+    if not par:
+        return None, ""
+    # A REFERÊNCIA GANHA SEMPRE, e ela vem da plataforma (o instrumento do
+    # ticket) ou da janela que ele mandou monitorar. Entre um ticker LIDO de
+    # uma imagem e um ticker LIDO de um campo de texto, o campo de texto vence.
+    return str(referencia).upper(), (
+        f"a leitura da imagem devolveu {str(lido).upper()}, mas a plataforma diz "
+        f"{str(referencia).upper()} — são o mesmo mercado em tamanhos "
+        f"diferentes ({r_lido} e {r_ref}), e um vale dez vezes o outro por "
+        "ponto. Fico com o que a plataforma diz")
+
+
+TIMEFRAMES_ACEITOS = (1, 2, 3, 5, 10, 15, 30, 60)
+
+
+def timeframe_do_plano(plano=None, padrao=5):
+    """Quantos minutos tem cada vela do gráfico que ele está olhando.
+
+    Devolve sempre um inteiro de `TIMEFRAMES_ACEITOS`. Um valor estranho no
+    plano (texto, zero, negativo, 7) volta ao padrão em vez de virar uma
+    afirmação errada dentro do pedido ao modelo — que é o defeito que esta
+    função existe para não repetir, só que ao contrário.
+    """
+    try:
+        plano = plano if plano is not None else plano_da_conta_ativa()
+    except Exception:
+        plano = {}
+    try:
+        m = int(float((plano or {}).get("timeframe_min") or padrao))
+    except (TypeError, ValueError):
+        return padrao
+    return m if m in TIMEFRAMES_ACEITOS else padrao
+
+
+def texto_do_timeframe(plano=None, agora=None):
+    """A frase que vai no pedido ao modelo dizendo de que tempo são as velas.
+
+    Ela CALCULA a última vela fechada em vez de dar um exemplo fixo: o texto
+    antigo cravava "se a hora atual for 11:40, a última vela consolidada é a
+    das 11:35" — um exemplo de 5m, escrito à mão, que continuava lá mesmo se o
+    gráfico fosse de 10 ou 15 minutos.
+    """
+    m = timeframe_do_plano(plano)
+    agora = agora or datetime.datetime.now()
+    fechada = agora - datetime.timedelta(
+        minutes=(agora.minute % m), seconds=agora.second,
+        microseconds=agora.microsecond)
+    return (f"O gráfico opera em velas de {m} minuto(s) ({m}m). "
+            f"Agora são {agora.strftime('%H:%M')}, então a última vela de {m}m "
+            f"JÁ FECHADA é a das {fechada.strftime('%H:%M')} — a vela seguinte "
+            "ainda está se formando e pode mudar de forma até fechar. "
+            "Estruture a leitura nesse tempo gráfico: o tamanho de um Order "
+            "Block, a distância de um stop e o que conta como quebra de "
+            "estrutura mudam com o tempo da vela.")
+
+
+def partir_para_whatsapp(texto, limite=LIMITE_MENSAGEM_WHATSAPP):
+    """Divide a mensagem em pedaços inteiros. FUNÇÃO PURA.
+
+    POR QUE ISTO EXISTE (04/09)
+    ---------------------------
+    Ele mandou o relatório que recebeu no celular, com a análise terminando
+    assim: "O preço está testando uma zona de oferta en". A frase morre no
+    meio da palavra "entre". Não foi o WhatsApp: era um `[:400]` no meio do
+    texto — quatrocentos caracteres cravados, com a tesoura caindo onde
+    calhasse.
+
+    O estrago não é estético. A análise é o PORQUÊ da sugestão, e é por ela
+    que ele decide acatar ou não estando longe da mesa. Entregar a metade de
+    um raciocínio é pior do que entregar nenhum: parece completo.
+
+    A regra do corte, em ordem de preferência: parágrafo, linha, fim de frase,
+    espaço. Cortar no meio de uma palavra é o último recurso e só acontece
+    quando não há nenhum respiro no trecho inteiro.
+    """
+    texto = str(texto or "")
+    try:
+        limite = max(200, int(limite))
+    except (TypeError, ValueError):
+        limite = LIMITE_MENSAGEM_WHATSAPP
+    if len(texto) <= limite:
+        return [texto] if texto else []
+
+    pedacos, resto = [], texto
+    while len(resto) > limite:
+        janela = resto[:limite]
+        corte = -1
+        for separador in ("\n\n", "\n", ". ", " "):
+            achou = janela.rfind(separador)
+            # Um respiro logo no começo não serve: partiria em migalhas.
+            if achou > limite // 3:
+                corte = achou + (len(separador) if separador != " " else 1)
+                break
+        if corte <= 0:
+            corte = limite
+        pedacos.append(resto[:corte].rstrip())
+        resto = resto[corte:].lstrip()
+    if resto:
+        pedacos.append(resto)
+
+    total = len(pedacos)
+    return [f"{p}\n\n— ({i}/{total})" for i, p in enumerate(pedacos, 1)]
+
+
 def enviar_relatorio_whatsapp(mensagem: str, imagem_print, log_callback):
     log_callback("📲 Disparando relatório para o WhatsApp...")
     try:
-        payload = {"jid": "", "texto": mensagem}
+        partes = partir_para_whatsapp(mensagem) or [""]
+        imagem64 = None
         if imagem_print is not None:
-            payload["imagemBase64"] = base64.b64encode(
+            imagem64 = base64.b64encode(
                 comprimir_grafico(imagem_print)).decode("utf-8")
-
-        response = requests.post(BAILEYS_API_URL, json=payload, timeout=45)
-        if response.status_code == 200:
-            log_callback("✅ Relatório enviado com sucesso!")
+        for i, parte in enumerate(partes):
+            payload = {"jid": "", "texto": parte}
+            # A imagem vai UMA vez, com o primeiro pedaço: repetir o gráfico
+            # em cada parte encheria a conversa dele de prints iguais.
+            if i == 0 and imagem64:
+                payload["imagemBase64"] = imagem64
+            response = requests.post(BAILEYS_API_URL, json=payload, timeout=45)
+            if response.status_code != 200:
+                log_callback(f"⚠️ Erro na API do WhatsApp: {response.text}")
+                return
+        if len(partes) > 1:
+            log_callback(f"✅ Relatório enviado em {len(partes)} partes "
+                         "(a mensagem era longa — foi partida, não cortada).")
         else:
-            log_callback(f"⚠️ Erro na API do WhatsApp: {response.text}")
+            log_callback("✅ Relatório enviado com sucesso!")
     except Exception as e:
         log_callback(f"⚠️ Falha no disparo do relatório: {e}")
 
@@ -18175,7 +18361,7 @@ class SmcQuantApp(ctk.CTk):
             "4. DADOS DA MESA EM TEMPO REAL: Quando o trader perguntar sobre o mercado atual, setups ou telemetria, utilize com autoridade os dados ao vivo fornecidos abaixo.\n"
             "5. HONESTIDADE VISUAL & PROIBIÇÃO DE ALUCINAÇÃO: NUNCA invente nem presuma indicadores técnicos que NÃO estão listados nos dados da mesa ou visíveis no gráfico (ex: RSI, MACD, Estocástico, médias móveis não plotadas). Se o trader perguntar sobre o RSI e ele não estiver no gráfico, responda com honestidade direta: 'O RSI não está plotado no gráfico nesta tela — a análise atual é 100% Price Action institucional SMC (Order Blocks, BOS/CHoCH, FVG e Liquidez)'. NUNCA afirme que o RSI está 'neutro' ou 'em 50' sem ele estar desenhado na tela.\n"
             "6. RESPOSTA DIRETA SOBRE DELTA E ORDER FLOW: Quando o trader perguntar sobre o Delta ('o delta está comprador ou vendedor?', 'qual o delta agora?'), responda PRIMEIRO e DIRETAMENTE se o Delta atual da mesa está COMPRADOR ou VENDEDOR (citando o valor da telemetria) e explique o contexto prático (ex: se o preço cai e o delta é comprador, isso indica absorção passiva vendedora no Order Block; se o delta é vendedor, indica agressão vendedora líquida a favor da queda). NUNCA dê apenas uma aula teórica vaga sem responder o dado real do momento.\n"
-            "7. TIMEFRAME E INTERVALO DO MOTOR: O gráfico opera em timeframe de 5 minutos (5m) com leituras periódicas de fechamento de vela (a cada 5 min). Se a hora atual for 11:40, a última leitura de candle de 5m consolidada é a das 11:35 enquanto a vela das 11:40 está se formando no book.\n\n"
+            f"7. TIMEFRAME E INTERVALO DO MOTOR: {texto_do_timeframe()}\n\n"
             # AS DUAS REGRAS ABAIXO VOLTARAM EM 21/08, e o motivo importa.
             # A instrucao 5 (honestidade visual) cobre INDICADORES que nao
             # estao no grafico. Nao cobre NUMERO DA CONTA nem ACAO EXECUTADA
@@ -21790,6 +21976,11 @@ class SmcQuantApp(ctk.CTk):
             ("Pausa após stops (min):", "entry_cooldown", "cooldown_stop_min", 9, 2, 30),
             ("Máx. operações no dia:", "entry_max_ops", "max_operacoes_dia", 10, 0, 6),
             ("Multi-Contas Simultâneas:", "entry_multi_contas", "multi_contas", 10, 2, 1),
+            # O TEMPO DA VELA QUE ESTÁ NA TELA. Ver `timeframe_do_plano`: até
+            # 04/09 o programa AFIRMAVA ao modelo que eram 5 minutos, sem
+            # nunca perguntar — e o tamanho de estrutura, de Order Block e de
+            # stop mudam todos com esse número.
+            ("Velas do gráfico (min):", "entry_timeframe", "timeframe_min", 11, 0, 5),
         ]
         for rotulo, attr, chave, linha, col, padrao in campos:
             ctk.CTkLabel(frame_config, text=rotulo, text_color=COR["dim"],
@@ -23527,6 +23718,7 @@ class SmcQuantApp(ctk.CTk):
             (self.entry_max_ops, "max_operacoes_dia", 6),
             (self.entry_multi_contas, "multi_contas", 1),
             (self.entry_risco_max, "risco_max_pct", 0),
+            (self.entry_timeframe, "timeframe_min", 5),
         ]
         for widget, chave, padrao in campos:
             widget.delete(0, tk.END)
@@ -23677,6 +23869,19 @@ class SmcQuantApp(ctk.CTk):
             self.plano["max_contratos"] = max(0, _mc)
             _mt = int(float(self.entry_min_ticks.get().replace(",", ".")))
             self.plano["min_ticks_stop"] = max(0, _mt)
+            # TEMPO GRÁFICO. Só entram os tempos que a Tradovate oferece; um
+            # "7" digitado aqui viraria uma afirmação errada dentro do pedido
+            # ao modelo, que é exatamente o defeito que este campo conserta.
+            try:
+                _tf = int(float(self.entry_timeframe.get().replace(",", ".")))
+                if _tf not in TIMEFRAMES_ACEITOS:
+                    self.log(f"⏱️ Velas de {_tf} min não é um tempo gráfico que "
+                             f"eu conheça ({', '.join(str(t) for t in TIMEFRAMES_ACEITOS)}). "
+                             "Mantive o que estava.")
+                else:
+                    self.plano["timeframe_min"] = _tf
+            except Exception:
+                pass
             # FREIO DE SUGESTÕES. Zero é opção legítima em todos: significa
             # "não quero essa trava". Por isso o piso aqui é 0, e não 1.
             _ms = int(float(self.entry_max_stops.get().replace(",", ".")))
@@ -25604,6 +25809,152 @@ class SmcQuantApp(ctk.CTk):
     # Quantos minutos entre um balanço de descartes e o próximo.
     RESUMO_DESCARTE_MIN = 20
 
+    # ==================================================================
+    #  O QUE O WHATSAPP RESPONDE QUANDO ELE PERGUNTA
+    # ==================================================================
+    #  Pedido de 04/09. Os quatro são montados EM CÓDIGO, com os números do
+    #  disco e da tela — nenhum passa por modelo. Isso não é preciosismo: ele
+    #  usa esses comandos longe da mesa, justamente quando não pode conferir,
+    #  e é aí que uma resposta inventada faz o maior estrago. Além disso, eles
+    #  continuam funcionando com a cota da API estourada, que é exatamente
+    #  quando o resto emudece.
+
+    def _texto_telemetria_whatsapp(self):
+        """⚡ TELEMETRIA — o momento do mercado, medido."""
+        linhas = ["⚡ *TELEMETRIA*", f"🕐 {time.strftime('%d/%m %H:%M:%S')}"]
+        _fila = ativos_em_analise(getattr(self, "_analises_por_ativo", {}))
+        if not _fila:
+            linhas.append("Nenhum gráfico lido ainda nesta sessão — sem "
+                          "telemetria para dar. Se o motor está ligado, ela "
+                          "aparece depois do primeiro ciclo.")
+            return "\n".join(linhas)
+        for dados in _fila:
+            nome = (dados or {}).get("ativo") or "?"
+            preco = (dados or {}).get("preco")
+            linhas.append(f"\n*{nome}*" + (f" · preço {preco}" if preco else ""))
+            leitura = (dados or {}).get("acao")
+            prob = (dados or {}).get("probabilidade")
+            if leitura:
+                linhas.append(f"leitura: {leitura}"
+                              + (f" · probabilidade {prob:.0f}%" if prob else ""))
+            conf = (dados or {}).get("confluencias") or []
+            if conf:
+                linhas.append("confluências: " + ", ".join(str(c) for c in conf[:6]))
+            ind = (dados or {}).get("indicadores") or []
+            if ind:
+                linhas.append("indicadores na tela: " + " · ".join(str(i) for i in ind[:6]))
+        try:
+            linhas.append("\n" + self.diagnostico_da_fita())
+        except Exception:
+            pass
+        try:
+            _t = self._texto_de_order_flow()
+            if _t:
+                linhas.append(f"fluxo: {_t}")
+        except Exception:
+            pass
+        return "\n".join(linhas)
+
+    def _texto_relatorio_whatsapp(self):
+        """📈 RELATÓRIO — plano, resultado do dia e acerto do motor."""
+        linhas = ["📈 *RELATÓRIO*", f"🕐 {time.strftime('%d/%m %H:%M:%S')}"]
+        try:
+            linhas.append("\n" + texto_do_relatorio_de_acerto())
+        except Exception:
+            pass
+        try:
+            plano = plano_da_conta_ativa() or {}
+            linhas.append(
+                f"\n*PISOS DO PLANO* — R:R mínimo 1:{plano.get('rr_minimo', '?')}"
+                f" · probabilidade mínima {plano.get('probabilidade_minima', '?')}%"
+                f" · stop mínimo {plano.get('min_ticks_stop', '?')} ticks"
+                f" · velas de {timeframe_do_plano(plano)} min")
+            _resta = drawdown_restante_hoje(plano)
+            if _resta is not None:
+                linhas.append(f"drawdown que ainda resta hoje: US${_resta:,.2f}")
+        except Exception:
+            pass
+        try:
+            _vivas = [p for p in carregar_posicoes() if _e_da_conta_ativa(p)]
+            _quem = texto_do_risco_comprometido(_vivas)
+            if _quem:
+                linhas.append(_quem)
+        except Exception:
+            pass
+        return "\n".join(linhas)
+
+    def _texto_niveis_whatsapp(self):
+        """🎯 ONDE — entrada, stop e alvo do cenário que está valendo AGORA.
+
+        A pergunta dele é "compro onde / vendo onde / onde é o stop", e a
+        única resposta honesta é a do cenário que EXISTE. Sem cenário aberto,
+        esta função diz isso — e não inventa um nível para não ficar calada."""
+        linhas = ["🎯 *NÍVEIS DO CENÁRIO*", f"🕐 {time.strftime('%d/%m %H:%M:%S')}"]
+        try:
+            vivas = [p for p in carregar_posicoes()
+                     if _e_da_conta_ativa(p)
+                     and str(p.get("status") or "").upper() in ("PENDENTE", "ABERTA")]
+        except Exception:
+            vivas = []
+        if vivas:
+            for p in vivas:
+                linhas.append(
+                    f"\n*{p.get('direcao')} {p.get('ativo')}* "
+                    f"({p.get('status')}) — {p.get('contratos')} ctr"
+                    f"\nentro em {p.get('entry')}"
+                    f"\nstop em {p.get('stop')}"
+                    f"\nalvo em {p.get('tp1') or p.get('tp2') or '—'}")
+            return "\n".join(linhas)
+        try:
+            pend = self._ultimo_sinal_pendente()
+        except Exception:
+            pend = None
+        if pend:
+            linhas.append(
+                f"\n*{pend.get('direcao')} {pend.get('ativo')}* — aguardando a "
+                f"sua decisão\nentro em {pend.get('entry')}"
+                f"\nstop em {pend.get('stop')}"
+                f"\nalvo em {pend.get('tp1') or pend.get('tp2') or '—'}"
+                "\n\nResponda ACATAR ou NAO OPEREI.")
+            return "\n".join(linhas)
+        linhas.append("\nNão há cenário valendo agora — nenhuma ordem "
+                      "pendente, nenhuma posição aberta e nenhuma sugestão "
+                      "esperando decisão. Não vou inventar um nível só para "
+                      "não ficar calada.")
+        try:
+            linhas.append("\n" + self._chat_status_texto())
+        except Exception:
+            pass
+        return "\n".join(linhas)
+
+    def _responder_print_no_whatsapp(self):
+        """🖼️ PRINT — a ÚLTIMA imagem que o motor de fato analisou.
+
+        Não é uma captura nova: é a MESMA imagem que gerou a última leitura.
+        A diferença importa — uma captura nova responderia 'como está agora',
+        e a pergunta dele é 'o que você está vendo', que é outra coisa."""
+        try:
+            from PIL import Image
+            img = Image.open(ULTIMO_PRINT_FILE)
+            img.load()
+        except Exception:
+            enviar_relatorio_whatsapp(
+                "🖼️ Ainda não tenho nenhuma captura desta sessão para te "
+                "mandar. Assim que o motor ler um gráfico, o PRINT passa a "
+                "funcionar.", None, self.log)
+            return
+        try:
+            quando = time.strftime(
+                '%d/%m %H:%M', time.localtime(os.path.getmtime(ULTIMO_PRINT_FILE)))
+        except Exception:
+            quando = "?"
+        _qual = getattr(self, "_ultimo_ativo_lido", None) or "o gráfico"
+        enviar_relatorio_whatsapp(
+            f"🖼️ *ESTA é a imagem que eu analisei* — {_qual}, capturada às "
+            f"{quando}. É a MESMA que gerou a última leitura, não uma foto "
+            "nova: se ela estiver velha, é porque o ciclo ainda não rodou de "
+            "novo.", img, self.log)
+
     def _contar_motivo_do_descarte(self, acao, ativo, motivo_curto):
         """Guarda POR QUE cada cenário morreu, para o balanço poder somar.
 
@@ -25942,6 +26293,36 @@ class SmcQuantApp(ctk.CTk):
                         self.log("📊 STATUS pedido pelo WhatsApp — respondendo.")
                         enviar_relatorio_whatsapp(
                             f"📊 STATUS\n{texto_status}", None, self.log)
+                        continue
+                    # OS QUATRO COMANDOS DE 04/09. Pedido dele: "considere
+                    # incluir comandos na interação com WhatsApp, por exemplo
+                    # status, print, relatório telemetria, compro onde, vendo
+                    # onde, onde é o stop etc.".
+                    #
+                    # Todos DETERMINÍSTICOS, como o STATUS: montados em código,
+                    # com os números do disco e da tela. Nenhum passa por
+                    # modelo — funcionam com a cota da API estourada, e não
+                    # têm como inventar preço.
+                    if tipo in ("TELEMETRIA", "RELATORIO", "ONDE", "PRINT"):
+                        ts_cmd = cmd.get("ts", 0)
+                        if ts_cmd and (time.time() * 1000 - ts_cmd) > 120000:
+                            self.log(f"⌛ Pedido de {tipo} ignorado (obsoleto na fila).")
+                            continue
+                        self.log(f"📲 {tipo} pedido pelo WhatsApp — respondendo.")
+                        try:
+                            if tipo == "PRINT":
+                                self._responder_print_no_whatsapp()
+                                continue
+                            texto_cmd = {
+                                "TELEMETRIA": self._texto_telemetria_whatsapp,
+                                "RELATORIO": self._texto_relatorio_whatsapp,
+                                "ONDE": self._texto_niveis_whatsapp,
+                            }[tipo]()
+                        except Exception as e:
+                            texto_cmd = (f"Não consegui montar o {tipo.lower()} "
+                                         f"agora ({type(e).__name__}). Abra o app "
+                                         "e confira na tela.")
+                        enviar_relatorio_whatsapp(texto_cmd, None, self.log)
                         continue
                     if tipo == "SAIR_MKT":
                         ts_cmd = cmd.get("ts", 0)
@@ -26964,6 +27345,15 @@ class SmcQuantApp(ctk.CTk):
                             "importa, mas não seja conservador a ponto de deixar passar setups "
                             "legítimos.\n"
                             "\n"
+                            # O TEMPO DA VELA ENTRA NO PEDIDO, E É O QUE ELE
+                            # CONFIGUROU. Até 04/09 nem o pedido de análise nem
+                            # o do chat perguntavam: o do chat AFIRMAVA 5m, e
+                            # este aqui não dizia nada — deixando o modelo
+                            # supor. Estrutura, tamanho de Order Block e
+                            # distância de stop mudam com o tempo gráfico, e
+                            # supor errado sai caro na hora de dimensionar.
+                            f"TEMPO GRÁFICO: {texto_do_timeframe()}\n"
+                            "\n"
                             "OS INDICADORES DA TELA SÃO PARTE DO TRABALHO, NÃO UM EXTRA.\n"
                             "O trader escolheu cada indicador que está naquele gráfico, e mexe "
                             "neles. Em 'indicadores_na_tela', LISTE TODOS os que você vê — pelo "
@@ -27016,7 +27406,16 @@ class SmcQuantApp(ctk.CTk):
                         except Exception:
                             _amb_tv = {}
 
-                        _eh_replay = bool(_amb_tv.get("eh_replay") or (_amb_tv.get("conta", "").startswith("RPL")))
+                        # `get("conta", "")` DEVOLVE None QUANDO A CHAVE EXISTE
+                        # COM VALOR None — o padrão só vale para chave AUSENTE.
+                        # Foi assim que saiu, em 04/09 12:35: "DEFEITO DO
+                        # PROGRAMA em main_app.py:27019 ('NoneType' object has
+                        # no attribute 'startswith')", e com ele duas análises
+                        # inteiras do ciclo se perderam. `or ""` fecha os dois
+                        # casos de uma vez.
+                        _conta_amb = str(_amb_tv.get("conta") or "")
+                        _eh_replay = bool(_amb_tv.get("eh_replay")
+                                          or _conta_amb.startswith("RPL"))
 
                         # OS TRÊS NASCEM DEFINIDOS, ANTES DE QUALQUER RAMO.
                         #
@@ -27428,6 +27827,25 @@ class SmcQuantApp(ctk.CTk):
                         probabilidade = sinal.get("probabilidade", 0)
                         confluencias = sinal.get("confluence_factors", []) or []
                         ativo = sinal.get("asset_symbol", "DESCONHECIDO")
+
+                        # ---- MICRO OU CHEIO? DEZ VEZES O DINHEIRO ----
+                        # Ver `confundiu_micro_com_cheio`: em 04/09 a leitura
+                        # devolveu ESU6 a manhã inteira num gráfico de MESU6, e
+                        # o robô chegou a TROCAR o instrumento do ticket na
+                        # Tradovate por causa disso. A referência é o
+                        # instrumento que a plataforma diz estar no ticket —
+                        # texto lido de um campo, não de uma imagem.
+                        try:
+                            _ref_ativo = self._ativo_da_fita()
+                            _corrigido, _porque_ativo = confundiu_micro_com_cheio(
+                                ativo, _ref_ativo)
+                            if _corrigido:
+                                self.log(f"🔎 ATIVO CORRIGIDO: {_porque_ativo}. "
+                                         f"Sigo como {_corrigido}.")
+                                ativo = _corrigido
+                                sinal["asset_symbol"] = _corrigido
+                        except Exception:
+                            pass
 
                         # ---- ISSO NÃO É UM GRÁFICO ----
                         # A janela 'Claude — Claude' ficou 20 minutos sendo
@@ -28511,7 +28929,11 @@ class SmcQuantApp(ctk.CTk):
                                 f"{cabecalho}\n"
                                 f"Preço atual: {preco}  |  Confiança: {confianca}%  |  Probabilidade: {probabilidade}%"
                                 f"{bloco_confluencias}\n\n"
-                                f"_{sinal.get('market_analysis', '')[:400]}_\n\n"
+                                # SEM TESOURA AQUI. Quem cuida do tamanho é
+                                # `partir_para_whatsapp`, que PARTE em pedaços
+                                # inteiros — ver a docstring dela, e a frase
+                                # "zona de oferta en" que ele recebeu em 04/09.
+                                f"_{sinal.get('market_analysis', '')}_\n\n"
                                 f"_Material educacional. A decisão de operar é sua._"
                             )
                             enviar_relatorio_whatsapp(mensagem_info, screenshot, self.log)

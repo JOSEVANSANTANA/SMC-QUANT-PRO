@@ -432,6 +432,34 @@ async function connectToWhatsApp() {
         const CMD_STATUS    = ['STATUS', 'SITUACAO', 'SITUAÇÃO', 'RESUMO',
                                'COMO ESTAMOS', 'COMO ESTA', 'COMO ESTÁ'];
 
+        // OS COMANDOS QUE ELE PEDIU EM 04/09, e o motivo de cada um.
+        //
+        //   "considere incluir comandos na interacao com whatsapp, por
+        //    exemplo status, print, relatorio telemetria, compro onde, vendo
+        //    onde, onde e o stop etc."
+        //
+        // STATUS ja existia. Estes quatro nasceram do mesmo lugar: ele esta
+        // LONGE da mesa e precisa perguntar coisa objetiva sem abrir o app.
+        // Todos sao deterministicos do lado do Python — nenhum passa por
+        // modelo, entao funcionam com a cota estourada e nao inventam numero.
+        const CMD_TELEMETRIA = ['TELEMETRIA', 'TELEMETRIA SMC', 'FLUXO',
+                                'ORDER FLOW', 'DELTA', 'CVD'];
+        // PRINT: manda a ULTIMA captura que o motor fez do grafico. E a
+        // resposta para "o que voce esta vendo?" sem ter de confiar em prosa.
+        const CMD_PRINT      = ['PRINT', 'PRINTA', 'FOTO', 'GRAFICO', 'GRÁFICO',
+                                'MANDA O PRINT', 'MANDE O PRINT', 'TELA'];
+        const CMD_RELATORIO  = ['RELATORIO', 'RELATÓRIO', 'PLANO',
+                                'PLANO DE TRADING', 'DESEMPENHO', 'ACERTO',
+                                'RESULTADO', 'RESULTADO DO DIA'];
+        // ONDE: entrada, stop e alvo do cenario que esta valendo agora.
+        const CMD_ONDE       = ['COMPRO ONDE', 'VENDO ONDE', 'ONDE COMPRO',
+                               'ONDE VENDO', 'ONDE E O STOP', 'ONDE É O STOP',
+                               'QUAL O STOP', 'QUAL É O STOP', 'QUAL E O STOP',
+                               'ONDE ESTA O STOP', 'ONDE ESTÁ O STOP',
+                               'QUAL O ALVO', 'QUAL É O ALVO', 'QUAL E O ALVO',
+                               'ONDE ENTRO', 'QUAL A ENTRADA', 'NIVEIS',
+                               'NÍVEIS', 'CENARIO', 'CENÁRIO'];
+
         // SAÍDA EM MERCADO E CANCELAMENTO DE EMERGÊNCIA — pedido direto via WhatsApp
         const CMD_SAIR_MKT  = ['SAIR EM MKT', 'SAIR EM MKT & CXL', 'SAIR EM MKT & CANCELAR',
                                'SAIR EM MERCADO', 'SAIR NO MERCADO', 'ENCERRAR TODAS',
@@ -447,6 +475,8 @@ async function connectToWhatsApp() {
             CMD_STOP.includes(texto) || CMD_START.includes(texto) ||
             CMD_ACATAR.includes(texto) || CMD_DISPENSAR.includes(texto) ||
             CMD_ANALISE.includes(texto) || CMD_STATUS.includes(texto) ||
+            CMD_TELEMETRIA.includes(texto) || CMD_PRINT.includes(texto) ||
+            CMD_RELATORIO.includes(texto) || CMD_ONDE.includes(texto) ||
             CMD_SAIR_MKT.some(c => texto.includes(c) || texto === c);
         if (!ehComando) return;
 
@@ -511,6 +541,30 @@ async function connectToWhatsApp() {
             // status a dois segundos de distancia e barulho, nao servico.
             filaComandos.push({ tipo: 'STATUS', jid: jidAlvo, ts: Date.now() });
             console.log(`📊 STATUS enfileirado (responde neste chat? ${inscrito}).`);
+            return;
+        }
+
+        // OS QUATRO NOVOS. Mesma fila, mesma regra: sem "aguarde", porque a
+        // resposta chega em segundos e um aviso a dois segundos da resposta e
+        // barulho, nao servico.
+        if (CMD_TELEMETRIA.includes(texto)) {
+            filaComandos.push({ tipo: 'TELEMETRIA', jid: jidAlvo, ts: Date.now() });
+            console.log(`⚡ TELEMETRIA enfileirada (responde neste chat? ${inscrito}).`);
+            return;
+        }
+        if (CMD_PRINT.includes(texto)) {
+            filaComandos.push({ tipo: 'PRINT', jid: jidAlvo, ts: Date.now() });
+            console.log(`🖼️ PRINT enfileirado (responde neste chat? ${inscrito}).`);
+            return;
+        }
+        if (CMD_RELATORIO.includes(texto)) {
+            filaComandos.push({ tipo: 'RELATORIO', jid: jidAlvo, ts: Date.now() });
+            console.log(`📈 RELATORIO enfileirado (responde neste chat? ${inscrito}).`);
+            return;
+        }
+        if (CMD_ONDE.includes(texto)) {
+            filaComandos.push({ tipo: 'ONDE', jid: jidAlvo, ts: Date.now() });
+            console.log(`🎯 ONDE enfileirado (responde neste chat? ${inscrito}).`);
             return;
         }
 
