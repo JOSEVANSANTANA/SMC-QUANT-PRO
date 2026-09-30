@@ -5,3 +5,8 @@ __pycache__/
 .venv/
 .venv*
 .env
+logs/
+agent_state.json
+agent_report.json
+agent_heartbeat.json
+last_issue.txt
