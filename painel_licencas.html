@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SMC Quant Pro — Painel de Licenças</title>
+<!--
+  ====================================================================
+  PAINEL DE LICENÇAS — SMC QUANT PRO / TIGER INVEST VIP
+  ====================================================================
+  Arquivo ÚNICO. Não precisa instalar nada: abra no navegador.
+  Funciona no Mac, no Windows e no celular.
+
+  ⚠️ ESTE ARQUIVO CONTÉM ACESSO DE ADMINISTRADOR.
+  Ele conversa com o seu servidor de licenças usando o ADMIN_TOKEN.
+  NÃO publique este arquivo na internet e NÃO mande para clientes:
+  quem tiver o token cria e revoga licenças no seu lugar.
+
+  Ele não guarda nada em servidor nenhum além do seu. O endereço e o
+  token ficam só no navegador desta máquina (localStorage), e só se
+  você marcar a caixa "lembrar nesta máquina".
+  ====================================================================
+-->
+<style>
+  :root{
+    --fundo:#0d1117; --painel:#12161f; --borda:#243044; --borda-forte:#33415c;
+    --texto:#e6edf3; --apagado:#8b98a9; --azul:#4c8dff; --azul-claro:#79c0ff;
+    --verde:#1f8b4c; --verde-claro:#3fb950; --vermelho:#8b1f1f;
+    --vermelho-claro:#f85149; --amarelo:#d29922; --laranja:#ff9f43;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--fundo); color:var(--texto); min-height:100vh;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:15px; line-height:1.5;
+  }
+  .envolt{max-width:1180px; margin:0 auto; padding:22px 18px 60px}
+  header{display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:6px}
+  h1{font-size:21px; margin:0; letter-spacing:.2px}
+  h1 span{color:var(--laranja)}
+  .sub{color:var(--apagado); font-size:13.5px; margin:0 0 20px}
+
+  .cartao{
+    background:var(--painel); border:1px solid var(--borda); border-radius:10px;
+    padding:16px 18px; margin-bottom:16px;
+  }
+  .cartao h2{
+    font-size:13px; text-transform:uppercase; letter-spacing:.9px;
+    color:var(--apagado); margin:0 0 12px; font-weight:600;
+  }
+  label{display:block; font-size:12.5px; color:var(--apagado); margin-bottom:5px}
+  input[type=text],input[type=password]{
+    width:100%; background:#0a0e14; border:1px solid var(--borda-forte);
+    border-radius:7px; color:var(--texto); padding:9px 11px; font-size:14px;
+    font-family:inherit;
+  }
+  input:focus{outline:none; border-color:var(--azul)}
+  .grade{display:grid; gap:12px}
+  .g2{grid-template-columns:1fr 1fr}
+  .g3{grid-template-columns:2fr 1fr auto}
+  @media(max-width:760px){ .g2,.g3{grid-template-columns:1fr} }
+
+  button{
+    background:var(--azul); color:#fff; border:0; border-radius:7px;
+    padding:9px 15px; font-size:14px; font-weight:600; cursor:pointer;
+    font-family:inherit; white-space:nowrap;
+  }
+  button:hover{filter:brightness(1.12)}
+  button:disabled{opacity:.45; cursor:not-allowed; filter:none}
+  button.verde{background:var(--verde)}
+  button.vermelho{background:var(--vermelho)}
+  button.cinza{background:#2a3446}
+  button.mini{padding:5px 10px; font-size:12.5px; font-weight:500}
+
+  .linha-botoes{display:flex; gap:9px; flex-wrap:wrap; align-items:flex-end}
+  .marca{display:flex; align-items:center; gap:7px; color:var(--apagado); font-size:13px}
+  .marca input{width:15px; height:15px; accent-color:var(--azul)}
+
+  #aviso{
+    border-radius:8px; padding:11px 14px; margin-bottom:14px; font-size:14px;
+    display:none; border:1px solid transparent; white-space:pre-wrap;
+  }
+  #aviso.ok{display:block; background:#0d2a18; border-color:var(--verde); color:#7ee2a8}
+  #aviso.erro{display:block; background:#2a0f0f; border-color:var(--vermelho); color:#ffa198}
+  #aviso.info{display:block; background:#0d1f2d; border-color:#1f4a6b; color:var(--azul-claro)}
+
+  .resumo{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px}
+  .cubo{
+    background:var(--painel); border:1px solid var(--borda); border-radius:9px;
+    padding:11px 16px; min-width:112px;
+  }
+  .cubo .n{font-size:23px; font-weight:700; line-height:1.15}
+  .cubo .r{font-size:11.5px; color:var(--apagado); text-transform:uppercase; letter-spacing:.6px}
+
+  table{width:100%; border-collapse:collapse; font-size:13.5px}
+  th{
+    text-align:left; padding:9px 10px; color:var(--apagado); font-weight:600;
+    font-size:11.5px; text-transform:uppercase; letter-spacing:.6px;
+    border-bottom:1px solid var(--borda-forte); white-space:nowrap;
+  }
+  td{padding:10px; border-bottom:1px solid var(--borda); vertical-align:middle}
+  tr:last-child td{border-bottom:0}
+  .rolagem{overflow-x:auto; -webkit-overflow-scrolling:touch}
+  code{
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:12.5px; background:#0a0e14; padding:2px 6px; border-radius:5px;
+    border:1px solid var(--borda); white-space:nowrap;
+  }
+  .selo{
+    display:inline-block; padding:2px 9px; border-radius:20px; font-size:11.5px;
+    font-weight:700; letter-spacing:.3px; white-space:nowrap;
+  }
+  .selo.ativa{background:#0d2a18; color:var(--verde-claro); border:1px solid #1a5c33}
+  .selo.livre{background:#2a2410; color:var(--amarelo); border:1px solid #5c4a1a}
+  .selo.morta{background:#2a0f0f; color:var(--vermelho-claro); border:1px solid #5c1a1a}
+  .apagado{color:var(--apagado)}
+  .acoes{display:flex; gap:6px; flex-wrap:wrap}
+  .rodape{
+    color:var(--apagado); font-size:12.5px; margin-top:26px; text-align:center;
+    line-height:1.7;
+  }
+  .aviso-forte{
+    background:#2a1a0d; border:1px solid #6b4a1f; color:#ffcc8a;
+    border-radius:8px; padding:11px 14px; font-size:13px; margin-bottom:16px;
+  }
+</style>
+</head>
+<body>
+<div class="envolt">
+
+  <header>
+    <h1>🐯 SMC Quant Pro — <span>Painel de Licenças</span></h1>
+  </header>
+  <p class="sub">TIGER INVEST VIP · criar, ativar, revogar e liberar máquinas</p>
+
+  <div class="aviso-forte">
+    <strong>Só para você.</strong> Este arquivo carrega a senha de administrador do
+    seu servidor. Não publique na internet e não mande para cliente nenhum — quem
+    tiver o token cria e revoga licenças no seu lugar.
+  </div>
+
+  <div id="aviso"></div>
+
+  <!-- ============ CONEXÃO ============ -->
+  <div class="cartao">
+    <h2>Conexão com o servidor</h2>
+    <div class="grade g2">
+      <div>
+        <label for="url">Endereço do servidor</label>
+        <input type="text" id="url" placeholder="https://smc-quant-pro.onrender.com"
+               value="https://smc-quant-pro.onrender.com" autocomplete="off" spellcheck="false">
+      </div>
+      <div>
+        <label for="token">Senha de administrador (ADMIN_TOKEN)</label>
+        <input type="password" id="token" placeholder="a senha que está no servidor"
+               autocomplete="off" spellcheck="false">
+      </div>
+    </div>
+    <div class="linha-botoes" style="margin-top:13px">
+      <button id="btnConectar" class="verde">Conectar e listar</button>
+      <button id="btnAtualizar" class="cinza">Atualizar</button>
+      <label class="marca">
+        <input type="checkbox" id="lembrar"> lembrar nesta máquina
+      </label>
+    </div>
+  </div>
+
+  <!-- ============ RESUMO ============ -->
+  <div class="resumo" id="resumo" style="display:none">
+    <div class="cubo"><div class="n" id="nTotal">—</div><div class="r">Total</div></div>
+    <div class="cubo"><div class="n" style="color:var(--verde-claro)" id="nAtivas">—</div><div class="r">Ativas</div></div>
+    <div class="cubo"><div class="n" style="color:var(--amarelo)" id="nLivres">—</div><div class="r">Não ativadas</div></div>
+    <div class="cubo"><div class="n" style="color:var(--vermelho-claro)" id="nMortas">—</div><div class="r">Revogadas</div></div>
+  </div>
+
+  <!-- ============ CRIAR ============ -->
+  <div class="cartao">
+    <h2>Criar nova licença</h2>
+    <div class="grade g3">
+      <div>
+        <label for="novaChave">Chave</label>
+        <input type="text" id="novaChave" placeholder="clique em Gerar, ou digite a sua"
+               autocomplete="off" spellcheck="false">
+      </div>
+      <div>
+        <label for="novoCliente">Cliente (nome ou WhatsApp)</label>
+        <input type="text" id="novoCliente" placeholder="ex.: João — 71 9xxxx-xxxx"
+               autocomplete="off">
+      </div>
+      <div class="linha-botoes">
+        <button id="btnGerar" class="cinza">Gerar</button>
+        <button id="btnCriar" class="verde">Criar</button>
+      </div>
+    </div>
+    <p class="apagado" style="font-size:12.5px; margin:11px 0 0">
+      A chave nasce <strong>não ativada</strong> e se casa com a PRIMEIRA máquina
+      que a usar. A partir daí, só funciona nela — se o cliente trocar de
+      computador, use <strong>Liberar máquina</strong>.
+    </p>
+  </div>
+
+  <!-- ============ LISTA ============ -->
+  <div class="cartao">
+    <h2>Licenças</h2>
+    <input type="text" id="filtro" placeholder="filtrar por chave, cliente ou máquina…"
+           style="margin-bottom:13px" autocomplete="off">
+    <div class="rolagem">
+      <table>
+        <thead>
+          <tr>
+            <th>Chave</th><th>Cliente</th><th>Situação</th>
+            <th>Máquina</th><th>Ativada</th><th>Último acesso</th><th>Ações</th>
+          </tr>
+        </thead>
+        <tbody id="corpo">
+          <tr><td colspan="7" class="apagado" style="padding:22px; text-align:center">
+            Preencha a senha acima e clique em <strong>Conectar e listar</strong>.
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <p class="rodape">
+    O servidor guarda tudo em <code>licencas.json</code>, no próprio servidor.<br>
+    Este painel não envia nada para lugar nenhum além do endereço que você digitou acima.
+  </p>
+</div>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+let LICENCAS = [];
+
+// ---------------------------------------------------------------
+// Mensagens ao usuário. Toda falha aparece com o MOTIVO — nunca um
+// "erro" mudo, e nunca um "deu certo" sem o servidor ter confirmado.
+// ---------------------------------------------------------------
+function avisar(texto, tipo) {
+  const el = $("aviso");
+  el.textContent = texto;
+  el.className = tipo || "info";
+  if (tipo === "ok") setTimeout(() => { if (el.textContent === texto) el.className = ""; }, 6000);
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+function limparAviso() { $("aviso").className = ""; }
+
+function base() { return ($("url").value || "").trim().replace(/\/+$/, ""); }
+function token() { return ($("token").value || "").trim(); }
+
+// ---------------------------------------------------------------
+// Chamada ao servidor.
+//
+// O Render no plano gratuito HIBERNA depois de um tempo parado: a
+// primeira chamada do dia pode levar ~50 segundos para acordar a
+// máquina. Sem avisar isso, parece que o painel travou — por isso o
+// aviso aparece assim que a espera passa de 3 segundos.
+// ---------------------------------------------------------------
+async function chamar(rota, metodo, corpo) {
+  if (!base()) { avisar("Preencha o endereço do servidor.", "erro"); return null; }
+  if (!token()) { avisar("Preencha a senha de administrador.", "erro"); return null; }
+
+  const lento = setTimeout(() => {
+    avisar("Acordando o servidor… No plano gratuito do Render ele hiberna quando "
+         + "fica parado, e a primeira chamada leva até uns 50 segundos. Aguarde.",
+           "info");
+  }, 3000);
+
+  try {
+    const r = await fetch(base() + rota, {
+      method: metodo || "GET",
+      headers: { "Content-Type": "application/json", "x-admin-token": token() },
+      body: corpo ? JSON.stringify(corpo) : undefined,
+    });
+    clearTimeout(lento);
+
+    if (r.status === 401) {
+      avisar("Senha de administrador recusada pelo servidor (401).\n"
+           + "É o ADMIN_TOKEN configurado lá — confira se digitou igual.", "erro");
+      return null;
+    }
+    if (!r.ok) {
+      avisar("O servidor respondeu com erro " + r.status + ".", "erro");
+      return null;
+    }
+    return await r.json();
+  } catch (e) {
+    clearTimeout(lento);
+    avisar("Não consegui falar com o servidor.\n"
+         + "Confira: o endereço está certo? há internet? o servidor está no ar?\n"
+         + "(detalhe técnico: " + e.message + ")", "erro");
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------
+// Listar
+// ---------------------------------------------------------------
+async function listar(silencioso) {
+  $("btnConectar").disabled = true;
+  $("btnAtualizar").disabled = true;
+  try {
+    const d = await chamar("/admin/lista", "GET");
+    if (!d) return;
+    if (!d.ok) { avisar(d.erro || "O servidor recusou a listagem.", "erro"); return; }
+    LICENCAS = d.licencas || [];
+    desenhar();
+    guardarSeMarcado();
+    if (!silencioso) {
+      avisar(LICENCAS.length + " licença(s) carregada(s).", "ok");
+    } else {
+      limparAviso();
+    }
+  } finally {
+    $("btnConectar").disabled = false;
+    $("btnAtualizar").disabled = false;
+  }
+}
+
+function selo(s) {
+  if (s === "ATIVA") return '<span class="selo ativa">ATIVA</span>';
+  if (s === "REVOGADA") return '<span class="selo morta">REVOGADA</span>';
+  return '<span class="selo livre">NÃO ATIVADA</span>';
+}
+
+// Datas do servidor vêm em ISO (UTC). Mostra no fuso do Mac dele.
+function data(iso) {
+  if (!iso) return '<span class="apagado">—</span>';
+  const d = new Date(iso);
+  if (isNaN(d)) return '<span class="apagado">—</span>';
+  return d.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit",
+    year: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+function escapar(t) {
+  return String(t == null ? "" : t).replace(/[&<>"']/g,
+    c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function desenhar() {
+  const f = ($("filtro").value || "").trim().toLowerCase();
+  const vis = LICENCAS.filter(l => !f ||
+    [l.chave, l.cliente, l.nome_maquina].some(v => (v || "").toLowerCase().includes(f)));
+
+  $("resumo").style.display = "flex";
+  $("nTotal").textContent  = LICENCAS.length;
+  $("nAtivas").textContent = LICENCAS.filter(l => l.status === "ATIVA").length;
+  $("nLivres").textContent = LICENCAS.filter(l => l.status === "NÃO ATIVADA").length;
+  $("nMortas").textContent = LICENCAS.filter(l => l.status === "REVOGADA").length;
+
+  const corpo = $("corpo");
+  if (!vis.length) {
+    corpo.innerHTML = '<tr><td colspan="7" class="apagado" style="padding:22px;text-align:center">'
+      + (LICENCAS.length ? "Nada bate com esse filtro."
+                         : "Nenhuma licença criada ainda.") + "</td></tr>";
+    return;
+  }
+
+  corpo.innerHTML = vis.map(l => `
+    <tr>
+      <td><code>${escapar(l.chave)}</code>
+          <button class="mini cinza" data-copiar="${escapar(l.chave)}"
+                  style="margin-left:6px">copiar</button></td>
+      <td>${escapar(l.cliente) || '<span class="apagado">—</span>'}</td>
+      <td>${selo(l.status)}</td>
+      <td>${escapar(l.nome_maquina) || '<span class="apagado">—</span>'}</td>
+      <td>${data(l.ativada_em)}</td>
+      <td>${data(l.ultimo_acesso)}</td>
+      <td><div class="acoes">
+        ${l.status !== "REVOGADA"
+          ? `<button class="mini vermelho" data-revogar="${escapar(l.chave)}">revogar</button>` : ""}
+        ${l.status === "ATIVA"
+          ? `<button class="mini cinza" data-liberar="${escapar(l.chave)}">liberar máquina</button>` : ""}
+      </div></td>
+    </tr>`).join("");
+}
+
+// ---------------------------------------------------------------
+// Ações
+// ---------------------------------------------------------------
+function gerarChave() {
+  // Sem ambiguidade visual: fora I, O, 0 e 1, que o cliente erra ao
+  // digitar do WhatsApp. Aleatoriedade do próprio navegador.
+  const abc = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  const letras = Array.from(bytes, b => abc[b % abc.length]);
+  return "SMC-" + letras.slice(0, 4).join("") + "-"
+                + letras.slice(4, 8).join("") + "-"
+                + letras.slice(8, 12).join("");
+}
+
+async function criar() {
+  const chave = ($("novaChave").value || "").trim().toUpperCase();
+  const cliente = ($("novoCliente").value || "").trim();
+  if (!chave) { avisar("Gere ou digite uma chave antes de criar.", "erro"); return; }
+
+  $("btnCriar").disabled = true;
+  try {
+    const d = await chamar("/admin/criar", "POST", { chave, cliente });
+    if (!d) return;
+    if (!d.ok) { avisar(d.erro || "Não foi possível criar.", "erro"); return; }
+    // Só diz que criou DEPOIS de o servidor confirmar, e relista para
+    // a tela mostrar o estado real — não o que eu presumo.
+    $("novaChave").value = "";
+    $("novoCliente").value = "";
+    await listar(true);
+    avisar("Licença criada: " + chave
+         + (cliente ? "  (" + cliente + ")" : "")
+         + "\nMande essa chave para o cliente colar na aba Motor.", "ok");
+  } finally {
+    $("btnCriar").disabled = false;
+  }
+}
+
+async function revogar(chave) {
+  if (!confirm("REVOGAR a licença " + chave + "?\n\n"
+             + "O programa do cliente para de funcionar na próxima validação.\n"
+             + "Dá para desfazer? Não por aqui — teria que criar outra chave.")) return;
+  const d = await chamar("/admin/revogar", "POST", { chave });
+  if (!d) return;
+  if (!d.ok) { avisar(d.erro || "Não foi possível revogar.", "erro"); return; }
+  await listar(true);
+  avisar("Licença " + chave + " revogada.", "ok");
+}
+
+async function liberar(chave) {
+  if (!confirm("LIBERAR a máquina da licença " + chave + "?\n\n"
+             + "Use quando o cliente trocou de computador.\n"
+             + "A chave volta a valer, e se casa com a PRÓXIMA máquina que ativar.")) return;
+  const d = await chamar("/admin/liberar", "POST", { chave });
+  if (!d) return;
+  if (!d.ok) { avisar(d.erro || "Não foi possível liberar.", "erro"); return; }
+  await listar(true);
+  avisar("Máquina liberada. " + chave + " pode ser ativada em outro computador.", "ok");
+}
+
+async function copiar(texto, botao) {
+  try {
+    await navigator.clipboard.writeText(texto);
+    const antes = botao.textContent;
+    botao.textContent = "copiado!";
+    setTimeout(() => { botao.textContent = antes; }, 1400);
+  } catch {
+    // Safari sem permissão de área de transferência: mostra para copiar à mão.
+    prompt("Copie a chave:", texto);
+  }
+}
+
+// ---------------------------------------------------------------
+// Memória local (só desta máquina, e só se ele pedir)
+// ---------------------------------------------------------------
+const MEM = "smc_painel_licencas";
+function guardarSeMarcado() {
+  try {
+    if ($("lembrar").checked) {
+      localStorage.setItem(MEM, JSON.stringify({ url: base(), token: token() }));
+    } else {
+      localStorage.removeItem(MEM);
+    }
+  } catch { /* navegador em modo privado: segue sem lembrar */ }
+}
+function recuperar() {
+  try {
+    const m = JSON.parse(localStorage.getItem(MEM) || "null");
+    if (m && m.token) {
+      if (m.url) $("url").value = m.url;
+      $("token").value = m.token;
+      $("lembrar").checked = true;
+      return true;
+    }
+  } catch { /* ignora */ }
+  return false;
+}
+
+// ---------------------------------------------------------------
+// Ligações da tela
+// ---------------------------------------------------------------
+$("btnConectar").onclick  = () => listar(false);
+$("btnAtualizar").onclick = () => listar(false);
+$("btnGerar").onclick     = () => { $("novaChave").value = gerarChave(); };
+$("btnCriar").onclick     = criar;
+$("filtro").oninput       = desenhar;
+$("lembrar").onchange     = guardarSeMarcado;
+$("token").addEventListener("keydown", e => { if (e.key === "Enter") listar(false); });
+
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.revogar) revogar(b.dataset.revogar);
+  else if (b.dataset.liberar) liberar(b.dataset.liberar);
+  else if (b.dataset.copiar) copiar(b.dataset.copiar, b);
+});
+
+// Se ele já tinha salvo o acesso, entra listando direto.
+if (recuperar()) listar(true);
+</script>
+</body>
+</html>

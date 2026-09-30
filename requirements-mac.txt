@@ -1,0 +1,85 @@
+# SMC Quant Pro — dependências para macOS (Apple Silicon M1/M2/M3)
+#
+# Instale com o Python 3.11 ou 3.12 do python.org (ver INSTALAR_NO_MAC.md —
+# o Python que já vem no Mac NÃO serve, ele não traz o Tk da interface):
+#
+#     python3 -m pip install -r requirements-mac.txt
+#
+# ------------------------------------------------------------------
+# INTERFACE
+# ------------------------------------------------------------------
+customtkinter>=5.2.0
+# tkinter NÃO se instala por pip: vem junto do Python do python.org.
+
+# ------------------------------------------------------------------
+# IMAGEM (captura do gráfico) E REDE
+# ------------------------------------------------------------------
+Pillow>=10.0.0
+requests>=2.31.0
+
+# ------------------------------------------------------------------
+# INTELIGÊNCIA (TIGER + análise do motor)
+# ------------------------------------------------------------------
+google-genai>=1.0.0
+openai>=1.0.0
+python-dotenv>=1.0.0
+
+# ------------------------------------------------------------------
+# VOZ
+# ------------------------------------------------------------------
+edge-tts>=7.0.0
+pyttsx3>=2.90
+
+# Comando por voz ("Olá Tiger"). Opcional: sem eles o programa funciona
+# inteiro e o botão do microfone explica como habilitar.
+SpeechRecognition>=3.10.0
+sounddevice>=0.4.6
+# O numpy entra como REDE DE SEGURANÇA, não como obrigação. Desde a v2.21.1 o
+# microfone abre com `sd.RawInputStream`, que entrega os bytes crus e NÃO
+# importa numpy — que é o que este programa sempre usou. O numpy só é exigido
+# se cair no caminho antigo (`sd.InputStream`), que existe para versões muito
+# velhas do sounddevice. Antes disso, a falta dele matava o microfone com
+# "No module named 'numpy'" no meio do pregão.
+numpy>=1.24.0
+
+# ------------------------------------------------------------------
+# JANELAS DO macOS  (ESTE É O ITEM QUE NÃO PODE FALTAR)
+# ------------------------------------------------------------------
+# É o equivalente do pywin32 no Mac: sem ele o programa não LISTA as janelas
+# abertas e não acha a janela do gráfico para capturar. A captura em si usa o
+# `screencapture`, que já vem no macOS.
+pyobjc-framework-Quartz>=10.0
+# O AppKit (Cocoa) diz QUAIS processos sao aplicativos de verdade — os que tem
+# icone no Dock. E o que separa a janela do Chrome de um servico interno do
+# macOS: sem ele, o seletor de janelas mostrava coisas como
+# "Accessibility Services", que nunca vao ser o grafico de ninguem.
+pyobjc-framework-Cocoa>=10.0
+# A PERMISSAO DE MICROFONE QUE NUNCA APARECIA NA LISTA. No macOS, um programa
+# so ENTRA em Ajustes -> Privacidade -> Microfone depois de PEDIR a permissao
+# pela API do sistema (TCC). O PortAudio abre o dispositivo por baixo, num
+# caminho que nem sempre dispara esse pedido: nao aparece prompt, nao aparece
+# na lista, e o sistema devolve SILENCIO sem erro nenhum. E a AVFoundation que
+# faz o pedido de verdade e que diz o estado real (autorizado, negado, nunca
+# pedido, restrito) — em vez de a ferramenta ficar adivinhando.
+pyobjc-framework-AVFoundation>=10.0
+
+# ------------------------------------------------------------------
+# LEITURA EXATA DOS INDICADORES  (OCR local — sem chave, sem internet)
+# ------------------------------------------------------------------
+# É o que faz "onde está a VWAP?" ser respondido LENDO o texto da legenda em
+# vez de perguntar a um modelo. Um LLM não lê pixel, ele prevê o texto mais
+# provável — foi assim que 7769.56 virou 7752.34. OCR lê.
+# O motor é o Vision, que já vem no macOS: isto aqui é só a ponte do Python
+# para ele. Não baixa modelo, não usa rede, não tem cota.
+pyobjc-framework-Vision>=10.0
+
+# ------------------------------------------------------------------
+# LEITURA DO EXTRATO DE ORDENS EM PDF (aba Plano de Trading).
+# OPCIONAL: o programa tem um leitor proprio embutido, que usa so a
+# biblioteca padrao e da conta do relatorio da Tradovate. O pypdf entra
+# como reforco para PDFs de outras corretoras com fonte incomum.
+pypdf>=4.0.0
+
+# EMPACOTAR EM .app (só para gerar o aplicativo; não é preciso para rodar)
+# ------------------------------------------------------------------
+# pyinstaller>=6.3.0

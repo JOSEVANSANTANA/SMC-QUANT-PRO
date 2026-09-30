@@ -1,0 +1,1710 @@
+=======================================================================
+  PASSO ZERO — O MAC VAI BLOQUEAR OS ARQUIVOS. E NORMAL.
+=======================================================================
+
+Ao dar dois cliques em qualquer .command, o Mac dira:
+
+    "A Apple nao pode verificar se o item esta livre de algum malware"
+              [ Mover para o Lixo ]   [ OK ]
+
+Clique em OK. NUNCA em "Mover para o Lixo".
+
+Depois abra o arquivo DESBLOQUEAR_MAC.txt (esta nesta mesma pasta) e siga
+os tres passos. Leva um minuto e libera a pasta inteira de uma vez.
+
+Isso acontece com TODO arquivo que sai de um zip baixado da internet. A
+mensagem diz que o Mac NAO PODE VERIFICAR — nao que encontrou alguma
+coisa. Some de vez so com assinatura paga da Apple.
+
+E NAO deixe a pasta no iCloud Drive (nem em Documentos/Mesa com o iCloud
+ligado): o iCloud retira do disco os arquivos parados e o programa quebra
+no meio do pregao. Use $HOME/Applications/SMC_QUANT_PRO.
+
+========================================================================
+  SMC QUANT PRO v2.37.0 — MAC (Apple Silicon M1 / M2 / M3)
+  Comece por aqui. Leva uns 10 minutos, e quase tudo é automático.
+========================================================================
+
+PASSO 1 — DESCOMPACTE E COLOQUE A PASTA NUM LUGAR FIXO
+------------------------------------------------------
+Arraste a pasta "SMC_QUANT_PRO" para dentro de Documentos.
+Depois de instalar, NÃO mova mais a pasta de lugar.
+
+ATENÇÃO: no Finder a pasta aparece como "Documentos", mas no disco ela
+se chama "Documents" (em inglês). É normal do macOS. Se for digitar um
+caminho no Terminal, use ~/Documents.
+
+
+PASSO 2 — INSTALE O PYTHON CERTO  (obrigatório, 5 min)
+-------------------------------------------------------
+O Python que já vem no Mac NÃO SERVE — ele não traz o Tk, que é a
+biblioteca da interface, e o programa nem abre.
+
+  1. Abra:  https://www.python.org/downloads/macos/
+  2. Baixe: "macOS 64-bit universal2 installer" do Python 3.12
+  3. Instale normalmente (Avançar, Avançar).
+
+
+PASSO 3 — INSTALE O NODE.JS  (obrigatório para o motor)
+--------------------------------------------------------
+Baixe o instalador ARM64 (Apple Silicon) em https://nodejs.org
+— pegue a versão LTS.
+
+Se você já usa o Homebrew, "brew install node" também serve.
+
+
+PASSO 4 — DOIS CLIQUES EM:  INSTALAR_MAC.command
+-------------------------------------------------
+Ele confere tudo e instala as bibliotecas sozinho. Vai abrir uma janela
+preta com o passo a passo — é assim mesmo.
+
+SE O MAC RECUSAR ABRIR ("não pode ser aberto porque é de um
+desenvolvedor não identificado"):
+
+  → Clique com o BOTÃO DIREITO no arquivo → Abrir → Abrir de novo.
+
+  Se ainda assim recusar, abra o app Terminal e cole isto (uma linha):
+
+      chmod +x ~/Documents/SMC_QUANT_PRO/*.command
+
+  Depois tente os dois cliques de novo.
+
+
+PASSO 5 — AS DUAS PERMISSÕES  (não pule — conceda AS DUAS)
+----------------------------------------------------------
+  Ajustes do Sistema → Privacidade e Segurança →
+
+    1) GRAVAÇÃO DE TELA   → "+" → adicione o programa
+    2) ACESSIBILIDADE     → "+" → adicione o programa
+
+  Depois FECHE e ABRA o programa de novo.
+
+O QUE ADICIONAR:
+  • se você abre pelo ABRIR_SMC_QUANT_PRO.command → adicione o TERMINAL
+  • se você criou o aplicativo (CRIAR_APP.command) → adicione o
+    "SMC Quant Pro"
+  • na dúvida, adicione OS DOIS. Não faz mal nenhum.
+
+POR QUE DUAS: o título da janela ("Google Chrome — Tradovate") pode vir
+por qualquer uma das duas. A Gravação de Tela às vezes não pega quando o
+programa é aberto por um .command — o macOS atribui a permissão ao
+processo "responsável", e nesse caminho ela se perde sem avisar. A
+Acessibilidade é o segundo caminho, e costuma funcionar quando o
+primeiro falha.
+
+SEM NENHUMA DAS DUAS: o macOS NÃO DÁ ERRO. Ele entrega a lista de
+janelas SEM OS TÍTULOS (só o nome do aplicativo) e a captura sai PRETA.
+É a causa número 1 de "instalei e não funciona".
+
+Para conferir: clique em "🩺 Diagnosticar janelas" na aba Motor. Ele diz
+qual das duas está respondendo e mostra o título de cada janela.
+
+
+>>> IMPORTANTE, LEIA ISTO: existe um caminho que NAO depende de permissao
+>>> nenhuma, e e o recomendado para a corretora.
+>>>
+>>> Abra o Chrome da corretora PELO BOTAO DO PROPRIO PROGRAMA.
+>>> Quando voce faz isso, a janela da corretora passa a aparecer no seletor
+>>> assim:
+>>>
+>>>     🌐 Chrome · Tradovate Trader
+>>>
+>>> Essas entradas com o globo vem do PROPRIO Chrome, nao do macOS. Elas:
+>>>   - sempre trazem o nome certo da pagina;
+>>>   - capturam o grafico SEM Gravacao de Tela e SEM Acessibilidade;
+>>>   - funcionam com a janela coberta, em outra area de trabalho e ate
+>>>     minimizada;
+>>>   - dao uma imagem melhor (so a pagina, sem a moldura do navegador).
+>>>
+>>> Se a sua corretora e a Tradovate (ou qualquer coisa em navegador),
+>>> ESCOLHA A ENTRADA COM O GLOBO. As permissoes do Passo 5 passam a ser
+>>> so para as OUTRAS plataformas (ProfitPro, NinjaTrader, MT5).
+
+
+PASSO 6 — ABRIR O PROGRAMA
+---------------------------
+Dois cliques em:  ABRIR_SMC_QUANT_PRO.command
+
+Na aba Motor:
+  • cole a chave da Gemini (ela vai para o Chaveiro do Mac, não fica em
+    texto no arquivo de configuração);
+  • na lista de gráficos, escolha a janela. No Mac ela aparece como
+    "Google Chrome — Tradovate" (o aplicativo vem primeiro de propósito:
+    sem a permissão do Passo 5 o título vem vazio, e assim você ainda
+    consegue escolher pelo aplicativo);
+  • LIGAR MOTOR.
+
+Na PRIMEIRA vez que ligar o motor ele instala as dependências do Node
+sozinho (1 a 2 minutos, precisa de internet). Isso só acontece uma vez.
+
+
+========================================================================
+  DEIXAR COMO APLICATIVO (ícone no Launchpad e no Dock)
+========================================================================
+Dois cliques em:  CRIAR_APP.command
+
+Sai em segundos. Ele monta o "SMC Quant Pro.app" dentro de Aplicativos,
+apontando para esta pasta. Não é uma cópia: quando eu te mandar uma
+versão nova, você troca os .py aqui e o aplicativo já usa a nova, sem
+recriar nada.
+
+Depois: abra uma vez, botão direito no ícone do Dock → Opções →
+Manter no Dock.
+
+⚠️ A PERMISSÃO É POR APLICATIVO. Você liberou a Gravação de Tela para o
+   TERMINAL. Aos olhos do macOS o aplicativo é OUTRO programa e precisa
+   da própria permissão:
+
+     Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela
+       → botão "+" → Aplicativos → "SMC Quant Pro" → e ABRA o app de novo
+
+⚠️ NÃO MOVA esta pasta depois de criar o aplicativo. Ele aponta para ela.
+   Se precisar mover, rode o CRIAR_APP.command de novo no lugar novo.
+
+
+========================================================================
+  PAINEL DE LICENÇAS  (só você usa — não é para cliente)
+========================================================================
+Dois cliques em:  ABRIR_PAINEL_LICENCAS.command
+
+Abre no navegador. Nele você:
+  • CRIA licenças (com gerador de chave sem letras que o cliente confunde:
+    sem I, sem O, sem 0 e sem 1);
+  • VÊ quem ativou, em qual máquina e quando foi o último acesso;
+  • REVOGA uma licença (o programa do cliente para na próxima validação);
+  • LIBERA a máquina quando o cliente troca de computador — a chave volta
+    a valer e se casa com a próxima máquina que ativar.
+
+O painel conversa com o SEU servidor, que já está no ar em
+https://smc-quant-pro.onrender.com
+
+Ele pede a SENHA DE ADMINISTRADOR (o ADMIN_TOKEN configurado no servidor).
+Marque "lembrar nesta máquina" para não digitar toda vez — fica guardada
+só neste Mac, no navegador, e some se você desmarcar.
+
+⚠️ NÃO mande o arquivo painel_licencas.html para ninguém. Quem tiver ele
+   mais o token cria e revoga licenças no seu lugar.
+
+SOBRE A PRIMEIRA CONEXÃO DO DIA: o Render, no plano gratuito, hiberna o
+servidor quando fica parado. A primeira chamada pode levar uns 50
+segundos para acordá-lo. O painel avisa isso na tela em vez de parecer
+travado — é só esperar.
+
+A pasta "servidor_licencas" tem o código do servidor, caso um dia você
+queira rodá-lo em outro lugar. Você NÃO precisa dela no dia a dia.
+
+
+========================================================================
+  UMA LIMITAÇÃO REAL, DITA NA CARA
+========================================================================
+Se você MINIMIZAR a janela do gráfico no Dock, o macOS descarta o
+conteúdo dela e NÃO EXISTE pixel para capturar. O programa pula o ciclo
+e avisa — ele não desminimiza sozinho de propósito, porque no Mac
+desminimizar obriga a ATIVAR o aplicativo, ou seja, pular na sua frente
+no meio do pregão.
+
+DEIXE A JANELA DO GRÁFICO ABERTA. Atrás de outras funciona perfeitamente
+— só não pode estar minimizada.
+
+
+========================================================================
+  MODO AUTONOMO — A FERRAMENTA OPERA SOZINHA
+========================================================================
+LIGA ONDE: Configuracoes -> AUTOMACAO TRADOVATE -> "Ligar automacao".
+E o MESMO interruptor de antes. O que ele significa mudou.
+
+ANTES: a sugestao esperava voce clicar em ACATAR, e so entao a ordem ia
+para a plataforma.
+AGORA: com ele ligado, toda sugestao aprovada vira ordem NA HORA. Voce e
+avisado DEPOIS (registro, WhatsApp, voz e aviso de tela) e a mensagem diz
+"EXECUTADO AUTOMATICAMENTE" em vez de perguntar se voce quer acatar.
+
+Desligado, tudo volta a ser como era: ela sugere, voce decide.
+
+O QUE **NAO** MUDA — e esta e a parte que importa
+-------------------------------------------------
+Sumiu UM passo (o ACATAR), nenhuma trava. Para uma sugestao virar ordem
+ela precisa passar, tudo em codigo e nesta ordem:
+
+  1. piso de qualidade: R:R minimo e probabilidade minima do seu Plano;
+  2. desconto por evento macro recem-publicado (CPI, FOMC, payroll);
+  3. correcao pelo aprendizado das SUAS operacoes fechadas;
+  4. politica de posicao aberta: nao empilha contra o que ja esta aberto;
+  5. FREIO: perda diaria (drawdown), limite de stops seguidos e teto de
+     operacoes do dia;
+  6. anti-repeticao: o mesmo setup nao vira duas ordens.
+
+E a ultima, que nao se negocia: o DIMENSIONAMENTO. Se o seu Plano
+dimensionar ZERO contrato (drawdown do dia consumido, margem
+insuficiente, stop curto demais), nao existe ordem para enviar. Zero
+contrato nao vira "manda um" — vira "hoje nao", escrito no registro.
+
+COMO A ORDEM VAI PARA A PLATAFORMA
+-----------------------------------
+Numa submissao SO: entrada + stop + alvo juntos, pela estrategia ATM da
+propria Tradovate (em ticks), com o OCO dela — executou um lado, o outro
+e cancelado pela corretora.
+
+Antes eram TRES ordens separadas, e entre uma e outra o painel vira
+comprovante e precisa voltar ao formulario. Toda vez que essa volta
+falhava existia uma janela em que a ENTRADA estava no mercado e a
+PROTECAO nao. Com a ATM essa janela deixa de existir.
+
+E a regra de ouro: NADA e enviado antes de todos os campos terem sido
+escritos E CONFERIDOS por leitura de volta. Se qualquer um falhar, ela
+nao clica em Enviar e diz por que. O pior resultado possivel passa a ser
+"nao operou".
+
+ANTES DE LIGAR, FACA ESTE TESTE DE UM MINUTO
+---------------------------------------------
+  1. Deixe o "Chamado do pedido" aberto na Tradovate, com a aba ATMs
+     visivel e "EXIBIR EM" em Ticks.
+  2. Configuracoes -> AUTOMACAO TRADOVATE -> "Testar conexao".
+     Ela vai dizer, campo por campo, o que consegue mirar e o que esta
+     escrito em cada um AGORA. Se algum disser "NAO consigo mirar",
+     resolva isso ANTES de ligar o modo autonomo.
+  3. Marque "Modo teste" e deixe rodar um cenario. Ela preenche o ticket
+     inteiro (preco, quantidade, obter lucro, stop loss) e NAO clica em
+     Enviar. Confira os numeros na tela.
+  4. So entao desmarque o "Modo teste".
+
+DUAS COISAS QUE VOCE PRECISA SABER
+-----------------------------------
+- Os valores de OBTER LUCRO e STOP LOSS ficam no ticket depois que ela
+  escreve. Se voce mandar uma ordem NA MAO logo em seguida, ela sai com
+  o bracket do ultimo cenario dela. Confira antes.
+- Se ela nao souber o tick do contrato (a tabela cobre MES/ES, MNQ/NQ,
+  MYM/YM, M2K/RTY, MGC/GC, MCL/CL, WIN/IND, WDO/DOL), ela avisa e vai
+  pelo caminho antigo das tres ordens. Nao chuta tick: chutar tick e
+  chutar a distancia do seu stop.
+
+
+E O AUTO TRAIL, SE FOR O CASO
+------------------------------
+Existe uma caixinha propria: "AUTO TRAIL (o stop passa a perseguir o
+preco a partir de 1R)". Ela vem DESLIGADA.
+
+Desligada, o stop fica onde o cenario mandou ate o alvo. Ligada, ela
+preenche os campos de AUTO TRAIL do ticket com a MESMA distancia do stop
+do cenario, comecando quando o trade paga 1R (ou seja, depois de o trade
+ja ter coberto o proprio risco).
+
+Por que a mesma distancia: qualquer outra mudaria em silencio o risco que
+o seu Plano dimensionou. Por que so a partir de 1R: antes disso arrastar
+o stop e antecipar saida no ruido.
+
+Isto e outra GESTAO de trade, nao um detalhe de preenchimento. Ligue
+sabendo disso.
+
+
+========================================================================
+  O QUE MUDOU NA v2.37.0  —  ELA TINHA TODOS OS DADOS E RESPONDEU
+                             "NAO TENHO DADOS SUFICIENTES"
+========================================================================
+Voce escreveu: "ela nao esta mais tao inteligente, nao consegue se
+conversar com o motor e nem com o plano de trading, nao responde
+perguntas rapido, esta demorando muito pensando".
+
+Sao TRES defeitos diferentes, e os tres eram meus. O log deixou os tres
+visiveis.
+
+1) A PERGUNTA DA META NUNCA CHEGAVA NO CODIGO QUE SABIA RESPONDER
+   As 16:01 voce perguntou:
+     "O DIA ENCERRA AS 17:59, como estamos de probabilidade de bater a
+      meta de hoje ate la?"
+   e recebeu "nao tenho dados suficientes para prever com precisao".
+   As 16:05 voce perguntou de novo e recebeu a mesma coisa.
+
+   Mas a meta estava no Plano de Trading. O resultado do dia estava no
+   diario. O horario de fechamento estava na configuracao. Quem nao
+   tinha os dados era o MODELO — a pergunta ia direto para ele, e nunca
+   passava pelo codigo que tem acesso aos arquivos.
+
+   Voce tentou consertar do jeito que dava: "olha no plano de trading e
+   o motor para responder essa pergunta - aprenda isso". E preciso eu
+   dizer com clareza por que isso nunca poderia funcionar: uma licao
+   vira TEXTO dentro do pedido ao modelo. Ela nao vira acesso ao
+   diario. Nenhuma frase gravada faz um modelo abrir um arquivo. Voce
+   estava certo no diagnostico e a ferramenta nao te deu o caminho.
+
+   AGORA A META E UMA PERGUNTA COM RESPOSTA PROPRIA, feita por
+   aritmetica, antes de qualquer modelo — e por isso instantanea. Ela
+   responde, por exemplo:
+
+     META DE HOJE — conta 'CONTA 25K LEGACY'
+     • Meta do dia: US$ 175.00 (ritmo exigido para fechar o ciclo em 2 dias)
+     • Feito ate agora hoje: US$ +50.00 em 2 operacoes fechadas
+     • Falta hoje: US$ 125.00
+     • Tempo ate o fechamento: 2h59
+     • No seu ritmo de hoje ainda cabem ~2 operacoes (teto do plano: 10/dia)
+     • Hoje: acerto 50%, ganho medio US$ 100.00, perda media US$ 50.00
+
+     ➡️ CHANCE: 25% — precisa de 2 acertos nas 2 operacoes que ainda cabem.
+
+   A porcentagem NAO e chute. E a conta binomial exata sobre os SEUS
+   numeros do dia: sua taxa de acerto, seu ganho medio, sua perda media,
+   e quantas operacoes ainda cabem no tempo que resta (medido pela sua
+   propria cadencia de hoje e limitado pelo teto do seu plano). A
+   resposta vem sempre com a premissa escrita junto: e aritmetica sobre
+   o que ja aconteceu, nao previsao de mercado — supoe que as proximas
+   operacoes se parecam com as de hoje, e o mercado nao assinou esse
+   contrato.
+
+   E quando NAO da para calcular, ela diz isso em vez de inventar: sem
+   operacao fechada nao ha taxa de acerto medida, e sem taxa de acerto
+   qualquer porcentagem seria invencao. Sem meta configurada ela diz
+   "voce ainda nao configurou uma meta" — nao diz "meta batida".
+   (Esse ultimo caso apareceu no teste, e era exatamente o tipo de
+   afirmacao falsa e simpatica que e a pior de todas.)
+
+   Pergunte de qualquer jeito: "da pra bater a meta hoje?", "qual a
+   chance de batermos a meta?", "quanto falta para a meta de hoje?",
+   "vou conseguir bater a meta?".
+
+2) "ESTA DEMORANDO MUITO PENSANDO" — A FILA NAO TINHA FIM
+   A conta era esta: onze modelos da Gemini, cada um com ate quatro
+   configuracoes diferentes, cada chamada com prazo de 60 segundos. Com
+   a cota estourada, isso podia passar de DEZ MINUTOS antes de ela
+   chegar na base propria — que responde na hora, do disco, sem cota
+   nenhuma. Voce ficava olhando "✳ pensando…" com a resposta pronta e
+   presa atras de uma fila que nao ia dar em nada.
+
+   Agora existe um TETO DE 45 SEGUNDOS para a conversa inteira. Estourou,
+   ela para a fila e vai responder com o que tem aqui — e escreve no
+   Registro que fez isso. O corte e no TOTAL, nao na chamada: baixar o
+   prazo individual repetiria um erro antigo (os 15s originais
+   estouravam antes de a resposta com busca na internet chegar, e
+   produziam "estou sem acesso a rede" com a rede funcionando).
+   Anexo continua sem teto: ler um video demora mesmo.
+
+3) LICOES QUE NAO ENSINAVAM NADA, ENTRANDO EM TODA ANALISE
+   As 12:40 a sua lista de licoes tinha SEIS itens, e o de numero 6 era:
+     "o que aconteceu com HAPV3 HOJE?"
+   Uma pergunta. Ela foi gravada antes de a trava de pergunta existir, e
+   continuava entrando em TODA analise e TODA conversa como se fosse
+   regra — porque as licoes vao INTEIRAS para dentro do pedido ao
+   modelo. Isso gasta espaco e empurra o modelo para responder a coisa
+   errada. E parte da resposta a "ela nao esta mais tao inteligente".
+
+   AGORA HA UMA FAXINA NA ABERTURA: as licoes ja gravadas passam pelas
+   mesmas travas de hoje, e as que nao ensinam nada saem. E ela DIZ no
+   Registro o que apagou e por que — memoria mexida em silencio e pior
+   que memoria suja, voce precisa poder discordar. Se alguma fizer
+   falta, e so ensinar de novo em forma de regra.
+
+   Alem disso: quando a licao e uma PERGUNTA seguida de uma REGRA
+   ("qual a probabilidade de batermos a meta hoje? olha no plano de
+   trading para responder essa pergunta - aprenda isso"), agora fica so
+   a REGRA. A pergunta era o exemplo, nao a licao.
+
+OS TESTES
+----------
+505 no total, todos passando. Os novos, so desta versao:
+  - a conta da chance conferida contra a binomial feita a mao (falta
+    100, ganho 100, perda 100, 3 operacoes: precisa de 2 acertos, e com
+    50% de acerto isso da exatamente 50%);
+  - o caso em que nem acertando TUDO da: a resposta e 0%, nao "baixa";
+  - a frase EXATA que voce digitou as 16:01, conferindo que ela vira
+    conta em vez de ir para o modelo;
+  - "o dia encerra as 17:59" as 16:01 = 118 minutos, e o pregao que
+    vira o dia contado ate o dia seguinte;
+  - a sua lista REAL de seis licoes, limpa na medida certa: sai a
+    pergunta, ficam as cinco regras.
+E o teste de janela aberta agora grava duas operacoes no diario, abre o
+pregao, e confere que a conta da meta SAI de ponta a ponta — foi ele
+que pegou o "meta batida" sem meta configurada.
+
+
+========================================================================
+  O QUE MUDOU NA v2.36.0  —  O MOTOR TENTOU 2 MODELOS DE 11 E DISSE
+                             QUE TINHA TENTADO TODOS
+========================================================================
+Voce escreveu: "nao recebi mais envios de relatorios no whatsapp, de
+alguma forma essa api gemini nao esta sendo de fato acionada e nem a ia
+local". Estava certo, e o seu log tinha a prova. Esta parte:
+
+  Modelos disponiveis (ordem de tentativa): [11 modelos]
+  gemini-2.5-flash foi descontinuado - removendo da lista
+  gemini-2.5-flash-lite foi descontinuado - removendo da lista
+  Erro: Todos os modelos disponiveis falharam.
+        Ultimo erro: 404 ... gemini-2.5-flash-lite
+
+Repare: onze modelos na lista, e o ultimo erro veio do SEGUNDO. Os
+outros nove nao aparecem no registro porque nunca foram tentados.
+
+1) A CAUSA: O COOLDOWN CORTAVA MODELO DA FILA
+   Quando um modelo da erro de cota, ele fica "estacionado" por 15 min
+   para nao gastar rede a toa. Ate aqui, tudo certo. O erro era o que
+   vinha depois: o motor EXCLUIA os estacionados da lista de tentativas,
+   e so voltava atras se a lista ficasse COMPLETAMENTE vazia.
+
+   As 14:45, nove modelos estavam estacionados por cota — postos la pela
+   conversa do chat dois minutos antes. Sobraram exatamente dois: os
+   dois que estavam mortos com 404. O motor tentou esses dois, falhou, e
+   escreveu "todos os modelos falharam". A frase estava certa sobre os
+   dois e calada sobre os nove.
+
+   AGORA O COOLDOWN SO ORDENA A FILA. Ninguem e cortado: os estacionados
+   vao para o FIM, e sao tentados se os livres nao resolverem. Cooldown e
+   um palpite sobre o futuro; perder o ciclo por causa de um palpite
+   custa 5 minutos de mercado, e tentar um modelo estacionado custa uma
+   requisicao. E a mesma regra que o lado do CHAT ja usava certo desde a
+   v2.24 — havia duas copias da regra, e a do motor era a errada. Agora
+   e uma funcao so, usada pelos dois.
+
+   A mensagem de falha tambem mudou: em vez de "todos os modelos
+   falharam" ela diz QUANTOS e QUAIS foram tentados. Foi essa frase
+   generica que escondeu o defeito por um dia inteiro.
+
+2) A IA LOCAL PASSOU A DIZER POR QUE NAO LEU
+   O seu log terminava com "A IA local com visao nao devolveu resposta
+   neste ciclo" — uma frase sobre a qual nao da para fazer nada. Agora
+   ela diz o motivo por extenso: se o servico caiu, se nao ha modelo de
+   visao baixado, se o Ollama devolveu erro, ou se o modelo passou do
+   prazo (e nesse caso avisa que na PRIMEIRA leitura isso e normal,
+   porque ele carrega 3,2 GB do disco).
+
+3) "O COMPUTADOR INTEIRO FICOU LENTO" — ERA A IMAGEM
+   Um modelo de visao pica a imagem em quadradinhos antes de pensar. A
+   tela cheia de um MacBook (3024x1964) vira mais de SETE MIL pedacos.
+   A Gemini roda no servidor do Google e nao liga; a IA local roda na sua
+   mesa. Agora a imagem e reduzida para 1400px antes de ir para o modelo
+   local — o preco continua legivel e o custo cai por volta de cinco
+   vezes. O modelo tambem passa a ficar carregado entre os ciclos, em vez
+   de ser lido do disco de novo a cada leitura. O prazo subiu para 7 min,
+   porque ela so entra quando a Gemini JA caiu: nao ha mais nada na fila
+   atras dela, e esperar e melhor que desistir.
+
+4) A VELOCIDADE DA FALA — ELA EXISTIA E ERA INVISIVEL
+   Voce escreveu "a velocidade da voz nao esta disponivel para alterar".
+   Estava certo. O controle existia, com o comando ligado e o valor
+   certo, e nunca aparecia na tela: eu escrevi `CTkSlider(...).set(v)`,
+   e como `.set()` devolve None, o `.pack()` — que e o que coloca o
+   widget na tela — nunca acontecia. Um widget sem `pack` nao e um
+   widget escondido: e um widget que nao esta la. Corrigido, e agora ha
+   um teste que abre a janela de verdade e pergunta se ele APARECE.
+
+5) A BIBLIOTECA DE VOZES — EU FILTRAVA SO PORTUGUES
+   "nao tem outras disponiveis": tambem estava certo. Eu listava apenas
+   as vozes de portugues, e num Mac recem-instalado existe UMA — as boas
+   sao download separado do sistema. Um menu com um item so e igual a um
+   menu quebrado. Agora vem a lista INTEIRA da sua maquina, com as de
+   portugues primeiro (pt-BR antes de pt-PT) e o idioma escrito ao lado
+   do nome, para voce nao escolher no escuro uma voz que vai ler os
+   numeros da mesa com sotaque ingles. E ha um BOTAO que abre direto o
+   painel do Mac onde se baixam mais vozes — em vez do roteiro de cinco
+   menus que ja falhou aqui com o Node.js e com o Ollama.
+   De quebra: o leitor da lista do sistema tambem estava cortando nomes
+   com espaco ("Eddy (Portugues (Brasil))" virava "Eddy", que nao existe).
+
+6) ABA CONFIGURACOES — O QUE ESTAVA SOLTO FOI RECOLHIDO
+   Pedido seu: "o que for possivel e considerado configuracao, organize
+   em uma opcao chamada Configuracoes, tem muita coisa que esta solta e
+   aleatoria". A aba Motor tinha NOVE secoes, e a chave da API (que se
+   poe uma vez na vida) dividia espaco com o Registro de atividade, que
+   se olha a cada cinco minutos no meio do pregao.
+
+   O corte e por QUANDO se mexe em cada coisa:
+     ⚙️ MOTOR & WHATSAPP  — o que se OPERA com o mercado aberto:
+        status, LIGAR MOTOR, janelas do grafico, WhatsApp/QR, Registro.
+     🎛️ CONFIGURACOES     — o que se AJUSTA uma vez e se esquece:
+        chave da API e IA local, pregao e intervalo, alertas na tela,
+        voz e velocidade da fala, tamanho da letra, automacao Tradovate,
+        modo desenvolvedor.
+   Nada foi removido nem renomeado; cada bloco continua abrindo e
+   fechando no clique do titulo, e o app continua lembrando como voce
+   deixou.
+
+7) COMO ENTREGAR A UM CLIENTE
+   Novo arquivo ENTREGA_AO_CLIENTE.md, dentro do pacote: qual zip mandar
+   para Mac e qual para Windows, a licenca, as permissoes do macOS que
+   mais geram chamado, a chave da Gemini e o limite do plano gratuito, a
+   IA local, e como conferir que ficou de pe antes de dizer que ficou.
+   Comeca pelo aviso que mais importa: o painel_licencas.html carrega o
+   SEU token de administrador e NUNCA pode ir junto — use
+   `python3 empacotar.py --sem-painel` e confira o zip antes de enviar.
+
+OS TESTES
+----------
+459 no total, todos passando. Os novos, alem dos que ja existiam:
+  - a fila de modelos com o cenario EXATO do seu log das 14:45 (dois
+    livres e mortos, nove estacionados e vivos): agora os onze entram na
+    fila, e nenhum e cortado;
+  - a tela cheia do MacBook sendo reduzida de verdade, com o Pillow, sem
+    distorcer a proporcao;
+  - a leitura das vozes com a saida real de um Mac, incluindo os nomes
+    com parenteses e o idioma escrito com hifen;
+  - e o teste de janela aberta, que agora percorre as QUATRO abas e
+    pergunta se o slider da velocidade esta MESMO na tela — a pergunta
+    que faltava, e que teria pego o defeito 4 sozinha.
+
+
+========================================================================
+  O QUE MUDOU NA v2.35.0  —  O BOTAO DA VISAO NUNCA CONSEGUIA INSTALAR
+                             A VISAO. DEFEITO MEU.
+========================================================================
+Voce escreveu: "Continua com o mesmo erro agora nas analises / Nao esta
+analisando nem com gemini / Nem com local / Precisa corrigir isso".
+
+E o seu log tinha a prova, nesta linha:
+
+    OK  A IA local JA esta no ar. Modelos: qwen2.5:3b. Nada a fazer.
+
+O defeito era meu, e era este. Na v2.34.0 eu acrescentei o modelo de
+VISAO — o unico que enxerga imagem — ao botao "Instalar a IA LOCAL".
+Mas a PRIMEIRA linha desse botao dizia, em resumo: "ja existe algum
+modelo instalado? entao nao ha nada a fazer, pode sair". E existia: o
+qwen2.5:3b, que voce ja tinha baixado na v2.29.0.
+
+Resultado: o botao saia na primeira linha, ANTES do passo que baixa a
+visao. O passo que eu escrevi era inalcancavel. O modelo de visao nunca
+podia ser instalado por caminho nenhum — e o qwen2.5:3b e um modelo de
+TEXTO PURO, que nao ve imagem alguma. Entao, quando os dez modelos da
+Gemini deram 503/429 no mesmo ciclo, nao havia reserva: nem Gemini, nem
+local. Exatamente o que voce descreveu.
+
+O QUE MUDOU
+------------
+1) "PRONTO" AGORA SIGNIFICA TEXTO **E** VISAO
+   A saida antecipada so acontece quando ha os dois. Com o qwen2.5:3b
+   sozinho ela escreve, no Registro:
+       "A IA local esta no ar (qwen2.5:3b), mas SEM modelo de visao —
+        e sem visao ela nao le grafico nenhum. Vou buscar o modelo que
+        enxerga."
+   e segue para baixar o qwen2.5vl.
+   >>> CLIQUE EM "Instalar a IA LOCAL (sem chave)" NA ABA MOTOR UMA VEZ.
+       Agora ele vai baixar o modelo que enxerga (alguns GB, uma vez so).
+
+2) O MOTOR PASSOU A DIZER POR QUE NAO TEVE ANALISE
+   Antes, com a Gemini fora, o ciclo morria e o log nao explicava nada —
+   voce so descobriu o motivo porque me mandou o log. Agora, quando a
+   Gemini cai, o Registro diz qual dos tres casos aconteceu:
+     - a IA local nem esta no ar;
+     - esta no ar, mas os modelos instalados sao CEGOS (e diz quais);
+     - tentou ler e nao voltou resposta.
+   A ferramenta explica a propria falha em vez de ficar calada.
+
+3) A IA LOCAL AGORA RECEBE O FORMATO POR EXTENSO
+   A Gemini recebe um "schema" e o servidor do Google OBRIGA o formato.
+   O Ollama nao tem isso: ele garante que sai JSON, e mais nada. Sem
+   dizer as chaves, o modelo local inventava as dele ("trend", "price"),
+   o app aceitava porque era JSON valido, e o ciclo morria logo depois
+   procurando o preco que nao existia. Agora o pedido leva a lista exata
+   de campos, e a resposta so e aceita se trouxer TODOS eles. JSON
+   valido deixou de ser sinonimo de analise valida.
+
+4) O MODELO DE VISAO SO ENTRA SE COUBER NA SUA MAQUINA
+   Abaixo de 12 GB de RAM ele traz o qwen2.5vl:3b em vez do :7b. Modelo
+   de visao carrega o codificador de imagem junto e pesa mais que o de
+   texto — um modelo que nao cabe nao fica "mais lento", ele trava a
+   maquina no meio do pregao.
+
+CONTINUA VALENDO, E ESTA ESCRITO DE PROPOSITO
+----------------------------------------------
+A leitura local e RESERVA, nao igual. Um modelo de 3 a 7 bilhoes de
+parametros rodando no seu Mac le grafico PIOR que a Gemini. Ele entra
+declarado como reserva no Registro, e passa pelas MESMAS travas de
+sempre: preco conferido contra o titulo da janela, ticker de contrato
+conhecido, piso de qualidade. Uma leitura de reserva conferida vale mais
+que nenhuma leitura — e continua sendo pior que a da Gemini.
+
+O TESTE QUE VOCE PEDIU
+-----------------------
+Voce escreveu "Antes de me entregar faca um teste por favor". Foi feito,
+e nao foi so leitura de codigo — era leitura de codigo que tinha deixado
+esse defeito passar.
+
+Subi um servidor Ollama DE MENTIRA nesta maquina, na mesma porta 11434,
+respondendo como o Ollama de verdade responde, e fiz o caminho inteiro
+passar por ele por HTTP: descobrir os modelos, mandar a imagem em
+base64, receber o JSON, escolher o modelo certo. Trinta testes novos,
+entre eles:
+  - com SO o qwen2.5:3b instalado (o estado exato da sua maquina), a
+    funcao devolve "nao sei ler" e nem chega a chamar o modelo;
+  - a imagem chega do outro lado como JPEG de verdade, no tamanho certo;
+  - pedindo o :7b numa maquina que tem o :3b, ele usa o :3b em vez de
+    falhar;
+  - servidor fora do ar, erro 500 e resposta vazia nao levantam nada e
+    nao derrubam o ciclo.
+Total da suite: 430 testes, todos passando, mais o teste da janela real
+aberta e fechada.
+
+
+========================================================================
+  O QUE MUDOU NA v2.34.0  —  O MICROFONE, A VISAO LOCAL E A VOZ
+========================================================================
+1) O MICROFONE — ACHEI A CAUSA, DEPOIS DE CINCO RELATOS
+  O lancador do aplicativo fazia:
+      exec /Library/Frameworks/.../python3 main_app.py
+
+  O processo que passava a existir era o PYTHON — um binario que mora
+  FORA do .app. E o macOS nao atribui permissao a "quem abriu": ele
+  atribui ao binario que PEDE, e ao bundle que CONTEM esse binario.
+
+  Por isso o Info.plist declarava NSMicrophoneUsageDescription certinho
+  e nao servia para NADA. Por isso o estado ficava eternamente em "nunca
+  pedido". E por isso autorizar "SMC Quant Pro" e "Terminal" na lista
+  nao mudava nada: nenhum dos dois era o requerente.
+
+  AGORA o CRIAR_APP.command copia o executavel do Python PARA DENTRO do
+  bundle, e o lancador executa esse. O processo roda dentro do
+  aplicativo, com a identidade dele.
+
+  ⚠️ O QUE VOCE PRECISA FAZER, e nesta ordem:
+     1. Rode o CRIAR_APP.command de novo.
+     2. Abra o programa pelo ICONE do aplicativo (NAO pelo .command).
+     3. Ligue o OLA TIGER. Na primeira vez, o macOS vai PERGUNTAR.
+     4. Se nao perguntar, diga "testa o microfone" no chat e me mande o
+        que aparecer.
+
+2) A IA LOCAL AGORA ENXERGA
+  Voce perguntou por que ela nao assume quando a Gemini cai. A resposta
+  era constrangedora: o modelo baixado (qwen2.5:3b) e de TEXTO PURO e
+  nao ve imagem nenhuma. A IA local NUNCA poderia ter lido um grafico —
+  e nada no app dizia isso.
+
+  A instalacao assistida passa a trazer TAMBEM um modelo de VISAO
+  (qwen2.5vl; o leve em maquina de menos de 12 GB). Quando TODOS os
+  modelos da Gemini falham, o motor tenta a leitura local.
+
+  ELA E DECLARADA COMO RESERVA no log. Le pior que a Gemini — e passa
+  pelas MESMAS travas: preco conferido contra o titulo da janela, ticker
+  de contrato conhecido, piso de qualidade. Resposta fora do formato e
+  descartada.
+
+  Uma leitura de reserva conferida vale mais que nenhuma leitura.
+
+  ⚠️ Clique em "Instalar a IA LOCAL" de novo para baixar o modelo de
+     visao (sao mais alguns GB, uma vez so).
+
+3) A VOZ  (aba Motor -> "🔊 VOZ DA TIGER")
+  • VELOCIDADE em palavras por minuto, com o nome do ritmo ao lado
+    (devagar / normal / rapida). Fica salva.
+  • BIBLIOTECA DE VOZES do seu proprio Mac. A lista sai do SISTEMA, nao
+    de uma tabela escrita a mao.
+  • Botao OUVIR: escolher voz por nome, sem ouvir, e escolher no escuro.
+
+  PARA TER MAIS OPCOES (as boas de verdade): Ajustes do Sistema ->
+  Acessibilidade -> Conteudo Falado -> Voz do sistema -> Gerenciar
+  vozes, e baixe as de portugues marcadas como Premium ou Aprimorada.
+  Sao MUITO melhores que a padrao.
+
+  Voz que voce escolheu e depois desinstalou nao deixa a ferramenta
+  muda: cai para a melhor disponivel e segue.
+
+TESTES: 400 (eram 381).
+
+
+========================================================================
+  O QUE MUDOU NA v2.33.0  —  QUATRO PERGUNTAS, QUATRO RESPOSTAS ERRADAS
+========================================================================
+1) A ACAO DA B3 QUE ELA NAO SABIA BUSCAR
+  13/08, das 12:15 as 12:39, voce perguntou sobre HAPV3 e recebeu:
+    • manchetes do Yahoo sobre Birkenstock e Blue Bird
+    • "nao tenho acesso direto aos dados do Ibovespa"
+    • "sugiro que voce tire um print do grafico do Ibovespa"
+    • de novo, manchetes aleatorias
+
+  E no meio disso 'nasdaq' e 'ibovespa' funcionaram perfeitamente —
+  porque estavam na tabela de apelidos escrita a mao.
+
+  Uma tabela nunca vai ter as 400 acoes da B3. Mas o FORMATO de um
+  ticker da B3 e inconfundivel: quatro letras e um digito (PETR4, VALE3,
+  HAPV3, ITUB4) — e nenhuma palavra do portugues tem essa forma.
+  Agora qualquer acao da B3 e reconhecida e buscada no Yahoo Finance,
+  sem chave e sem cota.
+
+  CONTRATO FUTURO NAO VIRA ACAO: 'MESU6' tem exatamente a mesma forma,
+  mas e o Micro E-mini de setembro. Foi o teste que pegou.
+
+  E MANCHETE DE OUTRA EMPRESA NAO E RESPOSTA. Quando voce cita um ativo
+  e ele nao acha, ele DIZ que nao achou. Ruido com cara de resposta e o
+  pior tipo, porque parece que a ferramenta respondeu.
+
+2) UMA PERGUNTA VIROU LICAO PERMANENTE
+  12:39, numa mensagem so:
+      "O QUE ACONTECEU COM HAPV3 HOJE? -APRENDA ISSO, TODA VEZ QUE TIVER
+       ALGUMA PERGUNTA ASSIM, PESQUISE NA WEB..."
+
+  O que voce queria ensinar era a REGRA que vinha depois. O que ficou
+  gravado foi a PERGUNTA — e um minuto depois ela estava na posicao 6 da
+  sua lista de licoes, entrando em toda analise, para sempre, como se
+  fosse instrucao.
+
+  Agora pergunta e RECUSADA como licao, com a explicacao de como mandar
+  so a regra. Regra de verdade continua passando normalmente.
+
+3) DIAGNOSTICO DO MICROFONE  (diga: "testa o microfone")
+  Voce relatou o mesmo defeito QUATRO vezes, e cada rodada minha
+  corrigiu uma causa possivel sem NUNCA saber qual era a real. Adivinhar
+  em serie e caro.
+
+  Agora ele responde tudo numa tela:
+    • bibliotecas (SpeechRecognition, sounddevice) e a causa se faltar
+    • ESTADO REAL da permissao do macOS:
+        autorizado / negado / NUNCA PEDIDO / restrito
+    • qual nome o macOS lista (procure ESTE, nao 'SMC Quant Pro')
+    • qual e o dispositivo de entrada padrao
+
+  "NUNCA PEDIDO" E a explicacao de "nao aparece na lista": o macOS so
+  lista quem ja pediu.
+
+  ⚠️ Se aparecer "nao consegui consultar", falta o
+     pyobjc-framework-AVFoundation — rode o INSTALAR_MAC.command.
+
+TESTES: 381 (eram 366).
+
+
+========================================================================
+  O QUE MUDOU NA v2.32.0  —  503 SIGNIFICA "TENTE DE NOVO"
+========================================================================
+13/08, 10:35 e 10:40. Dois ciclos seguidos morreram inteiros:
+
+    ⚠️ Erro ao analisar: 503 UNAVAILABLE — "This model is currently
+       experiencing high demand. Spikes in demand are usually TEMPORARY.
+       Please try again later."
+    ⚠️ Erro ao analisar: 504 DEADLINE_EXCEEDED
+
+A propria mensagem do Google diz TEMPORARIO e manda TENTAR DE NOVO. A
+resposta da ferramenta era jogar fora CINCO MINUTOS de mercado e esperar
+o proximo ciclo.
+
+AGORA: quando TODOS os modelos falham por erro temporario, o motor
+espera 20 segundos e tenta a lista mais uma vez. Uma passada extra so —
+e SO para erro transitorio. Com cota estourada ou chave invalida,
+insistir e desperdicio, e ai ele nao insiste.
+
+Vinte segundos custam quase nada. Cinco minutos de mercado, nao.
+
+E O CICLO PERDIDO PASSA A APARECER PARA VOCE
+  Aqueles dois ciclos existiram so dentro do Registro do computador.
+  Quem esperava sugestao no celular concluiu — de novo — que a
+  ferramenta tinha parado.
+
+  Agora, na SEGUNDA falha seguida, voce recebe aviso no chat e no
+  WhatsApp: o que falhou (a captura funciona; o que falhou foi a
+  LEITURA), e que o motor continua tentando.
+
+  O aviso sai UMA vez por sequencia. Aviso repetido vira ruido, e ruido
+  e ignorado justo quando importa. E a contagem e POR JANELA: uma janela
+  com problema nao dispara aviso pela outra.
+
+  Silencio nunca explica silencio.
+
+TESTES: 366 (eram 357).
+
+
+========================================================================
+  O QUE MUDOU NA v2.31.0  —  O TITULO DA JANELA SABE O PRECO
+========================================================================
+1) A LEITURA PRESA NO 7753 (o mais grave desta versao)
+  13/08, 10:05. A janela monitorada era:
+      'Google Chrome — MESU2026 7.784,00 ▲ +0.23% josevan'
+  e o motor mandou ao WhatsApp um cenario INTEIRO em cima de 7753.25.
+  Trinta pontos abaixo, numa regiao que o preco ja tinha deixado.
+
+  E 7753.25 era EXATAMENTE o numero que o modelo inventou no dia
+  anterior ("voce esta com uma posicao de venda aberta em 7753.25").
+  Ele grudou nele.
+
+  A trava de preco congelado nao pegou porque o valor OSCILAVA:
+      09:50 → 7753.25 · 09:55 → 7753.25 · 10:00 → 7788.25 · 10:05 → 7753.25
+
+  AGORA: a corretora escreve o preco AO VIVO no titulo da aba. Isso e
+  texto do sistema operacional — nao tem como ser alucinado. O app
+  confere o preco lido contra o do titulo; diferenca acima de 0,25%
+  (~19 pontos no MES, muito mais que qualquer movimento entre uma
+  leitura e outra) DESCARTA a leitura.
+
+  E descarta ANTES de ela entrar na memoria do motor — que era o que o
+  mantinha preso naquele numero, ciclo apos ciclo.
+
+  Le os dois formatos (7.784,00 e 7784.00) e nao confunde o 2026 do
+  vencimento nem o +0,23% da variacao com cotacao.
+
+2) A QUALIDADE DO PRINT
+  A imagem ia como JPEG qualidade 80. Para FOTO, 80 e otimo. Para
+  GRAFICO e destruicao: o JPEG foi feito para variacao suave, e um
+  grafico e o oposto — linha de um pixel, numero de 10px, alto
+  contraste. A compressao espalha borrao em volta de cada caractere, e
+  e exatamente ali que esta o preco.
+
+  AGORA vai PNG, sem perda nenhuma. E num grafico o PNG costuma ficar
+  ATE MENOR que o JPEG borrado (num teste: 50 KB contra 84 KB), porque
+  grafico tem poucas cores chapadas. Se nao couber, JPEG 95 com
+  subsampling desligado — subsampling e o que borra a cor na borda do
+  texto. Reduzir o TAMANHO da imagem e o ultimo recurso, e nunca abaixo
+  de 1280px.
+
+3) NOVA ANALISE PELO WHATSAPP  (pedido seu)
+  Mande NOVA ANALISE — ou ANALISE, ANALISA, ANALISAR AGORA — em
+  qualquer chat seu, como START/STOP. O app captura o grafico na hora e
+  responde com a leitura e o placar da conta.
+
+  Se o motor estiver DESLIGADO no computador, ele DIZ isso. Longe da
+  mesa, silencio se le como "a ferramenta parou".
+
+3-B) STATUS PELO WHATSAPP  (pedido seu, de 14/08)
+  Mande STATUS em qualquer chat seu — tambem valem SITUACAO e RESUMO —
+  e o app responde com a conta, o resultado de hoje e do ciclo, a meta,
+  o ritmo exigido por dia, as posicoes abertas com P&L e a ultima
+  leitura do grafico.
+
+  POR QUE ISTO ESTAVA FALTANDO, ja que voce pediu em agosto: voce tentou
+  ENSINAR ("toda vez que eu enviar STATUS pelo whatsapp, envie o status
+  para mim - aprenda isso") e a ferramenta respondeu "aprendido" duas
+  vezes seguidas. Nunca ia funcionar: licao vira TEXTO dentro do pedido
+  ao modelo, e texto nao aperta botao. Quem executa e comando — e o
+  comando STATUS nao existia. Existe agora.
+
+  O texto e montado em CODIGO, com os numeros do disco. Nao passa por
+  modelo nenhum: funciona com a cota da Gemini estourada, e nao tem como
+  inventar numero.
+
+4) A IA LOCAL RELIGA SOZINHA
+  Em 13/08 ela respondeu "a API esta fora" das 09:46 as 10:02 — porque o
+  Ollama estava instalado e PARADO. Voce percebeu sozinho e teve de
+  clicar em "Instalar a IA LOCAL" so para subir um servico.
+
+  Exigir um clique todo dia para religar algo ja instalado nao e
+  configuracao, e tarefa — e tarefa que ninguem lembra de fazer e
+  recurso que nao existe. Agora sobe na abertura do programa.
+  NADA e instalado sozinho: so sobe o que ja esta na maquina.
+
+5) O MICROFONE QUE NAO APARECE NA LISTA DO MAC
+  Essa era a chave que faltava, e o problema e do macOS: um programa so
+  ENTRA em Ajustes -> Privacidade -> Microfone depois de PEDIR a
+  permissao pela API do sistema (TCC). O PortAudio abre o dispositivo
+  por baixo, num caminho que nem sempre dispara esse pedido — entao nao
+  aparece prompt, nao aparece na lista, e o sistema devolve SILENCIO.
+  Sem erro. Sem nada.
+
+  AGORA o app PEDE pela AVFoundation antes de abrir o microfone, e sabe
+  o estado REAL: autorizado / negado / nunca pedido / restrito. Se
+  estiver NEGADO ele nao fica escutando o silencio: diz, e abre a tela
+  certa.
+
+  ⚠️ ESTA VERSAO TEM DEPENDENCIA NOVA (pyobjc-framework-AVFoundation).
+     Rode o INSTALAR_MAC.command de novo.
+
+6) A BASE PAROU DE SEQUESTRAR PERGUNTA
+  "essa qualidade de print esta muito ruim, como fazemos para melhorar?"
+  recebeu o verbete inteiro de TRAILING STOP. A nota veio SO de
+  semelhanca de palavra, com ZERO jargao escrito na pergunta.
+  Semelhanca serve para DESEMPATAR entre candidatos, nunca para eleger
+  um sozinha.
+
+TESTES: 357 (eram 325).
+
+
+========================================================================
+  O QUE MUDOU NA v2.30.0  —  A REGRESSAO QUE O SEU TESTE ENCONTROU
+========================================================================
+1) A BASE TINHA DEIXADO DE EXISTIR (e a culpa era minha)
+  Com a IA local instalada, voce perguntou:
+
+      voce: O QUE E SMC?
+      ela:  "SMC, no contexto do mercado financeiro in which we're
+             discussing futures trading e altamente volatil como o forex
+             (minucias como E-mini)..."
+
+  Ingles no meio da frase, e o Micro E-mini de INDICE chamado de forex.
+  A base propria responde essa pergunta com precisao, sem cota e sem
+  internet — e nao foi consultada.
+
+  CAUSA, ARQUITETURAL E MINHA: desde a 2.27.0 a base so era tentada
+  DEPOIS que todos os modelos falhavam. Enquanto o ultimo da fila era a
+  Gemini, isso funcionava (sem cota, a base respondia). Com a IA local,
+  o ultimo da fila NUNCA falha — e a base sumiu na pratica.
+
+  AGORA sao TRES degraus, nesta ordem:
+      1. a BASE, quando ha verbete para a pergunta
+      2. o provedor alternativo (inclusive a IA local)
+      3. o despejo generico de "nao tenho como responder"
+  Verbete curado ganha de geracao plausivel.
+
+2) FALTAVA O VERBETE MAIS BASICO DE TODOS
+  A base tinha 51 verbetes SOBRE conceitos de SMC e NENHUM sobre o que
+  SMC E. Agora tem — e ele diz, com todas as letras, que MES/MESU6 e um
+  contrato FUTURO DE INDICE da CME, vale US$ 5 por ponto, tick de 0,25
+  (US$ 1,25), e NAO e forex nem cripto.
+
+3) MENTIRA NA VOZ PASSIVA
+      voce: DEIXE ISSO SALVO
+      ela:  "Claro, ficou salvo: PENULTIMA LEITURA DO MOTOR (21:30)..."
+
+  Nada foi salvo, e o conteudo listado como salvo tinha acabado de ser
+  inventado. A guarda anti-mentira olhava so a primeira pessoa
+  ("gravei", "salvei"); a forma PASSIVA passava inteira. Agora "ficou
+  salvo", "esta gravado" e "foi registrado" sao pegos.
+  Explicar COMO salvar continua passando — senao ela nao poderia
+  orientar voce.
+
+4) O MODELO PEQUENO GANHOU REGRAS QUE O GRANDE NAO PRECISA
+  • Portugues do Brasil, e so. Nada de palavra solta em ingles nem de
+    outro alfabeto no meio da frase.
+  • O QUE O MES E: futuro de indice, US$ 5 por ponto, tick 0,25. E
+    PROIBIDO estimar multiplicador de contrato — sem certeza, diz que
+    nao sabe.
+  • Resposta CURTA. Lista generica do tipo "verifique sua conexao,
+    consulte o suporte" nao e resposta, e ruido — e numa mesa ruido
+    custa atencao na hora errada.
+  • Temperatura 0,2: criatividade numa mesa e defeito. E ela que faz um
+    modelo pequeno "completar" um valor por ponto que nao sabe.
+
+5) A BUSCA QUE VIRAVA DESPEJO
+      voce: "...E SO VOCE PESQUISAR E APRENDER"
+      ela:  [resultado da Lotofacil, balanco da Copasa, Braskem...]
+
+  Era uma frase SOBRE ela, e a palavra "pesquisar" bastou para virar
+  consulta. A busca falhou e ela despejou as manchetes do dia.
+  AGORA: frase dirigida a ela nao vira consulta, e manchete que nao casa
+  com a pergunta nao entra. Ruido com cara de resposta e pior que
+  silencio.
+
+O QUE JA ESTAVA CERTO NO SEU TESTE, e continua: "QUE DIA E HOJE",
+"STATUS", "O QUE VOCE PODE FAZER", "O QUE VOCE APRENDEU", "REMOVA 1" e
+"LIGA O MOTOR" responderam certo e sem modelo nenhum. Sao os caminhos
+deterministicos — os que nao dependem de cota, de saldo nem de sorte.
+
+TESTES: 325 (eram 315).
+
+
+========================================================================
+  O QUE MUDOU NA v2.29.0  —  UM BOTAO INSTALA A IA LOCAL
+========================================================================
+ATE AQUI, LIGAR A IA LOCAL EXIGIA UM ROTEIRO:
+  "baixe em ollama.com, escolha o instalador certo, instale, abra o
+   Terminal, rode ollama pull qwen2.5:7b, feche e abra o programa."
+
+Voce executa isso uma vez. Seu CLIENTE nao executa. Ele erra o
+instalador, baixa o x86 num Apple Silicon, nao abre Terminal nenhum — e
+a conclusao vira "o programa nao funciona".
+
+Ja tinha acontecido com o Node: o app dizia "Node.js nao encontrado" com
+o Node instalado e funcionando no Terminal, porque aberto pelo Finder o
+PATH do macOS nao traz /opt/homebrew/bin.
+
+AGORA E UM BOTAO
+  Aba Motor -> secao "SEGUNDA INTELIGENCIA" -> quadro "IA LOCAL":
+      [ ⬇️ Instalar a IA LOCAL (sem chave) ]   [ 🔎 Verificar ]
+
+  Clicou, o app faz TUDO e conta cada passo no Registro:
+
+  1. CONFERE se ja esta pronto. Rebaixar 5 GB a toa gasta o tempo e a
+     franquia de internet do cliente.
+  2. ESCOLHE O INSTALADOR CERTO para este sistema E esta arquitetura —
+     .zip no macOS, .exe no Windows, ARM64 ou x64 conforme a maquina.
+     Baixar o x86 num Apple Silicon instala e funciona MAL, que e pior
+     que nao instalar, porque ninguem desconfia.
+  3. BAIXA MOSTRANDO PROGRESSO (10 em 10%). 1 GB baixando em silencio e
+     indistinguivel de um programa travado, e ai o trader fecha o app no
+     meio e corrompe o download.
+  4. INSTALA. No Mac o sistema pede a sua senha de administrador — e
+     isso e o instalador oficial, e normal.
+  5. SOBE O SERVICO e CONFERE A PORTA. Instalado nao e o mesmo que
+     rodando; foi essa confusao que gerou o "Motor no ar" sobre um
+     processo ja morto.
+  6. ESCOLHE O MODELO QUE CABE, lendo a RAM da sua maquina. Abaixo de
+     9 GB vai o modelo leve. Um modelo que nao cabe nao fica "mais
+     lento": ele estoura a memoria, o sistema passa a usar disco como
+     RAM, e a maquina inteira trava no meio do pregao.
+  7. BAIXA O MODELO reportando o andamento sem inundar o Registro.
+  8. TESTA com uma pergunta real antes de dizer que esta pronto. Dizer
+     "instalado" sem testar seria repetir o erro da chave dobrada, que
+     so apareceu como 401 no meio do pregao. Se o teste nao voltar,
+     ela NAO crava que esta pronto — ela te diz.
+
+O BOTAO "VERIFICAR" distingue os TRES estados que pedem acoes
+diferentes: nao instalado / instalado mas com o servico parado / no ar.
+Juntar os tres num "nao encontrado" foi o que fez o trader reinstalar um
+Node que ja estava la.
+
+NADA E INSTALADO SEM VOCE MANDAR. O botao e seu.
+
+DEPOIS DISSO: sem chave, sem conta, sem cota e sem saldo para acabar.
+Internet so nessa primeira vez.
+
+TESTES: 315 (eram 293).
+
+
+========================================================================
+  O QUE MUDOU NA v2.28.0  —  O DIA DO PREGAO NAO E O DIA DO CALENDARIO
+========================================================================
+1) O FREIO QUE NAO SOLTAVA (o mais importante desta versao)
+  19:59  voce: "o dia ja virou, o inicio do dia para essa conta e as 19hs
+                ate as 17:59"
+  19:59  ela:  configurou certo e confirmou.
+  20:01  ela:  "voce ja fechou 6 operacoes hoje, que e o teto do seu
+                plano (6)"
+
+  Aquelas seis eram do pregao ANTERIOR. Voce reclamou tres vezes e ainda
+  gravou como licao pedindo "uma opcao de virar o ciclo".
+
+  NAO ERA UM BOTAO QUE FALTAVA. Era uma linha:
+      hoje = time.strftime('%d/%m/%Y')     <- o dia do CALENDARIO
+  Para quem opera indice americano de madrugada, meia-noite nao e a
+  virada de nada.
+
+  AGORA: com o pregao atravessando a meia-noite, tudo que acontece antes
+  das 19:00 ainda pertence ao pregao que comecou as 19:00 do dia
+  anterior. A operacao das 03:00 nao quebra mais o seu pregao em dois no
+  relatorio. Quem opera 09:00-17:00 nao ve diferenca nenhuma.
+
+  E O BOTAO TAMBEM EXISTE: diga "vire o dia" e ele encerra o dia ANTES
+  da hora. NAO apaga nada — apagar operacao para destravar um freio
+  seria trocar uma trava de gestao por amnesia. A virada manual expira
+  em 24h, senao o freio ficaria desligado para sempre.
+  "em que pregao estamos?" tambem responde, sem API.
+
+2) BOA TARDE
+  15:41  voce: BOA TARDE
+  15:41  ela:  "Nao tenho como responder isso com seguranca agora... a
+                API esta fora."
+
+  Cumprimentar nunca precisou de API. Agora responde — e pelo RELOGIO,
+  nao pelo que voce digitou: "bom dia" as 21h recebe "boa noite".
+  E "bom dia, o que deu errado no stop?" continua sendo PERGUNTA.
+
+3) A BASE DE CONHECIMENTO DOBROU (34 -> 51 verbetes, todos LOCAIS)
+  Entraram, com profundidade:
+      VWAP (inclusive ONDE ELA ENGANA), perfil de volume (POC, VAH, VAL,
+      LVN, POC virgem), RSI e divergencia, medias moveis, ATR, order
+      flow / DOM / footprint, correlacao ES-NQ, aberturas de sessao
+      (Asia, Londres, Nova York), evento macro e por que o grafico mente
+      no minuto, spread e slippage, projecao por desvio padrao,
+      combinacao de timeframes, trailing stop e gestao da posicao
+      aberta, open interest, tilt e sequencia de perdas, diario de
+      operacoes.
+
+  E o que faltava e mais importa para VOCE:
+      CONTA DE MESA PROPRIETARIA (APEX, Topstep) — o drawdown que
+      ACOMPANHA o seu pico, inclusive o pico FLUTUANTE. E a regra que
+      mais quebra conta de avaliacao e nao estava em lugar nenhum da
+      base. Junto com a regra de consistencia e os limites de horario.
+
+  Tudo isso responde SEM API, SEM internet e SEM cota.
+
+4) VER O QUE O MOTOR VE
+  Botao novo na aba Motor. Ele captura a janela selecionada, mostra a
+  MINIATURA e da um VEREDITO: o mesmo OCR que le a VWAP diz se aquilo e
+  um grafico ("li nesta janela: VWAP, SMA, RSI...").
+
+  Escolher janela por TITULO era adivinhacao — "Chrome — janela 2" nao
+  diz nada. Foi assim que a janela do Claude virou "grafico" por vinte
+  minutos. Agora voce confere em dois segundos.
+
+TESTES: 293 (eram 266).
+
+
+========================================================================
+  O QUE MUDOU NA v2.27.0  —  A IA QUE NAO PRECISA DE NINGUEM
+========================================================================
+VOCE PEDIU AUTONOMIA TOTAL. Para o problema que mais te queimou, tirar a
+API nao e perda: e GANHO. Eis por que.
+
+O DIAGNOSTICO QUE EU DEMOREI TRES VERSOES PARA ENXERGAR
+  Eu tratei a VWAP inventada como problema de PROMPT (2.25.0) e depois
+  como problema de GUARDA (2.26.0). Era problema de ARQUITETURA:
+
+      UM LLM NAO LE PIXEL. ELE PREVE O TEXTO MAIS PROVAVEL.
+
+  Por isso ele nunca diz "nao sei" — ele COMPLETA. Com a legenda
+  mostrando VWAP 7769.56, ele escreveu "a VWAP esta exatamente em
+  7752.34, conforme indicado na legenda". Eu estava usando a ferramenta
+  errada para o trabalho.
+
+1) QUEM LE O NUMERO AGORA E O OCR
+  "VWAP 7769.56" e TEXTO IMPRESSO: pixels nitidos, fonte digital, alto
+  contraste. Isso e trabalho de OCR — que le com precisao perto de 100%
+  e NAO completa o que nao viu.
+
+  E OCR nao precisa de chave, de internet nem de cota: os dois sistemas
+  ja trazem um motor embutido e de graca.
+      macOS   -> framework Vision (desde o Catalina)
+      Windows -> Windows.Media.Ocr (desde o Windows 10)
+
+  Quando voce pergunta onde esta um indicador, a resposta e montada
+  LENDO a legenda da captura, na sua maquina, ANTES de qualquer modelo
+  entrar na conversa. Ela vem assinada: "este numero nao passou por
+  modelo nenhum".
+
+  TESTADO CONTRA A LEGENDA REAL DO SEU PRINT DE 12/08 15:45. Le VWAP,
+  as DUAS SMAs (7767.58 e 7766.04 — e MOSTRA as duas, em vez de escolher
+  uma escondido, que foi como ele errou), PSAR, RSI, abertura, maxima,
+  minima, fechamento e volume.
+
+  E IGNORA de proposito MIDDLE 50, OVERBOUGHT 70 e OVERSOLD 30: sao a
+  CONFIGURACAO do RSI, nao niveis de preco. Ler 70 como se fosse um
+  nivel passaria despercebido e contaminaria a analise inteira.
+
+2) A IA LOCAL — SEM CHAVE, SEM INTERNET, SEM SALDO
+  Em 12/08 a OpenAI respondeu "You have no credits remaining". Um
+  cerebro que depende de saldo some justamente no dia em que o saldo
+  acaba.
+
+  O Ollama sobe um modelo na SUA maquina e expoe o MESMO protocolo da
+  OpenAI em localhost:11434 — por isso ele entrou na fila de provedores
+  sem uma linha de codigo novo de rede.
+
+  COMO LIGAR (uma vez, 10 minutos):
+      1. Baixe em https://ollama.com/download e instale.
+      2. No Terminal:  ollama pull qwen2.5:7b
+      3. Pronto. O app detecta sozinho — nao ha campo para preencher.
+
+  Ela e a ULTIMA da fila de proposito: quando ha um modelo grande de pe,
+  ele responde melhor. A local e o CHAO da escada — a que nunca falta.
+
+  O app confere se o Ollama esta no ar ANTES de tentar (senao a fila
+  esperaria um timeout justo quando ja esta lenta) e usa os modelos que
+  estao BAIXADOS na sua maquina, nao uma lista fixa.
+
+O QUE ISSO SIGNIFICA NA PRATICA
+  SEM NADA INSTALADO alem do app, ja funcionam offline: todo o calculo
+  de dinheiro (dimensionamento, piso de qualidade, drawdown, freio),
+  o diario, o dashboard, a autopsia da operacao, a metodologia SMC, os
+  comandos — e agora a LEITURA EXATA dos indicadores pelo OCR.
+  COM O OLLAMA, tambem a conversa livre.
+  A Gemini passa a ser opcional, nao o coracao.
+
+NADA DISSO TIROU AS GUARDAS. As quatro conferencias das versoes
+anteriores continuam valendo para tudo que vier de modelo.
+
+TESTES: 266 (eram 241).
+
+
+========================================================================
+  O QUE MUDOU NA v2.26.0  —  EXIGIR A FORMA SO MUDA A FORMA DA MENTIRA
+========================================================================
+A 2.25.0 obrigou a IA a dizer o NUMERO do indicador em vez do pronome.
+Ela obedeceu. E passou a inventar o numero — o que e PIOR, porque um
+numero inventado com cara de leitura e usado.
+
+O QUE A LEGENDA DO SEU PRINT DE 12/08 15:45 MOSTRA (candle de 13:25):
+      VWAP 7769.56 · SMA 7767.58 · SMA 7766.04 · PSAR 7764.20
+      RSI 55 · OPEN 7770.25 · HIGH 7771.25 · LOW 7768.50
+      POSICAO 0 (nas DUAS janelas) · ABRIR P/L 0.00 USD
+
+O QUE ELA RESPONDEU AS 15:43:
+      "a VWAP esta exatamente em 7752.34, conforme indicado na legenda"
+      "a media movel de 50 periodos que esta em 7751.28"
+      "voce esta com uma posicao de venda aberta em 7753.25"
+
+Tres numeros que nao existem naquela tela. Todos com a FORMA de uma
+resposta correta — e e por isso que exigir forma nao bastou.
+
+1) A SEGUNDA LEITURA
+  O que separa leitura de invencao nao e o formato: e a ESTABILIDADE.
+  Ler duas vezes o mesmo rotulo na mesma imagem da o mesmo numero;
+  inventar duas vezes da dois.
+
+  AGORA: quando voce pergunta onde esta um indicador, o programa le a
+  MESMA imagem uma SEGUNDA vez, com temperatura zero e um pedido minimo
+  ("responda so o numero, ou NAO_LEGIVEL"), e compara com o que ela
+  tinha dito. Divergiu mais de meio ponto? O numero e RECUSADO — e voce
+  ve os DOIS valores, para conferir voce mesmo.
+
+  Nao conseguir confirmar tambem reprova. Ausencia de prova nunca
+  autoriza entregar o numero.
+
+  Custa uma chamada de API extra so em pergunta de nivel, que e rara.
+
+2) A SUA POSICAO NAO SE DEDUZ DO GRAFICO
+  Dizer a alguem que ele esta vendido quando esta zerado e grave. Dizer
+  que esta zerado quando ele carrega posicao e pior — ele relaxa com
+  risco na mesa. Os DOIS sentidos passam a ser conferidos contra o
+  registro antes de a resposta sair.
+
+  Frase condicional ("se voce estiver comprado, proteja o stop")
+  continua passando: e hipotese, nao alegacao de fato.
+
+3) O ERRO DO PROVEDOR PARA DE SER ADIVINHACAO
+  A OpenAI respondeu, com todas as letras:
+      "You have no credits remaining. Add credits to continue..."
+  e o app te disse que a chave "pode estar errada, sem credito, ou o
+  modelo indisponivel" — tres possibilidades, com a resposta na mao.
+
+  AGORA: sem credito e dito como SEM CREDITO, e a chave e declarada
+  VALIDA (voce nao perde tempo trocando uma chave que esta boa). 401 e
+  chave recusada. 429 de limite temporario nao vira mais "troque a
+  chave" — ele some sozinho. Falha de rede nao vira problema de chave.
+
+  E quando um provedor PAGO falha, o app aponta a alternativa: a Groq
+  tem camada GRATUITA e fala o mesmo protocolo — console.groq.com/keys.
+  Sem isso voce fica sem cerebro reserva justamente quando precisa.
+
+4) UM R NO LUGAR DO V
+  14:16  voce: REMORA ISSO
+  14:17  ela:  [repetiu a licao que voce mandou apagar]
+
+  Os verbos de APAGAR (remova, apaga, esquece, deleta) entraram na
+  correcao de digitacao. Um comando de DESFAZER que so funciona com a
+  grafia perfeita falha justo quando mais se precisa dele.
+
+TESTES: 241 (eram 213).
+
+
+========================================================================
+  O QUE MUDOU NA v2.25.0  —  TRES GUARDAS ENTRE O MODELO E VOCE
+========================================================================
+A RAIZ DE TUDO O QUE DEU ERRADO NO PREGAO DE 12/08:
+  o modelo escreve algo plausivel e o app entrega sem conferir.
+  Prompt e PEDIDO, nao garantia. Onde o SEU dinheiro esta em jogo, quem
+  confere agora e o programa — deterministico, e testado.
+
+1) O PRONOME NAO RESPONDE "ONDE"
+  14:14  voce: TIRA UM PRINT, ONDE ESTA A VWAP?
+  14:14  ela:  "O preco agora trabalha ACIMA DELA, em 7774.25"
+  14:15  voce: CONSEGUE ME FALAR ONDE ESTA A VWAP?
+  14:15  ela:  "O preco atual esta trabalhando ACIMA DELA, em 7773.50"
+  14:16  voce: MAS A PORRA DO VWAP ESTA EM 7769,78
+
+  Tres respostas, nenhuma dizendo onde estava a VWAP. O numero citado
+  era o do ATIVO — por isso pareceu resposta, e por isso enganou.
+
+  AGORA: quando voce pergunta onde esta um indicador (VWAP, media,
+  suporte, resistencia, order block, FVG, RSI, POC...), o programa
+  procura o nome dele na resposta e exige um NUMERO junto. Se nao tiver,
+  cola a admissao: "nao consigo ler esse valor nesta captura". Nunca
+  mais uma evasao vai sair com cara de resposta.
+
+2) O NUMERO DA SUA CONTA TEM DONO, E O DONO E O DISCO
+  Margem, meta, drawdown, resultado de hoje e resultado do ciclo passam
+  por conferencia contra o que esta GRAVADO antes de a resposta sair.
+  Divergiu mais de US$1? A resposta sai com a correcao anexada e o valor
+  real do registro.
+
+  Meta DIARIA e drawdown RESTANTE ficam de fora de proposito: sao outros
+  numeros, calculados a partir destes. Corrigir um contra o outro seria
+  inventar erro onde nao ha.
+
+3) ISSO NAO E UM GRAFICO
+  A janela monitorada era 'Claude — Claude  [outra area de trabalho]' e
+  o motor passou VINTE MINUTOS analisando uma conversa como se fosse
+  mercado. Queimou cota, gerou leitura de texto e nao avisou ninguem.
+
+  AGORA: grafico de futuro tem PRECO e tem TICKER DE CONTRATO. Faltando
+  qualquer um dos dois, o ciclo e recusado na hora; no segundo ciclo
+  seguido voce e avisado no chat e no WhatsApp, com o motivo.
+  A contagem e POR JANELA — uma janela errada nao cala o alerta da
+  outra, que pode estar certa.
+
+O "SIM" AGORA TEM DONO
+  11:31  ela:  "Operacao encerrada no STOP. Quer revisar o que deu
+                errado nesse cenario?"
+  11:32  voce: sim
+  11:32  ela:  "Nao tenho como responder isso com seguranca agora..."
+
+  Ela perguntou e nao entendeu a propria resposta — e o pior: a resposta
+  estava INTEIRA no disco. Agora ela guarda a pergunta que fez, entende
+  o "sim" e monta a autopsia (o que estava no plano, o que aconteceu, a
+  leitura que justificou a entrada, o que ela ve) SEM API, sem internet
+  e sem cota. Mudar de assunto encerra o topico — um "sim" de outra
+  conversa nao dispara a autopsia de uma operacao que voce ja esqueceu.
+
+O WHATSAPP PAROU DE CAIR EM CICLO
+  Codigos 428 e 500 a cada ~10 minutos, a tarde toda. Tres causas, e
+  nenhuma delas era o WhatsApp:
+    - a espera era FIXA em 5s a cada queda, para sempre;
+    - o codigo 500 e "badSession" (credencial corrompida) e estava sendo
+      tratado como "tente de novo" — reconectar com a MESMA credencial
+      nunca ia funcionar;
+    - ninguem contava as quedas, entao "caiu de novo" e "caiu quarenta
+      vezes" apareciam igual no log.
+  AGORA: a espera DOBRA (5s, 10s, 20s, 40s, teto de 60s) e so zera com a
+  conexao realmente aberta; tres codigos 500 seguidos geram um QR novo
+  automaticamente; e a instabilidade aparece PARA VOCE, no Registro e no
+  chat, em vez de morrer dentro do log do motor.
+
+CONTEXTO QUE EXISTE PRECISA CHEGAR
+  Com varios graficos monitorados, so a ULTIMA leitura ia para a IA.
+  Perguntar "e o NQ?" logo depois de ela ler o MES devolvia a leitura
+  errada. Agora vai a leitura mais recente de CADA ativo, com a janela
+  de origem escrita em cada linha — nunca misturadas.
+
+TESTES: 213 (eram 174).
+
+
+========================================================================
+  O QUE MUDOU NA v2.24.0  —  A TIGER GANHOU UM SEGUNDO CEREBRO
+========================================================================
+O PROBLEMA ERA DE ARQUITETURA, NAO DE PROMPT.
+  A TIGER era Gemini-e-mais-nada. Com a cota do plano gratuito estourada
+  — o que acontece TODO DIA com o motor analisando de 5 em 5 minutos —
+  nao sobrava ninguem para pensar, e QUALQUER pergunta virava
+  "nao tenho como responder isso com seguranca agora".
+
+  Foi o que aconteceu com 'satatus', com 'sim' (respondendo a pergunta
+  que ELA mesma fez), com 'o que deu errado na sugestao' e ate com
+  'voce nao e uma IA?'.
+
+O QUE FAZER (leva 2 minutos):
+  Aba Motor -> secao "SEGUNDA INTELIGENCIA".
+  Cole a chave de UM destes — basta um:
+      OpenAI (ChatGPT) . . . platform.openai.com/api-keys
+      Anthropic (Claude) . . console.anthropic.com/settings/keys
+      OpenRouter . . . . . . openrouter.ai/keys      (varios modelos, 1 chave)
+      Groq . . . . . . . . . console.groq.com/keys   (tem camada gratuita)
+  Clique em "Salvar chaves e testar agora". Ela TESTA cada uma na hora,
+  com uma pergunta real, e diz qual respondeu.
+
+  A partir dai, quando a Gemini cair, a MESMA pergunta vai para o
+  proximo da fila — com a mesma persona e os mesmos numeros da sua mesa.
+
+  As chaves ficam no Chaveiro do macOS, igual a da Gemini.
+
+O QUE NAO MUDA:
+  Dinheiro continua FORA do modelo. Dimensionamento, piso de qualidade,
+  freio de perda e execucao seguem sendo calculo do programa. Trocar de
+  IA nao muda quantos contratos entram.
+  E a regra anti-invencao vale para todos: sem dado, ela diz que nao
+  sabe. Ter cinco cerebros nao autoriza chutar um numero.
+
+UMA LETRA NAO DERRUBA MAIS UM COMANDO
+  'satatus', 'stauts', 'tria um print', 'liag o motor' — todos
+  entendidos agora. Palavras de ate 3 letras ('sim', 'nao') nunca sao
+  corrigidas, para nao trocar a sua intencao.
+
+UM PRECO NAO E UMA REGRA
+  As 14:16 ela gravou "A PORRA DO VWAP ESTA EM 7769,78" como licao
+  PERMANENTE — um valor de um instante que passaria a ser repetido como
+  verdade para sempre. Agora isso e RECUSADO, com explicacao. Regra de
+  verdade com numero ('nunca arrisque mais de 2%', 'nao opere depois das
+  15h', 'exija R:R 1:2') continua sendo aceita.
+
+  E DA PARA APAGAR: "remova isso", "apaga a 2", "apaga a que fala de
+  vwap". Antes nao havia como desfazer.
+
+
+========================================================================
+  O QUE MUDOU NA v2.23.0
+========================================================================
+A NOTIFICACAO PAROU DE ROUBAR A TELA — pela raiz.
+  Na 2.22.0 eu tentei convencer o Tk a nao ativar o app. Nao bastou: no
+  macOS, criar uma janela ATIVA o aplicativo, ponto. Brigar com isso e
+  brigar com o sistema.
+
+  AGORA o padrao no Mac e a NOTIFICACAO NATIVA — a mesma da Central de
+  Notificacoes. Ela aparece no canto e, por construcao, nao tira o foco
+  de ninguem.
+
+  O preco: nela nao cabem os botoes ACATAR / NAO OPEREI. A decisao sai
+  por 'acatar' no chat ou pelos botoes do dashboard — e a propria
+  notificacao diz isso.
+
+  Se voce PREFERIR os botoes, escolha "Janela na tela" na aba Motor,
+  secao ALERTAS. O programa avisa, ao gravar, que naquele modo a tela
+  vai pular. Tem tambem o modo silencioso (so log e WhatsApp).
+
+MICROFONE MUDO — a causa era permissao, nao dispositivo.
+  Seu log das 18:32 mostrou o microfone ABRINDO sem erro e nao chegando
+  som nenhum. No macOS, app sem permissao de microfone NAO recebe erro:
+  recebe SILENCIO. A mensagem antiga mandava trocar o dispositivo de
+  entrada — o lugar errado.
+
+  Agora ela ABRE a tela de permissoes sozinha e diz QUAL app marcar.
+  ATENCAO a esta parte: se voce abre o programa por um .command, quem
+  aparece na lista de Microfone e o TERMINAL, nao o "SMC Quant Pro".
+  Quem procura pelo nome do programa nao acha e conclui que ja
+  autorizou. Depois de marcar, FECHE e ABRA o programa — a permissao so
+  vale a partir do proximo arranque.
+
+ACATAR NO CHAT
+  Voce digitou ACATAR e disse que nada aconteceu. Do lado do codigo
+  estava certo: ela perguntou "confirma?" e ficou esperando. Do seu
+  lado, voce deu uma ordem e recebeu uma pergunta — e o indicador
+  voltava para "pronta" logo depois, sem sinal de que havia algo
+  pendente.
+
+  Corrigido dos dois lados: o indicador mostra "aguardando confirmacao
+  do ACATAR" enquanto espera, e DIGITAR ACATAR DE NOVO confirma. A
+  trava continua: nada roda no primeiro comando.
+
+
+========================================================================
+  O QUE MUDOU NA v2.22.0
+========================================================================
+1) O RESULTADO ESTAVA SENDO CONTADO EM DOBRO.
+   As 16:05 a leitura da tela criou um registro de SELL MESU6 40 ctr.
+   As 16:10 voce acatou uma sugestao e nasceu um SEGUNDO registro. As
+   16:15 a execucao foi confirmada contra a MESMA posicao de 40 ctr — e
+   os dois registros ficaram vivos. Os dois fecharam:
+        encerrada na plataforma: US$-600,00
+        FECHADA no diario:       US$-1.176,00
+   Uma operacao so. Resultado do dia, win rate, drawdown e o FREIO DE
+   PERDA passaram a trabalhar com numero inflado — e foi o freio
+   inflado que travou o seu pregao.
+   AGORA: ao confirmar a execucao os dois registros sao FUNDIDOS num so
+   (mesmo ativo, mesma direcao). O registro fundido nao some do arquivo,
+   mas sai da contagem.
+
+2) A NOTIFICACAO ROUBAVA A TELA NO MAC.
+   Nao era o programa pedindo foco. No macOS, criar a janelinha de aviso
+   ATIVA o aplicativo, mesmo sem barra de titulo. Corrigido com o estilo
+   'help/noActivates' do proprio Tk-macOS, que existe exatamente para
+   janela flutuante que nao ativa o app. Clicar no aviso continua
+   trazendo o programa para frente — isso e decisao sua.
+
+3) "NENHUMA ENTRADA VALIDA" — a causa esta no log.
+   Das 18:01 as 18:11 o preco ficou travado em 7753,25 por TREZE
+   leituras, e o motor continuou sugerindo em cima da MESMA imagem
+   parada, virando de lado quatro vezes. O aviso de "preco nao muda" ja
+   existia e nao impedia nada. Agora tres leituras iguais SUSPENDEM as
+   sugestoes ate a tela se mexer — e o aviso sai uma vez, nao treze.
+   Junto: entrada longe demais do preco. As 15:30 saiu um SELL com
+   entrada em 7785,00 com o mercado em 7741,75 (8,6 vezes o risco). O
+   limite passou a ser 3 vezes o risco.
+
+4) TEMA ESCURO NAO ESTAVA FIXADO.
+   Se o seu Mac estiver em MODO CLARO, 22 rotulos da interface ficavam
+   INVISIVEIS (texto quase preto sobre o fundo escuro do app). Agora o
+   tema e fixado em escuro.
+
+TESTES: 135 automaticos, mais um teste que ABRE a janela de verdade,
+percorre as abas, aplica todas as escalas de letra, recolhe secoes e
+dispara notificacoes. Foi ele que achou o item 4.
+
+
+========================================================================
+  O QUE MUDOU NA v2.21.1
+========================================================================
+O MICROFONE NAO PRECISAVA DO NUMPY — E NUNCA PRECISOU.
+
+  O log de 16:00 tinha a contradicao que apontou o defeito:
+
+    (modo OLA TIGER LIGADO — escutando pelo microfone
+     "MacBook Air Microphone".)
+    (nao consegui abrir o microfone: No module named 'numpy'.)
+
+  Ela LEU o nome do dispositivo e falhou logo depois. Ou seja: o
+  sounddevice tinha importado e funcionava. O numpy era exigido num
+  ponto so — o sd.InputStream devolve as amostras como array do numpy.
+
+  So que este programa NUNCA usou esse array. Todo lugar que le o
+  microfone converte para bytes na hora e calcula o volume com a
+  biblioteca padrao do Python. A dependencia era paga e nao era usada.
+
+  Agora o microfone abre com sd.RawInputStream, que entrega os MESMOS
+  bytes e nao importa numpy. A documentacao da propria biblioteca diz:
+  "NumPy is not necessary for using this".
+
+  RESULTADO: o OLA TIGER e o botao do microfone voltam a funcionar SEM
+  instalar nada. Nao precisa rodar o INSTALAR_MAC.command de novo.
+
+A MENSAGEM DE ERRO PAROU DE MANDAR VOCE AO LUGAR ERRADO
+  Antes, qualquer falha ao abrir o microfone dizia "feche outros
+  programas e confira as permissoes" — e foi por isso que voce foi
+  procurar nas Permissoes do sistema por causa de um pacote do Python.
+  Agora, quando falta uma biblioteca, ela diz QUAL e o comando exato.
+  Permissao so e citada quando o erro e mesmo de permissao.
+
+
+========================================================================
+  O QUE MUDOU NA v2.21.0
+========================================================================
+O MOTOR DIZIA QUE SUBIU SEM TER SUBIDO — corrigido.
+  "liga o motor" respondia "Motor no ar: ja estou capturando e
+  analisando" enquanto, no mesmo minuto, o log dizia que o processo do
+  Node tinha morrido com a porta 3939 ocupada. Agora ela so diz que o
+  motor subiu quando a PORTA RESPONDE, e a morte do processo corta a
+  espera na hora, com o motivo real.
+
+A PORTA 3939 OCUPADA AGORA E RESOLVIDA PELO PROGRAMA
+  Aquele Node orfao e lixo que o proprio app deixou ao ser fechado a
+  forca. Antes voce tinha que abrir o Terminal e digitar
+  "lsof -ti :3939 | xargs kill -9" no meio do pregao. Agora o app
+  encerra o orfao sozinho antes de ligar. Ele so mata processo chamado
+  "node": se a porta estiver com outro programa, ele NAO mata nada e
+  diz de quem e.
+
+CENARIO QUE MORREU DEIXAVA DE "AGUARDAR DECISAO"
+  Quando o preco rompia o stop antes de tocar a entrada, o motor matava
+  o cenario so na memoria e o registro continuava marcado como
+  pendente. Por isso "acatar" respondia "nao ha cenario aguardando
+  decisao". Agora o registro e marcado e a resposta conta o que houve.
+
+CHAT
+  - "aprenda tudo isso" e "aprenda isso tudo que pedi acima" caiam no
+    despejo generico. Agora sao entendidos — e como "tudo" pode ser
+    varias falas, ela grava a ultima e MOSTRA as outras para voce
+    apontar, em vez de adivinhar e gravar regra errada para sempre.
+  - "me mostre o print" abre a imagem (arquivo local: sem cota, sem
+    internet, sem modelo).
+  - "envia o print no whatsapp" manda a IMAGEM, nao so texto.
+
+INTERFACE — os dois pedidos
+  - A aba Motor virou uma pilha de SECOES RECOLHIVEIS: instalacao,
+    janelas, WhatsApp/QR, pregao, alertas, log, Tradovate. Cada uma abre
+    e fecha com um clique no titulo e o app lembra como voce deixou. O
+    botao LIGAR MOTOR fica sempre a vista, fora das secoes. A secao do
+    WhatsApp abre sozinha quando chega um QR code.
+  - TAMANHO DA LETRA: Normal / Grande / Maior / Maximo, valendo para
+    TODAS as abas — inclusive o terminal da TIGER e o log do motor.
+    Botoes A- e A+ na barra da TIGER, e um menu na aba Motor
+    ("Tamanho da letra"). A janela cresce junto para nada ficar cortado.
+
+
+========================================================================
+  O QUE MUDOU NA v2.20.0
+========================================================================
+TAMANHO DA POSICAO — a correcao mais importante desta versao.
+  O numero de contratos sai de (Margem x Risco%) dividido pela
+  distancia ate o stop. Quanto MAIS CURTO o stop, MAIOR a posicao.
+  Um stop de 1,87 ponto no MES dimensionava 29 contratos numa conta
+  de US$1.400. A conta estava certa; o resultado, insano.
+
+  Agora o Plano de Trading tem dois campos novos:
+    - "Min. ticks de stop" (padrao 8): stop mais curto que isso NAO
+      dimensiona posicao nenhuma, e ela diz por que.
+    - "Max. contratos (0=auto)": teto duro por operacao.
+  E o teto de risco passou a ser o DRAWDOWN QUE AINDA RESTA HOJE, nao
+  o drawdown cheio. Antes, com 20% de risco e drawdown de US$1.400,
+  uma operacao continuava autorizada a arriscar US$280 depois de o dia
+  ja ter perdido US$1.177.
+
+AVISO DE PLANO
+  Ao salvar o Plano, ela faz a conta com os SEUS numeros e diz o que
+  eles implicam. Exemplo real: "com 20% sobre US$1.400, cada operacao
+  arrisca US$280; o seu drawdown de US$1.400 acaba em 5 stops, ANTES
+  do teto de 6 operacoes". Aritmetica, nao opiniao.
+
+EXECUCAO DIFERENTE DA SUGESTAO
+  Sugestao de 14 contratos @ 7773,25 e execucao de 30 @ 7777,1 nao
+  passa mais em silencio: sai o aviso com o fator de risco real.
+
+PISO DE R:R
+  Continua 1:2. O que mudou e contra QUAL alvo se mede: se o 1o alvo
+  nao paga mas o 2o paga (e esta do lado certo), o cenario passa — e a
+  sugestao AVISA que quem pagou foi o 2o e que a parcial no 1o cobra
+  esse preco. As rejeicoes repetidas viraram um balanco periodico com
+  o melhor R:R do periodo, em vez de dezenas de linhas iguais.
+
+CHAT
+  - "qual a utima sugestao?" respondia "nao ha sugestao de QUAL
+    registrada" (a palavra QUAL virava ticker). Corrigido.
+  - "compro ou vendo?" caia no despejo generico. Agora ela captura a
+    tela e le o grafico.
+  - "acatar" dizia "nao ha cenario aguardando decisao" quando o motor
+    tinha marcado a sugestao como EXPIRADA ou INVALIDADA. Agora ela
+    conta o que aconteceu, com a hora.
+  - Posicao aberta na mao entrava com "stop None - alvo None". Agora
+    voce informa: "o stop do MESU6 e 7760 e o alvo e 7800".
+
+MICROFONE E VOZ NO MAC
+  Faltava o numpy. O sounddevice importa numpy, e sem ele o microfone
+  e a fala morriam com "No module named 'numpy'" enquanto a mensagem
+  mandava instalar o que ja estava instalado. Corrigido no
+  requirements-mac.txt; rode o INSTALAR_MAC.command de novo. E nenhuma
+  tela de permissao do Windows aparece mais dentro do Mac.
+
+
+========================================================================
+  !!! LEIA ISTO ANTES DE MAIS NADA — Cmd+V COLAVA DUAS VEZES !!!
+========================================================================
+Ate a v2.18 havia um defeito do Tk no macOS: o Cmd+V inseria o texto
+DUAS VEZES no campo. Estragou duas coisas:
+
+  1) A LICENCA. A chave virava
+        SMC-DDPX-XZUG-PH8GSMC-DDPX-XZUG-PH8G
+     e o servidor recusava, com razao.
+
+  2) A CHAVE DA GEMINI — e esta era INVISIVEL, porque o campo mostra
+     asteriscos. A chave dobrada e recusada pela Google com
+        401 UNAUTHENTICATED / ACCESS_TOKEN_TYPE_UNSUPPORTED
+     que NAO e cota: e credencial invalida. Por isso "tentei 10
+     modelos" falhava — nao havia chave valida nenhuma, e nenhum
+     modelo ia funcionar.
+
+Corrigido na v2.19.0. Mas a chave dobrada JA ESTA SALVA no seu Mac.
+Faca isto UMA vez:
+
+  1. Abra o programa, aba Motor
+  2. Clique no campo da chave da Gemini
+  3. Cmd+A e depois Delete (apaga tudo)
+  4. Cole a chave UMA vez (Cmd+V)
+  5. LIGAR MOTOR — e o que salva a chave
+
+Se voce colar em dobro sem querer, o programa desfaz sozinho agora.
+A mesma correcao vale para o campo da licenca.
+
+
+========================================================================
+  SE ALGO DER ERRADO
+========================================================================
+Lista de janelas vazia
+  → falta o pyobjc. Rode o INSTALAR_MAC.command de novo.
+
+Janelas aparecem só com o nome do app, sem título
+  → é o Passo 5, e provavelmente falta a ACESSIBILIDADE (a Gravação de
+    Tela sozinha costuma não bastar quando o programa abre por um
+    .command). Conceda as DUAS e REABRA.
+  → confirme no "🩺 Diagnosticar janelas": a linha "Títulos por
+    Acessibilidade (System Events)" tem que dizer "ok".
+    Mesmo assim dá para escolher: quando há mais de uma janela do mesmo
+    aplicativo, a lista mostra "Google Chrome — janela 2 (1512x982)".
+    O tamanho é o que te diz qual é qual. Com a permissão concedida, o
+    título real aparece ("Google Chrome — Tradovate Trader").
+
+A janela da corretora NÃO aparece na lista
+  → clique em "Atualizar lista de janelas abertas";
+  → clique em "🩺 Diagnosticar janelas": ele despeja no log TUDO o que o
+    macOS está reportando — id, aplicativo, título, tamanho e em qual
+    área de trabalho cada janela está. Se ela não estiver nem aí, o
+    sistema não está entregando, e o log diz exatamente o que veio;
+  → a janela precisa estar ABERTA (minimizada no Dock não conta);
+  → se a lista começa com "(⚠️ SEM permissão de Gravação de Tela…)",
+    é o Passo 5 — conceda e REABRA o programa.
+
+A lista mostra COISAS QUE NÃO SÃO MINHAS JANELAS
+  → corrigido na v2.16.3. O seletor passou a mostrar só aplicativos com
+    ícone no Dock (Chrome, ProfitPro, o próprio programa). Serviços
+    internos do macOS como "Accessibility Services" e "Window Server"
+    ficam de fora, assim como janelas invisíveis e menus.
+    Isso depende do pyobjc-framework-Cocoa: se o "🩺 Diagnosticar
+    janelas" disser "AppKit AUSENTE", rode o INSTALAR_MAC.command.
+
+  SOBRE ÁREAS DE TRABALHO: até a v2.16.1 o programa só enxergava as
+  janelas da área de trabalho ATUAL. No Mac, cada área do Mission
+  Control é um espaço, e uma janela em TELA CHEIA vira um espaço só
+  dela — então o Chrome com a Tradovate noutra área simplesmente não
+  aparecia, e permissão nenhuma resolvia, porque não era permissão.
+  A partir da v2.16.2 TODAS as janelas aparecem, e as de outra área vêm
+  marcadas com "[outra área de trabalho]". Você pode escolhê-las
+  normalmente.
+
+Captura sai preta
+  → Passo 5, e REABRIR o programa.
+
+"Node.js não encontrado" mas "node -v" funciona no Terminal
+  → abra pelo ABRIR_SMC_QUANT_PRO.command (ele corrige o PATH).
+
+Motor não sobe, porta 3939 ocupada
+  → no Terminal:  lsof -ti :3939 | xargs kill -9
+
+A TIGER fala em inglês
+  → Ajustes → Acessibilidade → Conteúdo Falado → Voz do Sistema
+    → Português (Brasil) → Luciana
+
+Erro "ModuleNotFoundError: tkinter"
+  → Passo 2: o Python do python.org não foi instalado.
+
+
+========================================================================
+  O QUE FOI TESTADO — E O QUE SÓ O SEU MAC PODE TESTAR
+========================================================================
+Testado automaticamente (32 suítes Python + 6 JavaScript, todas
+passando): a camada de plataforma monta os comandos certos do macOS
+(screencapture, Chaveiro, voz say), a chave da API nunca é gravada em
+texto claro, falha de captura devolve "não consegui" em vez de imagem
+inventada, a correção do PATH funciona, e NENHUMA função de decisão de
+trading consulta o sistema operacional — a lógica de SMC é idêntica no
+Windows e no Mac.
+
+NÃO testado: eu não tenho um Mac. A permissão concedida de verdade, a
+captura real da janela do Chrome e a voz saindo no alto-falante só a sua
+máquina confirma. Se algo escapar, o log do arranque (as linhas que
+começam com o ícone de monitor) diz exatamente onde parou — me mande
+que eu ajusto.
+
+Guia completo e detalhado: INSTALAR_NO_MAC.md
+========================================================================
