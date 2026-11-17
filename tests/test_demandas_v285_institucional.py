@@ -358,5 +358,108 @@ class TestRegressoesLogsProducao(unittest.TestCase):
             self.assertEqual(div, [], frase)
 
 
+class TestPacoteSniper500Porcento(unittest.TestCase):
+    """Testa as 7 Alavancas Algorítmicas de Hiper-Lucro e Proteção de Conta."""
+
+    def test_refinamento_sniper_ote_converte_stop_100_ticks_em_80_ticks_com_maior_rr(self):
+        # Caso real do log: SELL NQZ6 com entrada 27345.0, stop 27370.0 (100 ticks), alvo 27295.0 (200 ticks)
+        res = tiger_predictive.normalizar_entrada_ote_para_caber_no_stop(
+            direcao="SELL",
+            entry=27345.0,
+            stop=27370.0,
+            tp1=27295.0,
+            tp2=27250.0,
+            preco_atual=27344.5,
+            tick=0.25,
+            faixa_ticks=(12, 80),
+            rr_minimo=2.0,
+        )
+        self.assertTrue(res["ajustado"])
+        self.assertEqual(res["entry"], 27350.0)
+        self.assertEqual(res["ticks_depois"], 80.0)
+        self.assertGreater(res["rr_novo"], 2.5)
+
+    def test_front_run_institucional_antecipa_entrada_em_2_ticks_sem_violar_rr(self):
+        res = tiger_predictive.otimizar_entrada_sniper_anti_perdida(
+            direcao="SELL",
+            entry=27350.0,
+            stop=27365.0,  # 60 ticks
+            tp1=27310.0,   # 160 ticks
+            preco_atual=27342.0,
+            tick=0.25,
+            faixa_ticks=(12, 80),
+            rr_minimo=2.0,
+        )
+        self.assertTrue(res["ajustado"])
+        self.assertEqual(res["entry"], 27349.5)  # +2 ticks de front-run na borda
+        self.assertGreaterEqual(res["rr_novo"], 2.05)
+
+    def test_despertar_sniper_0s_dispara_em_explosao_de_volume_zscore_3(self):
+        negocios = [{"preco": 27350.0, "tamanho": 2.0} for _ in range(20)]
+        negocios.append({"preco": 27355.0, "tamanho": 45.0})  # Spike institucional
+        res = tiger_predictive.detectar_gatilho_despertar_imediato(
+            negocios, ultimo_despertar_ts=0.0, cooldown_s=45.0, agora_ts=1000.0
+        )
+        self.assertTrue(res["despertar"])
+        self.assertGreaterEqual(res["z_score"], 3.0)
+
+    def test_divergencia_smt_detecta_bearish_e_bullish_smt_entre_nq_e_es(self):
+        # NQ faz Higher High (27300 -> 27360), ES faz Lower High (5850 -> 5840)
+        hist = {
+            "NQZ6": [(1, 27280.0), (2, 27300.0), (3, 27290.0), (4, 27360.0)],
+            "MESZ6": [(1, 5830.0), (2, 5850.0), (3, 5835.0), (4, 5840.0)],
+        }
+        res = market_regime.DetectorDivergenciaSMT.detectar("NQZ6", "SELL", hist)
+        self.assertTrue(res["smt_confirmado"])
+        self.assertEqual(res["tipo"], "BEARISH_SMT")
+        self.assertGreater(res["bonus_prob"], 0)
+
+    def test_vwap_bandas_e_killzone_ict(self):
+        neg = [
+            {"preco": 100.0, "tamanho": 10},
+            {"preco": 101.0, "tamanho": 10},
+            {"preco": 102.0, "tamanho": 10},
+            {"preco": 103.0, "tamanho": 10},
+            {"preco": 104.0, "tamanho": 10},
+        ]
+        info = market_regime.calcular_vwap_e_bandas_fita(neg, preco_atual=105.5)
+        self.assertTrue(info["disponivel"])
+        self.assertAlmostEqual(info["vwap"], 102.0)
+        self.assertEqual(info["zona"], "EXTREMO_PREMIUM_2SD")
+
+    def test_multiplicador_kelly_escudo_anti_quebra_e_house_money(self):
+        # 1. Drawdown restante crítico (30% do limite) -> corta lote a 0.50x
+        defesa = tiger_predictive.calcular_multiplicador_kelly_institucional(
+            probabilidade=88.0, rr=3.0, realizado_hoje=-700.0,
+            drawdown_restante=300.0, drawdown_maximo=1000.0
+        )
+        self.assertEqual(defesa["multiplicador"], 0.50)
+
+        # 2. Dia positivo + Setup Sniper S+ -> House Money 1.30x
+        ataque = tiger_predictive.calcular_multiplicador_kelly_institucional(
+            probabilidade=88.0, rr=3.0, realizado_hoje=450.0,
+            drawdown_restante=1000.0, drawdown_maximo=1000.0, smt_confirmado=True
+        )
+        self.assertEqual(ataque["multiplicador"], 1.30)
+
+    def test_catraca_lucro_4_estagios_e_parciais_70_30_runner(self):
+        # Estágio 3: +1.5R atingido -> trava +1.0R no bolso
+        cat = tiger_predictive.calcular_catraca_lucro_multinivel(
+            direcao="BUY", entry=100.0, stop_inicial=90.0, stop_atual=90.0,
+            preco_atual=115.0, tp1=120.0, tp2=135.0, tick=0.25
+        )
+        self.assertTrue(cat["mover"])
+        self.assertEqual(cat["estagio"], 3)
+        self.assertEqual(cat["novo_stop"], 110.0)  # +1.0R garantido
+
+        # Plano 70/30 para 3 contratos -> 2 no TP1 + 1 Runner no TP2
+        pl = tiger_predictive.calcular_plano_parciais_e_runner(
+            contratos=3, entry=100.0, stop=90.0, tp1=120.0, tp2=140.0
+        )
+        self.assertTrue(pl["tem_runner"])
+        self.assertEqual(pl["contratos_tp1"], 2)
+        self.assertEqual(pl["contratos_runner"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

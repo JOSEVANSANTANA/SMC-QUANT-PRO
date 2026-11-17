@@ -674,3 +674,446 @@ class MemoriaEvolutivaMercado:
             "NÃO repita o mesmo erro neste ciclo.\n"
         )
 
+    def otimizar_parametros_walk_forward(self, ativo: str) -> Dict[str, Any]:
+        """
+        Auto-Otimizador Walk-Forward: cruza os resultados reais dos buckets com as
+        estatísticas contrafactuais dos filtros (Shadow Book) para calibrar o piso
+        tático ideal daquele contrato sem superajuste.
+        """
+        raiz = self._raiz_ativo(ativo)
+        buckets = self.dados.get("buckets") or {}
+        stats_f = self.dados.get("estatisticas_filtros") or {}
+
+        wins = 0
+        losses = 0
+        soma_r = 0.0
+        for k, b in buckets.items():
+            if k in (f"{raiz}|BUY", f"{raiz}|SELL"):
+                wins += int(b.get("wins", 0))
+                losses += int(b.get("losses", 0))
+                soma_r += float(b.get("soma_r", 0.0))
+
+        total = wins + losses
+        wr = (wins / total) if total > 0 else self.PRIOR_WINRATE
+        exp_r = (soma_r / total) if total > 0 else 0.5
+
+        stops_evitados = sum(int(v.get("stops_evitados", 0)) for v in stats_f.values() if isinstance(v, dict))
+        alvos_perdidos = sum(int(v.get("alvos_perdidos", 0)) for v in stats_f.values() if isinstance(v, dict))
+
+        # Calibração conservadora e anti-alucinação
+        ajuste_prob_recomendado = 0.0
+        if total >= 5 and wr < 0.50:
+            ajuste_prob_recomendado = +5.0  # Eleva seletividade se WR recente caiu
+        elif alvos_perdidos > stops_evitados * 2 and alvos_perdidos >= 3 and wr >= 0.70:
+            ajuste_prob_recomendado = -2.0  # Flexibiliza levemente se muitos alvos limpos escaparam
+
+        return {
+            "ativo": raiz,
+            "amostras_reais": total,
+            "win_rate": round(wr * 100.0, 1),
+            "expectativa_r": round(exp_r, 2),
+            "stops_evitados_sombra": stops_evitados,
+            "alvos_perdidos_sombra": alvos_perdidos,
+            "ajuste_piso_prob_recomendado": ajuste_prob_recomendado,
+        }
+
+
+def normalizar_entrada_ote_para_caber_no_stop(
+    direcao: str,
+    entry: float,
+    stop: float,
+    tp1: float,
+    tp2: Optional[float],
+    preco_atual: Optional[float],
+    tick: float,
+    faixa_ticks: Optional[Tuple[int, int]],
+    rr_minimo: float = 2.0,
+) -> Dict[str, Any]:
+    """
+    Refinamento Institucional OTE (Optimal Trade Entry):
+      - Quando a IA identifica um setup válido mas posiciona a entrada na borda externa do Order Block,
+        deixando o stop entre `max_ticks` e `1.6 * max_ticks` (ex: 100 ticks no NQ cujo máximo é 80),
+        em vez de descartar a oportunidade inteira:
+        1. Mantém o `stop_loss` 100% INTOCADO atrás do pavio estrutural (jamais encurta o stop!).
+        2. Refina a entrada limite (`entry_price`) mais fundo no miolo/OTE da zona institucional
+           para que a distância `|entry_novo - stop|` caiba exatamente no limite máximo de ticks (`max_ticks`).
+        3. Isso MELHORA o preço de entrada, REDUZ o risco em ticks e AUMENTA o R:R até o alvo!
+    """
+    d = str(direcao or "").strip().upper()
+    try:
+        ep = float(entry or 0.0)
+        sl = float(stop or 0.0)
+        t1 = float(tp1 or 0.0)
+        tk = float(tick or 0.0)
+    except (TypeError, ValueError):
+        return {"ajustado": False, "entry": entry, "ticks_antes": 0, "ticks_depois": 0, "motivo": ""}
+
+    if d not in ("BUY", "SELL") or ep <= 0 or sl <= 0 or t1 <= 0 or tk <= 0 or not faixa_ticks:
+        return {"ajustado": False, "entry": ep, "ticks_antes": 0, "ticks_depois": 0, "motivo": ""}
+
+    min_tk, max_tk = int(faixa_ticks[0]), int(faixa_ticks[1])
+    ticks_atuais = round(abs(ep - sl) / tk, 1)
+
+    # Só atua se o stop estiver acima do máximo mas até 1.6x do máximo (ex: 81 a 128 ticks no NQ)
+    if ticks_atuais <= max_tk or ticks_atuais > max_tk * 1.65:
+        return {"ajustado": False, "entry": ep, "ticks_antes": ticks_atuais, "ticks_depois": ticks_atuais, "motivo": ""}
+
+    # Calcula nova entrada cravada em max_tk a partir do stop_loss intocado
+    dist_max_pts = max_tk * tk
+    if d == "BUY":
+        novo_ep = round((sl + dist_max_pts) / tk) * tk
+        if not (sl < novo_ep < t1):
+            return {"ajustado": False, "entry": ep, "ticks_antes": ticks_atuais, "ticks_depois": ticks_atuais, "motivo": ""}
+    else:
+        novo_ep = round((sl - dist_max_pts) / tk) * tk
+        if not (sl > novo_ep > t1):
+            return {"ajustado": False, "entry": ep, "ticks_antes": ticks_atuais, "ticks_depois": ticks_atuais, "motivo": ""}
+
+    novo_risco = abs(novo_ep - sl)
+    if novo_risco <= 1e-9:
+        return {"ajustado": False, "entry": ep, "ticks_antes": ticks_atuais, "ticks_depois": ticks_atuais, "motivo": ""}
+
+    # Confere se a distância até o preço atual permanece saudável (<= 1.45x risco)
+    if preco_atual is not None and float(preco_atual) > 0:
+        dist_preco_r = abs(novo_ep - float(preco_atual)) / novo_risco
+        if dist_preco_r > 1.45:
+            return {"ajustado": False, "entry": ep, "ticks_antes": ticks_atuais, "ticks_depois": ticks_atuais, "motivo": ""}
+
+    novo_rr = abs(t1 - novo_ep) / novo_risco
+    if novo_rr < max(1.8, float(rr_minimo or 2.0)):
+        return {"ajustado": False, "entry": ep, "ticks_antes": ticks_atuais, "ticks_depois": ticks_atuais, "motivo": ""}
+
+    return {
+        "ajustado": True,
+        "entry": round(novo_ep, 6),
+        "ticks_antes": ticks_atuais,
+        "ticks_depois": float(max_tk),
+        "rr_novo": round(novo_rr, 2),
+        "motivo": (
+            f"🎯 [SNIPER OTE] Entrada refinada de {ep:g} → {novo_ep:g} no miolo institucional "
+            f"(stop mantido intacto em {sl:g}; risco reduzido de {ticks_atuais:g} para {max_tk} ticks; "
+            f"R:R ampliado para 1:{novo_rr:.2f})."
+        ),
+    }
+
+
+def otimizar_entrada_sniper_anti_perdida(
+    direcao: str,
+    entry: float,
+    stop: float,
+    tp1: float,
+    preco_atual: Optional[float],
+    tick: float,
+    faixa_ticks: Optional[Tuple[int, int]],
+    rr_minimo: float = 2.0,
+) -> Dict[str, Any]:
+    """
+    Front-Run Institucional Calculado (Fim do 'preço bateu a 2 ticks da minha ordem e foi pro alvo'):
+      - Quando a entrada está com stop folgado abaixo do limite máximo e o preço está se aproximando,
+        antecipa a ordem limite em 2 ticks na borda de defesa institucional DESDE QUE:
+          1. O novo stop continue estritamente <= max_ticks da faixa do contrato;
+          2. O novo R:R até o TP1 continue >= max(rr_minimo, 2.05).
+    """
+    d = str(direcao or "").strip().upper()
+    try:
+        ep = float(entry or 0.0)
+        sl = float(stop or 0.0)
+        t1 = float(tp1 or 0.0)
+        tk = float(tick or 0.0)
+        p_at = float(preco_atual or 0.0)
+    except (TypeError, ValueError):
+        return {"ajustado": False, "entry": entry, "motivo": ""}
+
+    if d not in ("BUY", "SELL") or ep <= 0 or sl <= 0 or t1 <= 0 or tk <= 0 or not faixa_ticks:
+        return {"ajustado": False, "entry": ep, "motivo": ""}
+
+    min_tk, max_tk = int(faixa_ticks[0]), int(faixa_ticks[1])
+    ticks_atuais = round(abs(ep - sl) / tk, 1)
+    offset_ticks = 2
+
+    if ticks_atuais + offset_ticks > max_tk or ticks_atuais < min_tk:
+        return {"ajustado": False, "entry": ep, "motivo": ""}
+
+    if d == "BUY":
+        # Só faz front-run se o preço atual estiver acima da entrada limite (esperando pullback)
+        if p_at > 0 and p_at <= ep + offset_ticks * tk:
+            return {"ajustado": False, "entry": ep, "motivo": ""}
+        novo_ep = round((ep + offset_ticks * tk) / tk) * tk
+    else:
+        # SELL: preço atual abaixo da entrada limite (esperando repique)
+        if p_at > 0 and p_at >= ep - offset_ticks * tk:
+            return {"ajustado": False, "entry": ep, "motivo": ""}
+        novo_ep = round((ep - offset_ticks * tk) / tk) * tk
+
+    novo_risco = abs(novo_ep - sl)
+    if novo_risco <= 1e-9:
+        return {"ajustado": False, "entry": ep, "motivo": ""}
+    novo_rr = abs(t1 - novo_ep) / novo_risco
+    if novo_rr < max(2.05, float(rr_minimo or 2.0)):
+        return {"ajustado": False, "entry": ep, "motivo": ""}
+
+    return {
+        "ajustado": True,
+        "entry": round(novo_ep, 6),
+        "rr_novo": round(novo_rr, 2),
+        "motivo": (
+            f"⚡ [FRONT-RUN INSTITUCIONAL] Entrada antecipada em +{offset_ticks} ticks ({ep:g} → {novo_ep:g}) "
+            f"na borda de defesa do POI para evitar perder o embarque (R:R mantido em 1:{novo_rr:.2f})."
+        ),
+    }
+
+
+def detectar_gatilho_despertar_imediato(
+    negocios_recentes: Sequence[Dict[str, Any]],
+    ultimo_despertar_ts: float = 0.0,
+    cooldown_s: float = 45.0,
+    agora_ts: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Gatilho Orientado a Eventos (0s de Delay):
+      - Analisa os últimos negócios da fita em segundo plano durante o sleep do motor.
+      - Se detectar uma explosão anômala de volume (Z-score >= 3.0 ou burst >= 3.5x média)
+        acompanhada de deslocamento rápido/varredura, acorda o ciclo de visão da IA na hora!
+    """
+    agora = float(agora_ts if agora_ts is not None else time.time())
+    if (agora - float(ultimo_despertar_ts or 0.0)) < cooldown_s:
+        return {"despertar": False, "motivo": "em cooldown"}
+
+    if not negocios_recentes or len(negocios_recentes) < 15:
+        return {"despertar": False, "motivo": "amostra insuficiente"}
+
+    lotes: List[float] = []
+    precos: List[float] = []
+    for n in negocios_recentes[-60:]:
+        if not isinstance(n, dict):
+            continue
+        try:
+            v = float(n.get("tamanho") or n.get("size") or n.get("volume") or 0.0)
+            p = float(n.get("preco") or n.get("price") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if v > 0 and p > 0:
+            lotes.append(v)
+            precos.append(p)
+
+    if len(lotes) < 15:
+        return {"despertar": False, "motivo": "amostra insuficiente"}
+
+    base_lotes = lotes[:-5]
+    ultimos_5 = lotes[-5:]
+    media_base = sum(base_lotes) / len(base_lotes)
+    var_base = sum((x - media_base) ** 2 for x in base_lotes) / len(base_lotes)
+    std_base = math.sqrt(max(1e-6, var_base))
+
+    pico_recente = max(ultimos_5)
+    media_recente = sum(ultimos_5) / len(ultimos_5)
+    z_score = (pico_recente - media_base) / std_base if std_base > 0 else 0.0
+
+    if pico_recente >= max(10.0, media_base * 3.5) and (z_score >= 3.0 or media_recente >= media_base * 2.5):
+        return {
+            "despertar": True,
+            "z_score": round(z_score, 2),
+            "pico_lotes": pico_recente,
+            "motivo": (
+                f"Explosão institucional de fluxo na fita (lote {pico_recente:.0f} ctr, "
+                f"Z-score {z_score:.1f}σ acima da média de {media_base:.1f} ctr)"
+            ),
+        }
+
+    return {"despertar": False, "motivo": "fluxo normal"}
+
+
+def calcular_multiplicador_kelly_institucional(
+    probabilidade: float,
+    rr: float,
+    realizado_hoje: float,
+    drawdown_restante: float,
+    drawdown_maximo: float,
+    stops_seguidos_hoje: int = 0,
+    smt_confirmado: bool = False,
+    killzone_chop: bool = False,
+) -> Dict[str, Any]:
+    """
+    Alocação Dinâmica de Capital ("Extrair Lucros Sem Perder Contas"):
+      1. ESCUDO ANTI-QUEBRA DE CONTA:
+         - Se o drawdown restante cair abaixo de 40% do drawdown máximo -> reduz mão em 50% (0.50x).
+         - Se estiver vindo de stop seguido no dia ou em horário de almoço (Chop Zone) -> reduz mão (0.65x–0.75x).
+      2. TURBO HOUSE-MONEY (SÓ COM LUCRO NO BOLSO):
+         - Nunca aumenta o risco base da conta quando o dia está no zero ou negativo.
+         - Quando já está POSITIVO no dia (`realizado_hoje > 0`) e surge um setup Sniper S+
+           (`probabilidade >= 85%`, `rr >= 2.2`), permite escalar até 1.30x usando apenas uma fração
+           do lucro já ganho hoje, blindando 100% do saldo inicial da manhã!
+    """
+    prob = float(probabilidade or 0.0)
+    rel_rr = float(rr or 2.0)
+    hoje = float(realizado_hoje or 0.0)
+    dd_rest = float(drawdown_restante or 0.0)
+    dd_max = max(1.0, float(drawdown_maximo or 1000.0))
+    frac_dd = dd_rest / dd_max
+
+    # 1. Defesa prioritária da conta (Anti-Quebra)
+    if frac_dd <= 0.40:
+        return {
+            "multiplicador": 0.50,
+            "tier": "DEFESA_ANTI_QUEBRA",
+            "motivo": f"Escudo Anti-Quebra ativo (drawdown restante em {frac_dd*100:.0f}% do limite — lote reduzido a 0.50x).",
+        }
+    if int(stops_seguidos_hoje or 0) >= 1:
+        return {
+            "multiplicador": 0.70,
+            "tier": "RECUPERACAO_CAUTELOSA",
+            "motivo": f"Proteção pós-stop ativa ({stops_seguidos_hoje} stop(s) seguido(s) — lote reduzido a 0.70x até recuperar).",
+        }
+    if killzone_chop and prob < 85.0:
+        return {
+            "multiplicador": 0.65,
+            "tier": "DEFESA_HORARIO_ALMOCO",
+            "motivo": "Horário de baixa liquidez (Lunch Chop Zone) — lote defensivo de 0.65x.",
+        }
+
+    # 2. Modo Sniper S+ com House Money (apenas quando já tem lucro realizado hoje!)
+    if hoje > 0 and prob >= 85.0 and rel_rr >= 2.2:
+        mult = 1.30 if smt_confirmado else 1.20
+        return {
+            "multiplicador": mult,
+            "tier": "SNIPER_S_PLUS_HOUSE_MONEY",
+            "motivo": (
+                f"Setup Sniper S+ ({prob:.0f}%, R:R 1:{rel_rr:.1f}) operando com 'Dinheiro da Casa' "
+                f"(lucro do dia US$ {hoje:+,.2f} financia o lote de {mult:.2f}x sem expor o capital inicial)."
+            ),
+        }
+
+    return {
+        "multiplicador": 1.0,
+        "tier": "INSTITUCIONAL_PADRAO_A",
+        "motivo": "Alocação institucional padrão (1.00x do risco planejado).",
+    }
+
+
+def calcular_catraca_lucro_multinivel(
+    direcao: str,
+    entry: float,
+    stop_inicial: float,
+    stop_atual: float,
+    preco_atual: float,
+    tp1: Optional[float] = None,
+    tp2: Optional[float] = None,
+    tick: float = 0.25,
+) -> Dict[str, Any]:
+    """
+    Catraca Progressiva de Lucro em 4 Estágios (Zero Devolução + Runner até TP2):
+      - Estágio 1 (+0.5R atingido): Move stop para Break-Even + 0.10R (impossível sair no prejuízo).
+      - Estágio 2 (+1.0R atingido): Trava +0.50R de lucro líquido no bolso.
+      - Estágio 3 (+1.5R atingido): Trava +1.00R de lucro líquido garantido (mesmo que volte antes do TP1!).
+      - Estágio 4 (+2.0R / Runner): Trava max(+1.60R, lucro_atual_r - 0.40R), espremendo o movimento até o TP2!
+    """
+    d = str(direcao or "").strip().upper()
+    try:
+        ep = float(entry or 0.0)
+        sl_ini = float(stop_inicial or 0.0)
+        sl_at = float(stop_atual if stop_atual is not None else sl_ini)
+        p_at = float(preco_atual or 0.0)
+        tk = max(1e-6, float(tick or 0.25))
+    except (TypeError, ValueError):
+        return {"mover": False, "novo_stop": stop_atual, "estagio": 0, "lucro_r": 0.0, "motivo": ""}
+
+    risco = abs(ep - sl_ini)
+    if d not in ("BUY", "SELL") or ep <= 0 or sl_ini <= 0 or p_at <= 0 or risco <= 1e-9:
+        return {"mover": False, "novo_stop": sl_at, "estagio": 0, "lucro_r": 0.0, "motivo": ""}
+
+    avanco_pts = (p_at - ep) if d == "BUY" else (ep - p_at)
+    lucro_r = avanco_pts / risco
+
+    if lucro_r < 0.50:
+        return {"mover": False, "novo_stop": sl_at, "estagio": 0, "lucro_r": round(lucro_r, 2), "motivo": ""}
+
+    if lucro_r >= 2.0:
+        estagio = 4
+        r_travado = max(1.60, round(lucro_r - 0.40, 2))
+        nome_estagio = f"Estágio 4 (Runner Institucional — travando +{r_travado:.2f}R)"
+    elif lucro_r >= 1.50:
+        estagio = 3
+        r_travado = 1.00
+        nome_estagio = "Estágio 3 (Lucro Cheio de +1.00R Garantido)"
+    elif lucro_r >= 1.00:
+        estagio = 2
+        r_travado = 0.50
+        nome_estagio = "Estágio 2 (Meio Alvo +0.50R Garantido)"
+    else:
+        estagio = 1
+        r_travado = 0.10
+        nome_estagio = "Estágio 1 (Blindagem Zero-Devolução Break-Even +0.10R)"
+
+    if d == "BUY":
+        stop_desejado = round((ep + max(tk, risco * r_travado)) / tk) * tk
+        # Nunca afrouxa o stop nem coloca acima do preço atual
+        stop_desejado = min(stop_desejado, p_at - 2 * tk)
+        melhorou = stop_desejado > (sl_at + tk * 0.5)
+    else:
+        stop_desejado = round((ep - max(tk, risco * r_travado)) / tk) * tk
+        stop_desejado = max(stop_desejado, p_at + 2 * tk)
+        melhorou = stop_desejado < (sl_at - tk * 0.5)
+
+    if not melhorou:
+        return {
+            "mover": False,
+            "novo_stop": sl_at,
+            "estagio": estagio,
+            "lucro_r": round(lucro_r, 2),
+            "r_travado": r_travado,
+            "motivo": "",
+        }
+
+    return {
+        "mover": True,
+        "novo_stop": round(stop_desejado, 6),
+        "estagio": estagio,
+        "lucro_r": round(lucro_r, 2),
+        "r_travado": r_travado,
+        "motivo": (
+            f"🛡️ [CATRACA DE LUCRO — {nome_estagio}] Preço atingiu +{lucro_r:.2f}R ({p_at:g}) → "
+            f"stop avançado de {sl_at:g} para {stop_desejado:g} (+{r_travado:.2f}R blindado no bolso)."
+        ),
+    }
+
+
+def calcular_plano_parciais_e_runner(
+    contratos: int,
+    entry: float,
+    stop: float,
+    tp1: float,
+    tp2: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Divisão Assimétrica Institucional (70% Cash-Flow no TP1 + 30% Runner no TP2):
+      - Quando `contratos >= 2`, separa 70% para embolsar dinheiro rápido no TP1 e
+        mantém 30% (mínimo 1 contrato) para buscar o movimento estendido até o TP2.
+    """
+    qtd = max(1, int(contratos or 1))
+    if qtd < 2:
+        return {
+            "tem_runner": False,
+            "contratos_total": 1,
+            "contratos_tp1": 1,
+            "contratos_runner": 0,
+            "descricao": "1 contrato (100% protegido pela Catraca Progressiva de 4 Estágios).",
+        }
+    lote_tp1 = max(1, int(round(qtd * 0.70)))
+    if lote_tp1 >= qtd:
+        lote_tp1 = qtd - 1
+    lote_runner = qtd - lote_tp1
+    alvo_final = tp2 if (tp2 is not None and float(tp2 or 0) > 0) else tp1
+    return {
+        "tem_runner": True,
+        "contratos_total": qtd,
+        "contratos_tp1": lote_tp1,
+        "contratos_runner": lote_runner,
+        "alvo_tp1": tp1,
+        "alvo_runner": alvo_final,
+        "descricao": (
+            f"Divisão Assimétrica 70/30: {lote_tp1} ctr realizam lucro no TP1 ({tp1:g}) "
+            f"+ {lote_runner} ctr Runner busca(m) TP2 ({alvo_final:g}) com stop blindado."
+        ),
+    }
+
+

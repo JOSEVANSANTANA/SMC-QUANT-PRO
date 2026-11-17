@@ -453,3 +453,272 @@ class ConfluenceMatrix:
             "alertas": alertas,
             "veredito": "APROVADO INSTITUCIONAL" if aprovado else "RECUSADO POR CONFLUÊNCIA INSUFICIENTE",
         }
+
+
+import math
+import time
+from datetime import datetime
+
+
+PARES_CORRELACIONADOS_SMT = {
+    "NQ": ("ES", "MES", "YM", "MYM"),
+    "MNQ": ("MES", "ES", "MYM", "YM"),
+    "ES": ("NQ", "MNQ", "YM", "MYM"),
+    "MES": ("MNQ", "NQ", "MYM", "YM"),
+    "YM": ("ES", "NQ", "MES", "MNQ"),
+    "MYM": ("MES", "MNQ", "ES", "NQ"),
+}
+
+
+def _raiz_smt(simbolo: str) -> str:
+    s = str(simbolo or "").strip().upper()
+    for p in ("MNQ", "MES", "MYM", "M2K", "MGC", "MBT", "NQ", "ES", "YM", "RTY", "GC"):
+        if s.startswith(p):
+            return p
+    return s
+
+
+class DetectorDivergenciaSMT:
+    """
+    Detector Institucional de Divergência SMT (Smart Money Technique) Inter-Mercados:
+      - Compara a estrutura de topos e fundos recentes entre índices correlacionados
+        (ex: NQ/MNQ vs ES/MES).
+      - Bearish SMT: Ativo A renova a máxima (Higher High / Sweep) enquanto o Ativo B
+        falha em renovar sua máxima (Lower High) -> Forte sinal institucional de VENDA.
+      - Bullish SMT: Ativo A renova a mínima (Lower Low / Sweep) enquanto o Ativo B
+        sustenta fundo mais alto (Higher Low) -> Forte sinal institucional de COMPRA.
+    """
+
+    @staticmethod
+    def detectar(
+        ativo_alvo: str,
+        direcao_sinal: str,
+        historico_por_ativo: Dict[str, Sequence[Any]],
+        min_amostras: int = 4,
+    ) -> Dict[str, Any]:
+        raiz_a = _raiz_smt(ativo_alvo)
+        parceiros = PARES_CORRELACIONADOS_SMT.get(raiz_a, ())
+        dir_up = str(direcao_sinal or "").strip().upper()
+
+        if not parceiros or not isinstance(historico_por_ativo, dict):
+            return {
+                "smt_confirmado": False,
+                "smt_contra": False,
+                "ativo_parceiro": None,
+                "tipo": None,
+                "bonus_prob": 0.0,
+                "descricao": "",
+            }
+
+        def _extrair_precos(seq: Sequence[Any]) -> List[float]:
+            out: List[float] = []
+            for item in (seq or []):
+                v = _extrair_fechamento(item)
+                if v is not None and v > 0:
+                    out.append(v)
+            return out
+
+        # Localiza série do ativo alvo
+        serie_a: List[float] = []
+        for k, v in historico_por_ativo.items():
+            if _raiz_smt(k) == raiz_a:
+                cand = _extrair_precos(v)
+                if len(cand) > len(serie_a):
+                    serie_a = cand
+
+        if len(serie_a) < min_amostras:
+            return {
+                "smt_confirmado": False,
+                "smt_contra": False,
+                "ativo_parceiro": None,
+                "tipo": None,
+                "bonus_prob": 0.0,
+                "descricao": "",
+            }
+
+        # Localiza série do melhor parceiro correlacionado disponível
+        raiz_b = None
+        serie_b: List[float] = []
+        for p_cand in parceiros:
+            for k, v in historico_por_ativo.items():
+                if _raiz_smt(k) == p_cand:
+                    cand = _extrair_precos(v)
+                    if len(cand) >= min_amostras:
+                        raiz_b = p_cand
+                        serie_b = cand
+                        break
+            if serie_b:
+                break
+
+        if not serie_b or not raiz_b:
+            return {
+                "smt_confirmado": False,
+                "smt_contra": False,
+                "ativo_parceiro": None,
+                "tipo": None,
+                "bonus_prob": 0.0,
+                "descricao": "",
+            }
+
+        janela_a = serie_a[-min(12, len(serie_a)):]
+        janela_b = serie_b[-min(12, len(serie_b)):]
+        meio_a = max(2, len(janela_a) // 2)
+        meio_b = max(2, len(janela_b) // 2)
+
+        topo1_a, topo2_a = max(janela_a[:meio_a]), max(janela_a[meio_a:])
+        fundo1_a, fundo2_a = min(janela_a[:meio_a]), min(janela_a[meio_a:])
+
+        topo1_b, topo2_b = max(janela_b[:meio_b]), max(janela_b[meio_b:])
+        fundo1_b, fundo2_b = min(janela_b[:meio_b]), min(janela_b[meio_b:])
+
+        # Bearish SMT: um renovou topo (HH) e o outro fez topo mais baixo (LH)
+        bearish_smt = (topo2_a > topo1_a and topo2_b < topo1_b) or (topo2_a < topo1_a and topo2_b > topo1_b)
+        # Bullish SMT: um renovou fundo (LL) e o outro sustentou fundo mais alto (HL)
+        bullish_smt = (fundo2_a < fundo1_a and fundo2_b > fundo1_b) or (fundo2_a > fundo1_a and fundo2_b < fundo1_b)
+
+        if dir_up == "SELL" and bearish_smt:
+            lider = raiz_a if topo2_a < topo1_a else raiz_b
+            return {
+                "smt_confirmado": True,
+                "smt_contra": False,
+                "ativo_parceiro": raiz_b,
+                "tipo": "BEARISH_SMT",
+                "bonus_prob": 5.0,
+                "descricao": (
+                    f"Divergência SMT Baixista confirmada entre {raiz_a} e {raiz_b} "
+                    f"({lider} já mostra fraqueza estrutural não renovando máxima — distribuição institucional)."
+                ),
+            }
+        if dir_up == "BUY" and bullish_smt:
+            lider = raiz_a if fundo2_a > fundo1_a else raiz_b
+            return {
+                "smt_confirmado": True,
+                "smt_contra": False,
+                "ativo_parceiro": raiz_b,
+                "tipo": "BULLISH_SMT",
+                "bonus_prob": 5.0,
+                "descricao": (
+                    f"Divergência SMT Altista confirmada entre {raiz_a} e {raiz_b} "
+                    f"({lider} sustentou fundo mais alto durante o sweep — acumulação institucional)."
+                ),
+            }
+
+        return {
+            "smt_confirmado": False,
+            "smt_contra": False,
+            "ativo_parceiro": raiz_b,
+            "tipo": None,
+            "bonus_prob": 0.0,
+            "descricao": "",
+        }
+
+
+def calcular_vwap_e_bandas_fita(
+    negocios: Sequence[Dict[str, Any]],
+    preco_atual: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Calcula matematicamente a VWAP da sessão e as Bandas de Desvio-Padrão Institucional
+    (±1σ, ±2σ, ±3σ) direto da fita de negócios, sem depender de leitura visual.
+    """
+    soma_pv = 0.0
+    soma_v = 0.0
+    amostras: List[Tuple[float, float]] = []
+
+    for n in (negocios or []):
+        if not isinstance(n, dict):
+            continue
+        try:
+            p = float(n.get("preco") or n.get("price") or n.get("close") or 0.0)
+            v = float(n.get("tamanho") or n.get("size") or n.get("volume") or 1.0)
+        except (TypeError, ValueError):
+            continue
+        if p > 0 and v > 0:
+            soma_pv += p * v
+            soma_v += v
+            amostras.append((p, v))
+
+    if soma_v <= 0 or len(amostras) < 5:
+        return {
+            "disponivel": False,
+            "vwap": None,
+            "std": None,
+            "z_score": 0.0,
+            "zona": "NEUTRA",
+        }
+
+    vwap = soma_pv / soma_v
+    soma_var = sum(v * ((p - vwap) ** 2) for p, v in amostras)
+    std = math.sqrt(max(0.0, soma_var / soma_v))
+    p_ref = float(preco_atual) if (preco_atual is not None and preco_atual > 0) else amostras[-1][0]
+    z_score = ((p_ref - vwap) / std) if std > 1e-9 else 0.0
+
+    if z_score >= 2.0:
+        zona = "EXTREMO_PREMIUM_2SD"
+    elif z_score >= 1.0:
+        zona = "PREMIUM_1SD"
+    elif z_score <= -2.0:
+        zona = "EXTREMO_DISCOUNT_2SD"
+    elif z_score <= -1.0:
+        zona = "DISCOUNT_1SD"
+    else:
+        zona = "EQUILIBRIO_VWAP"
+
+    return {
+        "disponivel": True,
+        "vwap": round(vwap, 2),
+        "std": round(std, 2),
+        "banda_sup_1": round(vwap + std, 2),
+        "banda_inf_1": round(vwap - std, 2),
+        "banda_sup_2": round(vwap + 2.0 * std, 2),
+        "banda_inf_2": round(vwap - 2.0 * std, 2),
+        "z_score": round(z_score, 2),
+        "zona": zona,
+    }
+
+
+def avaliar_killzone_ict(ts: Optional[float] = None) -> Dict[str, Any]:
+    """
+    Classifica o horário atual nas janelas institucionais ICT (Killzones) para calibrar
+    agressividade, probabilidade mínima e tamanho de mão.
+    """
+    dt_local = datetime.fromtimestamp(ts or time.time())
+    hora_dec = dt_local.hour + dt_local.minute / 60.0
+
+    # Considerando fuso BRT (NY +1h ou +2h conforme DST; janelas principais NY Open 09:30-12:00 BRT/ET)
+    if 9.5 <= hora_dec <= 12.0:
+        return {
+            "janela": "NY_OPEN_SILVER_BULLET",
+            "liquidez_alta": True,
+            "chop_zone": False,
+            "multiplicador_lote": 1.0,
+            "ajuste_piso_prob": 0.0,
+            "descricao": "Killzone de Abertura NY / Silver Bullet (liquidez institucional máxima).",
+        }
+    if 12.25 <= hora_dec <= 13.75:
+        return {
+            "janela": "NY_LUNCH_CHOP",
+            "liquidez_alta": False,
+            "chop_zone": True,
+            "multiplicador_lote": 0.65,
+            "ajuste_piso_prob": 4.0,
+            "descricao": "Horário de Almoço NY (baixa liquidez e alto risco de violina — seletividade elevada).",
+        }
+    if 14.0 <= hora_dec <= 16.5:
+        return {
+            "janela": "NY_PM_SESSION",
+            "liquidez_alta": True,
+            "chop_zone": False,
+            "multiplicador_lote": 1.0,
+            "ajuste_piso_prob": 0.0,
+            "descricao": "Killzone da Tarde NY / Fechamento Institucional.",
+        }
+    return {
+        "janela": "SESSAO_PADRAO",
+        "liquidez_alta": True,
+        "chop_zone": False,
+        "multiplicador_lote": 0.85,
+        "ajuste_piso_prob": 0.0,
+        "descricao": "Sessão regular fora de pico primário.",
+    }
+

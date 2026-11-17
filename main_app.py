@@ -213,19 +213,37 @@ except Exception:
 
 try:
     from market_regime import (MarketRegimeClassifier, ConfluenceMatrix,
-                               avaliar_contra_tendencia_forte)
+                               avaliar_contra_tendencia_forte,
+                               DetectorDivergenciaSMT,
+                               calcular_vwap_e_bandas_fita,
+                               avaliar_killzone_ict)
 except Exception:
     MarketRegimeClassifier, ConfluenceMatrix = None, None
     avaliar_contra_tendencia_forte = None
+    DetectorDivergenciaSMT = None
+    calcular_vwap_e_bandas_fita = None
+    avaliar_killzone_ict = None
 
 try:
     from tiger_predictive import (PredictiveLiquidityEngine,
                                   calcular_plano_tatico_meta_momentum,
-                                  MemoriaEvolutivaMercado)
+                                  MemoriaEvolutivaMercado,
+                                  normalizar_entrada_ote_para_caber_no_stop,
+                                  otimizar_entrada_sniper_anti_perdida,
+                                  detectar_gatilho_despertar_imediato,
+                                  calcular_multiplicador_kelly_institucional,
+                                  calcular_catraca_lucro_multinivel,
+                                  calcular_plano_parciais_e_runner)
 except Exception:
     PredictiveLiquidityEngine = None
     calcular_plano_tatico_meta_momentum = None
     MemoriaEvolutivaMercado = None
+    normalizar_entrada_ote_para_caber_no_stop = None
+    otimizar_entrada_sniper_anti_perdida = None
+    detectar_gatilho_despertar_imediato = None
+    calcular_multiplicador_kelly_institucional = None
+    calcular_catraca_lucro_multinivel = None
+    calcular_plano_parciais_e_runner = None
 
 try:
     from agent_monitor import AgenteAutocorretivoInstitucional
@@ -28488,10 +28506,28 @@ class SmcQuantApp(ctk.CTk):
 
                 # Dorme em fatias de 1s para que DESLIGAR o motor tenha efeito
                 # imediato, em vez de esperar até 60 min pelo fim do sleep.
+                # A cada 2s verifica se houve explosão de fluxo/sweep na fita (Despertar Sniper 0s).
                 restante = espera
+                _passos_sleep = 0
                 while restante > 0 and not self.parar_solicitado:
                     time.sleep(min(1, restante))
                     restante -= 1
+                    _passos_sleep += 1
+                    if (_passos_sleep % 2 == 0 and restante > 5
+                            and detectar_gatilho_despertar_imediato is not None):
+                        try:
+                            _ult_wake = float(getattr(self, "_ultimo_despertar_sniper_ts", 0.0) or 0.0)
+                            for _at_w, _neg_w in list((getattr(self, "_negocios_por_ativo", {}) or {}).items()):
+                                _res_w = detectar_gatilho_despertar_imediato(
+                                    _neg_w, ultimo_despertar_ts=_ult_wake, cooldown_s=45.0)
+                                if _res_w.get("despertar"):
+                                    self._ultimo_despertar_sniper_ts = time.time()
+                                    self.log(f"⚡ [DESPERTAR SNIPER 0s — {_at_w}] {_res_w.get('motivo')} — "
+                                             "antecipando leitura do gráfico imediatamente!")
+                                    restante = 0
+                                    break
+                        except Exception:
+                            pass
                 if self.parar_solicitado:
                     break
 
@@ -29770,6 +29806,66 @@ class SmcQuantApp(ctk.CTk):
                                     self.after(0, self._atualizar_dashboard)
 
                         # ---------------- NOVO SINAL (se estado livre) ----------------
+                        # REFINAMENTO SNIPER OTE & FRONT-RUN INSTITUCIONAL:
+                        # 1. Se a IA posicionou a entrada na borda externa do Order Block deixando o stop
+                        #    entre 1.0x e 1.6x da régua máxima (ex: 100 ticks no NQ onde o teto é 80),
+                        #    refina a entrada mais fundo no miolo/OTE da zona sem tocar no stop_loss,
+                        #    reduzindo o risco para caber na régua e aumentando o R:R.
+                        # 2. Se o stop já está folgado abaixo do teto, aplica front-run de +2 ticks na
+                        #    borda de defesa institucional para evitar perder a ordem por poucos ticks.
+                        if acao in ("BUY", "SELL"):
+                            try:
+                                _ep_bruto = sinal.get("entry_price") or 0
+                                _sl_bruto = sinal.get("stop_loss") or 0
+                                _tp1_bruto = sinal.get("take_profit_1") or 0
+                                _tp2_bruto = sinal.get("take_profit_2") or 0
+                                _tk_at = tick_do_ativo(ativo) or 0.25
+                                _fx_at = faixa_de_stop_do_ativo(ativo)
+                                if normalizar_entrada_ote_para_caber_no_stop is not None and _fx_at:
+                                    _res_ote = normalizar_entrada_ote_para_caber_no_stop(
+                                        acao, _ep_bruto, _sl_bruto, _tp1_bruto, _tp2_bruto,
+                                        preco, _tk_at, _fx_at, RR_MINIMO)
+                                    if _res_ote.get("ajustado"):
+                                        sinal["entry_price"] = _res_ote["entry"]
+                                        _ep_bruto = _res_ote["entry"]
+                                        self.log(_res_ote["motivo"])
+                                    elif otimizar_entrada_sniper_anti_perdida is not None:
+                                        _res_fr = otimizar_entrada_sniper_anti_perdida(
+                                            acao, _ep_bruto, _sl_bruto, _tp1_bruto,
+                                            preco, _tk_at, _fx_at, RR_MINIMO)
+                                        if _res_fr.get("ajustado"):
+                                            sinal["entry_price"] = _res_fr["entry"]
+                                            self.log(_res_fr["motivo"])
+                            except Exception:
+                                pass
+
+                            # DETECTOR DE DIVERGÊNCIA SMT INTER-MERCADOS (NQ/MNQ vs ES/MES)
+                            if DetectorDivergenciaSMT is not None:
+                                try:
+                                    _res_smt = DetectorDivergenciaSMT.detectar(
+                                        ativo, acao, getattr(self, "_hist_indicadores", {}) or {})
+                                    if _res_smt.get("smt_confirmado"):
+                                        probabilidade = round(min(98.0, probabilidade + float(_res_smt.get("bonus_prob", 5.0))), 1)
+                                        if "Divergência SMT Institucional" not in confluencias:
+                                            confluencias.append("Divergência SMT Institucional")
+                                        self.log(f"💎 [SMT DIVERGENCE] {_res_smt.get('descricao')} (+{_res_smt.get('bonus_prob', 5.0):.0f} pts)")
+                                except Exception:
+                                    pass
+
+                            # BANDAS INSTITUCIONAIS DE VWAP (±1σ, ±2σ) PELA FITA
+                            if calcular_vwap_e_bandas_fita is not None:
+                                try:
+                                    _neg_vwap = (getattr(self, "_negocios_por_ativo", {}) or {}).get(
+                                        raiz_do_contrato(ativo) or str(ativo).upper(), [])
+                                    _info_vwap = calcular_vwap_e_bandas_fita(_neg_vwap, preco)
+                                    if _info_vwap.get("disponivel"):
+                                        _zs = float(_info_vwap.get("z_score") or 0.0)
+                                        if (acao == "BUY" and _zs <= -1.0) or (acao == "SELL" and _zs >= 1.0):
+                                            self.log(f"📊 [VWAP QUANT] Preço em zona institucional favorável "
+                                                     f"({_info_vwap.get('zona')} · Z={_zs:+.2f}σ · VWAP {_info_vwap.get('vwap')}).")
+                                except Exception:
+                                    pass
+
                         # PISO DE QUALIDADE: calcula o R:R até o 1º alvo e exige R:R>=2
                         # e probabilidade>=mínimo. Setups fracos (alvo curto, baixa
                         # convicção) NÃO viram sugestão — cortam o ruído.
@@ -30293,10 +30389,44 @@ class SmcQuantApp(ctk.CTk):
 
                             linha_contratos = ""
                             if sizing["contratos"] > 0:
+                                # ESCUDO ANTI-QUEBRA & ALOCAÇÃO KELLY / PARCIAIS ASSIMÉTRICAS 70/30
+                                _nota_kelly = ""
+                                _nota_runner = ""
+                                try:
+                                    if calcular_multiplicador_kelly_institucional is not None and sizing["contratos"] >= 2:
+                                        _st_pl = self._computar_stats_plano()
+                                        _dd_max_k = float(plano.get("drawdown_maximo") or 1000.0)
+                                        _dd_rest_k = max(0.0, _dd_max_k + min(0.0, float(_st_pl.get("lucro_usd") or 0.0)))
+                                        _kz = avaliar_killzone_ict() if avaliar_killzone_ict is not None else {}
+                                        _k_info = calcular_multiplicador_kelly_institucional(
+                                            probabilidade=probabilidade,
+                                            rr=rr1 or RR_MINIMO,
+                                            realizado_hoje=float(_st_pl.get("resultado_hoje") or 0.0),
+                                            drawdown_restante=_dd_rest_k,
+                                            drawdown_maximo=_dd_max_k,
+                                            smt_confirmado=("Divergência SMT Institucional" in confluencias),
+                                            killzone_chop=bool(_kz.get("chop_zone")),
+                                        )
+                                        _mult_k = float(_k_info.get("multiplicador") or 1.0)
+                                        if _mult_k < 1.0:
+                                            _novo_c = max(1, int(round(sizing["contratos"] * _mult_k)))
+                                            if _novo_c < sizing["contratos"]:
+                                                sizing["contratos"] = _novo_c
+                                                sizing["risco_real_usd"] = round(_novo_c * float(sizing.get("risco_por_contrato") or 0), 2)
+                                                _nota_kelly = f"\n🛡️ {_k_info.get('motivo')}"
+                                    if calcular_plano_parciais_e_runner is not None and sizing["contratos"] >= 2:
+                                        _pl_run = calcular_plano_parciais_e_runner(
+                                            sizing["contratos"], sinal_ativo["entry"],
+                                            sinal_ativo["stop"], sinal_ativo["tp1"], sinal_ativo.get("tp2"))
+                                        if _pl_run.get("tem_runner"):
+                                            _nota_runner = f"\n🚀 {_pl_run.get('descricao')}"
+                                except Exception:
+                                    pass
                                 linha_contratos = (
                                     f"\n📐 *Contratos (plano da mesa): {sizing['contratos']}* ({ativo})\n"
                                     f"Risco: US${sizing['risco_real_usd']} "
                                     f"(US${sizing['risco_por_contrato']}/contrato · teto US${sizing['risco_usd']})"
+                                    + _nota_kelly + _nota_runner
                                 )
                                 if sizing.get("motivo_limite"):
                                     linha_contratos += f"\n🔒 {sizing['motivo_limite']}"
