@@ -201,7 +201,7 @@ class TestOInterruptorEUmSo(unittest.TestCase):
         fonte = fonte_do_arquivo()
         i = fonte.index("def _modo_autonomo(")
         bloco = fonte[i:i + 700]
-        self.assertIn("tv_auto_var", bloco)
+        self.assertIn('_tradovate_preferencia("auto_ativo")', bloco)
         self.assertIn("TRADOVATE_DISPONIVEL", bloco)
 
 

@@ -46,6 +46,17 @@ a = Analysis(
         # A camada de plataforma é importada por nome; garantimos que entra.
         'plataforma',
         'tradovate_auto',
+        'tradovate_stream',
+        'order_flow',
+        'market_regime',
+        'tiger_voice',
+        'tiger_hud',
+        'tiger_predictive',
+        'tiger_autonomia',
+        'advanced_mode',
+        'news_trading',
+        'extrato_pdf',
+        'orbe_temas',
         'plano_recomendado',
         # O PyInstaller nem sempre segue o Quartz sozinho.
         'Quartz',

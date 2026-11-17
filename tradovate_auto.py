@@ -231,7 +231,12 @@ def plano_trailing_inteligente(ticks_stop, rr=None, probabilidade=None,
 
     # Multiplicador customizado se o trader escolheu via chat (ex: "1.5 R" -> 1.5)
     mult_custom = None
-    if modo_r and str(modo_r).lower() not in ("auto", "ia", "adaptativa", "🤖 ia adaptativa (smart smc)"):
+    modo_str = str(modo_r or "auto").strip().lower()
+    eh_blindagem = any(
+        k in modo_str
+        for k in ("blindagem", "zero_devolucao", "zero-devolucao", "zero-devolução", "protecao_total", "blindado")
+    ) or modo_str == "agressivo"
+    if not eh_blindagem and modo_r and modo_str not in ("auto", "ia", "adaptativa", "🤖 ia adaptativa (smart smc)"):
         import re
         m_match = re.search(r"(\d+(?:[.,]\d+)?)", str(modo_r))
         if m_match:
@@ -241,7 +246,14 @@ def plano_trailing_inteligente(ticks_stop, rr=None, probabilidade=None,
                 mult_custom = None
 
     # ---- 1) QUANDO ARMAR, e 2) A QUE DISTÂNCIA ----
-    if mult_custom is not None and mult_custom > 0:
+    if eh_blindagem:
+        acionar = max(2, int(round(base * 0.5)))
+        distancia = max(TRAIL_TICKS_MINIMO, int(round(base * 0.45)))
+        razoes.append(
+            f"BLINDAGEM ZERO-DEVOLUÇÃO: aciona já em 0,5R ({acionar} ticks) "
+            f"com distância curta ({distancia} ticks) para travar no positivo imediato"
+        )
+    elif mult_custom is not None and mult_custom > 0:
         acionar = max(1, int(round(base * mult_custom)))
         distancia = max(TRAIL_TICKS_MINIMO, base)
         razoes.append(f"Gatilho customizado em {mult_custom:.1f}R ({acionar} ticks) com folga de {distancia} ticks")
@@ -476,6 +488,7 @@ class TradovateAuto:
         self.porta = porta
         self.log = log
         self.ws = None
+        self._aviso_cdp_ausente = False
         self._proximo_id = 1
         self.stream = TradovateStream(self, log=self.log) if TradovateStream else None
         # calib = mapeamento linear preço -> Y da página + X da coluna de clique.
@@ -496,6 +509,59 @@ class TradovateAuto:
         try:
             self._http_json("/json/version")
             return True
+        except Exception:
+            return False
+
+    def listar_abas_tradovate(self):
+        """Lista todas as abas abertas da Tradovate no Chrome de depuração."""
+        try:
+            return [
+                a for a in self._http_json("/json")
+                if a.get("type") == "page"
+                and "tradovate" in (a.get("url") or "").lower()
+                and a.get("webSocketDebuggerUrl")
+            ]
+        except Exception:
+            return []
+
+    def selecionar_conta_no_dom(self, nome_conta):
+        """Tenta selecionar uma conta específica no seletor de contas do topo da Tradovate."""
+        alvo = str(nome_conta or "").strip()
+        if not alvo:
+            return False
+        js = f"""
+        (function(alvo){{
+          var alvoUp = alvo.toUpperCase();
+          var els = document.querySelectorAll('div,span,button,a,li,[role="option"],[role="menuitem"]');
+          for(var i=0;i<els.length;i++){{
+            var t = (els[i].innerText||els[i].textContent||'').trim();
+            if(t && t.length <= 40 && t.toUpperCase().indexOf(alvoUp) !== -1){{
+              var r = els[i].getBoundingClientRect();
+              if(r.width > 0 && r.height > 0 && r.top <= 120){{
+                return JSON.stringify({{ok:true, ja_selecionada:true, conta:t}});
+              }}
+            }}
+          }}
+          var seletores = document.querySelectorAll('.account-selector, [data-testid*="account"], .header-account, .dropdown-toggle');
+          for(var s=0;s<seletores.length;s++){{
+            try{{ seletores[s].click(); }}catch(e){{}}
+          }}
+          var itens = document.querySelectorAll('li, [role="option"], [role="menuitem"], .dropdown-item, div, span');
+          for(var j=0;j<itens.length;j++){{
+            var tj = (itens[j].innerText||itens[j].textContent||'').trim();
+            if(tj && tj.length <= 45 && tj.toUpperCase().indexOf(alvoUp) !== -1){{
+              var rj = itens[j].getBoundingClientRect();
+              if(rj.width > 0 && rj.height > 0){{
+                try{{ itens[j].click(); return JSON.stringify({{ok:true, trocada:true, conta:tj}}); }}catch(e){{}}
+              }}
+            }}
+          }}
+          return JSON.stringify({{ok:false}});
+        }})({json.dumps(alvo)})
+        """
+        try:
+            res = json.loads(self.avaliar_js(js) or "{}")
+            return bool(res.get("ok"))
         except Exception:
             return False
 
@@ -542,9 +608,12 @@ class TradovateAuto:
     def conectar(self, id_aba=None):
         """Abre o WebSocket CDP na aba da Tradovate. Retorna True/False."""
         if not self.chrome_ligado():
-            self.log("❌ Chrome de depuração não encontrado na porta "
-                     f"{self.porta}. Abra com abrir_chrome_debug() e logue na Tradovate.")
+            if not self._aviso_cdp_ausente:
+                self.log("❌ Chrome de depuração não encontrado na porta "
+                         f"{self.porta}. Abra com abrir_chrome_debug() e logue na Tradovate.")
+                self._aviso_cdp_ausente = True
             return False
+        self._aviso_cdp_ausente = False
         ws_url = self.descobrir_aba_tradovate(id_aba)
         if not ws_url:
             self.log("❌ Nenhuma aba da Tradovate encontrada. Abra trader.tradovate.com "

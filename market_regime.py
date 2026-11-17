@@ -1,230 +1,435 @@
-# 1. No topo de main_app.py, onde tem a importação do motor:
-#
-# try:
-#     from market_regime import MarketRegimeClassifier, ConfluenceMatrix
-# except Exception:
-#     MarketRegimeClassifier, ConfluenceMatrix = None, None
-#
-# CERTIFIQUE-SE DE INSTANCIAR NO __init__ DA SmcQuantApp:
-# Substitua a linha 13880:
-# self.regime_classifier = MarketRegimeClassifier() if MarketRegimeClassifier else None
-# self.confluence_matrix = ConfluenceMatrix() if ConfluenceMatrix else None
-
-# ==============================================================================
-# 2. VÁ PARA A LINHA ~2559 DENTRO DA FUNÇÃO _loop_robo_quant (onde ele emite o cenário)
-# ==============================================================================
-
-# ENCONTRE ESTE BLOCO:
-#
-# if sinal_ativo["estado"] == "ENCERRADA" and acao in ("BUY", "SELL") \
-#         and preco is not None and preco > 0 \
-#         and sinal.get("entry_price") and sinal.get("stop_loss") \
-#         and sinal.get("entry_price") > 0 and sinal.get("stop_loss") > 0 \
-#         and qualidade_ok and not repetido:
-
-# ==============================================================================
-# E SUBSTITUA POR ESTE BLOCO INTEIRO:
-# ==============================================================================
-
-                        # ---- 🛡️ FILTRO INSTITUCIONAL DE CONSOLIDAÇÃO (MARKET REGIME) ----
-                        # Aqui a inteligência do `market_regime.py` age antes do sinal 
-                        # ser validado. Se a fita detectou range (COMPRESSAO) e a IA sugeriu
-                        # um rompimento falso, a Matriz de Confluência derruba a nota e recusa.
-                        
-                        regime_ok = True
-                        if acao in ("BUY", "SELL") and getattr(self, "regime_classifier", None):
-                            _velas_fita = getattr(self, "_negocios_por_ativo", {}).get(
-                                raiz_do_contrato(ativo) or str(ativo).upper(), [])
-                            
-                            # Avalia se tem histórico mínimo na fita para classificar
-                            if len(_velas_fita) >= 15:
-                                info_regime = self.regime_classifier.classificar(list(_velas_fita))
-                                avaliacao_matrix = self.confluence_matrix.pontuar_setup(sinal, None, info_regime)
-                                
-                                if not avaliacao_matrix["aprovado"]:
-                                    regime_ok = False
-                                    repetido = True # Evita que prossiga
-                                    self._contar_motivo_do_descarte(
-                                        acao, ativo, "mercado em consolidação (chop zone)")
-                                    self.log(f"🛡️ BLOQUEIO DE CONSOLIDAÇÃO: {acao} {ativo} recusado "
-                                              f"pelo Filtro Institucional. {avaliacao_matrix['alertas'][0]}. "
-                                              f"Nota da confluência: {avaliacao_matrix['score']}/80.")
-
-                        # Só cria sinal com preços VÁLIDOS (>0), preço de tela lido E que
-                        # passe no piso de qualidade, e que NÃO seja um rompimento falso num range.
-                        if sinal_ativo["estado"] == "ENCERRADA" and acao in ("BUY", "SELL") \
-                                and preco is not None and preco > 0 \
-                                and sinal.get("entry_price") and sinal.get("stop_loss") \
-                                and sinal.get("entry_price") > 0 and sinal.get("stop_loss") > 0 \
-                                and qualidade_ok and not repetido and regime_ok:
-```eof
-
-Com este patch implementado em `main_app.py`, e o arquivo `market_regime.py` salvo na mesma pasta, toda ordem em ambientes de consolidação ou em momentos de baixíssima ineficiência do preço será ativamente bloqueada (ou penalizada) pela sua máquina aritmética. 
-
-Faça a inserção, abra a plataforma na conta de teste da Apex ou Topstep e preste atenção no log quando o mercado lateralizar. Ele vai exibir claramente o aviso do "Bloqueio de Consolidação". Me confirme se tudo correu perfeitamente!
-
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-market_regime.py — Classificador de Regime de Mercado Institucional e Smart SMC.
+market_regime.py — Classificador de Regime de Mercado Institucional, Filtro Anti-Contra-Tendência e Matriz de Confluência.
 
 Funcionalidades:
-  1. Identificação de Regime (Math-Based, não dependente de LLM):
-     - EXPANSAO (Trend): SMC direcional liberado, FVG, BOS.
-     - COMPRESSAO (Range/Chop Zone): Operações centrais bloqueadas. Habilita 
-       estratégia de Sweep de Liquidez nas extremidades (Retorno à Média).
-  2. Filtro Anti-Violinada para timeframes rápidos (30s e 5m).
+  1. Classificação de Regime de Mercado (Math-Based + Efficiency Ratio de Kaufman):
+     - EXPANSAO (Trend): Tendência direcional ativa — identifica ALTA / BAIXA e força da tendência.
+     - COMPRESSAO (Range / Chop Zone): Mercado lateralizado — bloqueia entradas no miolo e exige Sweep nos extremos.
+     - RISCO_NOTICIA (Event Risk): Notícias macro de alto impacto — bloqueio preventivo.
+  2. Escudo Institucional Anti-Contra-Tendência:
+     - Impede apostas contra tendências fortes (ex.: comprar faca caindo ou vender foguete subindo)
+       a menos que exista confirmação estrutural completa de reversão (CHoCH/MSS + Liquidity Sweep + OB/FVG + Prob >= 85%).
+  3. Matriz de Confluência Multi-Fator:
+     - Pontuação de 0 a 100 combinando SMC + Order Flow + Regime de Mercado + R:R.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
-EXPANSAO = "EXPANSAO"
-COMPRESSAO = "COMPRESSAO"
-RISCO_NOTICIA = "RISCO_NOTICIA"
+
+REGIME_EXPANSAO = "EXPANSAO"
+REGIME_COMPRESSAO = "COMPRESSAO"
+REGIME_RISCO_NOTICIA = "RISCO_NOTICIA"
+
+# Aliases de compatibilidade
+EXPANSAO = REGIME_EXPANSAO
+COMPRESSAO = REGIME_COMPRESSAO
+RISCO_NOTICIA = REGIME_RISCO_NOTICIA
+
+
+def _extrair_fechamento(item: Any) -> Optional[float]:
+    if isinstance(item, (int, float)):
+        return float(item)
+    if isinstance(item, (list, tuple)) and len(item) >= 2:
+        try:
+            return float(item[1])
+        except (TypeError, ValueError):
+            return None
+    if isinstance(item, dict):
+        for chave in ("close", "fechamento", "preco", "price"):
+            if item.get(chave) is not None:
+                try:
+                    return float(item[chave])
+                except (TypeError, ValueError):
+                    return None
+    return None
+
 
 class MarketRegimeClassifier:
-    """Classifica o regime de mercado em tempo real para proteção e calibração SMC."""
+    """Classifica o regime de mercado em tempo real para proteção de drawdown e alinhamento direcional."""
 
-    def __init__(self):
-        # Janela ideal para ler o regime nos últimos 15 a 20 candles.
-        self.periodo_analise = 15
+    def __init__(self, periodo_analise: int = 15):
+        self.periodo_analise = max(5, int(periodo_analise))
 
-    def classificar(self, candles: List[Dict[str, float]]) -> Dict[str, Any]:
+    @staticmethod
+    def classificar(candles: Optional[List[Dict[str, float]]] = None,
+                    atr_atual: Optional[float] = None,
+                    atr_medio: Optional[float] = None,
+                    minutos_para_noticia: Optional[int] = None) -> Dict[str, Any]:
         """
-        Classifica o regime atual com base na eficiência direcional e volatilidade.
-        candles: lista de dicionários contendo OHLC [{'open', 'high', 'low', 'close'}].
+        Classifica o regime atual com base em volatilidade, estrutura e Ratio de Eficiência de Kaufman (ER).
+        Funciona tanto via chamada estática quanto via instância.
         """
-        resultado = {
-            "regime": EXPANSAO,
-            "motivo": "Amostra inicial — operando em modo padrão.",
+        if minutos_para_noticia is not None and 0 <= minutos_para_noticia <= 15:
+            return {
+                "regime": REGIME_RISCO_NOTICIA,
+                "direcao": "NEUTRO",
+                "motivo": f"Notícia de alto impacto em {minutos_para_noticia} minutos. Operações bloqueadas.",
+                "permissao_operar": False,
+                "score_penalidade": -50,
+                "tendencia_forte": False,
+                "efficiency_ratio": 0.0,
+            }
+
+        if not candles or len(candles) < 3:
+            return {
+                "regime": REGIME_EXPANSAO,
+                "direcao": "NEUTRO",
+                "motivo": "Amostra inicial de candles — operando em modo padrão.",
+                "permissao_operar": True,
+                "score_penalidade": 0,
+                "tendencia_forte": False,
+                "efficiency_ratio": 0.5,
+            }
+
+        janela = min(len(candles), 15)
+        ultimos = candles[-janela:]
+        fechamentos = []
+        aberturas = []
+        maximas = []
+        minimas = []
+
+        for idx, c in enumerate(ultimos):
+            if not isinstance(c, dict):
+                val = _extrair_fechamento(c)
+                if val is not None:
+                    fechamentos.append(val)
+                    aberturas.append(fechamentos[-2] if len(fechamentos) > 1 else val)
+                    maximas.append(val)
+                    minimas.append(val)
+                continue
+            cl = float(c.get("close", c.get("fechamento", c.get("preco", 0))) or 0)
+            op = float(c.get("open", c.get("abertura", cl)) or cl)
+            hi = float(c.get("high", c.get("maxima", max(op, cl))) or max(op, cl))
+            lo = float(c.get("low", c.get("minima", min(op, cl))) or min(op, cl))
+            fechamentos.append(cl)
+            aberturas.append(op)
+            maximas.append(hi)
+            minimas.append(lo)
+
+        if len(fechamentos) < 3:
+            return {
+                "regime": REGIME_EXPANSAO,
+                "direcao": "NEUTRO",
+                "motivo": "Amostra insuficiente — operando em modo padrão.",
+                "permissao_operar": True,
+                "score_penalidade": 0,
+                "tendencia_forte": False,
+                "efficiency_ratio": 0.5,
+            }
+
+        amplitude_total = max(maximas) - min(minimas)
+        corpos_medios = sum(abs(fechamentos[i] - aberturas[i]) for i in range(len(fechamentos))) / len(fechamentos)
+        razao_atr = (float(atr_atual) / float(atr_medio)) if (atr_atual and atr_medio and float(atr_medio) > 0) else 1.0
+
+        inicio = aberturas[0] if aberturas[0] > 0 else fechamentos[0]
+        fim = fechamentos[-1]
+        deslocamento = fim - inicio
+        deslocamento_abs = abs(deslocamento)
+
+        caminho_bruto = sum(abs(fechamentos[i] - fechamentos[i - 1]) for i in range(1, len(fechamentos)))
+        efficiency_ratio = (deslocamento_abs / caminho_bruto) if caminho_bruto > 0 else 0.0
+
+        passos_a_favor = 0
+        passos_validos = 0
+        for i in range(1, len(fechamentos)):
+            diff = fechamentos[i] - fechamentos[i - 1]
+            if abs(diff) > 1e-9:
+                passos_validos += 1
+                if (deslocamento > 0 and diff > 0) or (deslocamento < 0 and diff < 0):
+                    passos_a_favor += 1
+        consistencia_passos = (passos_a_favor / passos_validos) if passos_validos > 0 else 0.0
+
+        direcao = "ALTA" if deslocamento > 0 else ("BAIXA" if deslocamento < 0 else "LATERAL")
+        tendencia_forte = bool(
+            len(fechamentos) >= 4
+            and efficiency_ratio >= 0.55
+            and consistencia_passos >= 0.65
+            and (amplitude_total <= 0 or deslocamento_abs >= amplitude_total * 0.55)
+        )
+
+        if razao_atr > 1.2 or (amplitude_total > 0 and deslocamento_abs > amplitude_total * 0.6 and corpos_medios > 0) or tendencia_forte:
+            return {
+                "regime": REGIME_EXPANSAO,
+                "direcao": direcao,
+                "motivo": f"Mercado em expansão direcional ({direcao}) com eficiência {efficiency_ratio:.0%}.",
+                "permissao_operar": True,
+                "alvo_rr_recomendado": 3.0 if tendencia_forte else 2.5,
+                "score_penalidade": 0,
+                "tendencia_forte": tendencia_forte,
+                "efficiency_ratio": round(efficiency_ratio, 3),
+                "consistencia": round(consistencia_passos, 3),
+            }
+
+        tamanho_sombras = sum(max(0.0, (maximas[i] - minimas[i]) - abs(fechamentos[i] - aberturas[i])) for i in range(len(fechamentos)))
+        tamanho_corpos = sum(abs(fechamentos[i] - aberturas[i]) for i in range(len(fechamentos)))
+        muita_sombra = tamanho_sombras > (tamanho_corpos * 1.2) if tamanho_corpos > 0 else True
+
+        if razao_atr < 0.7 or (amplitude_total > 0 and deslocamento_abs < amplitude_total * 0.25) or (efficiency_ratio < 0.30 and muita_sombra):
+            return {
+                "regime": REGIME_COMPRESSAO,
+                "direcao": "LATERAL",
+                "motivo": f"Mercado em compressão lateral (ER {efficiency_ratio:.0%}). Risco de violina elevado no miolo.",
+                "permissao_operar": False,
+                "alvo_rr_recomendado": 1.5,
+                "score_penalidade": 30,
+                "tendencia_forte": False,
+                "efficiency_ratio": round(efficiency_ratio, 3),
+                "consistencia": round(consistencia_passos, 3),
+            }
+
+        return {
+            "regime": REGIME_EXPANSAO,
+            "direcao": direcao,
+            "motivo": "Estrutura direcional moderada.",
             "permissao_operar": True,
+            "alvo_rr_recomendado": 2.0,
             "score_penalidade": 0,
-            "estrategia_sugerida": "SMC Direcional (BOS/FVG)"
+            "tendencia_forte": tendencia_forte,
+            "efficiency_ratio": round(efficiency_ratio, 3),
+            "consistencia": round(consistencia_passos, 3),
         }
 
-        if not candles or len(candles) < self.periodo_analise:
-            return resultado
 
-        # Seleciona apenas a janela de análise
-        ultimos = candles[-self.periodo_analise:]
+class _ResultadoContraTendencia(dict):
+    """Dicionário que também permite desempacotamento `(permitido, motivo)`."""
+    def __iter__(self):
+        yield bool(self.get("permitido", True))
+        yield str(self.get("motivo") or "")
 
-        maximas = [c.get("high", c.get("maxima", 0)) for c in ultimos]
-        minimas = [c.get("low", c.get("minima", 0)) for c in ultimos]
-        fechamentos = [c.get("close", c.get("fechamento", 0)) for c in ultimos]
-        aberturas = [c.get("open", c.get("abertura", 0)) for c in ultimos]
 
-        try:
-            topo_caixote = max(maximas)
-            fundo_caixote = min(minimas)
-            amplitude_total = topo_caixote - fundo_caixote
+def avaliar_contra_tendencia_forte(
+    acao: str,
+    precos_recentes: Optional[Any] = None,
+    candles: Optional[ Any ] = None,
+    confluencias: Optional[Sequence[str]] = None,
+    market_analysis: str = "",
+    probabilidade: float = 0.0,
+    order_flow_pressao: Optional[str] = None,
+) -> _ResultadoContraTendencia:
+    """
+    Trava Institucional Anti-Contra-Tendência:
+    Quando o mercado está em tendência fortíssima (ex: derretendo ou explodindo em linha reta),
+    NUNCA permite apostar contra a tendência no palpite.
+    Só autoriza uma operação de reversão contra tendência forte se houver:
+      1. Confirmação explícita de quebra de estrutura de reversão (CHoCH / MSS), E
+      2. Varredura de liquidez institucional (Liquidity Sweep / Spring / Upthrust), E
+      3. Zona institucional clara (Order Block / FVG / Absorção), E
+      4. Order Flow não oposto à reversão (se medido), E
+      5. Probabilidade de alta convicção (>= 85%).
+    """
+    direcao_sinal = str(acao or "").strip().upper()
+    if direcao_sinal not in ("BUY", "SELL"):
+        return _ResultadoContraTendencia({"permitido": True, "contra_tendencia": False, "direcao_tendencia": "NEUTRO", "motivo": None})
 
-            # 1. Distância Líquida Percorrida (Fechamento atual vs Abertura do início da janela)
-            inicio = aberturas[0]
-            fim = fechamentos[-1]
-            deslocamento_liquido = abs(fim - inicio)
+    # Compatibilidade posicional: avaliar_contra_tendencia_forte(acao, info_regime_dict, confluencias, probabilidade)
+    info: Optional[Dict[str, Any]] = None
+    if isinstance(precos_recentes, dict) and ("regime" in precos_recentes or "tendencia_forte" in precos_recentes or "direcao" in precos_recentes):
+        info = dict(precos_recentes)
+        if candles is not None and confluencias is None and isinstance(candles, (list, tuple)):
+            confluencias = candles
+        if isinstance(confluencias, (int, float)) and probabilidade == 0.0:
+            probabilidade = float(confluencias)
+            confluencias = candles if isinstance(candles, (list, tuple)) else []
+    else:
+        amostra_candles: List[Dict[str, float]] = []
+        if candles and isinstance(candles, (list, tuple)) and len(candles) >= 4:
+            amostra_candles = list(candles[-12:])
+        elif precos_recentes and isinstance(precos_recentes, (list, tuple)):
+            valores = [v for v in (_extrair_fechamento(x) for x in precos_recentes) if v is not None and v > 0]
+            filtrados: List[float] = []
+            for v in valores:
+                if not filtrados or abs(v - filtrados[-1]) > 1e-9:
+                    filtrados.append(v)
+            if len(filtrados) >= 4:
+                for i, p in enumerate(filtrados[-10:]):
+                    ant = filtrados[max(0, len(filtrados) - 10 + i - 1)]
+                    amostra_candles.append({
+                        "open": ant,
+                        "high": max(ant, p),
+                        "low": min(ant, p),
+                        "close": p,
+                    })
 
-            # 2. Caminho Bruto Percorrido (Soma do tamanho de todos os candles)
-            caminho_bruto = sum([abs(ultimos[i].get("close", 0) - ultimos[i-1].get("close", 0)) for i in range(1, len(ultimos))])
-            
-            # Evita divisão por zero
-            if caminho_bruto == 0 or amplitude_total == 0:
-                 resultado.update({
-                     "regime": COMPRESSAO,
-                     "motivo": "Mercado paralisado, sem volume.",
-                     "permissao_operar": False,
-                     "estrategia_sugerida": "Ficar de fora"
-                 })
-                 return resultado
+        if len(amostra_candles) < 4:
+            return _ResultadoContraTendencia({"permitido": True, "contra_tendencia": False, "direcao_tendencia": "NEUTRO", "motivo": None})
 
-            # 3. Ratio de Eficiência de Kaufman (ER)
-            # ER = Deslocamento Direcional / Caminho Bruto
-            # Vai de 0 (vai e volta, consolidação perfeita) a 1.0 (tendência perfeita sem pullback)
-            efficiency_ratio = deslocamento_liquido / caminho_bruto
+        info = MarketRegimeClassifier.classificar(amostra_candles)
 
-            # 4. Sombras vs Corpos
-            tamanho_corpos = sum([abs(c.get("close", 0) - c.get("open", 0)) for c in ultimos])
-            tamanho_sombras = sum([(c.get("high", 0) - c.get("low", 0)) - abs(c.get("close", 0) - c.get("open", 0)) for c in ultimos])
-            
-            # MATEMÁTICA INSTITUCIONAL DA CONSOLIDAÇÃO
-            # Se a eficiência for menor que 0.35 (vai e volta demais) E as sombras forem maiores que os corpos
-            if efficiency_ratio < 0.35 and tamanho_sombras > (tamanho_corpos * 1.2):
-                resultado.update({
-                    "regime": COMPRESSAO,
-                    "motivo": f"Mercado em Range (Topos: {topo_caixote} / Fundos: {fundo_caixote}). Alta fricção de liquidez.",
-                    "permissao_operar": True, # Podemos operar, MAS...
-                    "estrategia_sugerida": "Retorno à Média (Liquidity Sweep nos extremos). Bloquear BOS central.",
-                    "score_penalidade": 30 # Penaliza a nota da IA se ela sugerir compra no topo
-                })
-            else:
-                 resultado.update({
-                    "regime": EXPANSAO,
-                    "motivo": "Mercado em fluxo direcional. Caminho livre.",
-                    "permissao_operar": True,
-                    "estrategia_sugerida": "SMC Direcional (BOS/CHoCH/FVG)",
-                    "score_penalidade": 0
-                })
+    tendencia_forte = bool(info.get("tendencia_forte"))
+    raw_dir = str(info.get("direcao") or "NEUTRO").upper()
+    if raw_dir in ("BEARISH", "SELL", "DOWN", "BAIXA"):
+        direcao_tendencia = "BAIXA"
+    elif raw_dir in ("BULLISH", "BUY", "UP", "ALTA"):
+        direcao_tendencia = "ALTA"
+    else:
+        direcao_tendencia = raw_dir
 
-        except Exception as e:
-             resultado["motivo"] = f"Erro no cálculo do regime: {e}"
+    contra = (
+        tendencia_forte
+        and ((direcao_sinal == "BUY" and direcao_tendencia == "BAIXA")
+             or (direcao_sinal == "SELL" and direcao_tendencia == "ALTA"))
+    )
+    if not contra:
+        return _ResultadoContraTendencia({
+            "permitido": True,
+            "contra_tendencia": False,
+            "direcao_tendencia": direcao_tendencia,
+            "efficiency_ratio": info.get("efficiency_ratio", 0.0),
+            "motivo": None,
+        })
 
-        return resultado
+    # Está contra uma tendência forte! Verifica se existe confirmação institucional completa de reversão.
+    texto_confl = " | ".join(str(c).lower() for c in (confluencias or []))
+    texto_total = f"{texto_confl} | {str(market_analysis or '').lower()}"
+
+    tem_choch_mss = any(k in texto_total for k in ("choch", "mss", "change of character", "mudança de caráter", "mudanca de carater"))
+    tem_sweep = any(k in texto_total for k in ("sweep", "varredura de liquidez", "captura de liquidez", "stop hunt", "manipulação", "manipulacao"))
+    tem_zona = any(k in texto_total for k in ("order block", "ob", "fvg", "fair value gap", "ineficiência", "ineficiencia", "absorção", "absorcao"))
+    prob_ok = float(probabilidade or 0.0) >= 85.0
+
+    fluxo_contra = False
+    if order_flow_pressao:
+        p_norm = str(order_flow_pressao).upper()
+        if (direcao_sinal == "BUY" and "VENDEDOR" in p_norm) or (direcao_sinal == "SELL" and "COMPRADOR" in p_norm):
+            fluxo_contra = True
+
+    if tem_choch_mss and tem_sweep and tem_zona and prob_ok and not fluxo_contra:
+        return _ResultadoContraTendencia({
+            "permitido": True,
+            "contra_tendencia": True,
+            "direcao_tendencia": direcao_tendencia,
+            "efficiency_ratio": info.get("efficiency_ratio", 0.0),
+            "motivo": "",
+        })
+
+    faltam = []
+    if not tem_choch_mss:
+        faltam.append("CHoCH/MSS de reversão confirmada")
+    if not tem_sweep:
+        faltam.append("Liquidity Sweep de exaustão")
+    if not tem_zona:
+        faltam.append("Order Block/FVG institucional")
+    if not prob_ok:
+        faltam.append(f"probabilidade >= 85% (atual: {float(probabilidade or 0):.0f}%)")
+    if fluxo_contra:
+        faltam.append(f"Order Flow ainda {order_flow_pressao}")
+
+    return _ResultadoContraTendencia({
+        "permitido": False,
+        "contra_tendencia": True,
+        "direcao_tendencia": direcao_tendencia,
+        "efficiency_ratio": info.get("efficiency_ratio", 0.0),
+        "motivo": (
+            f"mercado em tendência forte de {direcao_tendencia} "
+            f"(eficiência {info.get('efficiency_ratio', 0):.0%}) e o sinal {direcao_sinal} "
+            f"aposta contra o fluxo dominante sem confirmação completa de reversão "
+            f"(faltou: {', '.join(faltam)})"
+        ),
+    })
+
 
 class ConfluenceMatrix:
-    """Matriz de pontuação multi-fator."""
+    """Matriz de pontuação multi-fator institucional."""
+
     def __init__(self):
         pass
 
-    def pontuar_setup(self, setup_smc: Dict, order_flow: Dict, regime_info: Dict) -> Dict:
+    @staticmethod
+    def pontuar_setup(setup_smc: Dict[str, Any],
+                      order_flow: Optional[Dict[str, Any]] = None,
+                      regime: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
-        Cruza a sugestão da IA com as leis do mercado. Se o score for menor que 80, o trade não sai.
+        Pontua o setup de 0 a 100. Retorna aprovação apenas para Score >= 80.
+        Funciona tanto via chamada estática quanto via instância.
         """
         score = 0
+        confluencias = []
         alertas = []
-        aprovado = False
 
-        # Avaliação de SMC Básica
-        if "order block" in str(setup_smc).lower(): score += 30
-        if "varredura de liquidez" in str(setup_smc).lower() or "sweep" in str(setup_smc).lower(): score += 20
-        if "fvg" in str(setup_smc).lower() or "fair value gap" in str(setup_smc).lower(): score += 10
-        
-        # Filtro Absoluto de Consolidação
-        direcao = str(setup_smc.get("action", "HOLD")).upper()
+        direcao = str(setup_smc.get("direcao") or setup_smc.get("action") or "").upper()
+        fatores_smc = setup_smc.get("confluencias") or setup_smc.get("confluences") or []
+        texto_smc = " ".join(str(f).upper() for f in fatores_smc) + " " + str(setup_smc.get("market_analysis", "")).upper()
 
-        if regime_info.get("regime") == COMPRESSAO:
-            alertas.append("ALERTA: Mercado Consolidado. Filtrando entradas falsas e ativando Sweep.")
-            # Numa consolidação, comprar rompimento é pedir para levar violinada
-            # Se o setup sugere COMPRA, só ganha ponto se for acompanhado de um Sweep (fundo do caixote)
-            if direcao in ["BUY", "COMPRA"] and "sweep" not in str(setup_smc).lower():
-                score -= 40
-                alertas.append("Setup de compra em consolidação sem captura de liquidez inferior. Risco de False Breakout (Violinada).")
-            elif direcao in ["SELL", "VENDA"] and "sweep" not in str(setup_smc).lower():
-                score -= 40
-                alertas.append("Setup de venda em consolidação sem captura de liquidez superior. Risco de False Breakout (Violinada).")
-            else:
-                # É um Sweep (Retorno à média) na consolidação! Estratégia de altíssimo acerto.
-                score += 50
-                alertas.append("Configuração Institucional de Retorno à Média (Range Sweep) validada. Estratégia LUCRATIVA DE CONSOLIDAÇÃO ATIVADA.")
-        
-        else: # Regime de Expansão (Trend)
-            # Mercado está correndo, BOS/CHoCH e FVG ganham poder
-            if "bos" in str(setup_smc).lower() or "choch" in str(setup_smc).lower():
-                score += 30
-            alertas.append("Regime de Expansão detectado. Privilegiando estrutura direcional.")
+        # 1. Componente SMC (até 40 pontos)
+        if any(k in texto_smc for k in ("ORDER_BLOCK", "ORDER BLOCK", "OB")):
+            score += 15
+            confluencias.append("Order Block Institucional")
+        if any(k in texto_smc for k in ("FVG", "FAIR VALUE GAP", "IMBALANCE", "INEFICIÊNCIA", "INEFICIENCIA")):
+            score += 15
+            confluencias.append("Fair Value Gap (FVG)")
+        if any(k in texto_smc for k in ("CHOCH", "BOS", "MSS", "QUEBRA DE ESTRUTURA")):
+            score += 10
+            confluencias.append("Quebra de Estrutura (BOS/ChoCH)")
 
-        # Deduz a penalidade macro
-        score -= regime_info.get("score_penalidade", 0)
+        # 2. Componente Order Flow (até 30 pontos)
+        if order_flow:
+            pressao = str(order_flow.get("pressao", "")).upper()
+            if (direcao in ("BUY", "COMPRA") and pressao == "COMPRADORA") or \
+               (direcao in ("SELL", "VENDA") and pressao == "VENDEDORA"):
+                score += 15
+                confluencias.append(f"CVD Alinhado ({pressao})")
 
-        # Avaliação Final
-        if score >= 80:
-             aprovado = True
-             veredito = "APROVADO INSTITUCIONAL"
+            if order_flow.get("absorcao"):
+                score += 15
+                confluencias.append("Absorção Passiva Confirmada")
+            elif order_flow.get("sweep"):
+                score += 15
+                confluencias.append("Liquidity Sweep Confirmado")
         else:
-             veredito = "RECUSADO POR CONFLUÊNCIA E/OU REGIME DE MERCADO"
+            # Se order_flow não foi passado separadamente, verifica se há sweep/liquidez e indicadores na leitura
+            if any(k in texto_smc for k in ("SWEEP", "VARREDURA DE LIQUIDEZ", "LIQUIDITY SWEEP")):
+                score += 20
+                confluencias.append("Liquidity Sweep Institucional")
+            if any(k in texto_smc for k in ("VWAP", "RSI", "MACD", "DISCOUNT", "PREMIUM", "OTE")):
+                score += 10
+                confluencias.append("Confluência Técnica / Zona OTE")
+
+        # 3. Componente Regime de Mercado (até 20 pontos)
+        if regime:
+            tipo_regime = regime.get("regime", REGIME_EXPANSAO)
+            if tipo_regime == REGIME_RISCO_NOTICIA:
+                score = 0
+                alertas.append("BLOQUEIO: Risco de notícia macroeconômica.")
+            elif tipo_regime == REGIME_EXPANSAO:
+                dir_regime = str(regime.get("direcao", "")).upper()
+                if (direcao in ("BUY", "COMPRA") and dir_regime == "ALTA") or \
+                   (direcao in ("SELL", "VENDA") and dir_regime == "BAIXA"):
+                    score += 20
+                    confluencias.append("Tendência em Expansão Alinhada")
+                elif regime.get("tendencia_forte") and (
+                    (direcao in ("BUY", "COMPRA") and dir_regime == "BAIXA") or
+                    (direcao in ("SELL", "VENDA") and dir_regime == "ALTA")
+                ):
+                    score -= 30
+                    alertas.append(f"BLOQUEIO: Sinal {direcao} contra tendência forte de {dir_regime}.")
+                else:
+                    score += 10
+                    confluencias.append("Expansão Moderada")
+            elif tipo_regime == REGIME_COMPRESSAO:
+                if any(k in texto_smc for k in ("SWEEP", "VARREDURA DE LIQUIDEZ", "LIQUIDITY SWEEP")):
+                    score += 15
+                    confluencias.append("Range Sweep nas Extremidades")
+                else:
+                    score -= 20
+                    alertas.append("ALERTA: Mercado em compressão/range sem captura de liquidez nas extremidades.")
+
+        # 4. Relação Risco:Retorno (até 10 pontos)
+        rr = float(setup_smc.get("rr") or setup_smc.get("risk_reward_ratio") or 0.0)
+        if rr >= 2.0:
+            score += 10
+            confluencias.append(f"Relação R:R Atraente ({rr:.1f}R)")
+        elif rr >= 1.5:
+            score += 5
+
+        score_final = max(0, min(100, score))
+        aprovado = score_final >= 80 and not any(a.startswith("BLOQUEIO") or a.startswith("ALERTA") for a in alertas)
 
         return {
-            "score": score,
+            "score": score_final,
             "aprovado": aprovado,
+            "confluencias": confluencias,
             "alertas": alertas,
-            "veredito": veredito
+            "veredito": "APROVADO INSTITUCIONAL" if aprovado else "RECUSADO POR CONFLUÊNCIA INSUFICIENTE",
         }
-```eof
-

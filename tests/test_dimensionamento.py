@@ -242,6 +242,20 @@ class TestDimensionarPeloPlano(unittest.TestCase):
         self.assertEqual(r2["risco_usd"], 73.42)
         self.assertEqual(r2["contratos"], 2)
 
+    def test_override_splits_one_plan_budget_between_pair_legs(self):
+        plano = {"margem": 1400, "risco_pct": 20, "drawdown_maximo": 1400,
+                 "max_contratos": 0, "min_ticks_stop": 8}
+        ns = _ns(plano_da_conta_ativa=lambda: plano,
+                 operacoes_fechadas_hoje=lambda **_: [{"pnl_final": -1177.50}],
+                 posicoes_do_ciclo=lambda: [])
+        total = ns["dimensionar_pelo_plano"](7772.0, 7767.0, "MESU6", plano)
+        half = ns["dimensionar_pelo_plano"](
+            7772.0, 7767.0, "MESU6", plano,
+            risco_usd_override=total["risco_usd"] / 2)
+        self.assertEqual(total["risco_usd"], 73.42)
+        self.assertEqual(half["risco_usd"], 36.71)
+        self.assertLessEqual(half["risco_real_usd"], half["risco_usd"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1,5 +1,6 @@
 import time, json, threading, customtkinter as ctk, tkinter as tk, os, subprocess, sys, webbrowser
 import collections, difflib
+import queue
 import base64
 import concurrent.futures
 import copy
@@ -10,6 +11,13 @@ import requests
 from io import BytesIO
 from PIL import ImageGrab, Image
 import pyttsx3
+from advanced_mode import (AdvancedModeController, PaperExecutionBook,
+                           PaperIntent, PaperLegIntent,
+                           allocate_pair_risk)
+from news_trading import (LiquidityGuard, MacroSMCAnalyzer, NewsMonitor,
+                          macro_bias_for_us_index,
+                          order_flow_side_from_confluences,
+                          read_book_snapshot_cdp)
 from google import genai
 from google.genai import types
 
@@ -203,9 +211,18 @@ except Exception:
     TradovateStream = None
 
 try:
-    from market_regime import MarketRegimeClassifier, ConfluenceMatrix
+    from market_regime import (MarketRegimeClassifier, ConfluenceMatrix,
+                               avaliar_contra_tendencia_forte)
 except Exception:
     MarketRegimeClassifier, ConfluenceMatrix = None, None
+    avaliar_contra_tendencia_forte = None
+
+try:
+    from tiger_predictive import (PredictiveLiquidityEngine,
+                                  calcular_plano_tatico_meta_momentum)
+except Exception:
+    PredictiveLiquidityEngine = None
+    calcular_plano_tatico_meta_momentum = None
 
 try:
     from tiger_hud import TigerHolographicHUD, TigerHUDEmbeddedFrame
@@ -936,6 +953,8 @@ PLANO_PADRAO = {
     # Para quem opera grupos de contas de mesa proprietária espelhadas (Apex, Topstep, etc).
     # O robô divide os resultados e dimensiona os limites por conta individualmente.
     "multi_contas": 1,
+    "parar_na_meta_diaria": True,
+    "participar_multicontas": True,
 }
 
 def dias_meta_do_plano(plano=None):
@@ -3494,7 +3513,8 @@ def avaliar_piso_de_qualidade(acao, entry, stop, tp1, tp2, rr_minimo,
         "rr_tp2": rr_tp2,
     }
 
-def dimensionar_pelo_plano(entry, stop, ativo, plano=None, restante_dia=None):
+def dimensionar_pelo_plano(entry, stop, ativo, plano=None, restante_dia=None,
+                          risco_usd_override=None):
     """Atalho que junta plano + travas — para nenhum ponto do código precisar
     lembrar de passar teto de contratos, piso de ticks e drawdown restante um
     por um (foi assim que o dimensionamento acabou com regras diferentes em
@@ -3517,11 +3537,12 @@ def dimensionar_pelo_plano(entry, stop, ativo, plano=None, restante_dia=None):
     # piora, ela já empurra no sentido contrário ao da meta. Duplicar isso com
     # uma segunda fração só do modo meta criaria dois números para a mesma
     # regra, e o mais frouxo dos dois acabaria mandando.
-    risco_override, motivo_meta = None, None
-    try:
-        risco_override, motivo_meta = risco_para_perseguir_a_meta(plano)
-    except Exception:
-        risco_override, motivo_meta = None, None
+    risco_override, motivo_meta = risco_usd_override, None
+    if risco_override is None:
+        try:
+            risco_override, motivo_meta = risco_para_perseguir_a_meta(plano)
+        except Exception:
+            risco_override, motivo_meta = None, None
 
     r = calcular_contratos(
         entry, stop, ativo,
@@ -6160,7 +6181,7 @@ def decidir_execucao_autonoma(automacao_ligada, modo_teste, contratos,
     return True, "executando sozinha"
 
 
-def freio_de_sugestoes(plano=None, agora=None):
+def freio_de_sugestoes(plano=None, agora=None, conta_id=None):
     """PROTEÇÃO CONTRA SEQUÊNCIA DE STOPS.
 
     Responde a uma pergunta só: o robô pode emitir uma sugestão nova AGORA?
@@ -6193,7 +6214,17 @@ def freio_de_sugestoes(plano=None, agora=None):
     # SEM O FILTRO DO CICLO. O freio é risco, não relatório: reiniciar o ciclo
     # apagava dele o prejuízo já realizado no mesmo pregão. Ver a explicação
     # inteira, com o diário de 22/08, em operacoes_fechadas_hoje.
-    fechadas = operacoes_fechadas_hoje(ignorar_ciclo=True)
+    if conta_id:
+        hoje_str = data_do_pregao()
+        fechadas = [
+            p for p in carregar_posicoes()
+            if p.get("conta_id") == conta_id
+            and p.get("status") == "FECHADA"
+            and p.get("pnl_final") is not None
+            and str(p.get("data_fechamento") or "").startswith(hoje_str)
+        ]
+    else:
+        fechadas = operacoes_fechadas_hoje(ignorar_ciclo=True)
 
     # 1) TETO DE PERDA DIÁRIA — o limite que o próprio trader configurou.
     #    Batido o drawdown do plano, o dia acabou. Continuar sugerindo depois
@@ -6206,7 +6237,8 @@ def freio_de_sugestoes(plano=None, agora=None):
         realizado = sum(p["pnl_final"] for p in fechadas)
         aberto = sum(p.get("pnl_atual", 0) or 0
                      for p in carregar_posicoes()
-                     if _e_da_conta_ativa(p) and p.get("status") == "ABERTA")
+                     if ((p.get("conta_id") == conta_id) if conta_id else _e_da_conta_ativa(p))
+                     and p.get("status") == "ABERTA")
         if (realizado + aberto) <= -abs(drawdown):
             return False, (
                 f"o prejuízo de hoje (US${realizado + aberto:,.2f}) bateu o "
@@ -6238,7 +6270,85 @@ def freio_de_sugestoes(plano=None, agora=None):
                     "stops, o problema deixa de ser o setup e passa a ser o "
                     "ritmo. Se quiser voltar antes, mude 'stops seguidos' ou "
                     "'pausa após stop' no Plano de Trading.")
+
+    # 4) META DO DIA ATINGIDA — assim que alcançar a meta diária estabelecida no
+    #    plano da conta, as sugestões e operações cessam naquele dia e só voltam
+    #    no pregão seguinte (lucro no bolso é inviolável).
+    if plano.get("parar_na_meta_diaria", True):
+        try:
+            meta_alvo = float(plano.get("meta_alvo", 0) or 0)
+            dias_meta = max(1, int(float(plano.get("dias_meta", 1) or 1)))
+        except (TypeError, ValueError):
+            meta_alvo, dias_meta = 0.0, 1
+        if meta_alvo > 0:
+            meta_do_dia = meta_alvo / dias_meta
+            realizado_dia = sum((p.get("pnl_final") or 0.0) for p in fechadas)
+            if realizado_dia >= meta_do_dia:
+                return False, (
+                    f"🏆 META DO DIA ATINGIDA: o resultado realizado de hoje "
+                    f"(US${realizado_dia:,.2f}) alcançou a meta diária do seu "
+                    f"plano (US${meta_do_dia:,.2f}). Sugestões e operações estão "
+                    "encerradas neste pregão para blindar o seu lucro — só "
+                    "voltamos no próximo pregão.")
     return True, None
+
+
+def validar_coerencia_sinal_ia(sinal):
+    """Confere se a direção (BUY/SELL), os níveis (entry, stop, tp1) e o texto
+    da análise (market_analysis + confluences) apontam todos para o MESMO lado.
+
+    Devolve (coerente: bool, acao_corrigida: str, motivo: str).
+    Impede que a IA devolva `action: BUY` no JSON enquanto escreve uma análise
+    de venda ('entrada curta', 'order block bearish') ou inverte stop/alvo.
+    """
+    if not isinstance(sinal, dict):
+        return False, "HOLD", "sinal inválido"
+    acao = str(sinal.get("action") or "HOLD").strip().upper()
+    if acao not in ("BUY", "SELL"):
+        return True, acao, ""
+
+    def _num(val):
+        try:
+            return float(val) if val is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    ep = _num(sinal.get("entry_price"))
+    sl = _num(sinal.get("stop_loss"))
+    tp1 = _num(sinal.get("take_profit_1"))
+    if ep and sl and ep > 0 and sl > 0:
+        if acao == "BUY" and sl >= ep:
+            return False, "HOLD", f"geometria incoerente para BUY: stop ({sl}) >= entrada ({ep})"
+        if acao == "SELL" and sl <= ep:
+            return False, "HOLD", f"geometria incoerente para SELL: stop ({sl}) <= entrada ({ep})"
+    if ep and tp1 and ep > 0 and tp1 > 0:
+        if acao == "BUY" and tp1 <= ep:
+            return False, "HOLD", f"geometria incoerente para BUY: alvo 1 ({tp1}) <= entrada ({ep})"
+        if acao == "SELL" and tp1 >= ep:
+            return False, "HOLD", f"geometria incoerente para SELL: alvo 1 ({tp1}) >= entrada ({ep})"
+
+    confls = " | ".join(str(c).lower() for c in (sinal.get("confluence_factors") or []))
+    analise = str(sinal.get("market_analysis") or "").lower()
+    texto = f"{confls} | {analise}"
+
+    marcas_venda_explicita = (
+        "entrada curta", "entrada vendida", "operação de venda", "operacao de venda",
+        "venda posicionada", "vender no order block", "order block bearish",
+        "order block de venda", "bloco de ordens vendedoras",
+    )
+    marcas_compra_explicita = (
+        "entrada comprada", "entrada longa", "operação de compra", "operacao de compra",
+        "compra posicionada", "comprar no order block", "order block bullish",
+        "order block de compra", "bloco de ordens compradoras",
+    )
+    tem_venda = any(m in texto for m in marcas_venda_explicita)
+    tem_compra = any(m in texto for m in marcas_compra_explicita)
+
+    if acao == "BUY" and tem_venda and not tem_compra:
+        return False, "HOLD", "contradição textual/interna da leitura: action=BUY mas a análise/confluências descrevem cenário de VENDA (short/bearish)"
+    if acao == "SELL" and tem_compra and not tem_venda:
+        return False, "HOLD", "contradição textual/interna da leitura: action=SELL mas a análise/confluências descrevem cenário de COMPRA (long/bullish)"
+    return True, acao, ""
 
 # ====================================================================
 # REGISTRO DE MODELOS — o motor e a TIGER usam a MESMA lista
@@ -13794,8 +13904,17 @@ def nome_da_escala(valor):
 
 
 class SmcQuantApp(ctk.CTk):
+    def after(self, ms, func=None, *args):
+        if threading.get_ident() != self._ui_thread_id:
+            self._ui_tasks.put((ms, func, args))
+            return None
+        return super().after(ms, func, *args)
+
     def __init__(self):
+        self._ui_thread_id = threading.get_ident()
+        self._ui_tasks = queue.Queue()
         super().__init__()
+        super().after(16, self._drain_ui_tasks)
         self.title("SMC Quant Pro - Trader Institucional AI")
         # A escala é aplicada ANTES de montar as abas: assim os widgets já
         # nascem no tamanho certo, sem precisar redesenhar a tela inteira.
@@ -13840,7 +13959,6 @@ class SmcQuantApp(ctk.CTk):
         # foram acatados — cenário não acatado é só a sugestão inicial, sem
         # follow-up no WhatsApp.
         self.sinais_acatados = set()
-
         # --- Automação Tradovate (opcional, DESLIGADA por padrão) ---
         tv_cfg = carregar_config().get("tradovate", {})
         # auto_ativo: se o robô envia ordem à Tradovate ao ACATAR um sinal.
@@ -13859,6 +13977,10 @@ class SmcQuantApp(ctk.CTk):
         # por tabela junto com uma correção de outra coisa.
         self.tv_trail_var = tk.BooleanVar(value=tv_cfg.get("trailing", False))
         self.tv_trail_modo_var = tk.StringVar(value=tv_cfg.get("trailing_modo", "🤖 IA Adaptativa (Smart SMC)"))
+        self.tv_protecao_lucro_var = tk.BooleanVar(
+            value=tv_cfg.get("protecao_lucro_dinamica", True))
+        self.tv_multicontas_var = tk.BooleanVar(
+            value=tv_cfg.get("multicontas_simultaneas", False))
         # cancelar_na_corretora: quando o cenário morre e a ordem não pegou, eu
         # aperto o 'Sair em Mkt & Cancelar' da própria Tradovate em vez de só
         # avisar. LIGADO por padrão porque ele foi categórico — "se a automação
@@ -13867,6 +13989,53 @@ class SmcQuantApp(ctk.CTk):
         # fora do modo teste.
         self.tv_cancelar_var = tk.BooleanVar(
             value=tv_cfg.get("cancelar_na_corretora", True))
+
+        # --- Modo avançado opcional (desligado por padrão) ---
+        advanced_cfg = carregar_config().get("advanced_mode", {})
+        self.advanced_mode_var = tk.BooleanVar(
+            value=bool(advanced_cfg.get("enabled", False)))
+        self.advanced_pairs_var = tk.BooleanVar(
+            value=bool(advanced_cfg.get("pairs_enabled", True)))
+        self.advanced_market_making_var = tk.BooleanVar(
+            value=bool(advanced_cfg.get("market_making_enabled", True)))
+        self.advanced_paper_var = tk.BooleanVar(
+            value=bool(advanced_cfg.get("paper_mode", True)))
+        self.advanced_paper_status_var = tk.StringVar(
+            value="Paper mode disponível; aguardando leituras suficientes")
+        self.advanced_report_var = tk.BooleanVar(
+            value=bool(advanced_cfg.get("report_confluences", True)))
+        self.news_trading_var = tk.BooleanVar(
+            value=bool(advanced_cfg.get("news_trading_enabled", False)))
+        self.news_trading_enabled = bool(advanced_cfg.get("news_trading_enabled", False))
+        self.news_monitor = NewsMonitor(on_release=self._ao_nova_divulgacao_macro)
+        self.macro_smc_analyzer = MacroSMCAnalyzer(
+            liquidity_guard=LiquidityGuard(max_spread_ticks=2.0, min_risk_reward=1.2))
+        self.news_status_var = tk.StringVar(value="Monitor macro desligado")
+        self.advanced_latency_var = tk.StringVar(
+            value=str(advanced_cfg.get("max_latency_ms", 180)))
+        primary_asset_salvo = str(advanced_cfg.get("primary_asset") or "MESU6").strip()
+        if any(marca in primary_asset_salvo.lower()
+               for marca in ("chrome", "tradovate", "smc quant pro")):
+            primary_asset_salvo = ""
+        self.advanced_primary_asset_var = tk.StringVar(value=primary_asset_salvo)
+        self.advanced_secondary_asset_var = tk.StringVar(
+            value=str(advanced_cfg.get("secondary_asset") or ""))
+        self.advanced_primary_window_var = tk.StringVar(
+            value=str(advanced_cfg.get("primary_window") or (janelas_monitoradas()[0] if janelas_monitoradas() else "")))
+        self.advanced_secondary_window_var = tk.StringVar(
+            value=str(advanced_cfg.get("secondary_window") or ""))
+        self.advanced_mode = AdvancedModeController(
+            enabled=self.advanced_mode_var.get(),
+            max_latency_ms=float(self.advanced_latency_var.get() or 180),
+            pairs_enabled=self.advanced_pairs_var.get(),
+            market_making_enabled=self.advanced_market_making_var.get(),
+            paper_mode=self.advanced_paper_var.get(),
+            risk_plan=plano_da_conta_ativa(),
+            primary_asset=self.advanced_primary_asset_var.get(),
+            secondary_asset=self.advanced_secondary_asset_var.get(),
+            primary_window=self.advanced_primary_window_var.get(),
+            secondary_window=self.advanced_secondary_window_var.get(),
+        )
 
         # --- Notificação no COMPUTADOR (além do WhatsApp) ---
         self.notif_var = tk.BooleanVar(
@@ -13883,8 +14052,10 @@ class SmcQuantApp(ctk.CTk):
         self._fita = TradovateStream(log=self.log) if TradovateStream else None
         self._fita_diag = None       # último diagnóstico, para o painel dizer o motivo
         self._fita_sem_lado = 0      # negócios lidos que não deram para classificar
+        self._paper_flow_by_asset = {}
         self.regime_classifier = MarketRegimeClassifier if MarketRegimeClassifier else None
         self.confluence_matrix = ConfluenceMatrix if ConfluenceMatrix else None
+        self.predictive_engine = PredictiveLiquidityEngine() if PredictiveLiquidityEngine else None
         self._hud_jarvis = None
 
         # --- Plataforma de análise (qualquer uma; a Tradovate só ganha os
@@ -13998,6 +14169,10 @@ class SmcQuantApp(ctk.CTk):
         self._resgatar_lancamentos_fora_do_ciclo()
 
         self.verificar_node()
+        if self.news_trading_enabled:
+            self.news_monitor.start()
+            self.news_status_var.set("Monitor macro iniciando; aguardando primeiro feed")
+            self.after(1000, self._atualizar_status_news)
         self.after(3000, self._loop_atualizar_dashboard)
         # O DIÁRIO ACOMPANHA A PLATAFORMA EM TEMPO REAL, e não só no ciclo de
         # análise. É o que faltava em 23/08: a operação entrou e saiu entre
@@ -14008,6 +14183,31 @@ class SmcQuantApp(ctk.CTk):
         # E o fluxo: a captura é contínua dentro da página; este laço só
         # recolhe o que ela juntou, de dois em dois segundos.
         self.after(4000, self._loop_drenar_fluxo)
+
+    def _drain_ui_tasks(self):
+        super().after(16, self._drain_ui_tasks)
+        for _ in range(200):
+            try:
+                ms, func, args = self._ui_tasks.get_nowait()
+            except queue.Empty:
+                break
+            if func is None:
+                continue
+            try:
+                if ms:
+                    super().after(ms, func, *args)
+                else:
+                    func(*args)
+            except Exception as e:
+                import traceback
+                print(f"Erro em callback da interface: {e}")
+                traceback.print_exc()
+
+    def _tradovate_preferencia(self, chave, padrao=False):
+        try:
+            return carregar_config().get("tradovate", {}).get(chave, padrao)
+        except Exception:
+            return padrao
 
     # ------------------------------------------------------------------
     # ABA 1: MOTOR / WHATSAPP / SETUP
@@ -14764,6 +14964,12 @@ class SmcQuantApp(ctk.CTk):
             self._secao(cfg, "🤖  AUTOMAÇÃO TRADOVATE (envio de ordem)",
                         "motor_tradovate", aberta_padrao=False))
 
+        # ---------- MODO AVANÇADO (OPCIONAL, DESLIGADO POR PADRÃO) ----------
+        self._montar_painel_modo_avancado(
+            getattr(self, "_secao")(
+                cfg, "🚀  MODO AVANÇADO (pairs + market making)",
+                "motor_avancado", aberta_padrao=False))
+
         # ---------- SEÇÃO DESENVOLVEDOR (oculta no app do cliente) ----------
         if MODO_DEV:
             frame_dev = ctk.CTkFrame(
@@ -14845,14 +15051,43 @@ class SmcQuantApp(ctk.CTk):
                         border_color="#63b3ed", hover_color="#25a35a"
                         ).pack(side="left")
         ctk.CTkOptionMenu(frame_trail, variable=self.tv_trail_modo_var,
-                          values=["🤖 IA Adaptativa (Smart SMC)", "1.0 R (Breakeven)", "1.5 R", "2.0 R", "2.5 R", "3.0 R"],
-                          width=210, command=lambda _v: self._tv_salvar_prefs()
+                          values=[
+                              "🤖 IA Adaptativa (Smart SMC)",
+                              "🛡️ Blindagem Zero-Devolução (0.5R)",
+                              "1.0 R (Breakeven)",
+                              "1.5 R",
+                              "2.0 R",
+                              "2.5 R",
+                              "3.0 R",
+                          ],
+                          width=240, command=lambda _v: self._tv_salvar_prefs()
                           ).pack(side="left", padx=10)
         ctk.CTkLabel(
             frame, justify="left", text_color=COR["dim"],
             font=ctk.CTkFont(size=11),
             text="   🤖 IA Adaptativa: a IA avalia volatilidade, R:R e liquidez para dar folga (1.5R) ou proteger rápido (1.0R).\n"
+                 "   🛡️ Blindagem Zero-Devolução (0.5R): arma já em +0.5R com perseguição curta para jamais devolver lucro.\n"
                  "   Valores Fixos (1.0R a 3.0R): arma o stop móvel exatamente no múltiplo R escolhido por você."
+        ).pack(pady=(0, 6), padx=12, anchor="w")
+        ctk.CTkCheckBox(
+            frame,
+            text="🛡️ Blindagem Zero-Devolução em Tempo Real (trava lucro em +0.5R/+1.0R/+1.5R a cada 2s)",
+            variable=self.tv_protecao_lucro_var, command=self._tv_salvar_prefs,
+            text_color=COR["texto"], fg_color="#1f8b4c",
+            border_color="#63b3ed", hover_color="#25a35a"
+            ).pack(pady=3, padx=12, anchor="w")
+        ctk.CTkCheckBox(
+            frame,
+            text="👥 Operar Múltiplas Contas / Abas Tradovate Simultaneamente (ON/OFF)",
+            variable=self.tv_multicontas_var, command=self._tv_salvar_prefs,
+            text_color=COR["texto"], fg_color="#1f8b4c",
+            border_color="#63b3ed", hover_color="#25a35a"
+            ).pack(pady=3, padx=12, anchor="w")
+        ctk.CTkLabel(
+            frame, justify="left", text_color=COR["dim"],
+            font=ctk.CTkFont(size=11),
+            text="   Com Multi-Contas ligado, toda ordem aprovada é enviada também nas outras abas/contas da Tradovate,\n"
+                 "   respeitando o dimensionamento e os limites diários (meta e drawdown) de cada conta individualmente."
         ).pack(pady=(0, 6), padx=12, anchor="w")
         ctk.CTkCheckBox(
             frame,
@@ -14909,6 +15144,693 @@ class SmcQuantApp(ctk.CTk):
                       hover_color="#777777", text_color="#ffffff", width=170,
                       command=self._tv_diagnosticar).pack(side="left", padx=4)
 
+    def _ao_nova_divulgacao_macro(self, release):
+        self.after(0, lambda r=release: self._notificar_divulgacao_macro(r))
+
+    def _atualizar_status_news(self):
+        if not self.news_trading_enabled:
+            return
+        status = self.news_monitor.status()
+        ultimo_ok = status.get("last_success_at")
+        if status.get("last_error"):
+            texto = f"Feed macro indisponível: {status['last_error']}"
+        elif ultimo_ok is None:
+            texto = "Monitor macro iniciando; aguardando primeiro feed"
+        else:
+            idade = max(0, int(time.time() - ultimo_ok))
+            texto = f"Feed público ativo · última atualização há {idade}s"
+        release = status.get("latest_release")
+        if release:
+            texto += f" · {release.event}: {release.actual:g} / {release.forecast:g}"
+        self.news_status_var.set(texto)
+        self.after(5000, self._atualizar_status_news)
+
+    def _notificar_divulgacao_macro(self, release):
+        direcao = macro_bias_for_us_index(release) or "sem viés automático"
+        self.news_status_var.set(
+            f"Último: {release.event} | Real {release.actual:g} · Previsto {release.forecast:g} | {direcao}"
+        )
+        self.log(
+            f"📰 Macro ({release.source}): {release.event} — real {release.actual:g}, "
+            f"previsto {release.forecast:g}; viés para índices: {direcao}."
+        )
+
+    def _orcamento_paper(self, plano):
+        try:
+            restante = drawdown_restante_hoje(plano)
+        except Exception:
+            restante = None
+        if restante is None:
+            restante = abs(float(plano.get("drawdown_maximo", 0) or 0))
+        try:
+            fracao = float(plano.get("fracao_max_do_restante", FRACAO_MAX_DO_RESTANTE_PADRAO))
+        except (TypeError, ValueError):
+            fracao = FRACAO_MAX_DO_RESTANTE_PADRAO
+        if not 0 < fracao <= 1:
+            fracao = FRACAO_MAX_DO_RESTANTE_PADRAO
+        teto = max(0.0, float(restante or 0) * fracao)
+        comprometido = 0.0
+        for posicao in carregar_posicoes():
+            if posicao.get("status") not in ("ABERTA", "PENDENTE") or not _e_da_conta_ativa(posicao):
+                continue
+            ativo_pos = posicao.get("ativo") or ""
+            valor_ponto = valor_por_ponto_do_ativo(ativo_pos)
+            if not valor_ponto:
+                return 0.0, 0.0
+            try:
+                comprometido += (abs(float(posicao["entry"]) - float(posicao["stop"]))
+                                 * int(posicao.get("contratos") or 0) * valor_ponto)
+            except (KeyError, TypeError, ValueError):
+                return 0.0, 0.0
+        max_paper_total = max(0.0, teto - comprometido)
+        disponivel = max(0.0, max_paper_total - self.advanced_mode.paper_book.open_risk_usd)
+        return disponivel, max_paper_total
+
+    def _paper_criar_perna(self, ativo, lado, entry, stop, target, plano,
+                           risco_orcado, probabilidade=0, trailing=True):
+        tick = tick_do_ativo(ativo)
+        valor_ponto = valor_por_ponto_do_ativo(ativo)
+        if not tick or not valor_ponto or risco_orcado <= 0:
+            return None, None
+        sizing = dimensionar_pelo_plano(
+            entry, stop, ativo, plano, risco_usd_override=risco_orcado)
+        quantidade = int(sizing.get("contratos", 0) or 0)
+        if quantidade <= 0:
+            return None, sizing
+        plano_trail = None
+        try:
+            if trailing and self._tradovate_preferencia("trailing"):
+                ticks_stop = tradovate_auto.ticks_entre(entry, stop, tick)
+                _fn_trail = getattr(tradovate_auto, "plano_trailing_inteligente")
+                plano_trail = _fn_trail(
+                    ticks_stop, rr=abs(target - entry) / abs(entry - stop),
+                    probabilidade=probabilidade, contratos=quantidade,
+                    valor_do_tick=valor_ponto * tick,
+                    drawdown_restante=drawdown_restante_hoje(plano), ligado=True,
+                    modo_r=self._tradovate_preferencia("trailing_modo", "auto"),
+                    ativo=ativo)
+        except Exception:
+            plano_trail = None
+        perna = PaperLegIntent(
+            asset=str(ativo), side=str(lado).upper(), entry=float(entry),
+            stop=float(stop), target=float(target), quantity=quantidade,
+            point_value=float(valor_ponto), tick_size=float(tick), trailing=plano_trail)
+        return perna, sizing
+
+    def _paper_submeter(self, estrategia, pernas, motivo, modo, max_total, agora,
+                        metadata=None):
+        if not pernas or max_total <= 0:
+            return False
+        chaves = {AdvancedModeController._asset_key(perna.asset) for perna in pernas}
+        for trade in self.advanced_mode.paper_book.trades:
+            if trade.status not in ("OPEN", "PENDING") or trade.intent.strategy != estrategia:
+                continue
+            if chaves == {AdvancedModeController._asset_key(perna.asset)
+                          for perna in trade.intent.legs}:
+                return False
+        sequencia = int(getattr(self, "_paper_intent_seq", 0)) + 1
+        self._paper_intent_seq = sequencia
+        intent = PaperIntent(
+            intent_id=f"{estrategia}:{sequencia}:{int(agora * 1000)}",
+            strategy=estrategia, legs=tuple(pernas), reason=str(motivo),
+            created_at=float(agora), entry_mode=modo, metadata=metadata)
+        aceito, porque = self.advanced_mode.paper_book.submit(intent, max_total)
+        if aceito:
+            registrar_evento(
+                "paper_trade_aberto", estrategia=estrategia,
+                ativos=[perna.asset for perna in pernas],
+                lados=[perna.side for perna in pernas],
+                contratos=[perna.quantity for perna in pernas],
+                risco_usd=round(intent.planned_risk_usd, 2), motivo=motivo,
+                nunca_enviado=True)
+            self.log(f"🧪 PAPER {estrategia}: " + " + ".join(
+                f"{perna.side} {perna.asset} {perna.quantity} ctr"
+                for perna in pernas) + f" · risco de plano US${intent.planned_risk_usd:.2f}. Sem envio real.")
+        return aceito
+
+    def _paper_par(self, candidato, plano, disponivel, max_total, agora):
+        pernas_brutas = (
+            (candidato["primary_asset"], candidato["primary_side"],
+             candidato["primary_price"], candidato["primary_return_volatility"]),
+            (candidato["secondary_asset"], candidato["secondary_side"],
+             candidato["secondary_price"], candidato["secondary_return_volatility"]),
+        )
+        specs = []
+        orcamentos = []
+        _rr_min = float((plano or {}).get("rr_minimo", 2.0) or 2.0)
+        for ativo, lado, entry, volatilidade in pernas_brutas:
+            tick = tick_do_ativo(ativo)
+            if not tick or entry <= 0 or volatilidade <= 0:
+                return False
+            distancia_stop = max(float(entry) * float(volatilidade) * 2.5, tick * 8)
+            distancia_alvo = distancia_stop * _rr_min
+            stop = entry - distancia_stop if lado == "BUY" else entry + distancia_stop
+            target = entry + distancia_alvo if lado == "BUY" else entry - distancia_alvo
+            base = dimensionar_pelo_plano(entry, stop, ativo, plano)
+            specs.append((ativo, lado, entry, stop, target))
+            orcamentos.append(float(base.get("risco_usd", 0) or 0))
+        risco_total = min([disponivel] + orcamentos) if orcamentos else 0.0
+        if risco_total <= 0:
+            return False
+        (primary, secondary) = specs
+        primary_tick, secondary_tick = tick_do_ativo(primary[0]), tick_do_ativo(secondary[0])
+        primary_value = valor_por_ponto_do_ativo(primary[0])
+        secondary_value = valor_por_ponto_do_ativo(secondary[0])
+        allocation = allocate_pair_risk(
+            max_risk_usd=risco_total, beta=candidato["beta"],
+            primary_entry=primary[2], primary_stop=primary[3],
+            primary_point_value=primary_value, primary_tick_size=primary_tick,
+            secondary_entry=secondary[2], secondary_stop=secondary[3],
+            secondary_point_value=secondary_value, secondary_tick_size=secondary_tick,
+            slippage_ticks=self.advanced_mode.paper_book.slippage_ticks)
+        if not allocation:
+            return False
+        primary_leg, primary_sizing = self._paper_criar_perna(
+            *primary[:2], primary[2], primary[3], primary[4], plano,
+            allocation["primary_risk_budget_usd"])
+        secondary_leg, secondary_sizing = self._paper_criar_perna(
+            *secondary[:2], secondary[2], secondary[3], secondary[4], plano,
+            allocation["secondary_risk_budget_usd"])
+        if (not primary_leg or not secondary_leg or not primary_sizing or not secondary_sizing
+                or primary_leg.quantity != allocation["primary_quantity"]
+                or secondary_leg.quantity != allocation["secondary_quantity"]):
+            return False
+        return self._paper_submeter(
+            "PAIRS_PAPER", [primary_leg, secondary_leg],
+            f"spread z={candidato['spread_zscore']:.2f}, beta={candidato['beta']:.3f}, "
+            f"corr={candidato['return_correlation']:.2f}",
+            "MARKET", max_total, agora,
+            metadata={
+                "entry_zscore": candidato["spread_zscore"],
+                "target_zscore": 0.25,
+                "stop_zscore": max(3.5, abs(candidato["spread_zscore"]) + 0.5),
+                "beta": candidato["beta"],
+            })
+
+    def _paper_market_maker(self, ativo, preco, plano, disponivel, max_total, agora):
+        controller = self.advanced_mode
+        janela = (getattr(self, "_analises_por_ativo", {}).get(
+            str(ativo).upper(), {}) or {}).get("janela", "")
+        primary_window = (controller.primary_window or "").strip().casefold()
+        current_window = str(janela or "").strip().casefold()
+        primary_asset = AdvancedModeController._asset_key(controller.primary_asset)
+        current_asset = AdvancedModeController._asset_key(ativo)
+        if primary_window and current_window:
+            if primary_window != current_window:
+                return False
+        elif primary_asset and current_asset != primary_asset:
+            return False
+
+        bot = getattr(self, "_tv_bot", None)
+        if bot is None:
+            return False
+        try:
+            ativo_livro = self._ativo_da_fita(bot)
+            if raiz_do_contrato(ativo_livro) != raiz_do_contrato(ativo):
+                return False
+        except Exception:
+            return False
+        book = read_book_snapshot_cdp(bot)
+        if book is None:
+            return False
+
+        chave = raiz_do_contrato(ativo) or str(ativo).upper()
+        balde = (getattr(self, "_negocios_por_ativo", {}) or {}).get(chave)
+        if not balde:
+            return False
+        candles = agregar_candles(list(balde), minutos=5)
+        fechados = candles[:-1]
+        if len(fechados) < 20:
+            return False
+        faixa = fechados[-20:]
+        support = min(float(candle["minima"]) for candle in faixa)
+        resistance = max(float(candle["maxima"]) for candle in faixa)
+        fluxo = (getattr(self, "_paper_flow_by_asset", {}).get(chave) or [])
+        if len(fluxo) < 20 or agora - fluxo[-1][0] > 15.0:
+            return False
+        bias = sum(valor for _, valor in list(fluxo)[-100:])
+        quote = controller.market_maker.evaluate_book(
+            price=float(preco), support=support, resistance=resistance,
+            order_flow_bias=bias, book=book, tick_size=tick_do_ativo(ativo) or 0)
+        if not quote:
+            return False
+
+        tick = tick_do_ativo(ativo)
+        buffer_stop = tick * 4
+        if quote["side"] == "BUY":
+            stop, target = support - buffer_stop, resistance
+        else:
+            stop, target = resistance + buffer_stop, support
+        risco_pontos = abs(float(quote["entry"]) - float(stop))
+        recompensa_pontos = abs(float(target) - float(quote["entry"]))
+        _rr_min = float((plano or {}).get("rr_minimo", 2.0) or 2.0)
+        if (risco_pontos <= 0 or recompensa_pontos / risco_pontos < _rr_min):
+            return False
+        sizing_base = dimensionar_pelo_plano(quote["entry"], stop, ativo, plano)
+        risk_budget = min(disponivel, float(sizing_base.get("risco_usd", 0) or 0))
+        perna, sizing = self._paper_criar_perna(
+            ativo, quote["side"], quote["entry"], stop, target, plano, risk_budget)
+        if perna is None or not sizing:
+            return False
+        liquidez = self.macro_smc_analyzer.liquidity_guard.assess(
+            book, quote["side"], quote["entry"], stop, target,
+            sizing["contratos"], tick, now=agora)
+        if not liquidez.allowed:
+            return False
+        return self._paper_submeter(
+            "MARKET_MAKING_PAPER", [perna], quote["reason"], "PASSIVE",
+            max_total, agora)
+
+    def _paper_reportar_fechamentos(self, trades):
+        for trade in trades:
+            registrar_evento(
+                "paper_trade_fechado", estrategia=trade.intent.strategy,
+                ativos=[perna.asset for perna in trade.intent.legs],
+                pnl_usd=trade.pnl_usd, motivo=trade.exit_reason,
+                nunca_enviado=True)
+            self.log(f"🧾 PAPER {trade.intent.strategy} encerrado: "
+                     f"P&L US${trade.pnl_usd:+.2f} · {trade.exit_reason}.")
+
+    def _atualizar_estrategias_paper(self, ativo, preco):
+        controller = getattr(self, "advanced_mode", None)
+        if (not controller or not controller.enabled or not controller.paper_mode
+                or not controller.allow_trade()):
+            return
+        try:
+            preco = float(preco)
+        except (TypeError, ValueError):
+            return
+        if preco <= 0:
+            return
+        agora = time.time()
+        closed = controller.paper_book.mark_prices({ativo: preco}, timestamp=agora)
+        self._paper_reportar_fechamentos(closed)
+
+        primary = controller.primary_asset
+        secondary = controller.secondary_asset
+        chaves = {AdvancedModeController._asset_key(primary),
+                  AdvancedModeController._asset_key(secondary)}
+        if (controller.pairs_enabled and secondary and
+                AdvancedModeController._asset_key(ativo) in chaves):
+            controller.pairs_engine.observe_price(ativo, preco, agora)
+            controller.pairs_engine.open_pairs = sum(
+                trade.status in ("OPEN", "PENDING")
+                and trade.intent.strategy == "PAIRS_PAPER"
+                for trade in controller.paper_book.trades)
+            candidato = controller.pairs_engine.evaluate_assets(primary, secondary, now=agora)
+            if candidato:
+                plano = plano_da_conta_ativa()
+                disponivel, max_total = self._orcamento_paper(plano)
+                self._paper_par(candidato, plano, disponivel, max_total, agora)
+            estado_par = controller.pairs_engine.pair_state(primary, secondary, now=agora)
+            if estado_par:
+                fechados_par = controller.paper_book.mark_pair_zscore(
+                    primary, secondary, estado_par["spread_zscore"], timestamp=agora)
+                self._paper_reportar_fechamentos(fechados_par)
+
+        if controller.market_making_enabled:
+            plano = plano_da_conta_ativa()
+            disponivel, max_total = self._orcamento_paper(plano)
+            if disponivel > 0:
+                self._paper_market_maker(ativo, preco, plano, disponivel,
+                                         max_total, agora)
+
+        status = controller.paper_book.status()
+        self.after(0, lambda s=status: self.advanced_paper_status_var.set(
+            f"Paper: {s['open']} aberta(s), {s['pending']} pendente(s), "
+            f"{s['closed']} fechada(s) · risco aberto US${s['open_risk_usd']:.2f} · "
+            f"P&L US${s['realized_pnl_usd']:+.2f}"))
+
+    def _salvar_modo_avancado(self):
+        try:
+            max_latency_ms = float(str(self.advanced_latency_var.get() or "180").replace(",", "."))
+            if max_latency_ms <= 0:
+                max_latency_ms = 180.0
+        except Exception:
+            max_latency_ms = 180.0
+
+        primary_window = (self.advanced_primary_window_var.get() or "").strip()
+        secondary_window = (self.advanced_secondary_window_var.get() or "").strip()
+        primary_asset = (self.advanced_primary_asset_var.get() or "").strip()
+        secondary_asset = (self.advanced_secondary_asset_var.get() or "").strip()
+
+        if not primary_window and janelas_monitoradas():
+            primary_window = janelas_monitoradas()[0]
+
+        self.advanced_mode.enabled = bool(self.advanced_mode_var.get())
+        self.advanced_mode.pairs_enabled = bool(self.advanced_pairs_var.get())
+        self.advanced_mode.market_making_enabled = bool(self.advanced_market_making_var.get())
+        self.advanced_mode.paper_mode = bool(self.advanced_paper_var.get())
+        self.advanced_mode.paper_mode = bool(self.advanced_paper_var.get())
+        self.advanced_mode.max_latency_ms = max_latency_ms
+        self.advanced_mode.latency_guard.max_latency_ms = max_latency_ms
+        self.advanced_mode.configure_assets(
+            primary_asset=primary_asset,
+            secondary_asset=secondary_asset,
+            primary_window=primary_window,
+            secondary_window=secondary_window,
+            report_confluences=bool(self.advanced_report_var.get()),
+        )
+        self.advanced_mode.set_risk_plan(plano_da_conta_ativa())
+        self.news_trading_enabled = bool(self.news_trading_var.get())
+
+        salvar_config({
+            "advanced_mode": {
+                "enabled": self.advanced_mode.enabled,
+                "pairs_enabled": self.advanced_mode.pairs_enabled,
+                "market_making_enabled": self.advanced_mode.market_making_enabled,
+                "paper_mode": self.advanced_mode.paper_mode,
+                "paper_mode": self.advanced_mode.paper_mode,
+                "max_latency_ms": max_latency_ms,
+                "report_confluences": self.advanced_mode.report_confluences,
+                "primary_asset": self.advanced_mode.primary_asset,
+                "secondary_asset": self.advanced_mode.secondary_asset,
+                "primary_window": self.advanced_mode.primary_window,
+                "secondary_window": self.advanced_mode.secondary_window,
+                "news_trading_enabled": self.news_trading_enabled,
+            }
+        })
+
+        if self.news_trading_enabled:
+            self.news_monitor.start()
+            self.news_status_var.set("Monitor macro ligado; verificando calendário público…")
+            self.after(1000, self._atualizar_status_news)
+            self.log("📰 News Trading LIGADO — feed público em polling assíncrono; sem garantia de latência milissegundo.")
+        else:
+            self.news_monitor.stop()
+            self.news_status_var.set("Monitor macro desligado")
+            self.log("📰 News Trading DESLIGADO — gate macro não interfere nas ordens.")
+
+        self._atualizar_resumo_modo_avancado()
+
+        if self.advanced_mode.enabled:
+            self.log(
+                "🚀 Modo avançado LIGADO — somente o principal pode enviar ordens; "
+                f"ativo principal {self.advanced_mode.primary_asset or 'N/D'} e "
+                f"secundário {self.advanced_mode.secondary_asset or 'N/D'} em standby. "
+                f"Pairs/Market Making em {'paper' if self.advanced_mode.paper_mode else 'pausa'} — nunca enviados à corretora. "
+                "O kill switch de latência permanece ativo."
+            )
+        else:
+            self.log("🚀 Modo avançado DESLIGADO — o robô mantém o comportamento atual e seguro.")
+
+    def _definir_janela_principal(self, titulo):
+        lista = list(janelas_monitoradas())
+        if not titulo or titulo not in lista:
+            self.log("⚠️ Primeiro selecione uma janela válida na lista de gráficos.")
+            return
+        lista.remove(titulo)
+        lista.insert(0, titulo)
+        salvar_janelas_monitoradas(lista)
+        self.advanced_primary_window_var.set(titulo)
+        self._render_lista_janelas()
+        self._salvar_modo_avancado()
+        self.log(f"🪟 Janela principal definida: {titulo}.")
+
+    def _atualizar_seletores_janelas_avancado(self):
+        """Mantém as janelas principal/secundária alinhadas à lista monitorada."""
+        if not hasattr(self, "advanced_primary_window_menu"):
+            return
+
+        janelas = list(janelas_monitoradas())
+        principal = (self.advanced_primary_window_var.get() or "").strip()
+        if principal not in janelas:
+            principal_salvo = (self.advanced_mode.primary_window or "").strip()
+            principal = principal_salvo if principal_salvo in janelas else (janelas[0] if janelas else "")
+            self.advanced_primary_window_var.set(principal)
+
+        secundarias = [janela for janela in janelas if janela != principal]
+        secundaria = (self.advanced_secondary_window_var.get() or "").strip()
+        if secundaria not in secundarias:
+            secundaria_salva = (self.advanced_mode.secondary_window or "").strip()
+            secundaria = secundaria_salva if secundaria_salva in secundarias else (secundarias[0] if secundarias else "")
+            self.advanced_secondary_window_var.set(secundaria)
+
+        self.advanced_primary_window_menu.configure(
+            values=janelas or ["(adicione uma janela monitorada)"])
+        self.advanced_secondary_window_menu.configure(
+            values=secundarias or ["(nenhuma janela secundária)"])
+        self._atualizar_resumo_modo_avancado()
+
+    def _ao_selecionar_janela_avancada(self, _valor=None):
+        self._atualizar_seletores_janelas_avancado()
+
+    def _atualizar_resumo_modo_avancado(self):
+        if not hasattr(self, "advanced_summary_var"):
+            return
+        principal = (self.advanced_primary_asset_var.get() or "").strip() or "símbolo não informado"
+        janela_principal = (self.advanced_primary_window_var.get() or "").strip()
+        secundaria = (self.advanced_secondary_asset_var.get() or "").strip() or "não configurado"
+        janela_secundaria = (self.advanced_secondary_window_var.get() or "").strip()
+        if janela_secundaria.startswith("("):
+            janela_secundaria = ""
+
+        texto = f"Principal: {principal}"
+        if janela_principal and not janela_principal.startswith("("):
+            texto += f"  ·  {janela_principal}"
+        texto += f"\nSecundário: {secundaria}"
+        if janela_secundaria:
+            texto += f"  ·  {janela_secundaria}"
+        if not janela_principal or janela_principal.startswith("(") or principal == "símbolo não informado":
+            texto += "\nInforme o símbolo e a janela principal para completar a configuração."
+        elif secundaria == "não configurado" or not janela_secundaria:
+            texto += "\nSem secundário: Pairs Trading não tem par configurado; Market Making usa o principal."
+        else:
+            texto += "\nPrincipal e secundário configurados para análise em par."
+        self.advanced_summary_var.set(texto)
+
+    def _adicionar_confluencias_avancadas_no_relatorio(self, relatorio, confluencias):
+        if not confluencias:
+            return relatorio
+        lista = list(confluencias)
+        if not lista:
+            return relatorio
+        texto = ", ".join(str(c) for c in lista)
+        relatorio.append(f"• Confluências do modo avançado: {texto}")
+        return relatorio
+
+    def _montar_painel_modo_avancado(self, master):
+        frame = ctk.CTkFrame(master, fg_color="#1b2a1b", border_color="#3ecf8e", border_width=1)
+        frame.pack(padx=10, pady=8, fill="x")
+        ctk.CTkLabel(
+            frame,
+            text="🚀 Modo avançado (opcional — desligado por padrão)",
+            font=ctk.CTkFont(weight="bold", size=13),
+            text_color="#7ee8a4",
+        ).pack(pady=(8, 0), anchor="w", padx=12)
+
+        ctk.CTkLabel(
+            frame,
+            justify="left",
+            text_color=COR["texto"],
+            text=(
+                "O principal é o ativo operado. O secundário fica em standby para validar o principal. "
+                "Com o Modo Avançado ligado, somente o principal pode enviar ordens SMC. Pairs e "
+                "Market Making são simulados no paper book, com risco agregado do Plano e sem envio real."
+            ),
+            wraplength=560,
+        ).pack(pady=(4, 8), padx=12, anchor="w")
+
+        ctk.CTkCheckBox(
+            frame,
+            text="Ativar modo avançado",
+            variable=self.advanced_mode_var,
+            command=self._salvar_modo_avancado,
+            text_color=COR["texto"],
+            fg_color="#1f8b4c",
+            border_color="#3ecf8e",
+            hover_color="#25a35a",
+        ).pack(pady=3, padx=12, anchor="w")
+
+        ctk.CTkCheckBox(
+            frame,
+            text="Habilitar Pairs Trading em paper (sem ordens reais)",
+            variable=self.advanced_pairs_var,
+            command=self._salvar_modo_avancado,
+            text_color=COR["texto"],
+            fg_color="#1f8b4c",
+            border_color="#3ecf8e",
+            hover_color="#25a35a",
+        ).pack(pady=3, padx=12, anchor="w")
+
+        ctk.CTkCheckBox(
+            frame,
+            text="Habilitar Market Making em paper (sem ordens reais)",
+            variable=self.advanced_market_making_var,
+            command=self._salvar_modo_avancado,
+            text_color=COR["texto"],
+            fg_color="#1f8b4c",
+            border_color="#3ecf8e",
+            hover_color="#25a35a",
+        ).pack(pady=3, padx=12, anchor="w")
+
+        ctk.CTkCheckBox(
+            frame,
+            text="Simular Pairs/Market Making (paper; nunca envia ordens reais)",
+            variable=self.advanced_paper_var,
+            command=self._salvar_modo_avancado,
+            text_color=COR["texto"],
+            fg_color="#1f8b4c",
+            border_color="#3ecf8e",
+            hover_color="#25a35a",
+        ).pack(pady=3, padx=12, anchor="w")
+        ctk.CTkLabel(
+            frame,
+            textvariable=self.advanced_paper_status_var,
+            justify="left",
+            anchor="w",
+            wraplength=560,
+            text_color=COR["dim"],
+            font=ctk.CTkFont(size=10),
+        ).pack(fill="x", padx=12, pady=(0, 4))
+
+        ctk.CTkCheckBox(
+            frame,
+            text="Simular Pairs/Market Making (paper; sem ordem real)",
+            variable=self.advanced_paper_var,
+            command=self._salvar_modo_avancado,
+            text_color=COR["texto"],
+            fg_color="#1f8b4c",
+            border_color="#3ecf8e",
+            hover_color="#25a35a",
+        ).pack(pady=3, padx=12, anchor="w")
+        ctk.CTkLabel(
+            frame,
+            textvariable=self.advanced_paper_status_var,
+            justify="left",
+            anchor="w",
+            wraplength=560,
+            text_color=COR["dim"],
+            font=ctk.CTkFont(size=10),
+        ).pack(fill="x", padx=12, pady=(0, 4))
+
+        ctk.CTkCheckBox(
+            frame,
+            text="Incluir confluências do módulo avançado no relatório do app",
+            variable=self.advanced_report_var,
+            command=self._salvar_modo_avancado,
+            text_color=COR["texto"],
+            fg_color="#1f8b4c",
+            border_color="#3ecf8e",
+            hover_color="#25a35a",
+        ).pack(pady=3, padx=12, anchor="w")
+
+        ctk.CTkCheckBox(
+            frame,
+            text="Ativar News Trading (monitor + proteção de ordens)",
+            variable=self.news_trading_var,
+            command=self._salvar_modo_avancado,
+            text_color=COR["texto"],
+            fg_color="#1f8b4c",
+            border_color="#3ecf8e",
+            hover_color="#25a35a",
+        ).pack(pady=(8, 2), padx=12, anchor="w")
+        ctk.CTkLabel(
+            frame,
+            textvariable=self.news_status_var,
+            justify="left",
+            anchor="w",
+            wraplength=560,
+            text_color=COR["dim"],
+            font=ctk.CTkFont(size=10),
+        ).pack(fill="x", padx=12, pady=(0, 2))
+        ctk.CTkLabel(
+            frame,
+            text=("Feed público pode atrasar. Em divulgação recente, só passa ordem com "
+                  "viés macro, gatilho SMC, Order Flow alinhado e book DOM legível; "
+                "sem profundidade confiável, a ordem é bloqueada. Feed indisponível "
+                "também bloqueia envios reais enquanto este modo estiver ligado."),
+            justify="left",
+            anchor="w",
+            wraplength=560,
+            text_color="#e0a458",
+            font=ctk.CTkFont(size=10),
+        ).pack(fill="x", padx=12, pady=(0, 6))
+
+        linha_ativo_principal = ctk.CTkFrame(frame, fg_color="transparent")
+        linha_ativo_principal.pack(fill="x", padx=12, pady=(5, 2))
+        ctk.CTkLabel(linha_ativo_principal, text="Símbolo principal:", width=145,
+                     anchor="w", text_color=COR["texto"]).pack(side="left")
+        ctk.CTkEntry(linha_ativo_principal, textvariable=self.advanced_primary_asset_var,
+                     width=180, placeholder_text="Ex.: MESU6").pack(side="left")
+        self.advanced_primary_asset_var.trace_add(
+            "write", lambda *_: self._atualizar_resumo_modo_avancado())
+
+        linha_ativo_secundario = ctk.CTkFrame(frame, fg_color="transparent")
+        linha_ativo_secundario.pack(fill="x", padx=12, pady=2)
+        ctk.CTkLabel(linha_ativo_secundario, text="Símbolo secundário:", width=145,
+                     anchor="w", text_color=COR["texto"]).pack(side="left")
+        ctk.CTkEntry(linha_ativo_secundario, textvariable=self.advanced_secondary_asset_var,
+                     width=180, placeholder_text="Opcional").pack(side="left")
+        self.advanced_secondary_asset_var.trace_add(
+            "write", lambda *_: self._atualizar_resumo_modo_avancado())
+
+        linha_janela_principal = ctk.CTkFrame(frame, fg_color="transparent")
+        linha_janela_principal.pack(fill="x", padx=12, pady=(8, 2))
+        ctk.CTkLabel(linha_janela_principal, text="Janela principal:",
+                     text_color=COR["texto"]).pack(anchor="w")
+        self.advanced_primary_window_menu = ctk.CTkOptionMenu(
+            linha_janela_principal,
+            variable=self.advanced_primary_window_var,
+            values=["(nenhuma janela monitorada)"],
+            width=420,
+            command=self._ao_selecionar_janela_avancada,
+        )
+        self.advanced_primary_window_menu.pack(anchor="w", pady=(3, 0))
+        ctk.CTkButton(
+            linha_janela_principal,
+            text="Marcar como principal",
+            width=150,
+            command=lambda: self._definir_janela_principal(self.advanced_primary_window_var.get()),
+            fg_color="#2b6cb0",
+        ).pack(anchor="w", pady=(5, 0))
+
+        linha_janela_secundaria = ctk.CTkFrame(frame, fg_color="transparent")
+        linha_janela_secundaria.pack(fill="x", padx=12, pady=(5, 2))
+        ctk.CTkLabel(linha_janela_secundaria, text="Janela secundária (opcional):",
+                     text_color=COR["texto"]).pack(anchor="w")
+        self.advanced_secondary_window_menu = ctk.CTkOptionMenu(
+            linha_janela_secundaria,
+            variable=self.advanced_secondary_window_var,
+            values=["(nenhuma janela secundária)"],
+            width=420,
+            command=self._ao_selecionar_janela_avancada,
+        )
+        self.advanced_secondary_window_menu.pack(anchor="w", pady=(3, 0))
+        ctk.CTkLabel(
+            linha_janela_secundaria,
+            text="Validação apenas; a automação não envia ordens pela janela secundária.",
+            text_color=COR["dim"],
+            font=ctk.CTkFont(size=10),
+        ).pack(anchor="w", pady=(3, 0))
+
+        self.advanced_summary_var = tk.StringVar()
+        ctk.CTkLabel(
+            frame,
+            textvariable=self.advanced_summary_var,
+            justify="left",
+            anchor="w",
+            text_color="#a8e6bd",
+            wraplength=560,
+        ).pack(fill="x", padx=12, pady=(6, 2))
+        self._atualizar_seletores_janelas_avancado()
+
+        linha = ctk.CTkFrame(frame, fg_color="transparent")
+        linha.pack(pady=(6, 10), padx=12, anchor="w")
+        ctk.CTkLabel(linha, text="Latência máxima de proteção (ms):", text_color=COR["texto"]).pack(side="left")
+        ctk.CTkEntry(
+            linha,
+            textvariable=self.advanced_latency_var,
+            width=90,
+        ).pack(side="left", padx=(8, 0))
+        ctk.CTkButton(
+            linha,
+            text="Salvar",
+            width=80,
+            command=self._salvar_modo_avancado,
+            fg_color="#2b6cb0",
+        ).pack(side="left", padx=(8, 0))
+
     def _tv_salvar_prefs(self):
         salvar_config({"tradovate": {
             "auto_ativo": self.tv_auto_var.get(),
@@ -14916,6 +15838,8 @@ class SmcQuantApp(ctk.CTk):
             "sync_posicoes": self.tv_sync_var.get(),
             "trailing": self.tv_trail_var.get(),
             "trailing_modo": getattr(self, "tv_trail_modo_var", None).get() if getattr(self, "tv_trail_modo_var", None) else "🤖 IA Adaptativa (Smart SMC)",
+            "protecao_lucro_dinamica": bool(getattr(self, "tv_protecao_lucro_var", None) and self.tv_protecao_lucro_var.get()),
+            "multicontas_simultaneas": bool(getattr(self, "tv_multicontas_var", None) and self.tv_multicontas_var.get()),
             "cancelar_na_corretora": self.tv_cancelar_var.get(),
         }})
         if self.tv_auto_var.get():
@@ -15136,6 +16060,7 @@ class SmcQuantApp(ctk.CTk):
         for w in self.frame_lista_janelas.winfo_children():
             w.destroy()
         lista = janelas_monitoradas()
+        self._atualizar_seletores_janelas_avancado()
         if not lista:
             ctk.CTkLabel(self.frame_lista_janelas, text_color=COR["dim"],
                          font=ctk.CTkFont(size=11),
@@ -15151,6 +16076,9 @@ class SmcQuantApp(ctk.CTk):
             ctk.CTkLabel(linha, text=titulo[:70], anchor="w",
                          text_color=COR["texto"], font=ctk.CTkFont(size=11)
                          ).pack(side="left", fill="x", expand=True, padx=4, pady=6)
+            ctk.CTkButton(linha, text="⭐ Principal", width=96, fg_color="#2b6cb0",
+                          command=lambda t=titulo: self._definir_janela_principal(t)
+                          ).pack(side="right", padx=(0, 6), pady=4)
             ctk.CTkButton(linha, text="🗑 Remover", width=90, fg_color=COR["vermelho"],
                           command=lambda t=titulo: self._remover_janela_monitorada(t)
                           ).pack(side="right", padx=6, pady=4)
@@ -16189,6 +17117,43 @@ class SmcQuantApp(ctk.CTk):
         
         confls = ua.get("confluencias", [])
         confl_txt = ", ".join(confls) if isinstance(confls, list) else str(confls or "Mapeando zonas de liquidez")
+
+        advanced_mode = getattr(self, "advanced_mode", None)
+        advanced_report = []
+        if advanced_mode and advanced_mode.enabled and advanced_mode.report_confluences:
+            primary_asset = advanced_mode.primary_asset or (ua.get("ativo") or ativo or "N/D")
+            secondary_asset = advanced_mode.secondary_asset or "N/D"
+            advanced_confluencias = list(ua.get("advanced_confluencias", []) or [])
+            advanced_report = [
+                f"• Modo avançado: {'ON' if advanced_mode.enabled else 'OFF'} | Pairs {'ON' if advanced_mode.pairs_enabled else 'OFF'} | MM {'ON' if advanced_mode.market_making_enabled else 'OFF'}",
+                f"• Ativos do modo avançado: principal={primary_asset}; secundário={secondary_asset if secondary_asset and secondary_asset != 'N/D' else 'N/D'} (paper pair; sem ordem à corretora)",
+                "• Confluências do módulo avançado: " + (", ".join(advanced_confluencias) if advanced_confluencias else "nenhuma reportada neste ciclo"),
+            ]
+        if advanced_mode and advanced_mode.enabled:
+            paper_status = advanced_mode.paper_book.status()
+            advanced_report.append(
+                f"• Estratégias paper: {paper_status['open']} aberta(s), "
+                f"{paper_status['pending']} pendente(s), {paper_status['closed']} fechada(s) | "
+                f"risco US${paper_status['open_risk_usd']:.2f} | "
+                f"P&L US${paper_status['realized_pnl_usd']:+.2f} | zero ordens reais"
+            )
+        if getattr(self, "news_trading_enabled", False):
+            news_status = self.news_monitor.status()
+            release = news_status.get("latest_release")
+            linhas_news = [
+                "• News Trading: ligado | feed " + (
+                    "atualizado" if news_status.get("last_success_at") and
+                    time.time() - news_status["last_success_at"] <= max(45, self.news_monitor.poll_interval_seconds * 3)
+                    else "sem atualização recente"),
+            ]
+            if release:
+                linhas_news.append(
+                    f"• Último release: {release.event} | real {release.actual:g} vs previsto {release.forecast:g} "
+                    f"({release.source}) | viés US index: {macro_bias_for_us_index(release) or 'não mapeado'}"
+                )
+            else:
+                linhas_news.append("• Último release estruturado: nenhum; sem Actual/Forecast confiáveis")
+            advanced_report.extend(linhas_news)
         
         stats = self._computar_stats_plano()
         res_hoje = stats.get("resultado_hoje", 0.0)
@@ -16201,10 +17166,14 @@ class SmcQuantApp(ctk.CTk):
             f"• Regime de Mercado: {regime}",
             f"• Confluência do Setup: {score}",
             f"• Confluências Ativas: {confl_txt}",
+
+
             f"• Conexão Tradovate (CDP): {'Ativa e Operacional' if getattr(self, '_tv_bot', None) else 'Pronta para envio'}",
             f"• Conta Ativa: {nome_conta_ativa()}",
             f"• Resultado do Dia: US$ {res_hoje:+,.2f} | Total do Ciclo: US$ {tot_ciclo:+,.2f}",
         ]
+        if advanced_report:
+            linhas.extend(advanced_report)
         pos = c.get("posicao")
         if pos:
             linhas.append(f"• Posição Aberta: {pos.get('direcao')} {pos.get('contratos')} ctr @ {pos.get('entry')} (Stop: {pos.get('stop')}, Alvo: {pos.get('tp1')})")
@@ -20808,7 +21777,7 @@ class SmcQuantApp(ctk.CTk):
         lido do gráfico não abre posição por conta própria."""
         if not plataforma_tem_cdp(getattr(self, "plataforma_atual", "tradovate")):
             return False
-        if not (getattr(self, "tv_sync_var", None) and self.tv_sync_var.get()):
+        if not self._tradovate_preferencia("sync_posicoes"):
             return False
         ultimo = getattr(self, "_tv_sync_ok_ts", 0)
         # Vale por 10 min: se a leitura parar de funcionar, voltamos ao modo
@@ -20951,7 +21920,8 @@ class SmcQuantApp(ctk.CTk):
         decisão só é a forma mais confiável de alguém ligar um e achar que
         ligou os dois."""
         try:
-            return bool(TRADOVATE_DISPONIVEL and self.tv_auto_var.get())
+            return bool(TRADOVATE_DISPONIVEL
+                        and self._tradovate_preferencia("auto_ativo"))
         except Exception:
             return False
 
@@ -20965,7 +21935,8 @@ class SmcQuantApp(ctk.CTk):
         próprio aqui viraria um segundo caminho para manter, e é sempre o
         segundo caminho que fica para trás."""
         executa, motivo = decidir_execucao_autonoma(
-            self._modo_autonomo(), bool(self.tv_dry_var.get()),
+            self._modo_autonomo(),
+            bool(self._tradovate_preferencia("dry_run")),
             contratos, motivo_limite)
         if not executa:
             if self._modo_autonomo():
@@ -21052,8 +22023,8 @@ class SmcQuantApp(ctk.CTk):
         orfas = list(_canceladas_ainda_na_corretora)
         if not orfas:
             return
-        permitido = bool(getattr(self, "tv_cancelar_var", None)
-                         and self.tv_cancelar_var.get())
+        permitido = bool(self._tradovate_preferencia(
+            "cancelar_na_corretora"))
         # As órfãs deste ciclo, separadas por contrato. Elas podem ser de
         # ativos diferentes, e daqui para baixo tudo respeita essa separação.
         por_ativo = {}
@@ -21070,7 +22041,8 @@ class SmcQuantApp(ctk.CTk):
         except Exception:
             leitura_ok = False
         decisao, motivo = decidir_cancelamento_na_corretora(
-            self._modo_autonomo(), bool(self.tv_dry_var.get()), permitido,
+            self._modo_autonomo(),
+            bool(self._tradovate_preferencia("dry_run")), permitido,
             orfas, leitura_de_posicao_ok=leitura_ok, posicao_aberta=tem_posicao,
             permitir_liquidar_posicao=permitir_liquidar_posicao)
         quais = "; ".join(
@@ -21317,6 +22289,83 @@ class SmcQuantApp(ctk.CTk):
         if mexeu:
             salvar_posicoes(lista)
 
+    @staticmethod
+    def _lado_normalizado(valor):
+        if isinstance(valor, (int, float)):
+            return "BUY" if valor > 0 else "SELL" if valor < 0 else None
+        texto = str(valor or "").strip().upper()
+        if texto in {"BUY", "LONG", "BULLISH", "COMPRA", "COMPRADOR"}:
+            return "BUY"
+        if texto in {"SELL", "SHORT", "BEARISH", "VENDA", "VENDEDOR"}:
+            return "SELL"
+        return None
+
+    def _analise_news_do_ativo(self, ativo):
+        ticker = str(ativo or "").strip().upper()
+        por_ativo = getattr(self, "_analises_por_ativo", {}) or {}
+        for chave, analise in por_ativo.items():
+            if str(chave).strip().upper() == ticker and isinstance(analise, dict):
+                return dict(analise)
+        ultima = getattr(self, "_ultima_analise", None) or {}
+        if isinstance(ultima, dict) and str(ultima.get("ativo") or "").strip().upper() == ticker:
+            return dict(ultima)
+        return {}
+
+    def _avaliar_gate_macro_ordem(self, bot, direcao, entry, stop, alvo, qtd,
+                                  ativo, analise):
+        status = self.news_monitor.status()
+        ultimo_ok = status.get("last_success_at")
+        if ultimo_ok is None or time.time() - ultimo_ok > max(45.0, self.news_monitor.poll_interval_seconds * 3):
+            return False, "feed macro sem atualização recente; modo News Trading bloqueia ordens reais"
+
+        release = status.get("latest_release")
+        if release is None or time.time() - release.published_at > self.macro_smc_analyzer.release_max_age_seconds:
+            return True, "sem release macro quente"
+
+        raiz = raiz_do_contrato(ativo)
+        if raiz not in {"ES", "MES", "NQ", "MNQ", "YM", "MYM", "RTY", "M2K"}:
+            return False, "não há regra macro calibrada para este contrato durante o release"
+
+        confluencias = analise.get("confluencias") or []
+        if not isinstance(confluencias, (list, tuple)):
+            confluencias = [confluencias]
+        termos_smc = ("order block", "ob ", "fvg", "absor", "sweep", "bos", "choch", "mss")
+        smc_trigger = any(any(termo in str(item).lower() for termo in termos_smc)
+                          for item in confluencias)
+
+        fluxo = (analise.get("order_flow_side") or analise.get("order_flow_direction")
+                 or analise.get("order_flow_bias") or analise.get("order_flow"))
+        if isinstance(fluxo, dict):
+            fluxo = fluxo.get("side") or fluxo.get("direction") or fluxo.get("bias")
+        order_flow_side = self._lado_normalizado(fluxo)
+        if order_flow_side is None:
+            order_flow_side = order_flow_side_from_confluences(confluencias)
+        decision = self.macro_smc_analyzer.evaluate(
+            release=release,
+            side=direcao,
+            technical_side=self._lado_normalizado(analise.get("acao") or analise.get("direcao")),
+            smc_trigger=smc_trigger,
+            order_flow_side=order_flow_side,
+            book=read_book_snapshot_cdp(bot),
+            entry=float(entry),
+            stop=float(stop),
+            target=float(alvo),
+            quantity=float(qtd),
+            tick_size=float(tick_do_ativo(ativo) or 0),
+        )
+        detalhe = decision.reason
+        if decision.liquidity and decision.liquidity.risk_reward_after_costs is not None:
+            detalhe += (f" (spread {decision.liquidity.spread_ticks:.2f} ticks; "
+                        f"R:R líquido {decision.liquidity.risk_reward_after_costs:.2f})")
+        return decision.allowed, detalhe
+
+    def _avaliar_gate_macro_ordem_seguro(self, *args):
+        try:
+            permitido, motivo = self._avaliar_gate_macro_ordem(*args)
+            return permitido, f"News Trading: {motivo}"
+        except Exception as e:
+            return False, f"News Trading: falha no gate macro: {e}"
+
     def _tv_enviar_bracket(self, direcao, entry, stop, alvo, qtd, ativo=None,
                            sinal_id=None, probabilidade=None):
         """Dispara o envio em thread separada (não trava a GUI). Usa dry-run
@@ -21330,10 +22379,22 @@ class SmcQuantApp(ctk.CTk):
         janela de 'entrada enviada, proteção não'."""
         if not TRADOVATE_DISPONIVEL:
             return
-        dry = self.tv_dry_var.get()
+        modo_avancado = getattr(self, "advanced_mode", None)
+        analise_ativo = self._analise_news_do_ativo(ativo)
+        if (modo_avancado and modo_avancado.is_secondary_validation_only(
+                asset=ativo, window=analise_ativo.get("janela"))):
+            motivo = "ativo secundário está em standby para validar o principal"
+            registrar_evento(
+                "ordem_bloqueada_ativo_secundario", ativo=ativo,
+                direcao=direcao, contratos=qtd, entry=entry, stop=stop,
+                alvo=alvo, motivo=motivo, sinal_id=sinal_id)
+            aviso = f"⏸️ Ordem de {ativo or 'ativo secundário'} não enviada: {motivo}."
+            self.log(aviso)
+            self._chat_feed(aviso)
+            return
+        dry = bool(self._tradovate_preferencia("dry_run"))
         tick = tick_do_ativo(ativo or getattr(self, "_ultimo_ativo_lido", "") or "")
-        usar_trail = bool(getattr(self, "tv_trail_var", None)
-                          and self.tv_trail_var.get())
+        usar_trail = bool(self._tradovate_preferencia("trailing"))
         # OS DADOS QUE O TRAIL INTELIGENTE PRECISA, LIDOS AQUI NA THREAD DA
         # INTERFACE. Dentro de `tarefa()` estamos noutra thread, e ler plano e
         # diário de lá seria pedir corrida de dados justamente no caminho que
@@ -21347,6 +22408,8 @@ class SmcQuantApp(ctk.CTk):
             _dd_resta = drawdown_restante_hoje()
         except Exception:
             _dd_resta = None
+        news_enabled = bool(getattr(self, "news_trading_enabled", False))
+        news_analysis = self._analise_news_do_ativo(ativo) if news_enabled else {}
         _rr = None
         try:
             _risco = abs(float(entry) - float(stop))
@@ -21379,19 +22442,26 @@ class SmcQuantApp(ctk.CTk):
                     _pode, _porque = self._conferir_plataforma_antes_de_enviar(
                         bot, ativo or getattr(self, "_ultimo_ativo_lido", None),
                         sinal_id)
+                    if _pode and news_enabled:
+                        _pode, _porque = self._avaliar_gate_macro_ordem_seguro(
+                            bot, direcao, entry, stop, alvo, qtd, ativo,
+                            news_analysis)
+                    _recusa_news = news_enabled and not _pode
                     if not _pode:
                         aviso = f"⛔ NÃO MANDEI A ORDEM: {_porque}"
+                        tipo_recusa = ("ordem_bloqueada_news_trading" if _recusa_news
+                                       else "ordem_recusada_pela_plataforma")
+                        try:
+                            self._desmarcar_ordem_na_corretora(sinal_id)
+                        except Exception:
+                            pass
                         registrar_evento(
-                            "ordem_recusada_pela_plataforma", ativo=ativo,
+                            tipo_recusa, ativo=ativo,
                             direcao=direcao, contratos=qtd, entry=entry,
                             stop=stop, alvo=alvo, motivo=_porque,
                             sinal_id=sinal_id)
                         self.log(aviso)
                         self._chat_feed(aviso)
-                        try:
-                            self._desmarcar_ordem_na_corretora(sinal_id)
-                        except Exception:
-                            pass
                         return
                 # ws pode ter caído entre um uso e outro — força reconferir
                 rotulo_ativo = f" {ativo}" if ativo else ""
@@ -21496,6 +22566,14 @@ class SmcQuantApp(ctk.CTk):
                 # UMA vez, logo após o envio, e é a única chance de pegar um
                 # stop trocado antes que ele vire prejuízo.
                 if not dry and res.get("ok"):
+                    if self._tradovate_preferencia("multicontas_simultaneas"):
+                        try:
+                            self._tv_replicar_bracket_multicontas(
+                                bot, direcao, entry, stop, alvo, tick, ativo,
+                                sinal_id=sinal_id, probabilidade=probabilidade,
+                                usar_trail=usar_trail)
+                        except Exception as _e_mc:
+                            self.log(f"⚠️ Multi-Contas: falha ao replicar ordem ({_e_mc}).")
                     try:
                         extrato = bot.ler_execucoes() or {}
                         if extrato.get("ok") and extrato.get("ordens"):
@@ -21581,6 +22659,134 @@ class SmcQuantApp(ctk.CTk):
                 self._tv_bot = None
 
         threading.Thread(target=tarefa, daemon=True).start()
+
+    def _tv_replicar_bracket_multicontas(self, bot_primario, direcao, entry,
+                                         stop, alvo, tick, ativo,
+                                         sinal_id=None, probabilidade=None,
+                                         usar_trail=False):
+        """Replica a ordem aprovada nas DEMAIS abas/contas da Tradovate quando
+        o interruptor 'Operar Múltiplas Contas / Abas Tradovate Simultaneamente'
+        está ligado.
+
+        Suporta os dois modelos reais de operação multi-conta:
+          1) Múltiplas abas da Tradovate abertas no Chrome de depuração (cada
+             aba logada numa conta ou subconta diferente);
+          2) Múltiplas contas cadastradas no SMC Quant Pro (trocando a conta no
+             seletor de contas do DOM da Tradovate e dimensionando contratos e
+             freios pelo Plano de cada conta individualmente).
+        """
+        if not TRADOVATE_DISPONIVEL or not tick:
+            return
+        ativo_alvo = ativo or getattr(self, "_ultimo_ativo_lido", None)
+        _vt = (valor_por_ponto_do_ativo(ativo_alvo or "") or 0) * (tick or 0)
+        _risco = abs(float(entry) - float(stop))
+        _rr = (abs(float(alvo) - float(entry)) / _risco) if _risco > 0 else None
+        _modo_r = (getattr(self, "tv_trail_modo_var", None).get()
+                   if getattr(self, "tv_trail_modo_var", None) else "auto")
+        _atr_ticks = self._ruido_ticks_do_ativo(ativo_alvo, tick)
+        _fn_trail = getattr(tradovate_auto, "plano_trailing_inteligente")
+
+        # 1) Múltiplas abas abertas no Chrome de depuração
+        try:
+            abas = bot_primario.listar_abas_tradovate() or []
+        except Exception:
+            abas = []
+        aba_primaria = getattr(bot_primario, "aba_id", None)
+        abas_extras = [
+            a for a in abas
+            if a.get("id") and a.get("id") != aba_primaria
+            and a.get("webSocketDebuggerUrl")
+        ]
+        for idx, aba in enumerate(abas_extras, start=2):
+            aba_id = aba.get("id")
+            titulo_aba = aba.get("title") or f"Aba #{idx}"
+            bot_extra = tradovate_auto.TradovateAuto(log=self.log)
+            try:
+                if not bot_extra.conectar(aba_id=aba_id):
+                    self.log(f"⚠️ Multi-Contas ({titulo_aba}): não consegui conectar à aba.")
+                    continue
+                _pode, _motivo = self._conferir_plataforma_antes_de_enviar(
+                    bot_extra, ativo_alvo, sinal_id)
+                if not _pode:
+                    self.log(f"⛔ Multi-Contas ({titulo_aba}): ordem segurada — {_motivo}")
+                    continue
+                plano_aba = plano_da_conta_ativa()
+                sizing_aba = dimensionar_pelo_plano(entry, stop, ativo_alvo, plano_aba)
+                qtd_aba = int(sizing_aba.get("contratos") or 0)
+                if qtd_aba <= 0:
+                    self.log(f"⛔ Multi-Contas ({titulo_aba}): 0 contratos pelo plano.")
+                    continue
+                trail_aba = _fn_trail(
+                    tradovate_auto.ticks_entre(entry, stop, tick),
+                    rr=_rr, probabilidade=probabilidade, contratos=qtd_aba,
+                    valor_do_tick=_vt, drawdown_restante=drawdown_restante_hoje(plano_aba),
+                    ligado=usar_trail, modo_r=_modo_r, ruido_ticks=_atr_ticks,
+                    ativo=ativo_alvo)
+                res_aba = bot_extra.enviar_ordem_com_atm(
+                    direcao, entry, stop, alvo, tick, qtd=qtd_aba,
+                    enviar=True, trailing=trail_aba, ativo=ativo_alvo)
+                if res_aba.get("ok"):
+                    self.log(f"✅ MULTI-CONTAS ({titulo_aba}): {direcao} {ativo_alvo} "
+                             f"{qtd_aba} ctr @ {entry} enviada com ATM.")
+                else:
+                    self.log(f"❌ MULTI-CONTAS ({titulo_aba}): falha no envio — "
+                             f"{res_aba.get('erro') or 'erro desconhecido'}.")
+            except Exception as e:
+                self.log(f"⚠️ Multi-Contas ({titulo_aba}): erro durante envio ({e}).")
+            finally:
+                try:
+                    bot_extra.fechar()
+                except Exception:
+                    pass
+
+        # 2) Múltiplas contas cadastradas no app (se não houver abas extras separadas)
+        contas = carregar_contas()
+        id_ativa = conta_ativa_id()
+        nome_ativa = nome_conta_ativa()
+        contas_extras = [
+            c for c in contas
+            if c.get("id") != id_ativa
+            and bool((c.get("plano_trading") or {}).get("participar_multicontas", True))
+        ]
+        if contas_extras and not abas_extras:
+            for c_extra in contas_extras:
+                nome_c = c_extra.get("nome") or ""
+                id_c = c_extra.get("id")
+                plano_c = dict(PLANO_PADRAO)
+                plano_c.update(c_extra.get("plano_trading") or {})
+                pode_c, motivo_c = freio_de_sugestoes(plano_c, conta_id=id_c)
+                if not pode_c:
+                    self.log(f"🛑 Multi-Contas ('{nome_c}'): {motivo_c}")
+                    continue
+                sizing_c = dimensionar_pelo_plano(entry, stop, ativo_alvo, plano_c)
+                qtd_c = int(sizing_c.get("contratos") or 0)
+                if qtd_c <= 0:
+                    self.log(f"⛔ Multi-Contas ('{nome_c}'): 0 contratos ({sizing_c.get('motivo_limite')}).")
+                    continue
+                trocou = bot_primario.selecionar_conta_no_dom(nome_c)
+                if not trocou.get("ok"):
+                    continue
+                trail_c = _fn_trail(
+                    tradovate_auto.ticks_entre(entry, stop, tick),
+                    rr=_rr, probabilidade=probabilidade, contratos=qtd_c,
+                    valor_do_tick=_vt, drawdown_restante=drawdown_restante_hoje(plano_c),
+                    ligado=usar_trail, modo_r=_modo_r, ruido_ticks=_atr_ticks,
+                    ativo=ativo_alvo)
+                res_c = bot_primario.enviar_ordem_com_atm(
+                    direcao, entry, stop, alvo, tick, qtd=qtd_c,
+                    enviar=True, trailing=trail_c, ativo=ativo_alvo)
+                if res_c.get("ok"):
+                    self.log(f"✅ MULTI-CONTAS ('{nome_c}'): {direcao} {ativo_alvo} "
+                             f"{qtd_c} ctr @ {entry} enviada com ATM.")
+                else:
+                    self.log(f"❌ MULTI-CONTAS ('{nome_c}'): falha no envio — "
+                             f"{res_c.get('erro') or 'erro desconhecido'}.")
+            # Restaura a conta ativa original no seletor da Tradovate
+            if nome_ativa:
+                try:
+                    bot_primario.selecionar_conta_no_dom(nome_ativa)
+                except Exception:
+                    pass
 
     def _checar_atualizacao(self):
         info = verificar_nova_versao()
@@ -22092,8 +23298,17 @@ class SmcQuantApp(ctk.CTk):
                      wraplength=560
                      ).grid(row=15, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 2))
 
+        self.var_parar_na_meta_diaria = ctk.BooleanVar(
+            value=bool(self.plano.get("parar_na_meta_diaria", True)))
+        ctk.CTkCheckBox(
+            frame_config, variable=self.var_parar_na_meta_diaria,
+            text="🏆 Parar sugestões e operações ao atingir a Meta do Dia (só volta no próximo pregão)",
+            text_color=COR["texto"], font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color=COR["verde_esc"], hover_color=COR["verde"]
+        ).grid(row=16, column=0, columnspan=4, sticky="w", padx=(12, 4), pady=4)
+
         frame_botoes_plano = ctk.CTkFrame(frame_config, fg_color="transparent")
-        frame_botoes_plano.grid(row=16, column=0, columnspan=4, pady=(6, 10))
+        frame_botoes_plano.grid(row=17, column=0, columnspan=4, pady=(6, 10))
         ctk.CTkButton(frame_botoes_plano, text="💾 Salvar Plano", width=140,
                       fg_color=COR["verde_esc"], hover_color=COR["verde"],
                       command=self.salvar_plano_trading).pack(side="left", padx=6)
@@ -23735,6 +24950,9 @@ class SmcQuantApp(ctk.CTk):
         # conta tem de trazer o estado dela, e não deixar ligado o que estava
         # ligado na anterior.
         self.var_perseguir_meta.set(bool(self.plano.get("perseguir_meta", False)))
+        if hasattr(self, "var_parar_na_meta_diaria"):
+            self.var_parar_na_meta_diaria.set(
+                bool(self.plano.get("parar_na_meta_diaria", True)))
         # Invalida os caches de render: a conta mudou, as listas TÊM de ser
         # redesenhadas mesmo que a assinatura anterior fosse igual.
         self._assin_posicoes = None
@@ -23907,6 +25125,9 @@ class SmcQuantApp(ctk.CTk):
             # base) e não aceita negativo — teto negativo zeraria a posição
             # sem dizer por quê.
             self.plano["perseguir_meta"] = bool(self.var_perseguir_meta.get())
+            if hasattr(self, "var_parar_na_meta_diaria"):
+                self.plano["parar_na_meta_diaria"] = bool(
+                    self.var_parar_na_meta_diaria.get())
             _rmax = float(self.entry_risco_max.get().replace(",", "."))
             self.plano["risco_max_pct"] = max(0.0, _rmax)
         except ValueError:
@@ -24077,9 +25298,113 @@ class SmcQuantApp(ctk.CTk):
         try:
             if getattr(self, "_tv_bot", None) is not None:
                 self._coletar_order_flow()
+                self._gerenciar_protecao_lucro_tempo_real()
         except Exception:
             pass
         self.after(2000, self._loop_drenar_fluxo)
+
+    def _gerenciar_protecao_lucro_tempo_real(self):
+        """Catraca de Blindagem Zero-Devolução em tempo real (a cada 2s).
+
+        Monitora posições ABERTAS no diário contra o preço ao vivo da fita/DOM:
+          • Ao atingir +0.5R de lucro flutuante: arma trava no Breakeven (+2 ticks).
+          • Ao atingir +1.0R de lucro flutuante: sobe trava para +0.5R garantido.
+          • Ao atingir +1.5R de lucro flutuante: sobe trava para +1.0R garantido.
+          • Ao atingir +2.0R de lucro flutuante: sobe trava para +1.5R garantido.
+        Se a posição já bateu pelo menos +0.8R de excursão favorável máxima e o
+        preço recuar até tocar a trava de proteção (e a blindagem dinâmica
+        estiver ativa no modo autônomo), liquida a mercado e cancela ordens
+        residuais para não devolver lucro ganho.
+        """
+        if not self._tradovate_preferencia("protecao_lucro_dinamica"):
+            return
+        fita = getattr(self, "_fita", None)
+        bot = getattr(self, "_tv_bot", None)
+        if fita is None or bot is None:
+            return
+        try:
+            preco_vivo = fita.ler_preco_imediato()
+        except Exception:
+            preco_vivo = None
+        if not preco_vivo or preco_vivo <= 0:
+            return
+        ativo_fita = self._ativo_da_fita(bot)
+        posicoes = carregar_posicoes()
+        mexeu = False
+        for p in posicoes:
+            if not _e_da_conta_ativa(p) or p.get("status") != "ABERTA":
+                continue
+            ativo_p = p.get("ativo") or ""
+            if ativo_fita and not _mesmo_contrato(ativo_p, ativo_fita):
+                continue
+            try:
+                entry = float(p.get("entry") or 0)
+                stop_orig = float(p.get("stop_original") or p.get("stop") or 0)
+                stop_atual = float(p.get("stop") or 0)
+                direcao = str(p.get("direcao") or "").upper()
+                tick = tick_do_ativo(ativo_p) or 0.25
+            except (TypeError, ValueError):
+                continue
+            risco = abs(entry - stop_orig)
+            if entry <= 0 or risco <= 0 or direcao not in ("BUY", "SELL"):
+                continue
+            p.setdefault("stop_original", stop_orig)
+            avanco = (preco_vivo - entry) if direcao == "BUY" else (entry - preco_vivo)
+            r_atual = avanco / risco
+            r_max = max(float(p.get("max_r_atingido") or 0.0), r_atual)
+            if r_max != p.get("max_r_atingido"):
+                p["max_r_atingido"] = round(r_max, 3)
+                mexeu = True
+
+            novo_stop = None
+            etapa = None
+            if r_max >= 2.0:
+                novo_stop = (entry + 1.5 * risco) if direcao == "BUY" else (entry - 1.5 * risco)
+                etapa = "+1.5R garantido (após tocar +2.0R)"
+            elif r_max >= 1.5:
+                novo_stop = (entry + 1.0 * risco) if direcao == "BUY" else (entry - 1.0 * risco)
+                etapa = "+1.0R garantido (após tocar +1.5R)"
+            elif r_max >= 1.0:
+                novo_stop = (entry + 0.5 * risco) if direcao == "BUY" else (entry - 0.5 * risco)
+                etapa = "+0.5R garantido (após tocar +1.0R)"
+            elif r_max >= 0.5:
+                folga = 2.0 * tick
+                novo_stop = (entry + folga) if direcao == "BUY" else (entry - folga)
+                etapa = "Breakeven + 2 ticks (após tocar +0.5R)"
+
+            if novo_stop is not None:
+                novo_stop = round(round(novo_stop / tick) * tick, 6)
+                melhorou = ((direcao == "BUY" and novo_stop > stop_atual + 1e-9)
+                            or (direcao == "SELL" and novo_stop < stop_atual - 1e-9))
+                if melhorou:
+                    p["stop"] = novo_stop
+                    p["etapa_blindagem"] = etapa
+                    mexeu = True
+                    self.log(f"🛡️ BLINDAGEM ZERO-DEVOLUÇÃO: {direcao} {ativo_p} "
+                             f"atingiu +{r_max:.2f}R -> stop protegido em {novo_stop} ({etapa}).")
+
+            # Se já chegou a +0.8R e devolveu até furar o stop protegido,
+            # liquida na plataforma imediatamente se estiver em modo autônomo.
+            stop_vigente = float(p.get("stop") or stop_atual)
+            violou_protecao = (
+                r_max >= 0.8
+                and p.get("etapa_blindagem")
+                and ((direcao == "BUY" and preco_vivo <= stop_vigente)
+                     or (direcao == "SELL" and preco_vivo >= stop_vigente))
+            )
+            if (violou_protecao and self._modo_autonomo()
+                    and not self._tradovate_preferencia("dry_run")
+                    and not p.get("blindagem_acionada")):
+                p["blindagem_acionada"] = True
+                mexeu = True
+                quais = f"{direcao} {ativo_p} {p.get('contratos', '')} ctr @ {entry}"
+                self.log(f"⚡ SAÍDA RÁPIDA ZERO-DEVOLUÇÃO: {quais} recuou até o stop "
+                         f"protegido ({stop_vigente}) após +{r_max:.2f}R — realizando lucro na plataforma.")
+                self._tv_cancelar_na_plataforma(
+                    quais, contexto=f"blindagem de lucro ({p.get('etapa_blindagem')})",
+                    exigir_zerado=False, ativo=ativo_p)
+        if mexeu:
+            salvar_posicoes(posicoes)
 
     def _loop_reconciliar_extrato(self):
         """Batida do relógio da reconciliação.
@@ -24149,13 +25474,30 @@ class SmcQuantApp(ctk.CTk):
         # muda devagar perto do que interessa, e é só reserva de quem já não
         # tem o lado pela cor da linha.
         bid = ask = None
+        pontual = {}
         try:
-            pontual = fita.ler_time_and_sales()
+            pontual = fita.ler_time_and_sales() or {}
             bid, ask = pontual.get("bid"), pontual.get("ask")
             diag = pontual.get("diag") or {}
         except Exception:
             diag = {}
+        if not novos and pontual.get("negocios"):
+            try:
+                novos = fita.negocios_novos(pontual.get("negocios") or [])
+            except Exception:
+                pass
+        if bid is None or ask is None:
+            try:
+                est_dom = bot.ler_estado() or {}
+                if bid is None and est_dom.get("bid") is not None:
+                    bid = float(est_dom["bid"])
+                if ask is None and est_dom.get("ask") is not None:
+                    ask = float(est_dom["ask"])
+            except Exception:
+                pass
         diag = dict(diag or {})
+        if not diag.get("metodo") and any(ln.get("lado") in ("COMPRA", "VENDA") for ln in (novos or [])):
+            diag["metodo"] = "rotulo"
         diag["capturados"] = len(novos)
         diag["continuo"] = True
         if info.get("perdidos"):
@@ -24176,9 +25518,19 @@ class SmcQuantApp(ctk.CTk):
         # importa — importa preço, tamanho e hora. Descartar aqui faria os
         # candles nascerem com buraco, e o ATR sairia menor que o mercado.
         try:
-            self._guardar_negocios_para_candles(novos, self._ativo_da_fita(bot))
+            ativo_fita = self._ativo_da_fita(bot)
+            self._guardar_negocios_para_candles(novos, ativo_fita)
         except Exception:
-            pass
+            ativo_fita = None
+
+        # Alimenta também o motor preditivo de liquidez (absorção institucional e sweep)
+        if getattr(self, "predictive_engine", None) is not None:
+            try:
+                self.predictive_engine.analisar_fita(
+                    ativo_fita or getattr(self, "_ultimo_ativo_lido", None) or "GERAL",
+                    novos)
+            except Exception:
+                pass
 
         entraram = 0
         for ln in novos:
@@ -24187,10 +25539,16 @@ class SmcQuantApp(ctk.CTk):
                 self._fita_sem_lado += 1
                 continue
             try:
+                volume = float(ln.get("tamanho") or 0)
                 motor.registrar_tick(preco=float(ln["preco"]),
-                                     volume=float(ln["tamanho"]),
+                                     volume=volume,
                                      agressao_compra=bool(lado))
                 entraram += 1
+                if ativo_fita:
+                    chave_fluxo = raiz_do_contrato(ativo_fita) or str(ativo_fita).upper()
+                    balde_fluxo = self._paper_flow_by_asset.setdefault(
+                        chave_fluxo, collections.deque(maxlen=1000))
+                    balde_fluxo.append((time.time(), volume if lado else -volume))
             except Exception:
                 continue
         return entraram, diag
@@ -24221,7 +25579,8 @@ class SmcQuantApp(ctk.CTk):
             return ("Fita de negócios: painel encontrado, porém SEM linhas. "
                     "Fora do pregão, ou a fita ainda não recebeu negócios.")
         metodo = {"rotulo": "pelo lado marcado na própria linha",
-                  "bid_ask": "pelo preço contra bid/ask (Lee-Ready)"}.get(
+                  "bid_ask": "pelo preço contra bid/ask (Lee-Ready)",
+                  "tick_rule": "pela direção do tick (uptick/downtick)"}.get(
                       d.get("metodo"), None)
         if not metodo:
             return (f"Fita de negócios: li {d['linhas_vistas']} linha(s), mas "
@@ -24699,6 +26058,23 @@ class SmcQuantApp(ctk.CTk):
                            "pool de liquidez cheio, mantendo o R:R mínimo intacto.")
 
         ritmo_txt = (f"US$ {ritmo:,.2f}/dia" if ritmo is not None else "prazo esgotado")
+        bloco_tatico = ""
+        if calcular_plano_tatico_meta_momentum is not None:
+            try:
+                _dd_hoje = drawdown_restante_hoje(self.plano)
+                _cvd_val = float(self.order_flow.obter_cvd()) if self._tem_fluxo_medido() else 0.0
+                _tatico = calcular_plano_tatico_meta_momentum(
+                    self.plano,
+                    realizado_hoje=float(stats.get("resultado_hoje") or 0.0),
+                    realizado_ciclo=float(stats.get("lucro_usd") or 0.0),
+                    dd_restante=float(_dd_hoje if _dd_hoje is not None else (self.plano.get("drawdown_maximo") or 0.0)),
+                    regime="EXPANSAO" if abs(_cvd_val) > 50 else "NEUTRO",
+                    cvd_delta=_cvd_val,
+                )
+                if _tatico.get("diretriz"):
+                    bloco_tatico = f"• Diretriz Tática (Meta & Momentum): {_tatico['diretriz']}\n"
+            except Exception:
+                bloco_tatico = ""
         return (
             "PLANO DA MESA (use para calibrar a POSTURA, nunca para forçar trade):\n"
             f"• Meta do ciclo: US$ {meta:,.2f} · já feito: US$ {stats['lucro_usd']:,.2f} "
@@ -24708,6 +26084,7 @@ class SmcQuantApp(ctk.CTk):
             f"• Ritmo necessário: {ritmo_txt} · risco por operação: "
             f"US$ {risco_trade:,.2f}\n"
             f"• {postura}\n"
+            f"{bloco_tatico}"
         )
 
     def _atualizar_dashboard(self, forcar=False):
@@ -26802,7 +28179,7 @@ class SmcQuantApp(ctk.CTk):
         try:
             if self._modo_autonomo():
                 teste = " (MODO TESTE — preenche o ticket e não envia)" \
-                    if self.tv_dry_var.get() else ""
+                    if self._tradovate_preferencia("dry_run") else ""
                 self.log(f"🤖 MODO AUTÔNOMO LIGADO{teste}: eu acato e envio "
                          "sozinha toda sugestão aprovada. Freio, drawdown, "
                          "stops seguidos e teto de operações continuam valendo.")
@@ -27259,8 +28636,7 @@ class SmcQuantApp(ctk.CTk):
                         # repetiria a mesma leitura e, pior, associaria a
                         # posição ao ativo da janela errada.
                         if (janela_principal
-                                and getattr(self, "tv_sync_var", None)
-                                and self.tv_sync_var.get()):
+                            and self._tradovate_preferencia("sync_posicoes")):
                             self._tv_sincronizar_posicoes(silencioso=True)
 
                         # ================================================
@@ -27484,7 +28860,9 @@ class SmcQuantApp(ctk.CTk):
                             # tratá-lo como confirmação.
                             + (f"\n--- FLUXO DE ORDENS MEDIDO NA FITA ---\n"
                                f"{self._texto_de_order_flow()}\n"
-                               "Use isto como CONFIRMAÇÃO da entrada dentro do "
+                               + (f"{self.predictive_engine.gerar_insight_preditivo(getattr(self, '_ultimo_ativo_lido', None) or 'GERAL', getattr(self, '_ultimo_preco_lido', None) or 0.0)}\n"
+                                  if getattr(self, "predictive_engine", None) is not None else "")
+                               + "Use isto como CONFIRMAÇÃO da entrada dentro do "
                                "viés que a estrutura definiu, nunca como o "
                                "motivo principal do cenário. Delta contra a "
                                "direção da estrutura é motivo para HOLD, não "
@@ -27494,6 +28872,17 @@ class SmcQuantApp(ctk.CTk):
                             f"CONTEXTO DA TELA: {DICAS_PLATAFORMA.get(self.plataforma_atual, DICAS_PLATAFORMA['outra'])}\n"
                             f"{contexto_meta}"
                             f"{bloco_licoes_prompt()}"
+                            "REGRA DE OURO ANTI-CONTRADIÇÃO E ANTI-FACAS CAINDO:\n"
+                            "- NUNCA retorne action='BUY' se o seu market_analysis descreve 'entrada curta', 'venda', "
+                            "'order block bearish no topo' ou 'stop acima do topo'; e NUNCA retorne action='SELL' se "
+                            "descreve 'entrada comprada', 'order block bullish no fundo' ou 'stop abaixo do fundo'. "
+                            "O campo 'action' DEVE corresponder 100% à direção da tese e à geometria dos níveis.\n"
+                            "- PROIBIDO OPERAR CONTRA TENDÊNCIA DIRECIONAL FORTE (FACA CAINDO / FOGUETE SUBINDO): "
+                            "se o gráfico mostra forte tendência direcional com velas amplas sem estrutura de reversão "
+                            "confirmada (Sweep de Liquidez + CHoCH/MSS real fechado + Order Block/FVG), NÃO tente adivinhar "
+                            "topo ou fundo — opere a favor do fluxo institucional ou retorne HOLD.\n"
+                            "- ANTI-VIÉS DE CORES: caixas verdes/vermelhas desenhadas por indicadores na tela NÃO são "
+                            "gatilho automático de compra/venda. Avalie primeiro a estrutura real das velas.\n\n"
                             "Identifique o TICKER do ativo no gráfico (asset_symbol) e leia o PREÇO "
                             "ATUAL com precisão pela última vela e pela escala de preço à direita.\n"
                             "\n"
@@ -27826,6 +29215,9 @@ class SmcQuantApp(ctk.CTk):
                                 f"({', '.join(candidatos)}). Último erro: {ultimo_erro}"
                             )
 
+                        if self.parar_solicitado:
+                            break
+
                         sinal = json.loads(resposta.text)
                         preco = sinal.get("current_price")
                         acao = sinal.get("action", "HOLD")
@@ -27833,6 +29225,16 @@ class SmcQuantApp(ctk.CTk):
                         probabilidade = sinal.get("probabilidade", 0)
                         confluencias = sinal.get("confluence_factors", []) or []
                         ativo = sinal.get("asset_symbol", "DESCONHECIDO")
+
+                        # ---- VALIDAÇÃO DE COERÊNCIA INTERNA DO SINAL IA ----
+                        # Bloqueia imediatamente respostas em que o JSON diz BUY mas
+                        # o texto/geometria descreve SELL (ou vice-versa).
+                        _coerente, _acao_corr, _motivo_coer = validar_coerencia_sinal_ia(sinal)
+                        if not _coerente:
+                            self.log(f"🛡️ BLOQUEIO DE COERÊNCIA IA ({ativo}): {_motivo_coer} "
+                                     f"— sinal {acao} convertido para HOLD por segurança.")
+                            acao = "HOLD"
+                            sinal["action"] = "HOLD"
 
                         # ---- MICRO OU CHEIO? DEZ VEZES O DINHEIRO ----
                         # Ver `confundiu_micro_com_cheio`: em 04/09 a leitura
@@ -27961,6 +29363,7 @@ class SmcQuantApp(ctk.CTk):
                             getattr(self, "_analises_por_ativo", {}),
                             ativo, self._ultima_analise)
                         self.after(0, self._atualizar_telemetria_hud_embutido)
+                        self._atualizar_estrategias_paper(ativo, preco)
 
                         _marca_janela = (f" | Janela: {nome_janela[:28]}"
                                          if len(_janelas_ciclo) > 1 and nome_janela else "")
@@ -28647,34 +30050,50 @@ class SmcQuantApp(ctk.CTk):
                         
                         regime_ok = True
                         if acao in ("BUY", "SELL") and MarketRegimeClassifier is not None:
-                            # Tenta puxar a fita se existir, senão usa um simulacro de variação de preço
-                            _velas = getattr(self, "_negocios_por_ativo", {}).get(
-                                raiz_do_contrato(ativo) or str(ativo).upper(), [])
-                            
-                            # Se não houver fita, mas houver histórico de preços lidos (vela a vela)
-                            if len(_velas) < 15:
+                            # Tenta puxar a fita se existir, senão usa o histórico de preços lidos
+                            _negocios_brutos = list(getattr(self, "_negocios_por_ativo", {}).get(
+                                raiz_do_contrato(ativo) or str(ativo).upper(), []))
+                            _velas = []
+                            if _negocios_brutos and isinstance(_negocios_brutos[0], dict) and "preco" in _negocios_brutos[0]:
+                                try:
+                                    _velas = agregar_candles(_negocios_brutos, minutos=5)
+                                except Exception:
+                                    _velas = []
+                            else:
+                                _velas = _negocios_brutos
+
+                            # Se não houver candles suficientes da fita, usa histórico de preços lidos (vela a vela)
+                            if len(_velas) < 3:
                                 _historico = getattr(self, "_hist_indicadores", {}).get(str(ativo).upper(), [])
                                 if len(_historico) >= 3:
-                                    _velas = [{"close": p} for _, p in _historico if p]
-                                    # Simula abertura e fechamento para a matemática bater
+                                    _velas = [{"close": p, "high": p, "low": p} for _, p in _historico if p]
                                     for i in range(1, len(_velas)):
                                         _velas[i]["open"] = _velas[i-1]["close"]
-                            
-                            if len(_velas) >= 3: # Reduzido para atuar mais rápido
+
+                            if len(_velas) >= 3:
                                 _classifier = MarketRegimeClassifier()
                                 _matrix = ConfluenceMatrix()
-                                
+
                                 info_regime = _classifier.classificar(list(_velas))
                                 avaliacao_matrix = _matrix.pontuar_setup(sinal, None, info_regime)
-                                
+
                                 if not avaliacao_matrix["aprovado"]:
                                     regime_ok = False
-                                    repetido = True # Bloqueia o cenário
-                                    self._contar_motivo_do_descarte(
+                                    repetido = True  # Bloqueia o cenário
+                                    getattr(self, "_contar_motivo_do_descarte")(
                                         acao, ativo, "mercado em consolidação (chop zone)")
                                     self.log(f"🛡️ BLOQUEIO DE CONSOLIDAÇÃO: {acao} {ativo} recusado "
                                               f"pelo Filtro Institucional. {avaliacao_matrix['alertas'][0]} "
                                               f"Nota da confluência: {avaliacao_matrix['score']}/80.")
+                                elif avaliar_contra_tendencia_forte is not None:
+                                    _ok_ct, _motivo_ct = avaliar_contra_tendencia_forte(
+                                        acao, info_regime, confluencias, probabilidade)
+                                    if not _ok_ct:
+                                        regime_ok = False
+                                        repetido = True
+                                        getattr(self, "_contar_motivo_do_descarte")(
+                                            acao, ativo, "contra tendência forte sem CHoCH+Sweep")
+                                        self.log(f"🛡️ BLOQUEIO CONTRA-TENDÊNCIA: {_motivo_ct}")
 
                         # Só cria sinal com preços VÁLIDOS (>0), preço de tela lido E que
                         # passe no piso de qualidade, e que NÃO seja um rompimento falso num range.
@@ -28701,6 +30120,9 @@ class SmcQuantApp(ctk.CTk):
                                 "tp1_notificado": False,
                                 "sinal_id": novo_sinal_id,   # elo com a decisão do trader
                                 "confluencias": list(confluencias),  # p/ o aprendizado
+                                "market_analysis": str(sinal.get("market_analysis") or ""),
+                                "confianca": confianca,
+                                "probabilidade": probabilidade,
                                 "ts_criacao": time.time(),   # p/ o timeout de acatar (10 min)
                             }
 
@@ -28942,11 +30364,51 @@ class SmcQuantApp(ctk.CTk):
                             # Antes, ciclos HOLD (ou com sinal já em acompanhamento) não
                             # disparavam nada, o que dava a impressão de que os relatórios
                             # "pararam" de chegar mesmo com o WhatsApp conectado.
+                            #
+                            # CORREÇÃO CRÍTICA DE COERÊNCIA (Item 1):
+                            # Quando há um cenário ativo (`sinal_ativo["estado"] != "ENCERRADA"`),
+                            # o cabeçalho anuncia `Cenário BUY em ATIVA (entrada ...)`. Se a
+                            # leitura do ciclo atual trouxe uma tentativa OPOSTA (ex.: SELL)
+                            # que foi DESCARTADA pelos filtros de risco/stop/qualidade, NÃO
+                            # podemos estampar as confluências e o texto de VENDA debaixo de
+                            # um cabeçalho que diz "Cenário BUY em ATIVA"! Usamos os dados do
+                            # próprio cenário ativo acompanhado e informamos que a leitura
+                            # contrária do ciclo foi descartada.
                             # ------------------------------------------------------------
+                            _em_acomp = (sinal_ativo.get("estado") != "ENCERRADA")
+                            _leitura_oposta_descartada = (
+                                _em_acomp
+                                and acao in ("BUY", "SELL")
+                                and acao != sinal_ativo.get("direcao")
+                            )
+                            _conf_rel = (
+                                sinal_ativo.get("confluencias") or confluencias
+                                if _leitura_oposta_descartada else confluencias
+                            )
+                            _confianca_rel = (
+                                sinal_ativo.get("confianca", confianca)
+                                if _leitura_oposta_descartada else confianca
+                            )
+                            _prob_rel = (
+                                sinal_ativo.get("probabilidade", probabilidade)
+                                if _leitura_oposta_descartada else probabilidade
+                            )
+                            _analise_rel = (
+                                sinal_ativo.get("market_analysis") or sinal.get("market_analysis", "")
+                                if _leitura_oposta_descartada else sinal.get("market_analysis", "")
+                            )
+                            if _leitura_oposta_descartada:
+                                _analise_rel = (
+                                    f"{_analise_rel}\n\n"
+                                    f"ℹ️ Nota do ciclo atual: houve leitura de pressão contrária ({acao}), "
+                                    f"mas ela foi descartada pelos filtros de risco/qualidade da mesa — "
+                                    f"o cenário {sinal_ativo.get('direcao')} segue em gestão até o alvo ou stop."
+                                ).strip()
+
                             bloco_confluencias = ""
-                            if confluencias:
+                            if _conf_rel:
                                 bloco_confluencias = "\n\n🔎 *Confluências observadas:*\n" + "\n".join(
-                                    f"• {c}" for c in confluencias
+                                    f"• {c}" for c in _conf_rel
                                 )
 
                             if sinal_ativo["estado"] != "ENCERRADA" and acatado_atual:
@@ -28954,7 +30416,7 @@ class SmcQuantApp(ctk.CTk):
                                 cabecalho = (f"⏳ *Acompanhamento — {ativo}*\n"
                                               f"🕐 {time.strftime('%d/%m/%Y %H:%M:%S')}\n"
                                               f"Cenário {sinal_ativo['direcao']} em {sinal_ativo['estado']} "
-                                              f"(entrada {sinal_ativo['entry']})")
+                                              f"(entrada {sinal_ativo['entry']} · stop {sinal_ativo.get('stop')} · alvo {sinal_ativo.get('tp1')})")
                             elif sinal_ativo["estado"] != "ENCERRADA":
                                 # Há um cenário aberto, mas o trader ainda NÃO acatou: nota
                                 # neutra, sem tratar como se fosse a operação dele.
@@ -28969,13 +30431,13 @@ class SmcQuantApp(ctk.CTk):
 
                             mensagem_info = (
                                 f"{cabecalho}\n"
-                                f"Preço atual: {preco}  |  Confiança: {confianca}%  |  Probabilidade: {probabilidade}%"
+                                f"Preço atual: {preco}  |  Confiança: {_confianca_rel}%  |  Probabilidade: {_prob_rel}%"
                                 f"{bloco_confluencias}\n\n"
                                 # SEM TESOURA AQUI. Quem cuida do tamanho é
                                 # `partir_para_whatsapp`, que PARTE em pedaços
                                 # inteiros — ver a docstring dela, e a frase
                                 # "zona de oferta en" que ele recebeu em 04/09.
-                                f"_{sinal.get('market_analysis', '')}_\n\n"
+                                f"_{_analise_rel}_\n\n"
                                 f"_Material educacional. A decisão de operar é sua._"
                             )
                             enviar_relatorio_whatsapp(mensagem_info, screenshot, self.log)
@@ -29056,6 +30518,10 @@ class SmcQuantApp(ctk.CTk):
                 time.sleep(10)
 
     def ao_fechar(self):
+        try:
+            self.news_monitor.close()
+        except Exception:
+            pass
         if self.processo_motor and self.processo_motor.poll() is None:
             self.log("Encerrando motor...")
             self.processo_motor.terminate()
@@ -29145,554 +30611,3 @@ if __name__ == "__main__":
             sys.exit(0)  # usuário fechou sem ativar
     app = SmcQuantApp()
     app.mainloop()
-
-# ==============================================================================
-# PATCH DE EMERGÊNCIA (CASCATA DE IA, CHAVES E PRIORIDADES) - 24/09/2026
-# ==============================================================================
-
-# 1. Força a prioridade máxima para a Gemini, com OpenRouter e Groq como reservas:
-import main_app
-main_app.ORDEM_PROVEDORES = ["openrouter", "groq", "openai", "anthropic", "local"]
-main_app.PROVEDORES_PRIORITARIOS = []
-
-# 2. Sobrescreve a função de leitura de chaves para evitar o bloqueio (401 invisível)
-def _patch_carregar_chave_provedor(pid: str) -> str:
-    if pid == "gemini":
-        return carregar_api_key()
-    cifrado = carregar_config().get(f"chave_{pid}_enc")
-    if cifrado and not ponteiro_do_cofre_e_de_outro(pid, cifrado):
-        return dpapi_decrypt(cifrado)
-    # Resgate da chave crua caso o cofre do macOS trave
-    chaves_soltas = carregar_config().get("chaves_provedores", {})
-    if isinstance(chaves_soltas, dict) and chaves_soltas.get(pid):
-        return str(chaves_soltas.get(pid)).strip()
-    return ""
-
-main_app.carregar_chave_provedor = _patch_carregar_chave_provedor
-
-# 3. Blinda a Matriz de Confluência para Consolidação (Rompimento do Caixote)
-# Substituindo o método que aprova o cenário dentro do ciclo de análise.
-_old_decidir_envio = SmcQuantApp._conferir_plataforma_antes_de_enviar
-
-def _patch_conferir_plataforma_antes_de_enviar(self, bot, ativo, sinal_id=None):
-    pode_enviar, motivo = _old_decidir_envio(self, bot, ativo, sinal_id)
-    
-    # Se a plataforma aprovou, passa pelo Filtro de Consolidação
-    if pode_enviar and getattr(self, "regime_classifier", None) and getattr(self, "confluence_matrix", None):
-        _velas = getattr(self, "_negocios_por_ativo", {}).get(
-            (main_app.raiz_do_contrato(ativo) or str(ativo).upper()), [])
-        
-        # Simula o fluxo se não houver fita ativa, usando preço de tela lido
-        if len(_velas) < 10:
-            _historico = getattr(self, "_hist_indicadores", {}).get(str(ativo).upper(), [])
-            if len(_historico) >= 3:
-                _velas = [{"close": p} for _, p in _historico if p]
-                for i in range(1, len(_velas)):
-                    _velas[i]["open"] = _velas[i-1]["close"]
-                    
-        if len(_velas) >= 3:
-            sinal_fake = {"direcao": "HOLD"}
-            # Busca a intenção no log de sinais para a matriz avaliar
-            _sinais = main_app.carregar_sinais_log()
-            if _sinais and _sinais[-1].get("id") == sinal_id:
-                sinal_fake = _sinais[-1]
-                
-            info_regime = self.regime_classifier.classificar(list(_velas))
-            avaliacao = self.confluence_matrix.pontuar_setup(sinal_fake, None, info_regime)
-            
-            if not avaliacao.get("aprovado", True):
-                self.log(f"🛡️ BLOQUEIO INSTITUCIONAL: Ação barrada em ambiente de consolidação. {avaliacao.get('alertas', [''])[0]}")
-                return False, "Mercado lateral (Chop Zone). Trade filtrado para evitar falso rompimento."
-                
-    return pode_enviar, motivo
-
-SmcQuantApp._conferir_plataforma_antes_de_enviar = _patch_conferir_plataforma_antes_de_enviar
-
-# ==============================================================================
-# PATCH CASCATA DE SOBREVIVÊNCIA: FORÇA O OPENROUTER DENTRO DO MOTOR
-# ==============================================================================
-import main_app
-
-_old_chat_worker = SmcQuantApp._chat_worker
-
-def _patch_chat_worker(self, pergunta, anexo=None):
-    # Tenta usar o provedor de fallback se não for imagem
-    if not anexo:
-        try:
-            mensagens = self._mensagens_para_provedor(pergunta)
-            # Varre os provedores alternativos na ordem de ORDEM_PROVEDORES
-            alt, quem = main_app.responder_por_provedor_alternativo(mensagens, self.log)
-            if alt:
-                self.log(f"🧠 Respondido por provedor alternativo ({quem}). A Gemini estava sem cota.")
-                self._chat_entregar_resposta(alt)
-                return
-        except Exception as e:
-            self.log(f"(tentativa de usar OpenRouter/Groq falhou: {str(e)[:120]})")
-
-    # Se falhou a rota de fallback (ou é imagem), continua com a lógica normal da Gemini
-    _old_chat_worker(self, pergunta, anexo)
-
-SmcQuantApp._chat_worker = _patch_chat_worker
-
-# Consertando o nome do modelo da Groq que deu erro 404
-if "groq" in main_app.PROVEDORES_IA:
-    main_app.PROVEDORES_IA["groq"]["modelos"] = ["llama-3.1-70b-versatile"] # Atualizando para o modelo correto da Groq
-
-
-# ==============================================================================
-# PATCH DE EMERGÊNCIA: BLINDAGEM CONTRA VIRADA DE MÃO CEGA (24/09/2026)
-# ==============================================================================
-import main_app
-
-_old_decidir_acoes = SmcQuantApp._decidir_acoes_sobre_cenario
-
-def _patch_decidir_acoes_sobre_cenario(self, novo_cenario):
-    ativo = novo_cenario.get("ativo", "").upper()
-    direcao_ia = novo_cenario.get("acao", "").upper() # BUY ou SELL
-    
-    # 1. Puxa a Posição REAL da Corretora (Blindada no Patch do DOM)
-    posicao_real_qtd = 0
-    _pos_corretora = self.estado_conta.get("posicoes", [])
-    for pos in _pos_corretora:
-        if pos.get("symbol", "").upper() == ativo:
-            try:
-                # Na Tradovate, quantidade negativa é Venda, positiva é Compra
-                posicao_real_qtd = int(pos.get("netPos", 0))
-            except:
-                pass
-                
-    # 2. Descobre para que lado a corretora DIZ que estamos
-    lado_corretora = None
-    if posicao_real_qtd > 0:
-        lado_corretora = "BUY"
-    elif posicao_real_qtd < 0:
-        lado_corretora = "SELL"
-        
-    # 3. Intercepta a "Virada de Mão" e valida contra a realidade
-    for p in self._posicoes_vivas_do_diario():
-        if p.get("symbol") == ativo and p.get("lado", "").upper() != direcao_ia:
-            # O Diário acha que estamos numa direção oposta à sugestão da IA.
-            # ANTES DE LIQUIDAR, checa a corretora!
-            if lado_corretora and lado_corretora == direcao_ia:
-                self.log(f"⚠️ CONFLITO DETECTADO: O Diário diz que estamos {p.get('lado')}, mas a Corretora mostra que já estamos {lado_corretora}. Abortando virada de mão para proteger a posição atual.")
-                # Corrige o diário sorrateiramente para bater com a corretora
-                p["lado"] = lado_corretora
-                p["qtd"] = abs(posicao_real_qtd)
-                # Avisa o usuário e barra a execução autônoma
-                self._chat_entregar_resposta(f"⚠️ Detectei um conflito entre o meu registro interno e a corretora. Você está **{lado_corretora}** na plataforma, e a sugestão é **{direcao_ia}**. Cancelei a liquidação autônoma para não danificar sua operação. Confira o diário.")
-                return False # Trava o motor de prosseguir com envio de ordem
-                
-    # Se passou pela blindagem, executa a rotina normal do motor
-    return _old_decidir_acoes(self, novo_cenario)
-
-SmcQuantApp._decidir_acoes_sobre_cenario = _patch_decidir_acoes_sobre_cenario
-
-# ==============================================================================
-# PATCH PREDITIVO: INJEÇÃO DO ORÁCULO DE LIQUIDEZ (FASE 1)
-# ==============================================================================
-import main_app
-
-# Tenta carregar o motor preditivo
-try:
-    from tiger_predictive import PredictiveLiquidityEngine
-    _motor_preditivo = PredictiveLiquidityEngine()
-except Exception as e:
-    _motor_preditivo = None
-    print(f"⚠️ Motor Preditivo não carregado: {e}")
-
-# Interceptador 1: Alimenta o Motor com os Ticks da Tradovate
-_old_processar_ticks = SmcQuantApp._processar_negocios_recebidos
-
-def _patch_processar_negocios_recebidos(self, negocios_lista):
-    _old_processar_ticks(self, negocios_lista)
-    if _motor_preditivo and negocios_lista:
-        try:
-            # O primeiro elemento geralmente tem o symbol
-            ativo = negocios_lista[0].get("contract", {}).get("name", "")
-            if ativo:
-                _motor_preditivo.analisar_fita(ativo, negocios_lista)
-        except Exception:
-            pass
-
-SmcQuantApp._processar_negocios_recebidos = _patch_processar_negocios_recebidos
-
-
-# Interceptador 2: Injeta a Predição no Prompt da Inteligência Artificial
-_old_mensagens_para_provedor = SmcQuantApp._mensagens_para_provedor
-
-def _patch_mensagens_para_provedor(self, pergunta):
-    # Roda a função original que monta o prompt (com regras, diário, imagem, etc)
-    mensagens = _old_mensagens_para_provedor(self, pergunta)
-    
-    if _motor_preditivo:
-        ativo_alvo = None
-        # Tenta descobrir de qual ativo o prompt está falando (geralmente na pergunta ou estado)
-        for t, d in getattr(self, "_hist_indicadores", {}).items():
-            if d: ativo_alvo = t; break # Pega o primeiro ativo ativo
-            
-        if ativo_alvo:
-            preco_atual = 0.0
-            _hist = getattr(self, "_hist_indicadores", {}).get(ativo_alvo, [])
-            if _hist and _hist[-1][1]: preco_atual = _hist[-1][1]
-            
-            insight = _motor_preditivo.gerar_insight_preditivo(ativo_alvo, preco_atual)
-            if insight:
-                # Injeta o insight no final do texto da pergunta que vai pra IA
-                for msg in mensagens:
-                    if msg.get("role") == "user":
-                        # Se for um prompt multi-modal (lista de partes)
-                        if isinstance(msg.get("content"), list):
-                            for part in msg["content"]:
-                                if part.get("type") == "text":
-                                    part["text"] += insight
-                                    break
-                        # Se for texto simples (Claude/Groq)
-                        elif isinstance(msg.get("content"), str):
-                            msg["content"] += insight
-                            
-                self.log(f"🧠 [PREDIÇÃO ATIVA]: Heatmap de Liquidez injetado para a IA em {ativo_alvo}.")
-
-    return mensagens
-
-SmcQuantApp._mensagens_para_provedor = _patch_mensagens_para_provedor
-
-
-# ==============================================================================
-# PATCH DE EMERGÊNCIA: ROTEAMENTO CONTEXTUAL DO CHAT E VISAO FORÇADA
-# ==============================================================================
-import main_app
-import time
-
-_old_processar_chat = SmcQuantApp._ouvir_mensagem_whatsapp
-
-def _patch_ouvir_mensagem_whatsapp(self, msg, tipo="texto"):
-    """Interceptador que força captura de tela em dúvidas gráficas e melhora o contexto."""
-    
-    # 1. Limpa e entende a intenção do usuário
-    texto = str(msg).lower().strip()
-    
-    palavras_grafico = ["gráfico", "gap", "vela", "candle", "fita", "olha", "print", "rompimento", "consolidação", "fvg", "order block"]
-    
-    if any(p in texto for p in palavras_grafico):
-        self.log("👁️ [CHAT]: O trader fez uma pergunta visual. Forçando captura de tela extra antes de responder...")
-        # Acha a janela ativa
-        janela = None
-        for j in getattr(self, "janelas_alvo", []):
-            if j.get("ativa", True):
-                janela = j; break
-                
-        # Se achou uma janela, tira a foto E injeta na fila do chat
-        if janela:
-            imagem = self._capturar_janela(janela)
-            if imagem:
-                self.log("📸 Print capturado para embasar a resposta do chat.")
-                # Aqui entra a mágica: enviamos a sua pergunta, mas forçamos a IA a olhar o anexo
-                # Adicionamos uma instrução rigorosa para evitar alucinação
-                instrucao_extra = " (IMPORTANTE: Analise a imagem em anexo. Responda em Português. Seja um analista técnico de SMC, não cite cotações de sites externos, olhe apenas a tela e o histórico que lhe dei.)"
-                
-                # Chamamos o Chat Worker manualmente com a imagem
-                self._chat_worker(str(msg) + instrucao_extra, anexo=imagem)
-                return # Encerra para não rodar a função antiga e duplicar
-            else:
-                self.log("⚠️ Falha ao tirar o print forçado. Prosseguindo sem imagem.")
-
-    # 2. Se a pergunta for reclamação/dúvida de contexto (como "vc não ta entendendo")
-    elif "não tá entendendo" in texto or "porque" in texto or "cancelou" in texto:
-        self.log("🧠 [CHAT]: Pergunta de contexto/diário detectada.")
-        instrucao_extra = " (Atenção: O usuário está questionando suas ações. Responda em Português com base estrita no histórico do nosso chat e não tente usar ferramentas externas. Seja conciso e peça desculpas se o log demonstrar erro seu.)"
-        self._chat_worker(str(msg) + instrucao_extra)
-        return
-
-    # Se não for dúvida técnica de gráfico nem bronca, roda o fluxo normal
-    _old_processar_chat(self, msg, tipo)
-
-SmcQuantApp._ouvir_mensagem_whatsapp = _patch_ouvir_mensagem_whatsapp
-
-# ==============================================================================
-# PATCH DE EMERGÊNCIA: DESLIGANDO A PESQUISA YAHOO FINANCE
-# ==============================================================================
-# O Motor aciona o agente de finanças quando vê perguntas de preço. Isso confunde
-# a análise técnica. Vamos arrancar essa ferramenta do prompt sistêmico.
-
-_old_prompt = main_app.carregar_prompt_sistema()
-# Limpamos se houver menção à tool externa para focar só na tela
-if _old_prompt:
-    main_app.carregar_prompt_sistema = lambda: _old_prompt + "\n REGRA ABSOLUTA: VOCÊ É UM ANALISTA SMC. NUNCA USE DADOS EXTERNOS OU FINANCEIROS (YAHOO, ETC). USE APENAS OS DADOS DA TELA DA PLATAFORMA TRADOVATE QUE ESTOU ENVIANDO E OS LOGS."
-
-# ==============================================================================
-# PATCH DEFINITIVO: MATAR LOOP FANTASMA E ATIVAR RODÍZIO DE CHAVES (POOLING)
-# ==============================================================================
-import main_app
-import random
-
-# 1. LIMPEZA DOS MODELOS FANTASMAS
-# Removemos as alucinações (3.5, 3.8) e forçamos o motor a usar apenas os 
-# modelos oficiais do Google que possuem Visão Computacional de alta velocidade.
-MODELOS_REAIS_GEMINI = [
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
-    "gemini-1.5-pro",
-    "gemini-2.0-flash-exp"
-]
-
-if hasattr(main_app, "MODELOS_VISION_GEMINI"):
-    main_app.MODELOS_VISION_GEMINI = MODELOS_REAIS_GEMINI
-if hasattr(main_app, "MODELOS_GEMINI_DISPONIVEIS"):
-    main_app.MODELOS_GEMINI_DISPONIVEIS = MODELOS_REAIS_GEMINI
-
-# 2. SISTEMA DE RODÍZIO DE CHAVES (LOAD BALANCER GRATUITO)
-_old_get_key = main_app.carregar_api_key
-
-def _patch_carregar_api_key():
-    chave_bruta = _old_get_key()
-    if not chave_bruta: return ""
-    
-    # Se o usuário colar várias chaves separadas por vírgula, o robô
-    # sorteará uma diferente a cada requisição. Isso dilui o uso da cota
-    # por 3 ou 4 contas, tornando o Free Tier praticamente infinito.
-    if "," in chave_bruta:
-        chaves = [c.strip() for c in chave_bruta.split(",") if c.strip()]
-        if chaves:
-            # Pega uma chave aleatória da lista para balancear a carga
-            return random.choice(chaves)
-            
-    return chave_bruta
-
-main_app.carregar_api_key = _patch_carregar_api_key
-
-
-# ==============================================================================
-# PATCH: CORREÇÃO DE CONTEXTO DO CHAT WHATSAPP (A IA NÃO ESTÁ MAIS CEGA)
-# ==============================================================================
-import main_app
-
-_old_chat_worker = main_app.SmcQuantApp._chat_worker
-
-def _patch_chat_worker(self, prompt, anexo=None, force_model=None):
-    # Pega o último status da análise visual para injetar na mente do chat
-    ultimo_estudo = "Nenhum estudo recente."
-    if hasattr(self, "_ultimo_cenario") and self._ultimo_cenario:
-         cenario = self._ultimo_cenario
-         ativo = cenario.get("ativo", "Ativo")
-         acao = cenario.get("acao", "Neutro")
-         confianca = cenario.get("confianca", 0)
-         ultimo_estudo = f"Última leitura de tela realizada com sucesso: {acao} em {ativo} com {confianca}% de confiança."
-
-    # Interceptador que blinda a resposta de erro
-    prompt_injetado = f"{prompt}\n\n[INSTRUÇÃO DO SISTEMA]: Ao responder sobre o status da leitura de tela, use esta informação base: '{ultimo_estudo}'. Se houver análise recente, NÃO diga que você está cega ou que a Gemini caiu. O motor secundário está operando a visão. Fale sobre o mercado."
-    
-    _old_chat_worker(self, prompt_injetado, anexo, force_model)
-
-main_app.SmcQuantApp._chat_worker = _patch_chat_worker
-
-
-
-# ==============================================================================
-# PATCH DE EMERGÊNCIA: UNIFICAÇÃO DA "MENTE ÚNICA" (STATE SYNC) (28/09/2026)
-# ==============================================================================
-import main_app
-import time
-
-# Precisamos garantir que a IA do chat não se baseie APENAS no log de erro,
-# mas sim no status REAL de execução.
-
-_old_mensagens_para_provedor_chat = main_app.SmcQuantApp._mensagens_para_provedor
-
-def _patch_mensagens_para_provedor_chat_unificado(self, pergunta):
-    # Pega as mensagens originais (que incluem o prompt do sistema)
-    mensagens = _old_mensagens_para_provedor_chat(self, pergunta)
-    
-    # 1. Busca o status REAL do Motor (Se ele executou algo recentemente)
-    texto_status_motor = ""
-    agora = time.time()
-    
-    # Verifica o Diário de Trades recentes
-    diario = getattr(self, "diario_operacoes", [])
-    trades_recentes = [d for d in diario if (agora - d.get("timestamp_saida", 0)) < 1800 or d.get("status") == "ABERTA"]
-    
-    # Verifica a última sugestão/cenário
-    ultimo_cenario = getattr(self, "_ultimo_cenario", {})
-    ts_cenario = ultimo_cenario.get("timestamp", 0)
-    
-    # Se o Motor fez leitura ou abriu trade nos últimos 5 minutos, ELE NÃO ESTÁ CEGO.
-    if (agora - ts_cenario) < 300 or trades_recentes:
-        texto_status_motor = (
-            "\n\n[SISTEMA - VERDADE ABSOLUTA SOBRE O MOTOR]:\n"
-            "IGNORAR MENSAGENS DE ERRO 401 OU 429 DO PASSADO.\n"
-            "A leitura visual do gráfico ESTÁ FUNCIONANDO através do sistema de Fallback (OpenRouter/Groq/Modelos Secundários).\n"
-            f"Última leitura feita com sucesso: {ultimo_cenario.get('acao', 'N/A')} em {ultimo_cenario.get('ativo', 'N/A')} "
-            f"com {ultimo_cenario.get('confianca', '0')}% de confiança.\n"
-        )
-        
-        if trades_recentes:
-            texto_status_motor += "Posições recentes do Motor Autônomo:\n"
-            for t in trades_recentes:
-                status = t.get("status", "N/A")
-                acao = t.get("acao", "N/A")
-                ativo = t.get("ativo", "N/A")
-                texto_status_motor += f"- {status}: {acao} {ativo} @ {t.get('preco_entrada')}\n"
-
-    else:
-        texto_status_motor = (
-            "\n\n[SISTEMA - VERDADE ABSOLUTA SOBRE O MOTOR]:\n"
-            "O motor analítico não gerou análises visuais válidas nos últimos 5 minutos. "
-            "Pode ser instabilidade da API. Se o usuário perguntar o status, seja honesta sobre isso."
-        )
-
-    # Injeta a "Mente Unificada" no Prompt de Sistema do Chat
-    for msg in mensagens:
-        if msg.get("role") == "system":
-            # Adiciona o status real do motor nas instruções da IA do chat
-            if isinstance(msg.get("content"), str):
-                msg["content"] += texto_status_motor
-            elif isinstance(msg.get("content"), list):
-                for part in msg["content"]:
-                    if part.get("type") == "text":
-                        part["text"] += texto_status_motor
-                        break
-            break # Só precisa injetar no system prompt
-
-    return mensagens
-
-# Aplica o patch
-# ==============================================================================
-# PATCH DEFINITIVO: CORREÇÃO DE TRAVAMENTO DO PROFIT PRO (29/09/2026)
-# ==============================================================================
-# Este patch corrige o travamento substituindo as funções de captura e
-# preparação de janela EXATAMENTE onde o _loop_robo_quant as chama, forçando
-# a captura segura de tela inteira apenas quando o Profit Desktop for o alvo.
-import main_app
-import subprocess
-import os
-
-_old_capturar = main_app.capturar_janela_em_segundo_plano
-_old_garantir = main_app.garantir_janela_renderizando
-
-def _patch_capturar_janela_em_segundo_plano(hwnd):
-    """
-    Substitui a captura. Se perceber que é o Profit Pro (Desktop) pelo título
-    da janela associado ao hwnd, não tenta isolar a janela via WindowServer 
-    (que causa o hang). Tira uma foto da tela inteira via subprocess.
-    """
-    try:
-        # Precisamos descobrir o título da janela a partir do hwnd
-        # O cache _hwnd_por_janela guarda {nome: hwnd}
-        nome_janela = ""
-        # Verifica se estamos dentro da classe App (o patch aplica à função global, mas tentamos achar o app ativo)
-        app = None
-        import gc
-        for obj in gc.get_objects():
-            if isinstance(obj, main_app.SmcQuantApp):
-                app = obj
-                break
-                
-        if app:
-            for nome, h in getattr(app, "_hwnd_por_janela", {}).items():
-                if h == hwnd:
-                    nome_janela = nome.lower()
-                    break
-        
-        eh_profit_desktop = "profit" in nome_janela and "chrome" not in nome_janela
-        
-        if eh_profit_desktop and main_app.E_MACOS:
-            # Caminho seguro para macOS com Profit Desktop
-            print("🛡️ Profit Pro Desktop detectado. Usando captura segura de tela inteira para evitar congelamento.")
-            caminho_temp = os.path.join(main_app.pasta_dados_usuario(), 'captura_segura_profit.jpg')
-            
-            # Executa captura de tela inteira silenciada (-x) com limite de tempo estrito
-            try:
-                subprocess.run(
-                    ['screencapture', '-x', caminho_temp],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    timeout=2.0 # Se demorar mais de 2s, mata e evita o hang
-                )
-                if os.path.exists(caminho_temp):
-                    from PIL import Image
-                    return Image.open(caminho_temp)
-            except subprocess.TimeoutExpired:
-                print("⏳ Timeout ao tentar capturar o Profit. Abortando esta tentativa para não travar.")
-                return None
-            except Exception as e:
-                 print(f"⚠️ Erro na captura segura: {e}")
-                 return None
-                 
-        # Para Tradovate/Chrome ou Windows, segue o fluxo normal nativo
-        return _old_capturar(hwnd)
-        
-    except Exception as e:
-        print(f"⚠️ Erro no interceptador de captura: {e}")
-        return _old_capturar(hwnd)
-
-def _patch_garantir_janela_renderizando(hwnd, restaurar_se_minimizada=True):
-    """
-    No macOS, o Profit Pro não reage bem aos eventos sintéticos do sistema
-    para forçar renderização quando em background, causando deadlock.
-    Vamos anular isso para o Profit.
-    """
-    try:
-        nome_janela = ""
-        import gc
-        for obj in gc.get_objects():
-            if isinstance(obj, main_app.SmcQuantApp):
-                app = obj
-                for nome, h in getattr(app, "_hwnd_por_janela", {}).items():
-                    if h == hwnd:
-                        nome_janela = nome.lower()
-                        break
-                break
-                
-        eh_profit_desktop = "profit" in nome_janela and "chrome" not in nome_janela
-        
-        if eh_profit_desktop and main_app.E_MACOS:
-            # Simula que garantiu, sem disparar eventos no macOS para o Profit
-            return True
-            
-        return _old_garantir(hwnd, restaurar_se_minimizada)
-    except Exception:
-        return _old_garantir(hwnd, restaurar_se_minimizada)
-
-# Aplica os patches às funções globais usadas no ciclo
-main_app.capturar_janela_em_segundo_plano = _patch_capturar_janela_em_segundo_plano
-main_app.garantir_janela_renderizando = _patch_garantir_janela_renderizando
-
-# ==============================================================================
-# LIMPEZA DOS PATCHES ANTIGOS QUE CAUSAVAM CONFLITO
-# ==============================================================================
-# Este código anula explicitamente qualquer resquício dos patches anteriores 
-# de "Thread Separada" ou "Isolamento Estrito" que eu enviei antes, 
-# se eles ainda estiverem rodando na memória.
-
-if hasattr(main_app.SmcQuantApp, '_rodar_ciclo_analise_seguro'):
-    delattr(main_app.SmcQuantApp, '_rodar_ciclo_analise_seguro')
-
-# ==============================================================================
-# PATCH DE EMERGÊNCIA: BLINDAGEM VISUAL ANTI-VIÉS DE ORDENS (29/09/2026)
-# ==============================================================================
-# Impede a IA de ser influenciada por ordens do próprio trader visíveis na tela.
-
-import main_app
-
-# Guarda a função original
-_old_compilar_memoria_prompt = main_app.compilar_memoria_prompt
-
-def _patch_compilar_memoria_prompt():
-    # Roda a função original que junta o diário, lições e estatísticas
-    contexto_original = _old_compilar_memoria_prompt()
-    
-    # Injeta a Regra Absoluta Anti-Viés
-    blindagem_visual = (
-        "\n\n🛑 REGRA ABSOLUTA DE BLINDAGEM VISUAL (ANTI-VIÉS) 🛑\n"
-        "O trader frequentemente possui ordens pendentes (Limit/Stop), posições abertas ou "
-        "marcações de preço da própria corretora desenhadas no gráfico (ex: linhas horizontais "
-        "com rótulos 'Buy', 'Sell', 'Limit', 'Stop').\n"
-        "É ESTRITAMENTE PROIBIDO usar essas linhas como 'dica' ou referência para o seu cenário.\n"
-        "Você DEVE IGNORAR COMPLETAMENTE qualquer ordem ou ticket já desenhado na tela.\n"
-        "Sua análise deve ser 100% INDEPENDENTE, fundamentada EXCLUSIVAMENTE na leitura "
-        "institucional dos candles (Price Action puro, Order Blocks, FVGs e Liquidez).\n"
-        "Replicar ou ser enviesado pelas ordens do próprio trader constitui uma falha analítica crítica."
-    )
-    
-    return contexto_original + blindagem_visual
-
-# Substitui a função original no núcleo do programa
-main_app.compilar_memoria_prompt = _patch_compilar_memoria_prompt

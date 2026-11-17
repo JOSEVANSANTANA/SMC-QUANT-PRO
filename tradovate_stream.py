@@ -292,13 +292,37 @@ class TradovateStream:
         }catch(e){}
         try{
           var pai = el.parentElement;
-          if(pai){
+          for(var niv=0; niv<3 && pai; niv++, pai = pai.parentElement){
             var tp = txt(pai);
-            // Tira o proprio rotulo antes de procurar o numero no pai.
-            if(tp && tp.length <= 80){
+            if(tp && tp.length <= 100){
               v = num(tp.replace(txt(el), ' '));
               if(v) return v;
             }
+          }
+        }catch(e){}
+        try{
+          var r0 = el.getBoundingClientRect();
+          var escopo = el.parentElement;
+          for(var u=0; u<4 && escopo && escopo.parentElement; u++) escopo = escopo.parentElement;
+          if(r0 && r0.width > 0 && escopo){
+            var cands = escopo.getElementsByTagName('*');
+            var melhorD = 9999, melhorV = null;
+            for(var c=0; c<cands.length; c++){
+              var ce = cands[c];
+              if(ce === el || ce.children.length > 1) continue;
+              var tc = txt(ce);
+              if(!tc || tc.length > 24) continue;
+              var vc = num(tc);
+              if(!vc || vc <= 0) continue;
+              var rc = ce.getBoundingClientRect();
+              if(!rc || rc.width <= 0) continue;
+              var dx = Math.abs((rc.left + rc.width/2) - (r0.left + r0.width/2));
+              var dy = Math.abs((rc.top + rc.height/2) - (r0.top + r0.height/2));
+              if(dx <= 140 && dy <= 65 && (dx + dy) < melhorD){
+                melhorD = dx + dy; melhorV = vc;
+              }
+            }
+            if(melhorV) return melhorV;
           }
         }catch(e){}
         return null;
@@ -338,6 +362,26 @@ class TradovateStream:
         if(meio > 0 && Math.abs(ultimo - meio) / meio > 0.002){
           diag.bid_ask_descartado = {bid:bid, ask:ask, ultimo:ultimo};
           bid = null; ask = null;
+        }
+      }
+      // 5) TICK RULE NA PRÓPRIA FITA: quando a linha não traz cor nem há
+      //    bid/ask válido para desempatar, compara cada negócio do mais antigo
+      //    ao mais recente com o preço diferente anterior da fita (uptick =
+      //    agressão compradora, downtick = agressão vendedora).
+      if(!diag.rotulos.length && !(bid && ask) && out.length > 1){
+        var refPreco = out[out.length - 1].preco;
+        var refLado = out[out.length - 1].lado;
+        for(var z = out.length - 2; z >= 0; z--){
+          if(!out[z].lado && refPreco > 0){
+            if(out[z].preco > refPreco) out[z].lado = 'compra';
+            else if(out[z].preco < refPreco) out[z].lado = 'venda';
+            else if(refLado) out[z].lado = refLado;
+          }
+          if(out[z].preco !== refPreco) refPreco = out[z].preco;
+          if(out[z].lado){
+            refLado = out[z].lado;
+            if(diag.rotulos.indexOf(out[z].lado) < 0) diag.rotulos.push(out[z].lado);
+          }
         }
       }
       diag.metodo = diag.rotulos.length ? 'rotulo' : ((bid&&ask) ? 'bid_ask' : null);
@@ -464,44 +508,56 @@ class TradovateStream:
     # dentro. Não é chute: é procurar a mesma marca um nível abaixo, e parar
     # no primeiro fundo que realmente tem cor.
     _JS_LADO_PELA_COR = r"""
+      function _corRGB(strCor){
+        if(!strCor || /rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*0(?:\.0+)?\s*\)/.test(strCor)) return null;
+        var m = strCor.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+        if(!m) return null;
+        var R=+m[1], G=+m[2], B=+m[3];
+        if(Math.abs(R-G)<=10 && Math.abs(G-B)<=10) return null;
+        if(R>G+14 && R>B+14) return 'venda';
+        if(G>R+14 && G>B+10) return 'compra';
+        return null;
+      }
       function _corDe(el){
         try{
           var c = window.getComputedStyle(el);
           // Fundo transparente não é cor: alfa 0 significa "não pintado",
           // e tratá-lo como preto (0,0,0) era o que fazia a leitura morrer.
-          if(c.backgroundColor && /rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*0\s*\)/.test(c.backgroundColor)) return null;
-          var m = (c.backgroundColor||'').match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-          if(!m) return null;
-          var R=+m[1], G=+m[2], B=+m[3];
-          if(R===G && G===B) return null;   // cinza/branco/preto: sem lado
-          if(R>G+25 && R>B+25) return 'venda';
-          if(G>R+25 && G>B+15) return 'compra';
-          return null;
+          if(c.backgroundColor && !/rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*0\s*\)/.test(c.backgroundColor)){
+            var m = (c.backgroundColor||'').match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+            if(m){
+              var R=+m[1], G=+m[2], B=+m[3];
+              if(!(R===G && G===B)){
+                if(R>G+14 && R>B+14) return 'venda';
+                if(G>R+14 && G>B+10) return 'compra';
+              }
+            }
+          }
+          return _corRGB(c.color||'');
         }catch(e){ return null; }
       }
       function _ladoPelaCor(ln){
         var l = _corDe(ln);
         if(l) return l;
-        // A linha não está pintada: a tinta pode estar na célula.
+        // A linha não está pintada: a tinta pode estar na célula ou no texto interno.
         try{
-          var f = ln.children || [];
-          for(var i=0;i<f.length && i<12;i++){
-            l = _corDe(f[i]);
+          var desc = ln.querySelectorAll ? ln.querySelectorAll('*') : (ln.children || []);
+          for(var i=0;i<desc.length && i<24;i++){
+            l = _corDe(desc[i]);
             if(l) return l;
-            var n = f[i].children || [];
-            for(var j=0;j<n.length && j<6;j++){
-              l = _corDe(n[j]);
-              if(l) return l;
-            }
+          }
+          if(ln.parentElement && (ln.parentElement.innerText||'').length <= 140){
+            l = _corDe(ln.parentElement);
+            if(l) return l;
           }
         }catch(e){}
-        // Última tentativa: marca declarada em classe ou atributo.
+        // Última tentativa: marca declarada em classe ou atributo (na linha ou filhos).
         try{
           var a = ((ln.className||'') + ' ' + (ln.getAttribute('data-side')||'')
-                   + ' ' + (ln.getAttribute('aria-label')||''))
+                   + ' ' + (ln.getAttribute('aria-label')||'') + ' ' + (ln.innerHTML||''))
                   .toString().normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
-          if(/\b(buy|bid|comprad|compra|up|alta|green)\b/.test(a)) return 'compra';
-          if(/\b(sell|ask|offer|vend|down|baixa|red)\b/.test(a)) return 'venda';
+          if(/\b(buy|bid|comprad|compra|up|alta|green|bull|agressao_compra)\b/.test(a)) return 'compra';
+          if(/\b(sell|ask|offer|vend|down|baixa|red|bear|agressao_venda)\b/.test(a)) return 'venda';
         }catch(e){}
         return null;
       }
@@ -556,6 +612,13 @@ class TradovateStream:
         var chave = d.chave;
         if(st.vistos[chave]) return;
         st.vistos[chave] = 1;
+        if(!d.lado && st.ultimoPreco && d.preco > 0){
+          if(d.preco > st.ultimoPreco) d.lado = 'compra';
+          else if(d.preco < st.ultimoPreco) d.lado = 'venda';
+          else if(st.ultimoLado) d.lado = st.ultimoLado;
+        }
+        if(d.preco > 0) st.ultimoPreco = d.preco;
+        if(d.lado) st.ultimoLado = d.lado;
         st.balde.push({preco:d.preco, tamanho:d.tamanho, lado:d.lado, ts:d.ts});
         // TETO NO BALDE: se o robô parar de esvaziar (app fechado, CDP caído),
         // a página não pode crescer sem limite e travar o navegador DELE.
@@ -572,12 +635,23 @@ class TradovateStream:
       var iniciais = alvo.querySelectorAll('tr,[role=row],li,div');
       for(var i=0;i<iniciais.length;i++){
         var d0 = _lerLinha(iniciais[i]);
-        if(d0) st.vistos[d0.chave] = 1;
+        if(d0){
+          st.vistos[d0.chave] = 1;
+          if(!st.ultimoPreco && d0.preco > 0) st.ultimoPreco = d0.preco;
+          if(!st.ultimoLado && d0.lado) st.ultimoLado = d0.lado;
+        }
       }
 
       st.obs = new MutationObserver(function(muts){
         for(var m=0;m<muts.length;m++){
-          var add = muts[m].addedNodes;
+          var mut = muts[m];
+          if(mut.type === 'characterData' && mut.target && mut.target.parentElement){
+            var p = mut.target.parentElement;
+            for(var up=0; up<4 && p && p !== alvo; up++, p = p.parentElement){
+              registrar(p);
+            }
+          }
+          var add = mut.addedNodes || [];
           for(var a=0;a<add.length;a++){
             var n = add[a];
             if(!n || n.nodeType !== 1) continue;
@@ -588,7 +662,7 @@ class TradovateStream:
           }
         }
       });
-      st.obs.observe(alvo, {childList:true, subtree:true});
+      st.obs.observe(alvo, {childList:true, subtree:true, characterData:true});
       return JSON.stringify({ok:true, ja_estava:false, capturados:0});
     })();
     """

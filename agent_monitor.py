@@ -12,6 +12,7 @@ Objetivo:
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import platform
@@ -22,7 +23,11 @@ import time
 from pathlib import Path
 from typing import List
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*_args, **_kwargs):
+        return False
 from google import genai
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -31,14 +36,33 @@ LOG_DIR = APP_ROOT / "logs"
 REPORT_PATH = LOG_DIR / "agent_report.json"
 HEARTBEAT_PATH = LOG_DIR / "agent_heartbeat.json"
 LAST_ISSUE_PATH = LOG_DIR / "last_issue.txt"
+USER_DATA_DIR = Path.home() / "Library" / "Application Support" / "SMC_Quant_Pro"
 
 
-def ensure_env():
+def ensure_env() -> str:
     if ENV_PATH.exists():
         load_dotenv(ENV_PATH)
-    key = os.getenv("GEMINI_API_KEY")
+    key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if not key and sys.platform == "darwin":
+        try:
+            res = subprocess.run(
+                ["security", "find-generic-password", "-s", "SMC_Quant_Pro", "-a", "gemini_api_key", "-w"],
+                capture_output=True, text=True, check=False, timeout=5
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                key = res.stdout.strip()
+        except Exception:
+            pass
     if not key:
-        raise RuntimeError("GEMINI_API_KEY ausente em .env")
+        cfg_file = USER_DATA_DIR / "config.json"
+        if cfg_file.exists():
+            try:
+                cfg = json.loads(cfg_file.read_text(encoding="utf-8", errors="ignore"))
+                key = str(cfg.get("api_key") or "").strip()
+            except Exception:
+                pass
+    if not key:
+        raise RuntimeError("GEMINI_API_KEY ausente em .env e no Chaveiro do macOS")
     return key
 
 
@@ -86,11 +110,24 @@ def detect_processes() -> str:
         return f"process-check-error: {exc}"
 
 
+def validar_integridade_sintaxe_projeto() -> List[str]:
+    """Verifica a árvore AST de todos os módulos Python principais para
+    detectar imediatamente qualquer corrupção sintática."""
+    erros: List[str] = []
+    for py_path in sorted(APP_ROOT.glob("*.py")):
+        try:
+            codigo = py_path.read_text(encoding="utf-8")
+            ast.parse(codigo, filename=py_path.name)
+        except SyntaxError as exc:
+            erros.append(f"{py_path.name}:{exc.lineno}: SyntaxError: {exc.msg}")
+    return erros
+
+
 def detect_error_patterns() -> str:
-    signals = []
+    signals = validar_integridade_sintaxe_projeto()
     candidates = []
 
-    for base_dir in [APP_ROOT / "logs", APP_ROOT]:
+    for base_dir in [APP_ROOT / "logs", APP_ROOT, USER_DATA_DIR, USER_DATA_DIR / "diario_tecnico"]:
         if not base_dir.exists():
             continue
         for file_path in sorted(base_dir.rglob("*")):
@@ -103,7 +140,7 @@ def detect_error_patterns() -> str:
                 continue
             if file_path.name in {"agent_report.json", "agent_heartbeat.json", "last_issue.txt"}:
                 continue
-            if file_path.suffix.lower() not in {".log", ".out"}:
+            if file_path.suffix.lower() not in {".log", ".out", ".jsonl"}:
                 continue
             candidates.append(file_path)
 
@@ -169,9 +206,9 @@ def apply_known_fixes(issue_text: str) -> str:
                 fixes.append("adicionado google-genai em requirements-mac.txt")
 
     if "models/gemini-" in issue_text or "API key not valid" in issue_text:
-        env_body = "GEMINI_API_KEY=" + os.getenv("GEMINI_API_KEY", "") + "\nMODEL_NAME=gemini-3.8-flash\n"
+        env_body = "GEMINI_API_KEY=" + os.getenv("GEMINI_API_KEY", "") + "\nMODEL_NAME=gemini-2.5-flash\n"
         ENV_PATH.write_text(env_body, encoding="utf-8")
-        fixes.append("ajustado modelo do Gemini para gemini-3.8-flash")
+        fixes.append("ajustado modelo do Gemini para gemini-2.5-flash")
 
     if not fixes:
         return "nenhuma correção automática aplicada"
@@ -180,7 +217,9 @@ def apply_known_fixes(issue_text: str) -> str:
 
 def ask_gemini_for_context(issue_text: str) -> str:
     api_key = ensure_env()
-    model_name = os.getenv("MODEL_NAME", "gemini-3.8-flash")
+    model_name = os.getenv("MODEL_NAME", "gemini-2.5-flash")
+    if model_name == "gemini-3.8-flash":
+        model_name = "gemini-2.5-flash"
     client = genai.Client(api_key=api_key)
 
     prompt = f"""Você é um agente de monitoramento do SMC Quant Pro.

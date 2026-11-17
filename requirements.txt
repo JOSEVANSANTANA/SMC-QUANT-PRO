@@ -1,0 +1,76 @@
+# SMC Quant Pro — dependências para WINDOWS
+#
+# Instale com o Python 3.11 ou 3.12 do python.org:
+#
+#     python -m pip install -r requirements.txt
+#
+# (A lista do Mac é outra: requirements-mac.txt. O CÓDIGO é o mesmo nos dois
+#  sistemas — o que muda é só a lista de bibliotecas nativas embaixo.)
+#
+# ------------------------------------------------------------------
+# INTERFACE
+# ------------------------------------------------------------------
+customtkinter>=5.2.0
+# tkinter NÃO se instala por pip: vem junto do Python do python.org.
+
+# ------------------------------------------------------------------
+# IMAGEM (captura do gráfico) E REDE
+# ------------------------------------------------------------------
+Pillow>=10.0.0
+requests>=2.31.0
+
+# ------------------------------------------------------------------
+# INTELIGÊNCIA (TIGER + análise do motor)
+# ------------------------------------------------------------------
+google-genai>=1.0.0
+openai>=1.0.0
+python-dotenv>=1.0.0
+
+# ------------------------------------------------------------------
+# VOZ
+# ------------------------------------------------------------------
+edge-tts>=7.0.0
+pyttsx3>=2.90
+
+# Comando por voz ("Olá Tiger"). Opcional: sem eles o programa funciona
+# inteiro e o botão do microfone explica como habilitar.
+SpeechRecognition>=3.10.0
+sounddevice>=0.4.6
+# O numpy entra como REDE DE SEGURANÇA, não como obrigação. Desde a v2.21.1 o
+# microfone abre com `sd.RawInputStream`, que entrega os bytes crus e NÃO
+# importa numpy — que é o que este programa sempre usou. O numpy só é exigido
+# se cair no caminho antigo (`sd.InputStream`), que existe para versões muito
+# velhas do sounddevice. Antes disso, a falta dele matava o microfone com
+# "No module named 'numpy'" no meio do pregão.
+numpy>=1.24.0
+
+# ------------------------------------------------------------------
+# JANELAS DO WINDOWS  (ESTE É O ITEM QUE NÃO PODE FALTAR)
+# ------------------------------------------------------------------
+# É o equivalente do pyobjc no Mac: sem ele o programa não LISTA as janelas
+# abertas, não captura a janela do gráfico com PrintWindow e não protege a
+# chave da API com a DPAPI.
+pywin32>=306
+
+# ------------------------------------------------------------------
+# LEITURA EXATA DOS INDICADORES  (OCR local — sem chave, sem internet)
+# ------------------------------------------------------------------
+# É o que faz "onde está a VWAP?" ser respondido LENDO o texto da legenda em
+# vez de perguntar a um modelo. Um LLM não lê pixel, ele prevê o texto mais
+# provável — foi assim que 7769.56 virou 7752.34. OCR lê.
+# O motor é o Windows.Media.Ocr, que já vem no Windows 10/11: isto aqui é só
+# a ponte do Python para ele. Não baixa modelo, não usa rede, não tem cota.
+winrt-Windows.Media.Ocr>=2.0.0
+winrt-Windows.Graphics.Imaging>=2.0.0
+winrt-Windows.Storage>=2.0.0
+
+# ------------------------------------------------------------------
+# LEITURA DO EXTRATO DE ORDENS EM PDF (aba Plano de Trading).
+# OPCIONAL: o programa tem um leitor proprio embutido, que usa so a
+# biblioteca padrao e da conta do relatorio da Tradovate. O pypdf entra
+# como reforco para PDFs de outras corretoras com fonte incomum.
+pypdf>=4.0.0
+
+# EMPACOTAR EM .EXE (só para gerar o executável; não é preciso para rodar)
+# ------------------------------------------------------------------
+# pyinstaller>=6.3.0
