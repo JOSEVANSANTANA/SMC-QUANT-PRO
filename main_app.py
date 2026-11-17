@@ -9,7 +9,8 @@ import ctypes
 import re
 import requests
 from io import BytesIO
-from PIL import ImageGrab, Image
+from PIL import ImageGrab, Image, ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 import pyttsx3
 from advanced_mode import (AdvancedModeController, PaperExecutionBook,
                            PaperIntent, PaperLegIntent,
@@ -219,10 +220,17 @@ except Exception:
 
 try:
     from tiger_predictive import (PredictiveLiquidityEngine,
-                                  calcular_plano_tatico_meta_momentum)
+                                  calcular_plano_tatico_meta_momentum,
+                                  MemoriaEvolutivaMercado)
 except Exception:
     PredictiveLiquidityEngine = None
     calcular_plano_tatico_meta_momentum = None
+    MemoriaEvolutivaMercado = None
+
+try:
+    from agent_monitor import AgenteAutocorretivoInstitucional
+except Exception:
+    AgenteAutocorretivoInstitucional = None
 
 try:
     from tiger_hud import TigerHolographicHUD, TigerHUDEmbeddedFrame
@@ -2323,9 +2331,11 @@ def resposta_degenerada(texto):
                       "meio do texto")
 
     # (2) LAÇO. O mesmo pedaço curto colado em si mesmo, muitas vezes.
-    m = re.search(r"(.{1,12}?)\1{7,}", t, re.DOTALL)
-    if m:
+    # Ignora separadores de tabela/markdown ('---', '===', '___', espaços).
+    for m in re.finditer(r"(.{1,12}?)\1{7,}", t, re.DOTALL):
         pedaco = m.group(1).strip() or m.group(1)
+        if not pedaco.strip(" -_*=~.#|:\t\n"):
+            continue
         vezes = len(m.group(0)) // max(1, len(m.group(1)))
         return True, (f"o trecho {pedaco!r} saiu repetido {vezes} vezes "
                       "seguidas — a geração travou num laço")
@@ -12432,8 +12442,10 @@ _ROTULOS_DE_FATO = {
     # um erro onde não há — daí as exclusões explícitas.
     "meta":      r"(?:meta(?!\s+(?:di[áa]ria|do dia|de hoje|por dia))"
                  r"(?:\s+de\s+lucro|\s+total|\s+do ciclo)?|objetivo da conta)",
-    # Idem: "drawdown restante hoje" é o que sobrou, não o do plano.
-    "drawdown":  r"(?:drawdown(?!\s+(?:restante|dispon[íi]vel|de hoje|do dia))"
+    # Idem: "drawdown restante hoje" ou "Drawdown: US$ 0.00 (teto: US$ 2.000)"
+    # dizem o consumido/restante primeiro e o teto entre parênteses depois.
+    "drawdown":  r"(?:drawdown(?!\s+(?:restante|dispon[íi]vel|de hoje|do dia|atual|acumulado|usado|consumido))"
+                 r"(?!\s*(?:de\s+|:\s*)?\*?\*?(?:US\$|R\$|\$)\s*[\d.,]+\*?\*?\s*\(\s*(?:teto|limite|m[áa]x))"
                  r"(?:\s+m[áa]ximo|\s+total)?|perda m[áa]xima)",
     "hoje":      r"(?:resultado (?:de )?hoje|hoje (?:voc[êe] )?(?:est[áa]|fez)|"
                  r"resultado do dia|no dia de hoje)",
@@ -14056,6 +14068,13 @@ class SmcQuantApp(ctk.CTk):
         self.regime_classifier = MarketRegimeClassifier if MarketRegimeClassifier else None
         self.confluence_matrix = ConfluenceMatrix if ConfluenceMatrix else None
         self.predictive_engine = PredictiveLiquidityEngine() if PredictiveLiquidityEngine else None
+        self.memoria_evolutiva = MemoriaEvolutivaMercado() if MemoriaEvolutivaMercado else None
+        self.agente_autocorretivo = AgenteAutocorretivoInstitucional() if AgenteAutocorretivoInstitucional else None
+        if self.agente_autocorretivo is not None:
+            try:
+                _MODELOS_INVALIDOS.update(self.agente_autocorretivo.carregar_modelos_descontinuados())
+            except Exception:
+                pass
         self._hud_jarvis = None
 
         # --- Plataforma de análise (qualquer uma; a Tradovate só ganha os
@@ -19962,6 +19981,26 @@ class SmcQuantApp(ctk.CTk):
             self.log("🛑 TIGER: a resposta falava como se estivesse lendo um "
                      "gráfico que o motor não entregou. Aviso anexado — nenhum "
                      "número daquele trecho veio de leitura.")
+        # TRAVA ANTI-ALUCINAÇÃO DE NOME DE CONTRATO: NQ/MNQ é Nasdaq-100, nunca S&P 500.
+        try:
+            resposta = re.sub(
+                r"\b(MNQ\s*[FGHJKMNQUVXZ]?\d*)\*\*(\s*\()([^)]*S&P\s*500[^)]*)(\))",
+                r"\1**\2Micro E-mini Nasdaq-100\4",
+                resposta, flags=re.IGNORECASE)
+            resposta = re.sub(
+                r"\b(NQ\s*[FGHJKMNQUVXZ]?\d*)\*\*(\s*\()([^)]*S&P\s*500[^)]*)(\))",
+                r"\1**\2E-mini Nasdaq-100\4",
+                resposta, flags=re.IGNORECASE)
+            resposta = re.sub(
+                r"\b(MNQ\s*[FGHJKMNQUVXZ]?\d*)(\s*\()([^)]*S&P\s*500[^)]*)(\))",
+                r"\1\2Micro E-mini Nasdaq-100\4",
+                resposta, flags=re.IGNORECASE)
+            resposta = re.sub(
+                r"\b(NQ\s*[FGHJKMNQUVXZ]?\d*)(\s*\()([^)]*S&P\s*500[^)]*)(\))",
+                r"\1\2E-mini Nasdaq-100\4",
+                resposta, flags=re.IGNORECASE)
+        except Exception:
+            pass
         registrar_msg_chat("ia", resposta)
         self._tiger_dialogo_ate = time.time() + 20.0
         self._ia_falar(resposta, forcar=bool(getattr(self, "_chat_por_voz", False)))
@@ -22315,7 +22354,15 @@ class SmcQuantApp(ctk.CTk):
                                   ativo, analise):
         status = self.news_monitor.status()
         ultimo_ok = status.get("last_success_at")
-        if ultimo_ok is None or time.time() - ultimo_ok > max(45.0, self.news_monitor.poll_interval_seconds * 3):
+        limite_idade = max(45.0, self.news_monitor.poll_interval_seconds * 3)
+        if ultimo_ok is None or time.time() - ultimo_ok > limite_idade:
+            if hasattr(self.news_monitor, "ensure_fresh_sync"):
+                try:
+                    status = self.news_monitor.ensure_fresh_sync(max_age_seconds=limite_idade)
+                    ultimo_ok = status.get("last_success_at")
+                except Exception:
+                    pass
+        if ultimo_ok is None or time.time() - ultimo_ok > limite_idade:
             return False, "feed macro sem atualização recente; modo News Trading bloqueia ordens reais"
 
         release = status.get("latest_release")
@@ -28928,7 +28975,10 @@ class SmcQuantApp(ctk.CTk):
                             "resposta for não, o stop está apertado demais. O stop só é válido se, "
                             "colocado assim (largo o suficiente), o R:R do 1º alvo AINDA fechar 1:2.\n"
                             + _instrucao_de_escala_do_stop(
-                                getattr(self, "_ultimo_ativo_lido", None))
+                                est.get("ultimo_ativo") or getattr(self, "_ultimo_ativo_lido", None))
+                            + (self.memoria_evolutiva.gerar_prompt_autocorrecao_ciclo(
+                                est.get("ultimo_ativo") or getattr(self, "_ultimo_ativo_lido", None))
+                               if getattr(self, "memoria_evolutiva", None) is not None else "")
                             + "5b) ALVOS — RASPAR O MÁXIMO (não seja tímido no alvo): take_profit_1 a "
                             "PELO MENOS 2x a distância do stop (R:R >= 1:2, idealmente 1:3), na "
                             "PRIMEIRA liquidez/estrutura REAL do caminho. take_profit_2 é o ALVO "
@@ -29092,6 +29142,11 @@ class SmcQuantApp(ctk.CTk):
                                             or "NO LONGER AVAILABLE" in erro_str):
                                         self.log(f"🚫 {modelo_atual} foi descontinuado — removendo da lista permanentemente.")
                                         modelos_invalidos.add(modelo_atual)
+                                        if getattr(self, "agente_autocorretivo", None) is not None:
+                                            try:
+                                                self.agente_autocorretivo.registrar_modelo_descontinuado(modelo_atual)
+                                            except Exception:
+                                                pass
                                         continue
 
                                     # Erros TRANSITÓRIOS ou de cota: vale tentar o próximo
@@ -29656,6 +29711,15 @@ class SmcQuantApp(ctk.CTk):
                                     salvar_resultado_performance(direcao, sinal_ativo["entry"], sinal_ativo["stop"],
                                                                   sinal_ativo["tp1"], sinal_ativo["stop"], "LOSS", ativo,
                                                                   sinal_ativo.get("confluencias"))
+                                    if getattr(self, "memoria_evolutiva", None) is not None:
+                                        try:
+                                            self.memoria_evolutiva.registrar_resultado_verificado(
+                                                ativo, direcao, "LOSS", rr_obtido=-1.0,
+                                                confluencias=sinal_ativo.get("confluencias"),
+                                                entry=sinal_ativo["entry"], stop=sinal_ativo["stop"],
+                                                tp1=sinal_ativo["tp1"])
+                                        except Exception:
+                                            pass
                                     sinal_ativo = {"estado": "ENCERRADA"}
                                     msg = f"🔴 *STOP ATINGIDO (LOSS) — {direcao}*\nOperação invalidada em {preco}."
                                     self.log(msg)
@@ -29668,6 +29732,15 @@ class SmcQuantApp(ctk.CTk):
                                     salvar_resultado_performance(direcao, sinal_ativo["entry"], sinal_ativo["stop"],
                                                                   sinal_ativo["tp2"], sinal_ativo["tp2"], "WIN", ativo,
                                                                   sinal_ativo.get("confluencias"))
+                                    if getattr(self, "memoria_evolutiva", None) is not None:
+                                        try:
+                                            self.memoria_evolutiva.registrar_resultado_verificado(
+                                                ativo, direcao, "WIN", rr_obtido=3.0,
+                                                confluencias=sinal_ativo.get("confluencias"),
+                                                entry=sinal_ativo["entry"], stop=sinal_ativo["stop"],
+                                                tp1=sinal_ativo["tp2"])
+                                        except Exception:
+                                            pass
                                     sinal_ativo = {"estado": "ENCERRADA"}
                                     msg = f"🟢🟢 *TAKE PROFIT 2 (WIN) — {direcao}*\nLucro máximo em {preco}."
                                     self.log(msg)
@@ -29681,6 +29754,15 @@ class SmcQuantApp(ctk.CTk):
                                     salvar_resultado_performance(direcao, sinal_ativo["entry"], sinal_ativo["stop"],
                                                                   sinal_ativo["tp1"], sinal_ativo["tp1"], "WIN", ativo,
                                                                   sinal_ativo.get("confluencias"))
+                                    if getattr(self, "memoria_evolutiva", None) is not None:
+                                        try:
+                                            self.memoria_evolutiva.registrar_resultado_verificado(
+                                                ativo, direcao, "WIN", rr_obtido=2.0,
+                                                confluencias=sinal_ativo.get("confluencias"),
+                                                entry=sinal_ativo["entry"], stop=sinal_ativo["stop"],
+                                                tp1=sinal_ativo["tp1"])
+                                        except Exception:
+                                            pass
                                     msg = f"🟢 *TAKE PROFIT 1 (WIN PARCIAL) — {direcao}*\nParcial realizada em {preco}."
                                     self.log(msg)
                                     if acatado_atual:
@@ -29704,6 +29786,20 @@ class SmcQuantApp(ctk.CTk):
                         # vem acertando ganha. O número original fica guardado, para o
                         # log mostrar de onde veio a diferença.
                         probabilidade_ia = probabilidade
+                        if preco is not None and preco > 0 and getattr(self, "memoria_evolutiva", None) is not None:
+                            try:
+                                _sombra_res = self.memoria_evolutiva.atualizar_precos_sombra(ativo, preco)
+                                for _sr in _sombra_res:
+                                    if _sr.get("desfecho_sombra") == "STOP_EVITADO":
+                                        self.log(f"🛡️ [APRENDIZADO CONTRAFACTUAL] Filtro protegeu o capital: "
+                                                  f"cenário descartado {_sr.get('direcao')} {_sr.get('ativo')} "
+                                                  f"({_sr.get('motivo_descarte')}) teria batido no STOP.")
+                                    else:
+                                        self.log(f"📚 [APRENDIZADO CONTRAFACTUAL] Cenário descartado "
+                                                  f"{_sr.get('direcao')} {_sr.get('ativo')} ({_sr.get('motivo_descarte')}) "
+                                                  f"teria atingido o ALVO — registrado na Memória Evolutiva.")
+                            except Exception:
+                                pass
                         _delta, _porques = ajuste_por_aprendizado(
                             confluencias, time.strftime('%H'))
                         if _delta:
@@ -29714,6 +29810,16 @@ class SmcQuantApp(ctk.CTk):
                                     f"🧠 APRENDIZADO: probabilidade {probabilidade_ia:.0f}% → "
                                     f"{probabilidade:.0f}% ({_delta:+.1f} pts pelo seu "
                                     f"histórico). " + " · ".join(_porques))
+                        if acao in ("BUY", "SELL") and getattr(self, "memoria_evolutiva", None) is not None:
+                            try:
+                                _cal_real = self.memoria_evolutiva.calibrar_probabilidade_real(
+                                    probabilidade_ia, ativo, acao, confluencias=confluencias)
+                                if _cal_real.get("trava_anti_eco_acionada"):
+                                    probabilidade = _cal_real["probabilidade_ajustada"]
+                                    self.log(f"🛡️ [TRAVA ANTI-ALUCINAÇÃO APRENDIZADO] {_cal_real.get('motivo')}. "
+                                              f"Probabilidade ajustada para {probabilidade:.0f}%.")
+                            except Exception:
+                                pass
 
                         # ENQUANTO A AMOSTRA NÃO SUSTENTA, O DESCONTO NÃO VETA.
                         # Ver `aprendizado_pode_vetar`: com 5 operações
@@ -29857,6 +29963,19 @@ class SmcQuantApp(ctk.CTk):
                                 self._contar_motivo_do_descarte(
                                     acao, ativo, "stop fora da faixa do contrato")
                                 self.log(f"📐 {acao} {ativo} descartado: {_motivo_stop}")
+                                if getattr(self, "memoria_evolutiva", None) is not None:
+                                    try:
+                                        self.memoria_evolutiva.registrar_cenario_sombra(
+                                            ativo, acao, _ep, _sl, _tp1,
+                                            "stop fora da faixa do contrato", confluencias)
+                                        _fx = faixa_de_stop_do_ativo(ativo)
+                                        self.memoria_evolutiva.registrar_feedback_ciclo(
+                                            ativo, _motivo_stop,
+                                            f"Posicione a entrada (entry_price) mais fundo no miolo/50% do Order Block ou OTE "
+                                            f"para que o stop fique entre {_fx[0]} e {_fx[1]} ticks neste contrato, "
+                                            "ou retorne HOLD se o stop técnico exceder a régua.")
+                                    except Exception:
+                                        pass
 
                         if not repetido and acao in ("BUY", "SELL"):
                             _ok_dist, _dist_r = avaliar_distancia_da_entrada(
@@ -30050,50 +30169,62 @@ class SmcQuantApp(ctk.CTk):
                         
                         regime_ok = True
                         if acao in ("BUY", "SELL") and MarketRegimeClassifier is not None:
-                            # Tenta puxar a fita se existir, senão usa o histórico de preços lidos
-                            _negocios_brutos = list(getattr(self, "_negocios_por_ativo", {}).get(
-                                raiz_do_contrato(ativo) or str(ativo).upper(), []))
-                            _velas = []
-                            if _negocios_brutos and isinstance(_negocios_brutos[0], dict) and "preco" in _negocios_brutos[0]:
-                                try:
-                                    _velas = agregar_candles(_negocios_brutos, minutos=5)
-                                except Exception:
-                                    _velas = []
-                            else:
-                                _velas = _negocios_brutos
+                            try:
+                                # Tenta puxar a fita se existir, senão usa o histórico de preços lidos
+                                _negocios_brutos = list(getattr(self, "_negocios_por_ativo", {}).get(
+                                    raiz_do_contrato(ativo) or str(ativo).upper(), []))
+                                _velas = []
+                                if _negocios_brutos and isinstance(_negocios_brutos[0], dict) and "preco" in _negocios_brutos[0]:
+                                    try:
+                                        _velas = agregar_candles(_negocios_brutos, minutos=5)
+                                    except Exception:
+                                        _velas = []
+                                else:
+                                    _velas = _negocios_brutos
 
-                            # Se não houver candles suficientes da fita, usa histórico de preços lidos (vela a vela)
-                            if len(_velas) < 3:
-                                _historico = getattr(self, "_hist_indicadores", {}).get(str(ativo).upper(), [])
-                                if len(_historico) >= 3:
-                                    _velas = [{"close": p, "high": p, "low": p} for _, p in _historico if p]
-                                    for i in range(1, len(_velas)):
-                                        _velas[i]["open"] = _velas[i-1]["close"]
+                                # Se não houver candles suficientes da fita, usa histórico de preços lidos (vela a vela)
+                                if len(_velas) < 3:
+                                    _historico = getattr(self, "_hist_indicadores", {}).get(str(ativo).upper(), [])
+                                    if len(_historico) >= 3:
+                                        _velas = [{"close": p, "high": p, "low": p} for _, p in _historico if p]
+                                        for i in range(1, len(_velas)):
+                                            _velas[i]["open"] = _velas[i-1]["close"]
 
-                            if len(_velas) >= 3:
-                                _classifier = MarketRegimeClassifier()
-                                _matrix = ConfluenceMatrix()
+                                if len(_velas) >= 3:
+                                    _classifier = MarketRegimeClassifier()
+                                    _matrix = ConfluenceMatrix()
 
-                                info_regime = _classifier.classificar(list(_velas))
-                                avaliacao_matrix = _matrix.pontuar_setup(sinal, None, info_regime)
+                                    info_regime = _classifier.classificar(list(_velas))
+                                    _sinal_matriz = dict(sinal or {})
+                                    _sinal_matriz["confluencias"] = list(confluencias or [])
+                                    _sinal_matriz["rr"] = rr_sinal
+                                    _sinal_matriz["direcao"] = acao
+                                    avaliacao_matrix = _matrix.pontuar_setup(_sinal_matriz, None, info_regime)
+                                    _alertas_mat = list(avaliacao_matrix.get("alertas") or [])
 
-                                if not avaliacao_matrix["aprovado"]:
-                                    regime_ok = False
-                                    repetido = True  # Bloqueia o cenário
-                                    getattr(self, "_contar_motivo_do_descarte")(
-                                        acao, ativo, "mercado em consolidação (chop zone)")
-                                    self.log(f"🛡️ BLOQUEIO DE CONSOLIDAÇÃO: {acao} {ativo} recusado "
-                                              f"pelo Filtro Institucional. {avaliacao_matrix['alertas'][0]} "
-                                              f"Nota da confluência: {avaliacao_matrix['score']}/80.")
-                                elif avaliar_contra_tendencia_forte is not None:
-                                    _ok_ct, _motivo_ct = avaliar_contra_tendencia_forte(
-                                        acao, info_regime, confluencias, probabilidade)
-                                    if not _ok_ct:
+                                    if not avaliacao_matrix.get("aprovado") and info_regime.get("regime") in ("COMPRESSAO", "RISCO_NOTICIA"):
                                         regime_ok = False
-                                        repetido = True
+                                        repetido = True  # Bloqueia o cenário
                                         getattr(self, "_contar_motivo_do_descarte")(
-                                            acao, ativo, "contra tendência forte sem CHoCH+Sweep")
-                                        self.log(f"🛡️ BLOQUEIO CONTRA-TENDÊNCIA: {_motivo_ct}")
+                                            acao, ativo, "mercado em consolidação (chop zone)")
+                                        _msg_alerta = _alertas_mat[0] if _alertas_mat else "Mercado em compressão lateral sem sweep."
+                                        self.log(f"🛡️ BLOQUEIO DE CONSOLIDAÇÃO: {acao} {ativo} recusado "
+                                                  f"pelo Filtro Institucional. {_msg_alerta} "
+                                                  f"Nota da confluência: {avaliacao_matrix.get('score', 0)}/80.")
+                                    elif avaliar_contra_tendencia_forte is not None:
+                                        _ok_ct, _motivo_ct = avaliar_contra_tendencia_forte(
+                                            acao, info_regime, confluencias, probabilidade)
+                                        if not _ok_ct:
+                                            regime_ok = False
+                                            repetido = True
+                                            getattr(self, "_contar_motivo_do_descarte")(
+                                                acao, ativo, "contra tendência forte sem CHoCH+Sweep")
+                                            self.log(f"🛡️ BLOQUEIO CONTRA-TENDÊNCIA: {_motivo_ct}")
+                            except Exception as _e_reg:
+                                regime_ok = True
+                                if getattr(self, "agente_autocorretivo", None) is not None:
+                                    self.agente_autocorretivo.intervir_em_falha_runtime(
+                                        _e_reg, onde_quebrou(_e_reg) or "market_regime", log_fn=self.log)
 
                         # Só cria sinal com preços VÁLIDOS (>0), preço de tela lido E que
                         # passe no piso de qualidade, e que NÃO seja um rompimento falso num range.
@@ -30448,6 +30579,12 @@ class SmcQuantApp(ctk.CTk):
                         # a análise do NQ no mesmo ciclo.
                         defeito = erro_e_defeito_do_programa(e)
                         local = onde_quebrou(e)
+                        if getattr(self, "agente_autocorretivo", None) is not None:
+                            try:
+                                self.agente_autocorretivo.intervir_em_falha_runtime(
+                                    e, local or "main_app.py", log_fn=self.log)
+                            except Exception:
+                                pass
                         if defeito:
                             # DEFEITO MEU SE ANUNCIA COMO DEFEITO MEU.
                             # O texto genérico abaixo dizia "o que falhou foi a

@@ -174,5 +174,189 @@ class TestPlanoTaticoMetaMomentum(unittest.TestCase):
         self.assertEqual(res["postura"], "META_BATIDA_ENCERRAR_DIA")
 
 
+class TestAgenteAutocorretivoETravasAntiAlucinacao(unittest.TestCase):
+    """Agente Autocorretivo em tempo real com as 5 Travas Anti-Alucinação."""
+
+    def test_repara_index_error_em_runtime_e_valida_ast(self):
+        import tempfile
+        from pathlib import Path
+        import agent_monitor
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            arq = root / "modulo_teste.py"
+            codigo_defeituoso = (
+                "def processar(avaliacao_matrix):\n"
+                "    msg = f\"Erro: {avaliacao_matrix['alertas'][0]}\"\n"
+                "    return msg\n"
+            )
+            arq.write_text(codigo_defeituoso, encoding="utf-8")
+            agente = agent_monitor.AgenteAutocorretivoInstitucional(
+                app_root=root, user_data_dir=root / "dados"
+            )
+            ev = agente.intervir_em_falha_runtime(
+                IndexError("list index out of range"),
+                local_quebra="modulo_teste.py:2",
+            )
+            self.assertTrue(ev["sucesso"])
+            novo_codigo = arq.read_text(encoding="utf-8")
+            self.assertIn(".get('alertas')", novo_codigo)
+            # Testa que o código reparado não levanta mais IndexError quando alertas=[]
+            ns_exec = {}
+            exec(novo_codigo, ns_exec)
+            self.assertEqual(ns_exec["processar"]({"alertas": []}), "Erro: ")
+
+    def test_trava_anti_alucinacao_bloqueia_exclusao_de_funcao_ou_markdown(self):
+        import agent_monitor
+
+        orig = "def f1():\n    return 1\n\ndef f2():\n    return 2\n"
+        # Tentativa de apagar f2
+        sem_f2 = "def f1():\n    return 1\n"
+        ok, motivo = agent_monitor.validar_patch_anti_alucinacao(orig, sem_f2)
+        self.assertFalse(ok)
+        self.assertIn("f2", motivo)
+
+        # Tentativa com markdown alucinado
+        com_md = "def f1():\n    return 1\n```python\ndef f2():\n    return 2\n"
+        ok_md, motivo_md = agent_monitor.validar_patch_anti_alucinacao(orig, com_md)
+        self.assertFalse(ok_md)
+        self.assertIn("markdown", motivo_md)
+
+    def test_trava_anti_alucinacao_bloqueia_remocao_de_simbolo_critico(self):
+        import agent_monitor
+
+        orig = "TOLERANCIA_FATO_USD = 1.0\ndef f():\n    return TOLERANCIA_FATO_USD\n"
+        novo = "def f():\n    return 1.0\n"
+        ok, motivo = agent_monitor.validar_patch_anti_alucinacao(orig, novo)
+        self.assertFalse(ok)
+        self.assertIn("TOLERANCIA_FATO_USD", motivo)
+
+
+class TestAutoAprendizadoRealEMemoriaEvolutiva(unittest.TestCase):
+    """Auto-Aprendizado Real Bayesiano + EWMA + Shadow Book + Travas Anti-Alucinação."""
+
+    def test_trava_anti_eco_bloqueia_bonus_apos_dois_stops_seguidos(self):
+        import tempfile
+        import os
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mem = tiger_predictive.MemoriaEvolutivaMercado(
+                os.path.join(tmp, "mem.json")
+            )
+            # Histórico antigo positivo (5 wins)
+            for _ in range(5):
+                mem.registrar_resultado_verificado(
+                    "NQZ6", "SELL", "WIN", rr_obtido=2.0,
+                    entry=27350.0, stop=27370.0, tp1=27310.0
+                )
+            # Últimos 2 deram LOSS (stop)
+            mem.registrar_resultado_verificado(
+                "NQZ6", "SELL", "LOSS", entry=27350.0, stop=27370.0, tp1=27310.0
+            )
+            mem.registrar_resultado_verificado(
+                "NQZ6", "SELL", "LOSS", entry=27350.0, stop=27370.0, tp1=27310.0
+            )
+            cal = mem.calibrar_probabilidade_real(78.0, "NQZ6", "SELL")
+            self.assertTrue(cal["trava_anti_eco_acionada"])
+            self.assertLess(cal["probabilidade_ajustada"], 78.0)
+
+    def test_aprendizado_contrafactual_shadow_book_registra_stop_evitado(self):
+        import tempfile
+        import os
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mem = tiger_predictive.MemoriaEvolutivaMercado(
+                os.path.join(tmp, "mem.json")
+            )
+            ok = mem.registrar_cenario_sombra(
+                "NQZ6", "SELL", entry=27350.0, stop=27375.0, tp1=27300.0,
+                motivo_descarte="stop fora da faixa do contrato"
+            )
+            self.assertTrue(ok)
+            # Preço toca na entrada (27351) e depois explode o stop (27376)
+            self.assertEqual(mem.atualizar_precos_sombra("NQZ6", 27351.0), [])
+            res = mem.atualizar_precos_sombra("NQZ6", 27376.0)
+            self.assertEqual(len(res), 1)
+            self.assertEqual(res[0]["desfecho_sombra"], "STOP_EVITADO")
+
+    def test_feedback_ciclo_a_ciclo_gera_instrucao_corretiva_no_prompt(self):
+        import tempfile
+        import os
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mem = tiger_predictive.MemoriaEvolutivaMercado(
+                os.path.join(tmp, "mem.json")
+            )
+            mem.registrar_feedback_ciclo(
+                "NQZ6",
+                "stop de 100 ticks acima do máximo de 80 ticks",
+                "Posicione entry_price no 50% do OB para manter stop <= 80 ticks.",
+            )
+            bloco = mem.gerar_prompt_autocorrecao_ciclo("NQZ6")
+            self.assertIn("AUTOCORREÇÃO OBRIGATÓRIA DO AGENTE", bloco)
+            self.assertIn("100 ticks", bloco)
+
+    def test_trava_geometria_rejeita_dados_alucinados(self):
+        ok, _ = tiger_predictive.MemoriaEvolutivaMercado.validar_geometria_anti_alucinacao(
+            "BUY", entry=27350.0, stop=27380.0, tp1=27300.0
+        )
+        self.assertFalse(ok)
+
+
+class TestRegressoesLogsProducao(unittest.TestCase):
+    """Testa especificamente os problemas capturados nos logs reais de 17/11."""
+
+    def test_confluence_matrix_nunca_retorna_alertas_vazio_quando_reprovado(self):
+        # Garante que avaliacao_matrix['alertas'][0] jamais cause IndexError
+        sinal = {
+            "action": "SELL",
+            "entry_price": 27344.5,
+            "stop_loss": 27364.5,
+            "take_profit_1": 27304.5,
+            "confluence_factors": ["MSS", "Bearish Order Block", "RSI Divergence"],
+            "market_analysis": "Rejeição em topo com MSS e divergência no RSI.",
+        }
+        info_regime = {"regime": market_regime.REGIME_EXPANSAO, "direcao": "BAIXA"}
+        res_aprovado = market_regime.ConfluenceMatrix.pontuar_setup(sinal, None, info_regime)
+        self.assertTrue(res_aprovado["aprovado"])
+
+        # Mesmo para um setup vazio/reprovado, alertas jamais é vazio
+        res_vazio = market_regime.ConfluenceMatrix.pontuar_setup({"action": "BUY"}, None, info_regime)
+        self.assertFalse(res_vazio["aprovado"])
+        self.assertGreaterEqual(len(res_vazio["alertas"]), 1)
+
+    def test_micro_oscilacao_nq_nao_dispara_tendencia_forte_falsa(self):
+        # 4 leituras de preço variando apenas 7.25 pontos no NQ a 27.344 (0.026%)
+        velas = [
+            {"open": 27344.5, "high": 27344.5, "low": 27344.5, "close": 27344.5},
+            {"open": 27344.5, "high": 27348.25, "low": 27348.25, "close": 27348.25},
+            {"open": 27348.25, "high": 27350.5, "low": 27350.5, "close": 27350.5},
+            {"open": 27350.5, "high": 27351.75, "low": 27351.75, "close": 27351.75},
+        ]
+        info = market_regime.MarketRegimeClassifier.classificar(velas)
+        self.assertFalse(info["tendencia_forte"])
+
+    def test_separador_markdown_nao_dispara_resposta_degenerada(self):
+        ns = carregar(["_RE_ESCRITA_ESTRANHA", "_LIGACAO_PT", "_LIGACAO_EN", "resposta_degenerada"])
+        texto_com_tabela = (
+            "Bom dia, Josevan! Aqui está o resumo do mercado agora:\n"
+            "| Ativo | Preço | Viés |\n"
+            "|----------|----------|----------|\n"
+            "| NQZ6 | 27350.0 | Venda |\n"
+        )
+        quebrada, motivo = ns["resposta_degenerada"](texto_com_tabela)
+        self.assertFalse(quebrada, motivo)
+
+    def test_drawdown_com_teto_entre_parenteses_nao_dispara_falso_alarme(self):
+        ns = carregar(["_ROTULOS_DE_FATO", "TOLERANCIA_FATO_USD", "_valor_perto_do_rotulo", "conferir_numeros_da_mesa"])
+        fatos = {"margem": 50000.0, "meta": 3000.0, "drawdown": 2000.0, "hoje": 0.0, "ciclo": 0.0}
+        for frase in (
+            "No plano, drawdown de US$ 0.00 (teto em US$ 2.000) e meta US$ 3.000.",
+            "- Drawdown: **US$ 0.00** (teto: US$ 2.000)",
+        ):
+            _, div = ns["conferir_numeros_da_mesa"](frase, fatos)
+            self.assertEqual(div, [], frase)
+
+
 if __name__ == "__main__":
     unittest.main()

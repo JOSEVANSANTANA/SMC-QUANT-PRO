@@ -142,8 +142,12 @@ class MarketRegimeClassifier:
         consistencia_passos = (passos_a_favor / passos_validos) if passos_validos > 0 else 0.0
 
         direcao = "ALTA" if deslocamento > 0 else ("BAIXA" if deslocamento < 0 else "LATERAL")
+        # Evita classificar micro-oscilações de poucos ticks (ex: 5-7 pts no NQ a 27.350 = 0.025%)
+        # como "tendência forte". Exige deslocamento mínimo significativo (>= 0.08% do preço).
+        deslocamento_relevante = deslocamento_abs >= max(abs(inicio) * 0.0008, 1e-6)
         tendencia_forte = bool(
             len(fechamentos) >= 4
+            and deslocamento_relevante
             and efficiency_ratio >= 0.55
             and consistencia_passos >= 0.65
             and (amplitude_total <= 0 or deslocamento_abs >= amplitude_total * 0.55)
@@ -349,21 +353,26 @@ class ConfluenceMatrix:
         alertas = []
 
         direcao = str(setup_smc.get("direcao") or setup_smc.get("action") or "").upper()
-        fatores_smc = setup_smc.get("confluencias") or setup_smc.get("confluences") or []
+        fatores_smc = (
+            setup_smc.get("confluencias")
+            or setup_smc.get("confluence_factors")
+            or setup_smc.get("confluences")
+            or []
+        )
         texto_smc = " ".join(str(f).upper() for f in fatores_smc) + " " + str(setup_smc.get("market_analysis", "")).upper()
 
-        # 1. Componente SMC (até 40 pontos)
-        if any(k in texto_smc for k in ("ORDER_BLOCK", "ORDER BLOCK", "OB")):
-            score += 15
+        # 1. Componente SMC (até 45 pontos)
+        if any(k in texto_smc for k in ("ORDER_BLOCK", "ORDER BLOCK", "OB", "BLOCO DE ORDENS", "MITIGATION")):
+            score += 20
             confluencias.append("Order Block Institucional")
         if any(k in texto_smc for k in ("FVG", "FAIR VALUE GAP", "IMBALANCE", "INEFICIÊNCIA", "INEFICIENCIA")):
             score += 15
             confluencias.append("Fair Value Gap (FVG)")
-        if any(k in texto_smc for k in ("CHOCH", "BOS", "MSS", "QUEBRA DE ESTRUTURA")):
-            score += 10
+        if any(k in texto_smc for k in ("CHOCH", "BOS", "MSS", "QUEBRA DE ESTRUTURA", "STRUCTURE SHIFT", "BREAK OF STRUCTURE")):
+            score += 15
             confluencias.append("Quebra de Estrutura (BOS/ChoCH)")
 
-        # 2. Componente Order Flow (até 30 pontos)
+        # 2. Componente Order Flow / Liquidez (até 30 pontos)
         if order_flow:
             pressao = str(order_flow.get("pressao", "")).upper()
             if (direcao in ("BUY", "COMPRA") and pressao == "COMPRADORA") or \
@@ -379,11 +388,11 @@ class ConfluenceMatrix:
                 confluencias.append("Liquidity Sweep Confirmado")
         else:
             # Se order_flow não foi passado separadamente, verifica se há sweep/liquidez e indicadores na leitura
-            if any(k in texto_smc for k in ("SWEEP", "VARREDURA DE LIQUIDEZ", "LIQUIDITY SWEEP")):
+            if any(k in texto_smc for k in ("SWEEP", "VARREDURA DE LIQUIDEZ", "LIQUIDITY SWEEP", "CAPTURA DE LIQUIDEZ", "LIQUIDEZ", "SSL", "BSL", "SFP", "TURTLE SOUP")):
                 score += 20
                 confluencias.append("Liquidity Sweep Institucional")
-            if any(k in texto_smc for k in ("VWAP", "RSI", "MACD", "DISCOUNT", "PREMIUM", "OTE")):
-                score += 10
+            if any(k in texto_smc for k in ("VWAP", "RSI", "MACD", "DISCOUNT", "PREMIUM", "OTE", "MÉDIA", "MEDIA", "DIVERG")):
+                score += 15
                 confluencias.append("Confluência Técnica / Zona OTE")
 
         # 3. Componente Regime de Mercado (até 20 pontos)
@@ -405,26 +414,37 @@ class ConfluenceMatrix:
                     score -= 30
                     alertas.append(f"BLOQUEIO: Sinal {direcao} contra tendência forte de {dir_regime}.")
                 else:
-                    score += 10
+                    score += 15
                     confluencias.append("Expansão Moderada")
             elif tipo_regime == REGIME_COMPRESSAO:
-                if any(k in texto_smc for k in ("SWEEP", "VARREDURA DE LIQUIDEZ", "LIQUIDITY SWEEP")):
+                if any(k in texto_smc for k in ("SWEEP", "VARREDURA DE LIQUIDEZ", "LIQUIDITY SWEEP", "CAPTURA DE LIQUIDEZ", "SFP")):
                     score += 15
                     confluencias.append("Range Sweep nas Extremidades")
                 else:
                     score -= 20
                     alertas.append("ALERTA: Mercado em compressão/range sem captura de liquidez nas extremidades.")
 
-        # 4. Relação Risco:Retorno (até 10 pontos)
+        # 4. Relação Risco:Retorno (até 15 pontos)
         rr = float(setup_smc.get("rr") or setup_smc.get("risk_reward_ratio") or 0.0)
+        if rr <= 0:
+            try:
+                ep = float(setup_smc.get("entry_price") or setup_smc.get("entry") or 0.0)
+                sl = float(setup_smc.get("stop_loss") or setup_smc.get("stop") or 0.0)
+                tp = float(setup_smc.get("take_profit_1") or setup_smc.get("tp1") or 0.0)
+                if ep > 0 and sl > 0 and tp > 0 and abs(ep - sl) > 1e-9:
+                    rr = abs(tp - ep) / abs(ep - sl)
+            except (TypeError, ValueError):
+                rr = 0.0
         if rr >= 2.0:
-            score += 10
+            score += 15
             confluencias.append(f"Relação R:R Atraente ({rr:.1f}R)")
         elif rr >= 1.5:
             score += 5
 
         score_final = max(0, min(100, score))
         aprovado = score_final >= 80 and not any(a.startswith("BLOQUEIO") or a.startswith("ALERTA") for a in alertas)
+        if not aprovado and not alertas:
+            alertas.append(f"ALERTA: Confluência institucional insuficiente ({score_final}/80).")
 
         return {
             "score": score_final,

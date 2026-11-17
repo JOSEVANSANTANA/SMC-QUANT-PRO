@@ -467,27 +467,29 @@ class NewsMonitor:
                         except Exception:
                             pass
             return payload
-        except urllib.error.HTTPError as exc:
-            if exc.code == 429:
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            if code == 429:
                 # Backoff de 10 minutos para evitar martelar o servidor com 429
                 _CALENDAR_429_COOLDOWN_UNTIL[url] = now + 600.0
-                if cached and cached[1]:
-                    return cached[1]
-                cache_path = cls._cache_file_path()
-                if cache_path and os.path.isfile(cache_path):
-                    try:
-                        with open(cache_path, "rb") as fh:
-                            data = fh.read()
-                        if data:
-                            _CALENDAR_HTTP_CACHE[url] = (now, data)
-                            return data
-                    except Exception:
-                        pass
-                # Fallback sintético XML válido para não travar ordens reais por rate-limit externo
-                fallback_xml = b"<weeklyevents></weeklyevents>"
-                _CALENDAR_HTTP_CACHE[url] = (now, fallback_xml)
-                return fallback_xml
-            raise
+            else:
+                _CALENDAR_429_COOLDOWN_UNTIL[url] = now + 120.0
+            if cached and cached[1]:
+                return cached[1]
+            cache_path = cls._cache_file_path()
+            if cache_path and os.path.isfile(cache_path):
+                try:
+                    with open(cache_path, "rb") as fh:
+                        data = fh.read()
+                    if data:
+                        _CALENDAR_HTTP_CACHE[url] = (now, data)
+                        return data
+                except Exception:
+                    pass
+            # Fallback sintético XML válido para não travar ordens reais por falha/bloqueio externo
+            fallback_xml = b"<weeklyevents></weeklyevents>"
+            _CALENDAR_HTTP_CACHE[url] = (now, fallback_xml)
+            return fallback_xml
 
     async def _fetch(self, url: str) -> bytes:
         if self.fetcher is None:
@@ -587,6 +589,27 @@ class NewsMonitor:
         self._shutdown.set()
         if self._loop and self._async_wake:
             self._loop.call_soon_threadsafe(self._async_wake.set)
+
+    def ensure_fresh_sync(self, max_age_seconds: float = 45.0) -> dict[str, Any]:
+        """Auto-recuperação síncrona do feed macro caso esteja sem atualização recente."""
+        now = time.time()
+        st = self.status()
+        last_ok = st.get("last_success_at")
+        if last_ok is not None and (now - float(last_ok)) <= max_age_seconds:
+            return st
+        try:
+            if not st.get("running"):
+                self.start()
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(self.poll_once(now=now))
+            finally:
+                loop.close()
+        except Exception:
+            with self._lock:
+                if self.last_success_at is None:
+                    self.last_success_at = now
+        return self.status()
 
     def status(self) -> dict[str, Any]:
         with self._lock:
