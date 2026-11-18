@@ -8158,9 +8158,14 @@ def confundiu_micro_com_cheio(lido, referencia):
     # A REFERÊNCIA GANHA SEMPRE, e ela vem da plataforma (o instrumento do
     # ticket) ou da janela que ele mandou monitorar. Entre um ticker LIDO de
     # uma imagem e um ticker LIDO de um campo de texto, o campo de texto vence.
-    return str(referencia).upper(), (
+    ref_up = str(referencia).strip().upper()
+    if not re.search(r"\d", ref_up):
+        m_v = re.search(r"([FGHJKMNQUVXZ]\d{1,2})$", str(lido or "").strip().upper())
+        if m_v:
+            ref_up = ref_up + m_v.group(1)
+    return ref_up, (
         f"a leitura da imagem devolveu {str(lido).upper()}, mas a plataforma diz "
-        f"{str(referencia).upper()} — são o mesmo mercado em tamanhos "
+        f"{ref_up} — são o mesmo mercado em tamanhos "
         f"diferentes ({r_lido} e {r_ref}), e um vale dez vezes o outro por "
         "ponto. Fico com o que a plataforma diz")
 
@@ -19333,8 +19338,14 @@ class SmcQuantApp(ctk.CTk):
                 meta_atingida_pct = (tot_ciclo / meta * 100) if meta else 0.0
                 incertas = stats.get("incertas", 0)
 
+                _motor_str = "LIGADO (analisando gráficos em tempo real)" if getattr(self, "robo_ativo", False) else "DESLIGADO (ciclo de análise parado)"
+                _auto_str = "LIGADO" if self._modo_autonomo() else "DESLIGADO"
+                _janelas_str = ", ".join(janelas_monitoradas() or []) or "tela inteira"
                 partes.append(
                     f"\n--- PAINEL DO PLANO DE TRADING (CONTA '{nome_conta_ativa()}') ---\n"
+                    f"• Status do Motor de Análise: {_motor_str}\n"
+                    f"• Modo Autônomo: {_auto_str}\n"
+                    f"• Janelas Monitoradas: {_janelas_str}\n"
                     f"• Resultado do Dia de Hoje: US$ {res_hoje:+,.2f}\n"
                     f"• Total do Ciclo: US$ {tot_ciclo:+,.2f}\n"
                     # `drawdown_max` NUNCA EXISTIU. A chave do plano é
@@ -20003,26 +20014,6 @@ class SmcQuantApp(ctk.CTk):
             self.log("🛑 TIGER: a resposta falava como se estivesse lendo um "
                      "gráfico que o motor não entregou. Aviso anexado — nenhum "
                      "número daquele trecho veio de leitura.")
-        # TRAVA ANTI-ALUCINAÇÃO DE NOME DE CONTRATO: NQ/MNQ é Nasdaq-100, nunca S&P 500.
-        try:
-            resposta = re.sub(
-                r"\b(MNQ\s*[FGHJKMNQUVXZ]?\d*)\*\*(\s*\()([^)]*S&P\s*500[^)]*)(\))",
-                r"\1**\2Micro E-mini Nasdaq-100\4",
-                resposta, flags=re.IGNORECASE)
-            resposta = re.sub(
-                r"\b(NQ\s*[FGHJKMNQUVXZ]?\d*)\*\*(\s*\()([^)]*S&P\s*500[^)]*)(\))",
-                r"\1**\2E-mini Nasdaq-100\4",
-                resposta, flags=re.IGNORECASE)
-            resposta = re.sub(
-                r"\b(MNQ\s*[FGHJKMNQUVXZ]?\d*)(\s*\()([^)]*S&P\s*500[^)]*)(\))",
-                r"\1\2Micro E-mini Nasdaq-100\4",
-                resposta, flags=re.IGNORECASE)
-            resposta = re.sub(
-                r"\b(NQ\s*[FGHJKMNQUVXZ]?\d*)(\s*\()([^)]*S&P\s*500[^)]*)(\))",
-                r"\1\2E-mini Nasdaq-100\4",
-                resposta, flags=re.IGNORECASE)
-        except Exception:
-            pass
         registrar_msg_chat("ia", resposta)
         self._tiger_dialogo_ate = time.time() + 20.0
         self._ia_falar(resposta, forcar=bool(getattr(self, "_chat_por_voz", False)))
@@ -23655,10 +23646,22 @@ class SmcQuantApp(ctk.CTk):
         ativo = None
         if bot is not None:
             try:
-                lido = bot.ler_ativo_do_ticket()
+                if hasattr(bot, "ler_ativo_do_grafico_ou_fita"):
+                    lido = bot.ler_ativo_do_grafico_ou_fita(sincronizar_ticket=True)
+                else:
+                    lido = bot.ler_ativo_do_ticket()
                 ativo = (str(lido).strip().upper() or None) if lido else None
             except Exception:
                 ativo = None
+        if not ativo:
+            try:
+                for _jn in (janelas_monitoradas() or []):
+                    _mj = re.search(r"\b(MNQ|MES|MGC|MBT|MYM|M2K|MCL)\b", str(_jn).upper())
+                    if _mj:
+                        ativo = _mj.group(1)
+                        break
+            except Exception:
+                pass
         self._cache_ativo_da_fita = (ativo, agora)
         return ativo
 

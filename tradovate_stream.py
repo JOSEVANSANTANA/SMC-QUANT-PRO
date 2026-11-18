@@ -176,7 +176,9 @@ class TradovateStream:
       }
       function num(s){
         if(!s || ehCarimbo(s)) return null;
-        var t = String(s).replace(/[^0-9.,-]/g,'');
+        var mNum = String(s).match(/-?\d[\d.,]*/);
+        if(!mNum) return null;
+        var t = mNum[0];
         if(!t) return null;
         if(t.indexOf(',')>-1 && t.indexOf('.')>-1){
           t = (t.lastIndexOf(',') > t.lastIndexOf('.'))
@@ -211,12 +213,16 @@ class TradovateStream:
         // maiores sao a pagina inteira em volta dela.
         if(t.length < melhor){ melhor = t.length; alvo = c; }
       }
+      while(alvo && alvo.parentElement && !/\d{1,2}:\d{2}/.test(txt(alvo)) && txt(alvo.parentElement).length < 15000){
+        alvo = alvo.parentElement;
+      }
       if(!alvo) return JSON.stringify({ok:false, motivo:'fita_nao_encontrada', diag:diag});
       diag.painel = true;
       diag.cabecalho = txt(alvo).slice(0,90);
 
       // 2) AS LINHAS. Cada uma tem carimbo + preco + tamanho.
-      var linhas = alvo.querySelectorAll('tr,[role=row],li,div');
+      var linhasSemanticas = alvo.querySelectorAll('tr,[role=row],li');
+      var linhas = (linhasSemanticas && linhasSemanticas.length > 1) ? linhasSemanticas : alvo.querySelectorAll('tr,[role=row],li,div');
       var out = [];
       for(var j=0;j<linhas.length;j++){
         var ln = linhas[j];
@@ -224,6 +230,7 @@ class TradovateStream:
         var textos = [];
         if(celulas.length >= 2){
           for(var k=0;k<celulas.length;k++){
+            if(celulas[k].children && celulas[k].children.length > 0) continue;
             var ct = txt(celulas[k]);
             if(ct && ct.length < 30) textos.push(ct);
           }
@@ -429,7 +436,9 @@ class TradovateStream:
       }
       function _num(s){
         if(!s || _ehCarimbo(s)) return null;
-        var t=String(s).replace(/[^0-9.,-]/g,'');
+        var mNum=String(s).match(/-?\d[\d.,]*/);
+        if(!mNum) return null;
+        var t=mNum[0];
         if(!t) return null;
         if(t.indexOf(',')>-1 && t.indexOf('.')>-1){
           t=(t.lastIndexOf(',')>t.lastIndexOf('.'))
@@ -455,12 +464,16 @@ class TradovateStream:
           if(!(RE_H.test(n) && RE_P.test(n) && RE_T.test(n))) continue;
           if(t.length<menor){ menor=t.length; alvo=c[i]; }
         }
+        while(alvo && alvo.parentElement && !/\d{1,2}:\d{2}/.test(_txt(alvo)) && _txt(alvo.parentElement).length < 15000){
+          alvo = alvo.parentElement;
+        }
         return alvo;
       }
       function _lerLinha(ln){
         if(!ln || !ln.querySelectorAll) return null;
         var cel=ln.querySelectorAll('td,[role=cell],span,div'), textos=[];
         for(var k=0;k<cel.length;k++){
+          if(cel[k].children && cel[k].children.length > 0) continue;
           var ct=_txt(cel[k]);
           if(ct && ct.length<30) textos.push(ct);
         }
@@ -566,9 +579,12 @@ class TradovateStream:
     _JS_INSTALAR_OBSERVADOR = r"""
     (function(){
       PLACEHOLDER_ACHAR_FITA
-      if(window.__smcFita && window.__smcFita.vivo) {
+      if(window.__smcFita && window.__smcFita.vivo && window.__smcFita.v286) {
         return JSON.stringify({ok:true, ja_estava:true,
                                capturados: window.__smcFita.balde.length});
+      }
+      if(window.__smcFita && window.__smcFita.obs){
+        try{ window.__smcFita.obs.disconnect(); }catch(e){}
       }
       var alvo = _acharFita();
       if(!alvo) return JSON.stringify({ok:false, motivo:'fita_nao_encontrada'});
@@ -577,6 +593,8 @@ class TradovateStream:
       st.balde = st.balde || [];
       st.vistos = st.vistos || {};
       st.vivo = true;
+      st.v286 = true;
+      st.alvo = alvo;
       st.perdidos = 0;
 
       // PORTEIRO BARATO, ANTES DO TRABALHO CARO.
@@ -642,12 +660,19 @@ class TradovateStream:
         }
       }
 
+      st.varrer = function(){
+        if(!st.alvo) return;
+        var linhasSem = st.alvo.querySelectorAll('tr,[role=row],li');
+        var lns = (linhasSem && linhasSem.length > 1) ? linhasSem : st.alvo.querySelectorAll('tr,[role=row],li,div');
+        for(var i=0;i<lns.length;i++) registrar(lns[i]);
+      };
+
       st.obs = new MutationObserver(function(muts){
         for(var m=0;m<muts.length;m++){
           var mut = muts[m];
           if(mut.type === 'characterData' && mut.target && mut.target.parentElement){
             var p = mut.target.parentElement;
-            for(var up=0; up<4 && p && p !== alvo; up++, p = p.parentElement){
+            for(var up=0; up<12 && p && p !== alvo; up++, p = p.parentElement){
               registrar(p);
             }
           }
@@ -671,6 +696,7 @@ class TradovateStream:
     (function(){
       var st = window.__smcFita;
       if(!st || !st.vivo) return JSON.stringify({ok:false, motivo:'sem_observador'});
+      if(typeof st.varrer === 'function'){ try{ st.varrer(); }catch(e){} }
       var lote = st.balde;
       st.balde = [];
       var perdidos = st.perdidos || 0;

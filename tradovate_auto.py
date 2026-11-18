@@ -3774,6 +3774,60 @@ class TradovateAuto:
             return None
         return (d.get("atual") or "").strip().upper() if d.get("achou") else None
 
+    def ler_ativo_do_grafico_ou_fita(self, sincronizar_ticket=True):
+        """Lê o ticker REAL exibido no cabeçalho do Gráfico e da Fita (Time & Sales),
+        fora do painel lateral 'Chamado do pedido' (`x > 280`).
+
+        Soluciona o bug em que o 'Chamado do pedido' à esquerda ficava com NQZ6
+        enquanto o Gráfico e a Fita do trader estavam em MNQZ6, fazendo o robô
+        sobrescrever MNQZ6 por NQZ6 (10x mais caro) e travar em 0 contratos."""
+        js = r"""
+        (function(){
+          var RE_TK = /^(MNQ|MES|MGC|MBT|MYM|M2K|MCL|NQ|ES|GC|BTC|YM|RTY|CL)[FGHJKMNQUVXZ]\d{1,2}$/i;
+          var els = document.querySelectorAll('div,span,strong,b,input');
+          var votos = {};
+          var ordem = [];
+          for(var i=0;i<els.length;i++){
+            var el = els[i];
+            var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+            if(!r || r.width <= 0 || r.height <= 0) continue;
+            // Ignora a coluna esquerda do 'Chamado do pedido' (x < 280)
+            if(r.left < 280 || r.top > 260) continue;
+            var t = String((el.tagName === 'INPUT' ? el.value : (el.innerText || el.textContent)) || '').trim().toUpperCase();
+            if(!t || t.length > 10) continue;
+            var tk = t.split(/\s+/)[0];
+            if(RE_TK.test(tk)){
+              if(!votos[tk]){ votos[tk] = 0; ordem.push(tk); }
+              votos[tk] += (r.left > 600 ? 2 : 1); // Prioriza cabeçalho do gráfico principal
+            }
+          }
+          if(!ordem.length) return JSON.stringify({achou:false});
+          ordem.sort(function(a,b){ return votos[b] - votos[a]; });
+          return JSON.stringify({achou:true, ativo:ordem[0], votos:votos});
+        })()
+        """
+        ativo_grafico = None
+        try:
+            d = json.loads(self.avaliar_js(js) or "{}")
+            if d.get("achou") and d.get("ativo"):
+                ativo_grafico = str(d["ativo"]).strip().upper()
+        except ConexaoPerdida:
+            raise
+        except Exception:
+            ativo_grafico = None
+
+        ativo_ticket = self.ler_ativo_do_ticket()
+        if ativo_grafico:
+            if sincronizar_ticket and ativo_ticket and ativo_ticket != ativo_grafico:
+                try:
+                    self.log(f"🔄 Sincronizando 'Chamado do pedido' ({ativo_ticket} → {ativo_grafico}) "
+                             f"para obedecer ao Gráfico/Fita na tela...")
+                    self.garantir_ativo_no_ticket(ativo_grafico)
+                except Exception:
+                    pass
+            return ativo_grafico
+        return ativo_ticket
+
     @staticmethod
     def mesmo_instrumento(a, b):
         """MESU6 e MES são o mesmo; MESU6 e MNQU6 NÃO são.
