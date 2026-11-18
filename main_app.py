@@ -233,7 +233,9 @@ try:
                                   detectar_gatilho_despertar_imediato,
                                   calcular_multiplicador_kelly_institucional,
                                   calcular_catraca_lucro_multinivel,
-                                  calcular_plano_parciais_e_runner)
+                                  calcular_plano_parciais_e_runner,
+                                  calibrar_setup_para_orcamento_e_execucao_real,
+                                  verificar_pausa_anti_violina_pos_stop)
 except Exception:
     PredictiveLiquidityEngine = None
     calcular_plano_tatico_meta_momentum = None
@@ -244,6 +246,8 @@ except Exception:
     calcular_multiplicador_kelly_institucional = None
     calcular_catraca_lucro_multinivel = None
     calcular_plano_parciais_e_runner = None
+    calibrar_setup_para_orcamento_e_execucao_real = None
+    verificar_pausa_anti_violina_pos_stop = None
 
 try:
     from agent_monitor import AgenteAutocorretivoInstitucional
@@ -25423,19 +25427,17 @@ class SmcQuantApp(ctk.CTk):
 
             novo_stop = None
             etapa = None
+            # Catraca calibrada para NÃO sufocar ganhadores em +0.5R no ruído normal
+            # (corrige o caso das 17:50 que fechou com +$12.40 antes de cair 325 pontos).
             if r_max >= 2.0:
-                novo_stop = (entry + 1.5 * risco) if direcao == "BUY" else (entry - 1.5 * risco)
-                etapa = "+1.5R garantido (após tocar +2.0R)"
-            elif r_max >= 1.5:
-                novo_stop = (entry + 1.0 * risco) if direcao == "BUY" else (entry - 1.0 * risco)
-                etapa = "+1.0R garantido (após tocar +1.5R)"
-            elif r_max >= 1.0:
-                novo_stop = (entry + 0.5 * risco) if direcao == "BUY" else (entry - 0.5 * risco)
-                etapa = "+0.5R garantido (após tocar +1.0R)"
-            elif r_max >= 0.5:
-                folga = 2.0 * tick
-                novo_stop = (entry + folga) if direcao == "BUY" else (entry - folga)
-                etapa = "Breakeven + 2 ticks (após tocar +0.5R)"
+                novo_stop = (entry + 1.50 * risco) if direcao == "BUY" else (entry - 1.50 * risco)
+                etapa = "+1.50R garantido (após tocar +2.0R)"
+            elif r_max >= 1.55:
+                novo_stop = (entry + 0.85 * risco) if direcao == "BUY" else (entry - 0.85 * risco)
+                etapa = "+0.85R garantido (após tocar +1.55R)"
+            elif r_max >= 1.15:
+                novo_stop = (entry + 0.25 * risco) if direcao == "BUY" else (entry - 0.25 * risco)
+                etapa = "+0.25R protegido (após romper +1.15R com folga de respiro)"
 
             if novo_stop is not None:
                 novo_stop = round(round(novo_stop / tick) * tick, 6)
@@ -25448,11 +25450,11 @@ class SmcQuantApp(ctk.CTk):
                     self.log(f"🛡️ BLINDAGEM ZERO-DEVOLUÇÃO: {direcao} {ativo_p} "
                              f"atingiu +{r_max:.2f}R -> stop protegido em {novo_stop} ({etapa}).")
 
-            # Se já chegou a +0.8R e devolveu até furar o stop protegido,
-            # liquida na plataforma imediatamente se estiver em modo autônomo.
+            # Só liquida a mercado por recuo se já tiver atingido pelo menos +1.35R
+            # (evita ser violinado no zero a zero em respiro normal de 0.5R–0.8R).
             stop_vigente = float(p.get("stop") or stop_atual)
             violou_protecao = (
-                r_max >= 0.8
+                r_max >= 1.35
                 and p.get("etapa_blindagem")
                 and ((direcao == "BUY" and preco_vivo <= stop_vigente)
                      or (direcao == "SELL" and preco_vivo >= stop_vigente))
@@ -28428,9 +28430,15 @@ class SmcQuantApp(ctk.CTk):
             """As janelas que entram neste ciclo, lidas do disco a cada volta —
             você pode incluir ou remover uma com o motor ligado.
 
-            Lista vazia devolve [""] de propósito: é o comportamento antigo de
-            capturar a tela inteira quando nenhuma janela foi escolhida."""
-            return janelas_monitoradas() or [""]
+            Filtra janelas de sistema/IDE (ex: Antigravity) caso tenham sido
+            marcadas por engano, garantindo que a aba real da corretora seja a
+            janela principal (`_idx_janela == 0`)."""
+            brutas = janelas_monitoradas() or []
+            validas = [
+                j for j in brutas
+                if not any(b in str(j).lower() for b in ("antigravity", "smc quant pro"))
+            ]
+            return validas or brutas or [""]
 
         sinal_ativo = {"estado": "ENCERRADA"}
         ledger_text_memory = "Nenhuma operação aberta no momento. Aguardando primeiro sinal institucional."
@@ -29814,14 +29822,50 @@ class SmcQuantApp(ctk.CTk):
                         # 2. Se o stop já está folgado abaixo do teto, aplica front-run de +2 ticks na
                         #    borda de defesa institucional para evitar perder a ordem por poucos ticks.
                         if acao in ("BUY", "SELL"):
+                            # 0. PAUSA ANTI-VIOLINA PÓS-STOP (impede sequência 20:51 -> 20:57 -> 21:10)
+                            if verificar_pausa_anti_violina_pos_stop is not None:
+                                try:
+                                    _ok_whip, _mot_whip = verificar_pausa_anti_violina_pos_stop(
+                                        carregar_posicoes(), conta_ativa_id(), ativo, cooldown_segundos=900.0)
+                                    if not _ok_whip:
+                                        acao = "HOLD"
+                                        self.log(_mot_whip)
+                                except Exception:
+                                    pass
+
+                        if acao in ("BUY", "SELL"):
                             try:
                                 _ep_bruto = sinal.get("entry_price") or 0
                                 _sl_bruto = sinal.get("stop_loss") or 0
                                 _tp1_bruto = sinal.get("take_profit_1") or 0
                                 _tp2_bruto = sinal.get("take_profit_2") or 0
                                 _tk_at = tick_do_ativo(ativo) or 0.25
+                                _vpp_at = valor_por_ponto_do_ativo(ativo) or 20.0
                                 _fx_at = faixa_de_stop_do_ativo(ativo)
-                                if normalizar_entrada_ote_para_caber_no_stop is not None and _fx_at:
+                                _orc_max = None
+                                try:
+                                    _dd_r = drawdown_restante_hoje()
+                                    if _dd_r is not None and _dd_r > 0:
+                                        _orc_max = _dd_r * 0.33
+                                except Exception:
+                                    _orc_max = None
+
+                                if calibrar_setup_para_orcamento_e_execucao_real is not None:
+                                    _res_cal = calibrar_setup_para_orcamento_e_execucao_real(
+                                        acao, _ep_bruto, _sl_bruto, _tp1_bruto, _tp2_bruto,
+                                        preco, _tk_at, _vpp_at, _fx_at,
+                                        orcamento_max_usd=_orc_max, rr_minimo=RR_MINIMO)
+                                    if _res_cal.get("bloqueado"):
+                                        acao = "HOLD"
+                                        self.log(_res_cal["motivo"])
+                                    elif _res_cal.get("ajustado"):
+                                        sinal["entry_price"] = _res_cal["entry"]
+                                        sinal["stop_loss"] = _res_cal["stop"]
+                                        _ep_bruto = _res_cal["entry"]
+                                        _sl_bruto = _res_cal["stop"]
+                                        self.log(_res_cal["motivo"])
+
+                                if acao in ("BUY", "SELL") and normalizar_entrada_ote_para_caber_no_stop is not None and _fx_at:
                                     _res_ote = normalizar_entrada_ote_para_caber_no_stop(
                                         acao, _ep_bruto, _sl_bruto, _tp1_bruto, _tp2_bruto,
                                         preco, _tk_at, _fx_at, RR_MINIMO)

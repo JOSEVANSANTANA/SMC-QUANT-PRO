@@ -1117,3 +1117,205 @@ def calcular_plano_parciais_e_runner(
     }
 
 
+def calibrar_setup_para_orcamento_e_execucao_real(
+    direcao: str,
+    entry: float,
+    stop: float,
+    tp1: float,
+    tp2: Optional[float],
+    preco_atual: Optional[float],
+    tick: float,
+    valor_por_ponto: float,
+    faixa_ticks: Optional[Tuple[int, int]],
+    orcamento_max_usd: Optional[float] = None,
+    rr_minimo: float = 1.5,
+) -> Dict[str, Any]:
+    """
+    Soluciona os 3 Gargalos Reais diagnosticados nos logs de 17/11 e 18/11:
+      1. ESCUDO ANTI-STOP INSTANTÂNEO (11:53, 11:58, 14:11, 15:25, 15:48, 21:10):
+         Se o preço ao vivo (`preco_atual`) já passou da entrada em direção ao stop,
+         deixando menos de 65% do stop planejado (ou menos de `min_ticks`), BLOQUEIA
+         na hora! Impede enviar ordem limite cruzada que executa a mercado colada no stop.
+      2. ADEQUAÇÃO AO ORÇAMENTO DE DRAWDOWN RESTANTE (06:04 a 08:26 de 18/11):
+         Quando o teto de 33% do drawdown restante (ex: US$ 204.60) não comporta 1 contrato
+         com stop de 20 pontos no NQ (US$ 400), mas comporta até 40 ticks (10 pontos = US$ 200),
+         refina a entrada mais fundo no OTE (mantendo o stop_loss intocado atrás do pavio!)
+         para que o risco caiba no orçamento de 1 contrato em vez de travar em '0 contratos'.
+      3. ANCORAGEM DE EMBARQUE EM IMPULSO (Fim dos 9 gains perdidos de 17/11):
+         Quando o movimento já começou a favor do alvo e a entrada limite ficou pendurada
+         longe demais para trás (> 8 pontos no NQ), aproxima a entrada para a borda de
+         pullback curto (a 1.5–3.0 pontos do preço atual) com stop técnico ajustado dentro
+         do orçamento, garantindo o embarque nos movimentos vencedores.
+    """
+    d = str(direcao or "").strip().upper()
+    try:
+        ep = float(entry or 0.0)
+        sl = float(stop or 0.0)
+        t1 = float(tp1 or 0.0)
+        t2 = float(tp2 or 0.0) if tp2 is not None else 0.0
+        p_at = float(preco_atual or 0.0)
+        tk = max(1e-6, float(tick or 0.25))
+        vpp = max(0.0, float(valor_por_ponto or 0.0))
+    except (TypeError, ValueError):
+        return {"bloqueado": False, "ajustado": False, "entry": entry, "stop": stop, "motivo": ""}
+
+    if d not in ("BUY", "SELL") or ep <= 0 or sl <= 0 or t1 <= 0:
+        return {"bloqueado": False, "ajustado": False, "entry": ep, "stop": sl, "motivo": ""}
+
+    min_tk = int(faixa_ticks[0]) if faixa_ticks else 10
+    max_tk = int(faixa_ticks[1]) if faixa_ticks else 80
+    risco_pts = abs(ep - sl)
+    ticks_plan = round(risco_pts / tk, 1)
+
+    # 1. ESCUDO ANTI-STOP INSTANTÂNEO (Preço já invadiu a zona rumo ao stop)
+    if p_at > 0:
+        invadiu_contra = (d == "BUY" and p_at < ep) or (d == "SELL" and p_at > ep)
+        if invadiu_contra:
+            respiro_vivo_pts = (p_at - sl) if d == "BUY" else (sl - p_at)
+            ticks_vivos = round(respiro_vivo_pts / tk, 1)
+            if respiro_vivo_pts <= 0 or ticks_vivos < max(min_tk, ticks_plan * 0.65):
+                return {
+                    "bloqueado": True,
+                    "ajustado": False,
+                    "entry": ep,
+                    "stop": sl,
+                    "motivo": (
+                        f"🛡️ [ESCUDO ANTI-STOP IMEDIATO] Preço ao vivo ({p_at:g}) já invadiu a zona "
+                        f"contra a entrada ({ep:g}) em direção ao stop ({sl:g}), restando apenas "
+                        f"{max(0.0, ticks_vivos):.0f} ticks de respiro. Ordem barrada para evitar "
+                        "execução a mercado colada no stop!"
+                    ),
+                }
+
+    # Calcula teto de ticks que cabem no orçamento de 1 contrato (evita '0 contratos')
+    max_tk_efetivo = max_tk
+    if orcamento_max_usd is not None and float(orcamento_max_usd) > 0 and vpp > 0:
+        valor_tick = vpp * tk
+        if valor_tick > 0:
+            ticks_orc = int(float(orcamento_max_usd) // valor_tick)
+            if min_tk <= ticks_orc < max_tk_efetivo:
+                max_tk_efetivo = ticks_orc
+
+    # 2. ADEQUAÇÃO AO ORÇAMENTO RESTANTE (Refina entrada no OTE para caber em 1 contrato)
+    if ticks_plan > max_tk_efetivo and min_tk <= max_tk_efetivo:
+        dist_alvo_pts = max_tk_efetivo * tk
+        novo_ep = round(((sl + dist_alvo_pts) if d == "BUY" else (sl - dist_alvo_pts)) / tk) * tk
+        geometria_ok = (sl < novo_ep < t1) if d == "BUY" else (sl > novo_ep > t1)
+        # Verifica se o preço ao vivo não invadiu a nova entrada
+        nao_invadiu = True
+        if p_at > 0:
+            if (d == "BUY" and p_at < novo_ep - 2 * tk) or (d == "SELL" and p_at > novo_ep + 2 * tk):
+                nao_invadiu = False
+        if geometria_ok and nao_invadiu:
+            novo_risco = abs(novo_ep - sl)
+            novo_rr = abs(t1 - novo_ep) / max(1e-9, novo_risco)
+            if novo_rr >= float(rr_minimo or 1.5):
+                return {
+                    "bloqueado": False,
+                    "ajustado": True,
+                    "entry": round(novo_ep, 6),
+                    "stop": round(sl, 6),
+                    "motivo": (
+                        f"🎯 [SNIPER ORÇAMENTO/OTE] Entrada refinada de {ep:g} → {novo_ep:g} "
+                        f"(stop intacto em {sl:g}) para reduzir o risco de {ticks_plan:g} para "
+                        f"{max_tk_efetivo} ticks (US$ {max_tk_efetivo * vpp * tk:.2f}), "
+                        f"cabendo no limite atual da conta com R:R 1:{novo_rr:.2f}."
+                    ),
+                }
+
+    # 3. ANCORAGEM DE EMBARQUE EM IMPULSO (Quando o preço já se afastou a favor do alvo)
+    if p_at > 0:
+        a_favor = (d == "BUY" and p_at > ep) or (d == "SELL" and p_at < ep)
+        gap_pts = abs(p_at - ep)
+        gap_ticks = round(gap_pts / tk, 1)
+        # Se a ordem ficou mais de 24 ticks (6 pontos no NQ) para trás do preço atual
+        if a_favor and gap_ticks > 24:
+            recuo_embarque_ticks = 8  # Espera apenas um micro-respiro de 8 ticks (2 pts no NQ)
+            tk_stop_ancorado = min(max_tk_efetivo, max(min_tk, int(round(ticks_plan))))
+            dist_stop_pts = tk_stop_ancorado * tk
+            if d == "BUY":
+                ep_anc = round((p_at - recuo_embarque_ticks * tk) / tk) * tk
+                sl_anc = round((ep_anc - dist_stop_pts) / tk) * tk
+                alvo_ref = t1 if (t1 > ep_anc and (t1 - ep_anc) / dist_stop_pts >= rr_minimo) else t2
+                valido_anc = alvo_ref > ep_anc and (alvo_ref - ep_anc) / dist_stop_pts >= float(rr_minimo or 1.5)
+            else:
+                ep_anc = round((p_at + recuo_embarque_ticks * tk) / tk) * tk
+                sl_anc = round((ep_anc + dist_stop_pts) / tk) * tk
+                alvo_ref = t1 if (t1 < ep_anc and (ep_anc - t1) / dist_stop_pts >= rr_minimo) else t2
+                valido_anc = 0 < alvo_ref < ep_anc and (ep_anc - alvo_ref) / dist_stop_pts >= float(rr_minimo or 1.5)
+
+            if valido_anc:
+                rr_anc = abs(alvo_ref - ep_anc) / dist_stop_pts
+                return {
+                    "bloqueado": False,
+                    "ajustado": True,
+                    "entry": round(ep_anc, 6),
+                    "stop": round(sl_anc, 6),
+                    "motivo": (
+                        f"🚀 [EMBARQUE NO FLUXO] A entrada original ({ep:g}) estava {gap_ticks:g} ticks "
+                        f"atrás do preço ({p_at:g}) e correria risco de ir ao alvo sem executar. "
+                        f"Entrada ancorada em {ep_anc:g} com stop técnico protegido em {sl_anc:g} "
+                        f"({tk_stop_ancorado} ticks · R:R 1:{rr_anc:.2f})."
+                    ),
+                }
+
+    return {"bloqueado": False, "ajustado": False, "entry": ep, "stop": sl, "motivo": ""}
+
+
+def verificar_pausa_anti_violina_pos_stop(
+    posicoes: Sequence[Dict[str, Any]],
+    conta_id: str,
+    ativo: str,
+    cooldown_segundos: float = 900.0,
+    agora_ts: Optional[float] = None,
+) -> Tuple[bool, str]:
+    """
+    Trava Anti-WhipSaw / Anti-Revenge Trading (Soluciona a sequência 20:51 -> 20:57 -> 21:10):
+      - Após qualquer STOP (perda realizada) na conta ativa para aquele contrato, exige
+        uma janela mínima de estabilização (padrão 15 minutos = 900s) antes de enviar
+        nova ordem no mesmo ativo.
+      - Impede virar a mão ('BUY -> SELL -> BUY') dentro de uma caixa de consolidação
+        noturna logo após tomar um stop.
+    """
+    agora = float(agora_ts if agora_ts is not None else time.time())
+    raiz_alvo = MemoriaEvolutivaMercado._raiz_ativo(ativo)
+
+    for p in reversed(list(posicoes or [])):
+        if not isinstance(p, dict):
+            continue
+        if conta_id and p.get("conta_id") != conta_id:
+            continue
+        if p.get("status") != "FECHADA":
+            continue
+        pnl = p.get("pnl_final")
+        if pnl is None or float(pnl) >= 0:
+            continue
+        raiz_p = MemoriaEvolutivaMercado._raiz_ativo(str(p.get("ativo") or ""))
+        if raiz_p != raiz_alvo:
+            continue
+
+        # Determina instante do fechamento
+        ts_fech = None
+        df_str = str(p.get("data_fechamento") or "").strip()
+        if df_str:
+            try:
+                dt_f = datetime.strptime(df_str, "%d/%m/%Y %H:%M")
+                ts_fech = dt_f.timestamp()
+            except Exception:
+                ts_fech = None
+        if ts_fech is None:
+            ts_fech = float(p.get("ts_criacao") or 0.0)
+
+        if ts_fech > 0 and 0 <= (agora - ts_fech) < cooldown_segundos:
+            restam_min = max(1, int(math.ceil((cooldown_segundos - (agora - ts_fech)) / 60.0)))
+            return False, (
+                f"🛡️ [PAUSA ANTI-VIOLINA PÓS-STOP] Última operação em {raiz_alvo} fechou em STOP "
+                f"(US$ {float(pnl):+,.2f} às {df_str or 'há pouco'}). Aguardando mais {restam_min} min "
+                "de estabilização estrutural para impedir stops seguidos em lateralização/whipsaw."
+            )
+        break
+
+    return True, ""
+
+
+

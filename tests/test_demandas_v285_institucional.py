@@ -460,6 +460,44 @@ class TestPacoteSniper500Porcento(unittest.TestCase):
         self.assertEqual(pl["contratos_tp1"], 2)
         self.assertEqual(pl["contratos_runner"], 1)
 
+    def test_escudo_anti_stop_imediato_bloqueia_quando_preco_ja_invadiu_stop(self):
+        # Caso real das 11:53 / 14:11: SELL @ 27245, stop 27265, mas preço atual já está em 27260 (a 5 pts do stop)
+        res = tiger_predictive.calibrar_setup_para_orcamento_e_execucao_real(
+            direcao="SELL", entry=27245.0, stop=27265.0, tp1=27205.0, tp2=27160.0,
+            preco_atual=27260.0, tick=0.25, valor_por_ponto=20.0, faixa_ticks=(12, 80)
+        )
+        self.assertTrue(res["bloqueado"])
+        self.assertIn("ESCUDO ANTI-STOP IMEDIATO", res["motivo"])
+
+    def test_adequacao_orcamento_refina_ote_para_caber_em_204_dolares_sem_dar_0_contratos(self):
+        # Caso real de 18/11 07:08–08:26: orçamento de 33% do DD restante é US$ 204.60 (40 ticks = 10 pts no NQ)
+        res = tiger_predictive.calibrar_setup_para_orcamento_e_execucao_real(
+            direcao="SELL", entry=27330.0, stop=27345.0, tp1=27300.0, tp2=27280.0,
+            preco_atual=27329.0, tick=0.25, valor_por_ponto=20.0, faixa_ticks=(12, 80),
+            orcamento_max_usd=204.60, rr_minimo=1.5
+        )
+        self.assertFalse(res["bloqueado"])
+        self.assertTrue(res["ajustado"])
+        # Novo stop de 40 ticks (10 pts): entrada refinada em 27335.0, risco = US$ 200.00 <= US$ 204.60!
+        self.assertEqual(res["entry"], 27335.0)
+        self.assertEqual(abs(res["entry"] - res["stop"]) * 20.0, 200.0)
+
+    def test_pausa_anti_violina_pos_stop_bloqueia_reentrada_em_menos_de_15_min(self):
+        posicoes = [
+            {
+                "conta_id": "conta_1",
+                "ativo": "NQZ6",
+                "status": "FECHADA",
+                "pnl_final": -400.0,
+                "ts_criacao": 1000.0,
+            }
+        ]
+        ok, motivo = tiger_predictive.verificar_pausa_anti_violina_pos_stop(
+            posicoes, "conta_1", "NQZ6", cooldown_segundos=900.0, agora_ts=1200.0
+        )
+        self.assertFalse(ok)
+        self.assertIn("PAUSA ANTI-VIOLINA PÓS-STOP", motivo)
+
 
 if __name__ == "__main__":
     unittest.main()
