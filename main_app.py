@@ -236,7 +236,8 @@ try:
                                   calcular_plano_parciais_e_runner,
                                   calibrar_setup_para_orcamento_e_execucao_real,
                                   verificar_pausa_anti_violina_pos_stop)
-except Exception:
+except Exception as _e_tp:
+    print(f"⚠️ Erro ao importar tiger_predictive: {_e_tp}", file=sys.stderr)
     PredictiveLiquidityEngine = None
     calcular_plano_tatico_meta_momentum = None
     MemoriaEvolutivaMercado = None
@@ -1952,6 +1953,27 @@ def analise_local_valida(bruto):
     return dados
 
 
+def extrair_json_analise(texto):
+    """Extrai e valida um JSON de análise de gráfico mesmo se o modelo envolver em
+    blocos ```json ... ``` ou tags <think>...</think>. Devolve JSON normalizado ou None."""
+    if not texto:
+        return None
+    t = str(texto).strip()
+    t = re.sub(r"<think>.*?</think>", "", t, flags=re.DOTALL | re.IGNORECASE).strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", t)
+        t = re.sub(r"\s*```$", "", t).strip()
+    dados = analise_local_valida(t)
+    if dados is None:
+        i = t.find("{")
+        j = t.rfind("}")
+        if i != -1 and j > i:
+            dados = analise_local_valida(t[i:j + 1])
+    if dados is None:
+        return None
+    return json.dumps(dados, ensure_ascii=False)
+
+
 def _keep_alive_do_ciclo(intervalo_min=None, folga=5):
     """Por quanto tempo o modelo de visão fica residente entre uma leitura e a
     seguinte: o INTERVALO DO MOTOR mais uma folga.
@@ -2167,6 +2189,155 @@ def modelos_gratuitos_openrouter(timeout=12, agora=None, forcar=False):
         _CACHE_MODELOS_OPENROUTER["lista"] = list(lista)
         _CACHE_MODELOS_OPENROUTER["quando"] = agora
     return lista
+
+
+_CACHE_MODELOS_VISAO_OPENROUTER = {"quando": 0.0, "lista": []}
+_FALLBACK_VISAO_OPENROUTER = [
+    "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "nvidia/nemotron-3.5-super-vl:free",
+    "openrouter/free",
+]
+
+
+def modelos_visao_gratuitos_openrouter(timeout=12, agora=None, forcar=False):
+    """Descobre dinamicamente os modelos GRATUITOS de VISÃO (imagem -> texto) na OpenRouter.
+
+    Exclui modelos pagos e modelos com saída em áudio (como Lyria), priorizando
+    os mais capazes para leitura estrutural de candlesticks."""
+    agora = time.time() if agora is None else agora
+    if (not forcar and _CACHE_MODELOS_VISAO_OPENROUTER["lista"]
+            and agora - _CACHE_MODELOS_VISAO_OPENROUTER["quando"] < VALIDADE_CATALOGO_SEG):
+        return list(_CACHE_MODELOS_VISAO_OPENROUTER["lista"])
+    try:
+        r = requests.get("https://openrouter.ai/api/v1/models", timeout=timeout)
+        if r.status_code != 200:
+            return list(_FALLBACK_VISAO_OPENROUTER)
+        dados = (r.json() or {}).get("data") or []
+    except Exception:
+        return list(_FALLBACK_VISAO_OPENROUTER)
+
+    def custa_zero(m):
+        p = m.get("pricing") or {}
+        try:
+            return (float(p.get("prompt") or 0) == 0
+                    and float(p.get("completion") or 0) == 0)
+        except (TypeError, ValueError):
+            return False
+
+    lista = []
+    for m in dados:
+        mid = m.get("id")
+        if not mid or not custa_zero(m):
+            continue
+        arch = m.get("architecture") or {}
+        in_mods = arch.get("input_modalities") or []
+        out_mods = arch.get("output_modalities") or []
+        if "image" in in_mods and "text" in out_mods and "audio" not in out_mods:
+            lista.append(mid)
+
+    if not lista:
+        return list(_FALLBACK_VISAO_OPENROUTER)
+
+    preferidos = {
+        "google/gemma-4-31b-it:free": 0,
+        "google/gemma-4-26b-a4b-it:free": 1,
+        "nvidia/nemotron-3.5-super-vl:free": 2,
+        "openrouter/free": 3,
+    }
+    lista.sort(key=lambda mid: (preferidos.get(mid, 99), mid))
+    _CACHE_MODELOS_VISAO_OPENROUTER["lista"] = list(lista)
+    _CACHE_MODELOS_VISAO_OPENROUTER["quando"] = agora
+    return lista
+
+
+def analisar_grafico_openrouter(
+    imagem_pil,
+    prompt,
+    chave=None,
+    modelos=None,
+    timeout=60,
+    url="https://openrouter.ai/api/v1/chat/completions",
+):
+    """Lê o gráfico via OpenRouter Visão usando apenas modelos gratuitos.
+
+    NUNCA levanta: devolve `(texto_json, modelo_usado, motivo)`.
+    """
+    try:
+        chave_uso = chave if chave is not None else carregar_chave_provedor("openrouter")
+        if not chave_uso:
+            return None, None, "sem chave OpenRouter configurada"
+        try:
+            b64 = _b64_da_imagem(imagem_pil, lado_max=LADO_MAX_VISAO_NUVEM)
+        except Exception as e:
+            return None, None, f"falha ao preparar imagem: {type(e).__name__}"
+
+        candidatos = list(modelos if modelos is not None else modelos_visao_gratuitos_openrouter())[:4]
+        if not candidatos:
+            candidatos = list(_FALLBACK_VISAO_OPENROUTER)
+
+        mensagens = [
+            {
+                "role": "system",
+                "content": (
+                    "Retorne estritamente um objeto JSON válido (sem markdown nem comentários) "
+                    "em português com as chaves exigidas. Não inclua quantidade de contratos "
+                    "nem valores de risco em dólar."
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt_para_visao_local(prompt)},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ],
+            },
+        ]
+        headers = {
+            "Authorization": f"Bearer {chave_uso}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://smcquantpro.local",
+            "X-Title": "SMC Quant Pro",
+        }
+        erros = []
+        for modelo in candidatos:
+            try:
+                r = requests.post(
+                    url,
+                    headers=headers,
+                    json={
+                        "model": modelo,
+                        "messages": mensagens,
+                        "max_tokens": 1400,
+                        "temperature": 0.15,
+                    },
+                    timeout=timeout,
+                )
+                if r.status_code in (401, 402):
+                    return None, None, diagnostico_de_provedor(
+                        f"HTTP {r.status_code}: {r.text[:220]}", "OpenRouter")
+                if r.status_code != 200:
+                    erros.append(f"{modelo}: HTTP {r.status_code}")
+                    continue
+                dados = r.json() or {}
+                escolha = (dados.get("choices") or [{}])[0]
+                msg = escolha.get("message") or {}
+                conteudo = msg.get("content") or ""
+                if isinstance(conteudo, list):
+                    conteudo = "".join(
+                        p.get("text", "") if isinstance(p, dict) else str(p)
+                        for p in conteudo
+                    )
+                json_valido = extrair_json_analise(conteudo)
+                if json_valido:
+                    return json_valido, modelo, ""
+                erros.append(f"{modelo}: formato JSON incompleto")
+            except Exception as e:
+                erros.append(f"{modelo}: {type(e).__name__}: {str(e)[:80]}")
+                continue
+        return None, None, " · ".join(erros[:3]) or "sem resposta dos modelos gratuitos de visão"
+    except Exception as e:
+        return None, None, f"{type(e).__name__}: {str(e)[:120]}"
 
 
 def ia_local_ligada(cfg=None):
@@ -3202,7 +3373,10 @@ def _instrucao_de_escala_do_stop(asset_symbol):
             f"entre {minimo} e {maximo} ticks ({minimo * tick:g} a "
             f"{maximo * tick:g} pontos). Abaixo de {minimo} o preço varre por "
             f"ruído, sem invalidar nada; acima de {maximo} o alvo de 1:2 "
-            "precisaria de um movimento que raramente vem no dia. Se a "
+            "precisaria de um movimento que raramente vem no dia. "
+            "Use SEMPRE o pavio do swing/Order Block LOCAL do timeframe "
+            "operacional (ex.: 5m) dentro dessa faixa — NUNCA coloque o stop "
+            "atrás de um topo/fundo macro 50 a 150 pontos distante. Se a "
             "estrutura que você encontrou EXIGE um stop fora dessa faixa, "
             "então este não é um setup intradiário: retorne HOLD em vez de "
             "espremer o stop ou esticar o alvo para caber.\n")
@@ -7866,11 +8040,18 @@ def salvar_ultimo_print(imagem_pil, janela=""):
     que gerou a sugestão, sem você tirar print à mão.
     Devolve o dicionário com o que foi salvo, ou None se não deu para salvar.
     """
+    tmp = ULTIMO_PRINT_FILE + ".tmp"
     try:
-        imagem_pil.convert("RGB").save(ULTIMO_PRINT_FILE, format="PNG")
+        imagem_pil.convert("RGB").save(tmp, format="PNG")
+        os.replace(tmp, ULTIMO_PRINT_FILE)
         return {"caminho": ULTIMO_PRINT_FILE, "hora": time.strftime("%H:%M"),
                 "quando": time.time(), "janela": janela or ""}
     except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
         return None
 
 def idade_do_ultimo_print(info):
@@ -12605,9 +12786,11 @@ _RE_ACAO_INVENTADA = re.compile(
 # ao lado da mentira.
 _RE_DESCRICAO_DE_ESTADO = re.compile(
     r"\b(estou|est[aá]|estava|estamos|continu[ao]|segue|permanece|permanecem|"
-    r"sigo|fiquei|ficou|encontra-se|consta|aparece|mostra|indica)\b"
+    r"sigo|fiquei|ficou|encontra-se|consta|aparece|mostra|indica|"
+    r"expirou|expirada|n[aã]o\s+foi\s+preenchid[ao]|n[aã]o\s+preenchid[ao])\b"
     r"|\bcom\s+a\s+posi[çc][aã]o\b"
-    r"|\bposi[çc][aã]o\s+atual\b",
+    r"|\bposi[çc][aã]o\s+atual\b"
+    r"|(?:→|->)\s*\*?\*?posi[çc][aã]o\s+zerad",
     re.IGNORECASE)
 
 
@@ -12810,11 +12993,24 @@ def censurar_acao_inventada(resposta):
     # Por frase, e não pelo texto todo, também na direção contrária: assim
     # "Cancelei todas as ordens, estou com a posição zerada" continua sendo
     # pego, porque a frase da mentira é julgada sozinha.
+    _re_acao_explicita = re.compile(
+        r"(ordens?\s+(\w+\s+)?(foram|foi)\s+cancelad|"
+        r"\bordem\s+cancelada\b\s*[:.*]|"
+        r"cancelei\s+(as|todas|a\s+ordem)|"
+        r"encerrei\s+(a|as|todas|sua)|"
+        r"(enviei|mandei)\s+(a\s+)?ordem|"
+        r"posi[çc][aã]o\s+foi\s+(zerad|encerrad|fechad)|"
+        r"fechei\s+(a|as|todas?|suas?|o|os)\s+(\w+\s+)?posi|"
+        r"executei\s+(o\s+comando|na\s+(tradovate|plataforma))|"
+        r"via\s+api\s+tradovate|"
+        r"✅\s*enviado\b)",
+        re.IGNORECASE)
     culpada = None
     for frase in re.split(r"(?<=[.!?])\s+|\n+", texto):
-        if _RE_ACAO_INVENTADA.search(frase) and not _RE_DESCRICAO_DE_ESTADO.search(frase):
-            culpada = frase
-            break
+        if _RE_ACAO_INVENTADA.search(frase):
+            if _re_acao_explicita.search(frase) or not _RE_DESCRICAO_DE_ESTADO.search(frase):
+                culpada = frase
+                break
     if culpada is None:
         return texto, False
     aviso = (
@@ -28478,9 +28674,15 @@ class SmcQuantApp(ctk.CTk):
             marcadas por engano, garantindo que a aba real da corretora seja a
             janela principal (`_idx_janela == 0`)."""
             brutas = janelas_monitoradas() or []
+            _bloqueadas = (
+                "antigravity", "smc quant pro",
+                "ajustes do sistema", "preferências do sistema",
+                "system settings", "system preferences", "finder",
+            )
             validas = [
                 j for j in brutas
-                if not any(b in str(j).lower() for b in ("antigravity", "smc quant pro"))
+                if str(j).strip().lower() != "ajustes"
+                and not any(b in str(j).lower() for b in _bloqueadas)
             ]
             return validas or brutas or [""]
 
@@ -29166,142 +29368,167 @@ class SmcQuantApp(ctk.CTk):
                         # MESMA função do lado do chat. Antes eram duas cópias
                         # da regra, e a daqui era a errada.
                         agora_ts = time.time()
+                        candidatos = list(modelos_fallback)
+                        _pular_gemini = False
+                        _motivo_skip_gemini = ""
                         # COTA DIÁRIA ESGOTADA EM TODOS OS MODELOS = NÃO INSISTE.
-                        # Cada tentativa é uma requisição inútil (e o log vira um
-                        # muro de 10 linhas por ciclo). Suspende a análise desta
-                        # janela até o primeiro modelo voltar, e avisa UMA vez.
+                        # Se houver OpenRouter ou IA local de visão, desvia direto
+                        # para a reserva sem gastar requisições; sem reserva, suspende.
                         try:
                             _voltas = [cooldown_modelos.get(m, 0) for m in modelos_fallback]
                             if _voltas and all(v - agora_ts > 3600 for v in _voltas):
                                 _volta_em = min(_voltas)
                                 _hh = time.strftime("%d/%m %H:%M", time.localtime(_volta_em))
+                                _tem_or_visao = bool(carregar_chave_provedor("openrouter"))
+                                try:
+                                    _tem_local_visao = bool(
+                                        ia_local_ligada()
+                                        and tem_modelo_de_visao(ia_local_no_ar(timeout=1.5) or []))
+                                except Exception:
+                                    _tem_local_visao = False
+                                if not _tem_or_visao and not _tem_local_visao:
+                                    if not getattr(self, "_avisou_cota_diaria", False):
+                                        self._avisou_cota_diaria = True
+                                        _msg_q = (
+                                            "⛔ A cota DIÁRIA gratuita da Gemini acabou em TODOS os modelos "
+                                            f"(volta por volta de {_hh}). Suspendi as análises para não "
+                                            "gastar requisição à toa — NENHUMA sugestão nova sai até lá. "
+                                            "Para operar o dia todo: use uma chave Gemini paga ou OpenRouter (aba Motor).")
+                                        self.log(_msg_q)
+                                        self._chat_feed(_msg_q)
+                                    else:
+                                        self.log(f"⏸️ Cota diária da Gemini esgotada — análise suspensa até ~{_hh}.")
+                                    continue
+                                _pular_gemini = True
+                                _motivo_skip_gemini = f"Cota diária gratuita da Gemini esgotada até ~{_hh}"
                                 if not getattr(self, "_avisou_cota_diaria", False):
                                     self._avisou_cota_diaria = True
+                                    _destino = "OpenRouter Visão (reserva gratuita)" if _tem_or_visao else "IA local (visão)"
                                     _msg_q = (
-                                        "⛔ A cota DIÁRIA gratuita da Gemini acabou em TODOS os modelos "
-                                        f"(volta por volta de {_hh}). Suspendi as análises para não "
-                                        "gastar requisição à toa — NENHUMA sugestão nova sai até lá. "
-                                        "Para operar o dia todo: use uma chave Gemini paga (aba Motor).")
+                                        "⚠️ Cota diária gratuita da Gemini esgotada até "
+                                        f"~{_hh} — desviando leitura do gráfico automaticamente "
+                                        f"para {_destino} sem gastar requisições na Gemini.")
                                     self.log(_msg_q)
                                     self._chat_feed(_msg_q)
                                 else:
-                                    self.log(f"⏸️ Cota diária da Gemini esgotada — análise suspensa até ~{_hh}.")
-                                continue
+                                    self.log(f"⏭️ Gemini em cota diária (~{_hh}) — usando reserva de visão automaticamente.")
                             elif getattr(self, "_avisou_cota_diaria", False):
                                 self._avisou_cota_diaria = False
-                                self.log("✅ Cota da Gemini voltou — análises retomadas.")
+                                self.log("✅ Cota da Gemini voltou — análises retomadas na fila principal.")
                         except Exception:
                             pass
-                        candidatos, n_parados = fila_por_cooldown(
-                            modelos_fallback, cooldown_modelos, agora_ts)
-                        n_livres = len(candidatos) - n_parados
-                        if n_parados and not n_livres:
-                            self.log("⏳ Todos os modelos estão em cooldown de cota/sobrecarga — "
-                                      "tentando mesmo assim. (Considere aumentar o intervalo ou usar chave paga.)")
-                        elif n_parados:
-                            self.log(f"⏳ {n_parados} modelo(s) em cooldown foram para o fim "
-                                      f"da fila — {n_livres} livre(s) primeiro. Nenhum fica de fora: "
-                                      "perder o ciclo custa mais que uma tentativa.")
 
-                        # UMA SEGUNDA PASSADA, PORQUE 503 SIGNIFICA "TENTE DE NOVO".
-                        # Log de 13/08, 10:35 e 10:40: dois ciclos seguidos
-                        # perdidos inteiros com 503 UNAVAILABLE ("high demand,
-                        # spikes are usually temporary") e 504 DEADLINE.
-                        # A palavra do próprio Google é TEMPORÁRIO — e a
-                        # ferramenta respondia a isso jogando fora CINCO
-                        # MINUTOS de mercado e esperando o ciclo seguinte.
-                        # Vinte segundos de espera custam quase nada e
-                        # recuperam a maioria desses casos. Uma passada extra
-                        # só, e só para erro transitório: com cota estourada
-                        # ou chave inválida, insistir é desperdício.
-                        # PREPARA A IMAGEM UMA VEZ, FORA DOS DOIS LAÇOS.
-                        # Estava dentro, sem ninguém ter escrito que estava:
-                        # passar o PIL cru faz o SDK recodificar e resubir a
-                        # foto inteira A CADA modelo tentado.
-                        imagem_para_ia = imagem_para_o_modelo(screenshot)
-                        for tentativa in (1, 2):
-                            for modelo_atual in candidatos:
-                                try:
-                                    resposta = client.models.generate_content(
-                                        model=modelo_atual,
-                                        contents=[PROMPT_FINAL, imagem_para_ia],
-                                        config=types.GenerateContentConfig(
-                                            system_instruction=INSTRUCAO_SISTEMA,
-                                            response_mime_type="application/json",
-                                            response_schema=SIGNAL_SCHEMA,
+                        if not _pular_gemini:
+                            candidatos, n_parados = fila_por_cooldown(
+                                modelos_fallback, cooldown_modelos, agora_ts)
+                            n_livres = len(candidatos) - n_parados
+                            if n_parados and not n_livres:
+                                self.log("⏳ Todos os modelos estão em cooldown de cota/sobrecarga — "
+                                          "tentando mesmo assim. (Considere aumentar o intervalo ou usar chave paga.)")
+                            elif n_parados:
+                                self.log(f"⏳ {n_parados} modelo(s) em cooldown foram para o fim "
+                                          f"da fila — {n_livres} livre(s) primeiro. Nenhum fica de fora: "
+                                          "perder o ciclo custa mais que uma tentativa.")
+
+                            # UMA SEGUNDA PASSADA, PORQUE 503 SIGNIFICA "TENTE DE NOVO".
+                            # Log de 13/08, 10:35 e 10:40: dois ciclos seguidos
+                            # perdidos inteiros com 503 UNAVAILABLE ("high demand,
+                            # spikes are usually temporary") e 504 DEADLINE.
+                            # A palavra do próprio Google é TEMPORÁRIO — e a
+                            # ferramenta respondia a isso jogando fora CINCO
+                            # MINUTOS de mercado e esperando o ciclo seguinte.
+                            # Vinte segundos de espera custam quase nada e
+                            # recuperam a maioria desses casos. Uma passada extra
+                            # só, e só para erro transitório: com cota estourada
+                            # ou chave inválida, insistir é desperdício.
+                            # PREPARA A IMAGEM UMA VEZ, FORA DOS DOIS LAÇOS.
+                            # Estava dentro, sem ninguém ter escrito que estava:
+                            # passar o PIL cru faz o SDK recodificar e resubir a
+                            # foto inteira A CADA modelo tentado.
+                            imagem_para_ia = imagem_para_o_modelo(screenshot)
+                            for tentativa in (1, 2):
+                                for modelo_atual in candidatos:
+                                    try:
+                                        resposta = client.models.generate_content(
+                                            model=modelo_atual,
+                                            contents=[PROMPT_FINAL, imagem_para_ia],
+                                            config=types.GenerateContentConfig(
+                                                system_instruction=INSTRUCAO_SISTEMA,
+                                                response_mime_type="application/json",
+                                                response_schema=SIGNAL_SCHEMA,
+                                            )
                                         )
-                                    )
-                                    modelo_vencedor = modelo_atual
-                                    # Respondeu: sai do cooldown E passa a liderar a
-                                    # fila também no chat — a TIGER começa pelo que
-                                    # acabou de funcionar, em vez de descobrir sozinha.
-                                    registrar_sucesso_modelo(modelo_atual)
-                                    # O painel mostra o modelo QUE RESPONDEU,
-                                    # não o que está no topo da fila. Com a
-                                    # rotação por cooldown os dois divergem o
-                                    # tempo todo, e o trader precisa saber
-                                    # quem de fato analisou o gráfico dele.
-                                    self._ultimo_modelo_usado = modelo_atual
-                                    if modelo_atual != candidatos[0]:
-                                        self.log(f"ℹ️ Análise concluída usando modelo de reserva: {modelo_atual}")
-                                    break
-                                except Exception as e:
-                                    ultimo_erro = e
-                                    erro_str = str(e).upper()
+                                        modelo_vencedor = modelo_atual
+                                        # Respondeu: sai do cooldown E passa a liderar a
+                                        # fila também no chat — a TIGER começa pelo que
+                                        # acabou de funcionar, em vez de descobrir sozinha.
+                                        registrar_sucesso_modelo(modelo_atual)
+                                        # O painel mostra o modelo QUE RESPONDEU,
+                                        # não o que está no topo da fila. Com a
+                                        # rotação por cooldown os dois divergem o
+                                        # tempo todo, e o trader precisa saber
+                                        # quem de fato analisou o gráfico dele.
+                                        self._ultimo_modelo_usado = modelo_atual
+                                        if modelo_atual != candidatos[0]:
+                                            self.log(f"ℹ️ Análise concluída usando modelo de reserva: {modelo_atual}")
+                                        break
+                                    except Exception as e:
+                                        ultimo_erro = e
+                                        erro_str = str(e).upper()
 
-                                    # 404 / NOT_FOUND = o modelo NÃO EXISTE mais para esta
-                                    # conta (foi descontinuado). Não adianta tentar de novo
-                                    # nos próximos ciclos: removemos da lista de vez.
-                                    if erro_e_modelo_inexistente(e):
-                                        self.log(f"🚫 {modelo_atual} foi descontinuado — removendo da lista permanentemente.")
-                                        modelos_invalidos.add(modelo_atual)
-                                        if getattr(self, "agente_autocorretivo", None) is not None:
-                                            try:
-                                                self.agente_autocorretivo.registrar_modelo_descontinuado(modelo_atual)
-                                            except Exception:
-                                                pass
-                                        continue
+                                        # 404 / NOT_FOUND = o modelo NÃO EXISTE mais para esta
+                                        # conta (foi descontinuado). Não adianta tentar de novo
+                                        # nos próximos ciclos: removemos da lista de vez.
+                                        if erro_e_modelo_inexistente(e):
+                                            self.log(f"🚫 {modelo_atual} foi descontinuado — removendo da lista permanentemente.")
+                                            modelos_invalidos.add(modelo_atual)
+                                            if getattr(self, "agente_autocorretivo", None) is not None:
+                                                try:
+                                                    self.agente_autocorretivo.registrar_modelo_descontinuado(modelo_atual)
+                                                except Exception:
+                                                    pass
+                                            continue
 
-                                    # Erros TRANSITÓRIOS ou de cota: vale tentar o próximo
-                                    # modelo em vez de derrubar o ciclo inteiro.
-                                    #   429 / RESOURCE_EXHAUSTED -> cota esgotada
-                                    #   503 / UNAVAILABLE        -> modelo sobrecarregado (alta demanda)
-                                    #   500 / INTERNAL           -> falha temporária do servidor
-                                    #   504 / DEADLINE / TIMED OUT -> timeout de rede
-                                    # ATENÇÃO: a mensagem real do SDK é "The read operation
-                                    # timed out" (com espaço). Procurar só por "TIMEOUT"
-                                    # deixava esse erro passar como fatal e matava o ciclo.
-                                    transitorios = ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE",
-                                                     "500", "INTERNAL", "504", "DEADLINE", "TIMEOUT",
-                                                     "TIMED OUT", "OVERLOADED", "CONNECTION", "SSL",
-                                                     "TEMPORARILY")
-                                    if any(t in erro_str for t in transitorios):
-                                        eh_cota = erro_e_cota(e)
-                                        _espera_cota = segundos_ate_cota_voltar(e, COOLDOWN_COTA)
-                                        cooldown_modelos[modelo_atual] = time.time() + (
-                                            _espera_cota if eh_cota else COOLDOWN_SOBRECARGA)
-                                        if eh_cota and _espera_cota > 3600:
-                                            motivo = (f"cota DIÁRIA esgotada (volta em "
-                                                      f"~{_espera_cota / 3600:.0f}h)")
-                                        elif eh_cota:
-                                            motivo = "cota esgotada (pausado 15min)"
-                                        else:
-                                            motivo = "sobrecarregado (pausado 2min)"
-                                        self.log(f"⚠️ {modelo_atual} {motivo} — próximo modelo...")
-                                        continue  # sem sleep: o próximo modelo já é uma nova requisição
-                                    raise  # erro real (ex: chave inválida): sobe pro tratamento do ciclo
+                                        # Erros TRANSITÓRIOS ou de cota: vale tentar o próximo
+                                        # modelo em vez de derrubar o ciclo inteiro.
+                                        #   429 / RESOURCE_EXHAUSTED -> cota esgotada
+                                        #   503 / UNAVAILABLE        -> modelo sobrecarregado (alta demanda)
+                                        #   500 / INTERNAL           -> falha temporária do servidor
+                                        #   504 / DEADLINE / TIMED OUT -> timeout de rede
+                                        # ATENÇÃO: a mensagem real do SDK é "The read operation
+                                        # timed out" (com espaço). Procurar só por "TIMEOUT"
+                                        # deixava esse erro passar como fatal e matava o ciclo.
+                                        transitorios = ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE",
+                                                         "500", "INTERNAL", "504", "DEADLINE", "TIMEOUT",
+                                                         "TIMED OUT", "OVERLOADED", "CONNECTION", "SSL",
+                                                         "TEMPORARILY")
+                                        if any(t in erro_str for t in transitorios):
+                                            eh_cota = erro_e_cota(e)
+                                            _espera_cota = segundos_ate_cota_voltar(e, COOLDOWN_COTA)
+                                            cooldown_modelos[modelo_atual] = time.time() + (
+                                                _espera_cota if eh_cota else COOLDOWN_SOBRECARGA)
+                                            if eh_cota and _espera_cota > 3600:
+                                                motivo = (f"cota DIÁRIA esgotada (volta em "
+                                                          f"~{_espera_cota / 3600:.0f}h)")
+                                            elif eh_cota:
+                                                motivo = "cota esgotada (pausado 15min)"
+                                            else:
+                                                motivo = "sobrecarregado (pausado 2min)"
+                                            self.log(f"⚠️ {modelo_atual} {motivo} — próximo modelo...")
+                                            continue  # sem sleep: o próximo modelo já é uma nova requisição
+                                        raise  # erro real (ex: chave inválida): sobe pro tratamento do ciclo
 
-                            if resposta is not None:
-                                break            # respondeu: nada a repetir
-                            if tentativa == 1 and \
-                                    classificar_erro_modelo(ultimo_erro) == "transitorio":
-                                self.log("⏳ Todos os modelos deram erro TEMPORÁRIO "
-                                         "(o próprio Google chama de 'pico de demanda'). "
-                                         "Esperando 20s e tentando de novo — jogar o "
-                                         "ciclo fora custaria 5 minutos de mercado.")
-                                time.sleep(20)
-                                continue
-                            break                # cota, chave ou erro real: não insiste
+                                if resposta is not None:
+                                    break            # respondeu: nada a repetir
+                                if tentativa == 1 and \
+                                        classificar_erro_modelo(ultimo_erro) == "transitorio":
+                                    self.log("⏳ Todos os modelos deram erro TEMPORÁRIO "
+                                             "(o próprio Google chama de 'pico de demanda'). "
+                                             "Esperando 20s e tentando de novo — jogar o "
+                                             "ciclo fora custaria 5 minutos de mercado.")
+                                    time.sleep(20)
+                                    continue
+                                break                # cota, chave ou erro real: não insiste
 
                         # Expurga de vez os modelos descontinuados, para não perder
                         # tempo tentando-os em todos os ciclos seguintes.
@@ -29321,6 +29548,27 @@ class SmcQuantApp(ctk.CTk):
                         if modelo_vencedor and modelos_fallback and modelos_fallback[0] != modelo_vencedor:
                             modelos_fallback = ([modelo_vencedor] +
                                                  [m for m in modelos_fallback if m != modelo_vencedor])
+
+                        # ---- RESERVA EM NUVEM COM VISÃO (OPENROUTER GRATUITO) ----
+                        if resposta is None and carregar_chave_provedor("openrouter"):
+                            self.log("🌐 Gemini indisponível — chamando OpenRouter Visão (modelos gratuitos) como reserva...")
+                            _t_or = time.time()
+                            _bruto_or, _mod_or, _mot_or = analisar_grafico_openrouter(
+                                screenshot, PROMPT_FINAL)
+                            if _bruto_or and analise_local_valida(_bruto_or):
+                                self.log(
+                                    f"🌐 Leitura feita pela OpenRouter Visão ({_mod_or}) em "
+                                    f"{time.time() - _t_or:.1f}s — reserva gratuita validada "
+                                    "pelas mesmas travas de preço, ticker e escala.")
+                                resposta = type("R", (), {"text": _bruto_or})()
+                                modelo_vencedor = f"OpenRouter ({_mod_or})"
+                                self._ultimo_modelo_usado = modelo_vencedor
+                            elif _mot_or:
+                                self.log(f"🌐 OpenRouter Visão não respondeu: {_mot_or}.")
+                                if ultimo_erro is None:
+                                    ultimo_erro = RuntimeError(f"OpenRouter Visão: {_mot_or}")
+                        if ultimo_erro is None and _motivo_skip_gemini:
+                            ultimo_erro = RuntimeError(_motivo_skip_gemini)
 
                         # ---- A IA LOCAL COM VISÃO É A ÚLTIMA RESERVA ----
                         # Em 13/08, TODOS os dez modelos da Gemini devolveram

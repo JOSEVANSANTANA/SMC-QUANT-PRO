@@ -19,7 +19,7 @@ Funcionalidades:
 import time
 import math
 import logging
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
 class PredictiveLiquidityEngine:
@@ -1206,6 +1206,9 @@ def calibrar_setup_para_orcamento_e_execucao_real(
         if p_at > 0:
             if (d == "BUY" and p_at < novo_ep - 2 * tk) or (d == "SELL" and p_at > novo_ep + 2 * tk):
                 nao_invadiu = False
+            novo_risco_tmp = abs(novo_ep - sl)
+            if novo_risco_tmp <= 1e-9 or abs(novo_ep - p_at) / novo_risco_tmp > 1.5:
+                nao_invadiu = False
         if geometria_ok and nao_invadiu:
             novo_risco = abs(novo_ep - sl)
             novo_rr = abs(t1 - novo_ep) / max(1e-9, novo_risco)
@@ -1229,7 +1232,8 @@ def calibrar_setup_para_orcamento_e_execucao_real(
         gap_pts = abs(p_at - ep)
         gap_ticks = round(gap_pts / tk, 1)
         # Se a ordem ficou mais de 24 ticks (6 pontos no NQ) para trás do preço atual
-        if a_favor and gap_ticks > 24:
+        # (só ancora setups intradiários válidos; macro stops > 1.65x max_tk são rejeitados depois)
+        if a_favor and gap_ticks > 24 and ticks_plan <= max_tk * 1.65:
             recuo_embarque_ticks = 8  # Espera apenas um micro-respiro de 8 ticks (2 pts no NQ)
             tk_stop_ancorado = min(max_tk_efetivo, max(min_tk, int(round(ticks_plan))))
             dist_stop_pts = tk_stop_ancorado * tk
