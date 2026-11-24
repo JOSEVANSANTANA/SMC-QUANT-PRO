@@ -6529,13 +6529,53 @@ def modelos_para_tentar(excluir=(), preferido=None):
         cooldown = dict(_MODELOS["cooldown"])
     return fila_por_cooldown(base, cooldown, agora, preferido)[0]
 
+def erro_e_cota(erro):
+    e = str(erro or "").upper()
+    return "RESOURCE_EXHAUSTED" in e or e.lstrip().startswith("429")
+
+
+def erro_e_modelo_inexistente(erro):
+    """Modelo descontinuado de verdade (404 NOT_FOUND).
+
+    ANTES: `"404" in texto`. Uma mensagem de COTA traz números como
+    'retryDelay: 64404s' ou 'limit: 20' — bastava o dígito "404" aparecer ali
+    para um modelo VÁLIDO ser marcado como morto para sempre (e gravado em
+    disco). Agora: cota nunca é 404, e o 404 tem de ser o código do erro."""
+    e = str(erro or "").upper()
+    if erro_e_cota(e):
+        return False
+    return (e.lstrip().startswith("404") or "NOT_FOUND" in e
+            or "NO LONGER AVAILABLE" in e)
+
+
+def segundos_ate_cota_voltar(erro, padrao=900):
+    """Quanto tempo um 429 manda esperar. Cota DIÁRIA do plano gratuito
+    ('PerDay', 'per day') não volta em 15 min: volta em horas. Insistir a cada
+    ciclo só gasta requisição e enche o log (24/11: 10 modelos x a cada 5 min
+    o dia inteiro, todos com 'retry in 17h')."""
+    texto = str(erro or "")
+    diaria = bool(re.search(r"PerDay|per day", texto, re.I))
+    segs = None
+    m = re.search(r"retryDelay['\"]?\s*:\s*['\"]?(\d+)s", texto)
+    if m:
+        segs = int(m.group(1))
+    else:
+        m = re.search(r"retry in\s+(?:(\d+)h)?\s*(?:(\d+)m)?\s*([\d.]+)s", texto, re.I)
+        if m:
+            segs = int(int(m.group(1) or 0) * 3600 + int(m.group(2) or 0) * 60
+                       + float(m.group(3) or 0))
+    if diaria:
+        return max(1800, min(segs or 6 * 3600, 8 * 3600))
+    return padrao
+
+
 def classificar_erro_modelo(erro):
     """'invalido' (404), 'cota' (429), 'transitorio' (503/timeout...) ou 'fatal'."""
     e = str(erro or "").upper()
-    if "404" in e or "NOT_FOUND" in e or "NO LONGER AVAILABLE" in e:
-        return "invalido"
-    if "429" in e or "RESOURCE_EXHAUSTED" in e:
+    if erro_e_cota(e):
         return "cota"
+    if erro_e_modelo_inexistente(e):
+        return "invalido"
     # 401 e credencial, nao cota. Tentar os outros modelos com a MESMA chave
     # invalida so gasta tempo e ainda faz o trader pensar que e limite de uso
     # -- foi o que aconteceu: "tentei 10 modelos" com uma chave que nao valia.
@@ -6595,7 +6635,8 @@ def registrar_falha_modelo(modelo, erro):
             _MODELOS["invalidos"].add(modelo)
             _MODELOS["lista"] = [m for m in _MODELOS["lista"] if m != modelo]
         elif tipo == "cota":
-            _MODELOS["cooldown"][modelo] = time.time() + COOLDOWN_COTA_SEG
+            _MODELOS["cooldown"][modelo] = time.time() + segundos_ate_cota_voltar(
+                erro, COOLDOWN_COTA_SEG)
         elif tipo == "transitorio":
             _MODELOS["cooldown"][modelo] = time.time() + COOLDOWN_SOBRECARGA_SEG
     # A COTA ESTOUROU: a reserva local está prestes a ser chamada. Começa a
@@ -14099,7 +14140,7 @@ class SmcQuantApp(ctk.CTk):
         self.agente_autocorretivo = AgenteAutocorretivoInstitucional() if AgenteAutocorretivoInstitucional else None
         if self.agente_autocorretivo is not None:
             try:
-                _MODELOS_INVALIDOS.update(self.agente_autocorretivo.carregar_modelos_descontinuados())
+                _MODELOS["invalidos"].update(self.agente_autocorretivo.carregar_modelos_descontinuados())
             except Exception:
                 pass
         self._hud_jarvis = None
@@ -29125,6 +29166,32 @@ class SmcQuantApp(ctk.CTk):
                         # MESMA função do lado do chat. Antes eram duas cópias
                         # da regra, e a daqui era a errada.
                         agora_ts = time.time()
+                        # COTA DIÁRIA ESGOTADA EM TODOS OS MODELOS = NÃO INSISTE.
+                        # Cada tentativa é uma requisição inútil (e o log vira um
+                        # muro de 10 linhas por ciclo). Suspende a análise desta
+                        # janela até o primeiro modelo voltar, e avisa UMA vez.
+                        try:
+                            _voltas = [cooldown_modelos.get(m, 0) for m in modelos_fallback]
+                            if _voltas and all(v - agora_ts > 3600 for v in _voltas):
+                                _volta_em = min(_voltas)
+                                _hh = time.strftime("%d/%m %H:%M", time.localtime(_volta_em))
+                                if not getattr(self, "_avisou_cota_diaria", False):
+                                    self._avisou_cota_diaria = True
+                                    _msg_q = (
+                                        "⛔ A cota DIÁRIA gratuita da Gemini acabou em TODOS os modelos "
+                                        f"(volta por volta de {_hh}). Suspendi as análises para não "
+                                        "gastar requisição à toa — NENHUMA sugestão nova sai até lá. "
+                                        "Para operar o dia todo: use uma chave Gemini paga (aba Motor).")
+                                    self.log(_msg_q)
+                                    self._chat_feed(_msg_q)
+                                else:
+                                    self.log(f"⏸️ Cota diária da Gemini esgotada — análise suspensa até ~{_hh}.")
+                                continue
+                            elif getattr(self, "_avisou_cota_diaria", False):
+                                self._avisou_cota_diaria = False
+                                self.log("✅ Cota da Gemini voltou — análises retomadas.")
+                        except Exception:
+                            pass
                         candidatos, n_parados = fila_por_cooldown(
                             modelos_fallback, cooldown_modelos, agora_ts)
                         n_livres = len(candidatos) - n_parados
@@ -29185,8 +29252,7 @@ class SmcQuantApp(ctk.CTk):
                                     # 404 / NOT_FOUND = o modelo NÃO EXISTE mais para esta
                                     # conta (foi descontinuado). Não adianta tentar de novo
                                     # nos próximos ciclos: removemos da lista de vez.
-                                    if ("404" in erro_str or "NOT_FOUND" in erro_str
-                                            or "NO LONGER AVAILABLE" in erro_str):
+                                    if erro_e_modelo_inexistente(e):
                                         self.log(f"🚫 {modelo_atual} foi descontinuado — removendo da lista permanentemente.")
                                         modelos_invalidos.add(modelo_atual)
                                         if getattr(self, "agente_autocorretivo", None) is not None:
@@ -29210,13 +29276,17 @@ class SmcQuantApp(ctk.CTk):
                                                      "TIMED OUT", "OVERLOADED", "CONNECTION", "SSL",
                                                      "TEMPORARILY")
                                     if any(t in erro_str for t in transitorios):
-                                        eh_cota = ("429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str)
-                                        # Estaciona o modelo para não desperdiçar rede nos
-                                        # próximos ciclos: cota -> 15 min, sobrecarga -> 2 min.
+                                        eh_cota = erro_e_cota(e)
+                                        _espera_cota = segundos_ate_cota_voltar(e, COOLDOWN_COTA)
                                         cooldown_modelos[modelo_atual] = time.time() + (
-                                            COOLDOWN_COTA if eh_cota else COOLDOWN_SOBRECARGA)
-                                        motivo = "cota esgotada (pausado 15min)" if eh_cota \
-                                                  else "sobrecarregado (pausado 2min)"
+                                            _espera_cota if eh_cota else COOLDOWN_SOBRECARGA)
+                                        if eh_cota and _espera_cota > 3600:
+                                            motivo = (f"cota DIÁRIA esgotada (volta em "
+                                                      f"~{_espera_cota / 3600:.0f}h)")
+                                        elif eh_cota:
+                                            motivo = "cota esgotada (pausado 15min)"
+                                        else:
+                                            motivo = "sobrecarregado (pausado 2min)"
                                         self.log(f"⚠️ {modelo_atual} {motivo} — próximo modelo...")
                                         continue  # sem sleep: o próximo modelo já é uma nova requisição
                                     raise  # erro real (ex: chave inválida): sobe pro tratamento do ciclo
